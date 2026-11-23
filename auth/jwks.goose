@@ -83,6 +83,7 @@ fn add_symmetric_key(
     guard jwks.keys.len < 16 && kid.len <= 64 && min_len > 0 else { return false; }
     guard secret_key.len >= min_len && secret_key.len <= 128 else { return false; }
     var item = JwksKey { kty: JwkKeyType.Oct, alg: alg, valid: true, .. };
+    defer core::secure_zeroize_slice(item.symmetric_key[..]);
     if kid.len > 0 { item.kid.append(kid); }
     item.symmetric_key.append(secret_key);
     return jwks.keys.try_push(item);
@@ -162,7 +163,7 @@ fn resolve_jwks_key_index(jwks: const Jwks&, kid: const u8[:]) -> i64, bool {
     return 0, false;
 }
 
-// Verifies a compact JWT against `jwks` using `kid` dispatch, preserving `out_header` on `KeyNotFound`.
+// Verifies a compact JWT against `jwks` using `kid` dispatch, clearing `out_claims` on any error.
 fn verify_jwt(
     jwks:         const Jwks&,
     token:        const u8[:],
@@ -171,17 +172,24 @@ fn verify_jwt(
     out_header:   JwtHeader&,
     out_claims:   JwtClaims&,
 ) -> JwtError {
+    var err = JwtError.MalformedToken;
+    defer if err != JwtError.None {
+        out_claims = JwtClaims { .. };
+    };
     var hdr = JwtHeader { .. };
-    let herr = parse_jwt_header_only(token, hdr);
-    guard herr == JwtError.None else { return herr; }
+    err = parse_jwt_header_only(token, hdr);
+    guard err == JwtError.None else { return err; }
 
-    let rerr = auth_internal::verify_jwt_header_rules(hdr, options);
-    guard rerr == JwtError.None else { return rerr; }
+    err = auth_internal::verify_jwt_header_rules(hdr, options);
+    guard err == JwtError.None else { return err; }
 
     let idx, found = resolve_jwks_key_index(jwks, hdr.kid[..]);
-    guard found else { return JwtError.KeyNotFound; }
+    guard found else {
+        err = JwtError.KeyNotFound;
+        return err;
+    }
 
-    return auth_internal::dispatch_jwks_verification(
+    err = auth_internal::dispatch_jwks_verification(
         token,
         jwks.keys[idx],
         hdr.alg,
@@ -190,6 +198,7 @@ fn verify_jwt(
         out_header,
         out_claims,
     );
+    return err;
 }
 
 // Zeroizes all keys inside `jwks` and clears the key array.

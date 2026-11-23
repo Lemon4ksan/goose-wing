@@ -163,8 +163,9 @@ fn test_cab_c2_04_jwe_and_device_grant() {
     // 1. ConcatKDF with 300-byte PartyUInfo must not silently drop PartyVInfo or key_bits.
     var big_apu: u8[..320] = [];
     for _ in 300 { big_apu.push('U'); }
-    let kdf_bob = auth::concat_kdf_sha256(z, "A256GCM", big_apu[..], "Bob", 256);
-    let kdf_mallory = auth::concat_kdf_sha256(z, "A256GCM", big_apu[..], "Mallory", 256);
+    let kdf_bob, ok_bob = auth::concat_kdf_sha256(z, "A256GCM", big_apu[..], "Bob", 256);
+    let kdf_mallory, ok_mal = auth::concat_kdf_sha256(z, "A256GCM", big_apu[..], "Mallory", 256);
+    assert(ok_bob && ok_mal);
     let kdf_no_collision = !core::ct_eq_tag32(kdf_bob, kdf_mallory);
 
     // 2. JWE must reject protected_b64 headers that are not valid JSON with alg="dir" and enc="A256GCM".

@@ -98,10 +98,10 @@ fn digest_hash_hex(algorithm: const u8[:], data: const u8[:]) -> u8[..64] {
     }
     if algorithm.eq_ascii_fold(rfc::DIGEST_ALGO_SHA512_256) ||
         algorithm.eq_ascii_fold(rfc::DIGEST_ALGO_SHA512_256_SESS) {
-        // RFC 7616 Section 3.9.2: SHA-512-256 Digest uses first 256 bits of SHA-512.
-        var d = core::sha512(data);
-        defer core::secure_zeroize_64(d);
-        for i in 32 { d[i].format_u8_hex(out, false); }
+        // RFC 7616 Section 3.9.2 & FIPS 180-4 §5.3.6.2: SHA-512/256 uses distinct IVs, not truncated SHA-512.
+        var d = core::sha512_256(data);
+        defer core::secure_zeroize_32(d);
+        for b in d { b.format_u8_hex(out, false); }
         return out;
     }
     return out;

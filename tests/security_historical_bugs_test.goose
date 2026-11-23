@@ -2082,7 +2082,26 @@ fn test_rfc9449_dpop_proof_validation_and_uri_normalization(t: lit::T&) {
         );
         sub.assert_true(ok_gen, "Valid DPoP proof generated");
 
+        var dpop_seed: u8[32] = [0; 32];
+        for i in 32 {
+            if i < key.len {
+                dpop_seed[i] = key[i];
+            }
+        }
+        let dpop_pub = core::ed25519_public_key(dpop_seed);
+
         let ok_ver = auth::verify_dpop_proof(
+            proof_jwt[..],
+            dpop_pub[..],
+            "GET",
+            "https://api.example.com/items",
+            "token_sec_123",
+            "server_nonce_777",
+            now_sec,
+        );
+        sub.assert_true(ok_ver, "Valid DPoP proof successfully verified end-to-end");
+
+        let seed_rejected = auth::verify_dpop_proof(
             proof_jwt[..],
             key,
             "GET",
@@ -2091,7 +2110,7 @@ fn test_rfc9449_dpop_proof_validation_and_uri_normalization(t: lit::T&) {
             "server_nonce_777",
             now_sec,
         );
-        sub.assert_true(ok_ver, "Valid DPoP proof successfully verified end-to-end");
+        sub.assert_false(seed_rejected, "Private seed MUST be rejected by verify_dpop_proof (AUTH-01)");
     };
 }
 

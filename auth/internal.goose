@@ -307,7 +307,7 @@ inline fn is_canonical_jwk_rsa_params(n_be: const u8[:], e_be: const u8[:]) -> b
     return e_be[0] != 0 && core::is_valid_rsa_public_exponent(e_be, n_be);
 }
 
-inline fn has_nonzero_byte_32(buf: const u8[32]) -> bool {
+inline fn has_nonzero_byte_32(buf: const u8[32]&) -> bool {
     var acc: u8 = 0;
     for b in buf { acc = acc | b; }
     return acc != 0;
@@ -324,9 +324,7 @@ inline fn append_json_str_member<B>(
     guard val.len > 0 else { return true; }
     if !first { guard out.try_push(',' as u8) else { return false; } }
     first = false;
-    core::format_json_key(out, key);
-    core::format_json_string(out, val);
-    return true;
+    return core::try_format_json_key(out, key) && core::try_format_json_string(out, val);
 }
 
 inline fn append_json_int_member<B>(
@@ -338,9 +336,7 @@ inline fn append_json_int_member<B>(
     guard val >= 0 else { return true; }
     if !first { guard out.try_push(',' as u8) else { return false; } }
     first = false;
-    core::format_json_key(out, key);
-    val.format_i64_dec(out);
-    return true;
+    return core::try_format_json_key(out, key) && core::try_format_i64_dec(val, out);
 }
 
 inline fn serialize_audiences_member<B>(
@@ -354,7 +350,7 @@ inline fn serialize_audiences_member<B>(
         guard out.try_append("\"aud\":[") else { return false; }
         for i in claims.audiences.len {
             if i > 0 { guard out.try_push(',' as u8) else { return false; } }
-            core::format_json_string(out, claims.audiences[i][..]);
+            guard core::try_format_json_string(out, claims.audiences[i][..]) else { return false; }
         }
         return out.try_push(']' as u8);
     }
@@ -372,15 +368,14 @@ inline fn serialize_custom_claim<B>(
 ) -> bool {
     if !first { guard out.try_push(',' as u8) else { return false; } }
     first = false;
-    core::format_json_key(out, c.key[..]);
+    guard core::try_format_json_key(out, c.key[..]) else { return false; }
     if c.is_num {
-        c.val_num.format_i64_dec(out);
-    } else if c.is_bool {
-        guard out.try_append(if c.val_bool { "true" } else { "false" }) else { return false; }
-    } else {
-        core::format_json_string(out, c.val_str[..]);
+        return core::try_format_i64_dec(c.val_num, out);
     }
-    return true;
+    if c.is_bool {
+        return out.try_append(if c.val_bool { "true" } else { "false" });
+    }
+    return core::try_format_json_string(out, c.val_str[..]);
 }
 
 // Appends a validated, non-standard, non-duplicate `crit` parameter name to `list` (RFC 7515 §4.1.11).

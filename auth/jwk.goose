@@ -101,7 +101,7 @@ fn validate_jwks_key_compatibility(key: const JwksKey&, header_alg: JwtAlg) -> J
     if key.use.len > 0 && key.use[..] != "sig" {
         return JwtError.UnsupportedAlgorithm;
     }
-    if (key.key_ops & JWK_OP_ENCRYPT) != 0 && (key.key_ops & JWK_OP_VERIFY) == 0 {
+    if key.key_ops != 0 && (key.key_ops & JWK_OP_VERIFY) == 0 {
         return JwtError.UnsupportedAlgorithm;
     }
     if key.alg != JwtAlg.Unspecified && key.alg != header_alg {

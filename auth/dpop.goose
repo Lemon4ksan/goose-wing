@@ -74,7 +74,7 @@ fn create_dpop_proof<B>(
 
 // RFC 9449 Section 4.2: Creates an ECDSA P-256 (ES256) DPoP proof JWT with embedded JWK into `out`.
 fn create_dpop_proof_es256<B>(
-    priv_key:     const u8[32],
+    priv_key:     const u8[32]&,
     method:       const u8[:],
     target_uri:   const u8[:],
     access_token: const u8[:],
@@ -209,23 +209,25 @@ fn extract_dpop_nonce<B>(headers: const http::HeaderMap&, out: B&) -> bool {
     return true;
 }
 
-// RFC 9449 Section 4.3: Checks for JTI replay in `cache`, evicts expired entries, and records fresh JTIs.
+// RFC 9449 Section 4.3: Checks for JTI replay in `cache`, purges expired entries, and fails closed if full.
 fn check_and_record_dpop_jti(
     cache:        DPoPReplayCache&,
     jti:          const u8[:],
     now_sec:      i64,
     ttl_sec:      i64 = 300,
     max_skew_sec: i64 = 60,
+    iat_sec:      i64 = 0,
 ) -> bool {
     guard now_sec > 0 && ttl_sec >= 0 && max_skew_sec >= 0 else { return false; }
     guard jti.len > 0 && jti.len <= 512 else { return false; }
 
+    let jti_hash = core::sha256(jti);
     var write_idx: i64 = 0;
     var is_dup = false;
     for i in cache.entries.len {
         let e .= cache.entries[i];
         if e.expires_at_sec >= now_sec {
-            if e.jti.len == jti.len && core::ct_eq_bytes(e.jti[..], jti) {
+            if core::ct_eq_tag32(e.jti_hash, jti_hash) {
                 is_dup = true;
             }
             if write_idx != i {
@@ -237,27 +239,15 @@ fn check_and_record_dpop_jti(
     cache.entries.resize(write_idx);
     guard !is_dup else { return false; }
 
-    if cache.entries.len >= cache.entries.cap {
-        var oldest_idx: i64 = 0;
-        for i in cache.entries.len {
-            if cache.entries[i].expires_at_sec < cache.entries[oldest_idx].expires_at_sec {
-                oldest_idx = i;
-            }
-        }
-        cache.entries[oldest_idx] = DPoPJtiEntry {
-            expires_at_sec: core::add_sat_i64(now_sec, core::add_sat_i64(ttl_sec, max_skew_sec)),
-            ..
-        };
-        guard cache.entries[oldest_idx].jti.try_set(jti) else { return false; }
-        return true;
-    }
+    // RFC 9449 Section 11.1: Fail closed when cache is saturated with unexpired JTIs (never evict active entries).
+    guard cache.entries.len < cache.entries.cap else { return false; }
 
-    var entry = DPoPJtiEntry {
-        expires_at_sec: core::add_sat_i64(now_sec, core::add_sat_i64(ttl_sec, max_skew_sec)),
-        ..
+    let base_sec = if iat_sec > now_sec { iat_sec } else { now_sec };
+    let entry = DPoPJtiEntry {
+        jti_hash:       jti_hash,
+        expires_at_sec: core::add_sat_i64(base_sec, core::add_sat_i64(ttl_sec, max_skew_sec)),
     };
-    guard entry.jti.try_set(jti) && cache.entries.try_push(entry) else { return false; }
-    return true;
+    return cache.entries.try_push(entry);
 }
 
 // Verifies a DPoP proof JWT and atomically rejects replayed `jti` values using `cache` (RFC 9449 §4.3 / §11.1).
@@ -291,5 +281,7 @@ fn verify_dpop_proof_with_replay_cache(
         expected_alg,
         parsed_claims,
     ) else { return false; }
-    return check_and_record_dpop_jti(cache, parsed_claims.jti[..], now_sec, max_age_sec, max_skew_sec);
+    return check_and_record_dpop_jti(
+        cache, parsed_claims.jti[..], now_sec, max_age_sec, max_skew_sec, parsed_claims.iat,
+    );
 }

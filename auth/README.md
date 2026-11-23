@@ -114,10 +114,10 @@ fn create_pkce_pair(entropy: const u8[:] = "", method: const u8[:] = "S256") -> 
 fn encode_external_entropy<B>(entropy: const u8[:], out: B&) -> bool
 fn generate_code_verifier<B>(out: B&, entropy: const u8[:] = "") -> bool
 fn compute_code_challenge<B>(verifier: const u8[:], method: const u8[:], out: B&) -> bool
-fn validate_code_challenge(verifier: const u8[:], challenge: const u8[:], method: const u8[:] = "plain") -> bool
+fn validate_code_challenge(verifier: const u8[:], challenge: const u8[:], method: const u8[:] = "S256") -> bool
 fn validate_code_challenge_strict(verifier: const u8[:], challenge: const u8[:], method: const u8[:] = "S256") -> bool
 fn is_valid_code_verifier(v: const u8[:]) -> bool
-fn is_valid_code_challenge(challenge: const u8[:], method: const u8[:] = "plain") -> bool
+fn is_valid_code_challenge(challenge: const u8[:], method: const u8[:] = "S256") -> bool
 fn is_valid_code_challenge_strict(challenge: const u8[:], method: const u8[:] = "S256") -> bool
 fn parse_device_auth_response(raw_json: const u8[:]) -> DeviceAuthResponse, bool
 fn step_device_poll_interval(status: DevicePollStatus, current_interval_sec: i64, max_backoff_sec: i64) -> i64, bool
@@ -163,12 +163,12 @@ struct DPoPClaims {
 }
 
 struct DPoPJtiEntry {
-    jti:            u8[..512] = [],
-    expires_at_sec: i64       = 0,
+    jti_hash:       u8[32] = [0; 32],
+    expires_at_sec: i64    = 0,
 }
 
 struct DPoPReplayCache {
-    entries: DPoPJtiEntry[..128] = [],
+    entries: DPoPJtiEntry[..1024] = [],
 }
 
 fn normalize_dpop_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool
@@ -189,12 +189,12 @@ fn verify_dpop_claims(claims: const DPoPClaims&, expected_method: const u8[:], e
 fn matches_dpop_jkt_thumbprint(jwk_pub: const u8[32]&, claims_jkt: const u8[:], expected_jkt: const u8[:]) -> bool
 fn verify_dpop_key_binding(key: const u8[:], expected_jkt: const u8[:], alg: const u8[:], jwk_info: const DPoPJwkInfo&) -> bool
 fn create_dpop_proof<B>(key: const u8[:], method: const u8[:], target_uri: const u8[:], access_token: const u8[:], nonce: const u8[:], now_sec: i64, jti: const u8[:], out: B&) -> bool
-fn create_dpop_proof_es256<B>(priv_key: const u8[32], method: const u8[:], target_uri: const u8[:], access_token: const u8[:], nonce: const u8[:], now_sec: i64, jti: const u8[:], out: B&) -> bool
+fn create_dpop_proof_es256<B>(priv_key: const u8[32]&, method: const u8[:], target_uri: const u8[:], access_token: const u8[:], nonce: const u8[:], now_sec: i64, jti: const u8[:], out: B&) -> bool
 fn verify_dpop_proof(jwt: const u8[:], key: const u8[:], expected_method: const u8[:], expected_uri: const u8[:], access_token: const u8[:] = "", expected_nonce: const u8[:] = "", now_sec: i64 = 0, max_age_sec: i64 = 300, max_skew_sec: i64 = 60, expected_jkt: const u8[:] = "", expected_alg: const u8[:] = "EdDSA") -> bool
 fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "")
 fn extract_dpop_nonce(headers: const wing::HeaderMap&) -> const u8[:], bool
 fn extract_dpop_nonce<B>(headers: const wing::HeaderMap&, out: B&) -> bool
-fn check_and_record_dpop_jti(cache: DPoPReplayCache&, jti: const u8[:], now_sec: i64, ttl_sec: i64 = 300, max_skew_sec: i64 = 60) -> bool
+fn check_and_record_dpop_jti(cache: DPoPReplayCache&, jti: const u8[:], now_sec: i64, ttl_sec: i64 = 300, max_skew_sec: i64 = 60, iat_sec: i64 = 0) -> bool
 fn verify_dpop_proof_with_replay_cache(cache: DPoPReplayCache&, jwt: const u8[:], key: const u8[:], expected_method: const u8[:], expected_uri: const u8[:], now_sec: i64, access_token: const u8[:] = "", expected_nonce: const u8[:] = "", max_age_sec: i64 = 300, max_skew_sec: i64 = 60, expected_jkt: const u8[:] = "", expected_alg: const u8[:] = "EdDSA") -> bool
 ```
 
@@ -348,7 +348,7 @@ struct JwtValidationOptions {
     require_exp:               bool           = true,
     require_nbf:               bool           = false,
     allow_none_alg:            bool           = false,
-    validate_aud_when_present: bool           = false,
+    validate_aud_when_present: bool           = true,
 }
 
 fn parse_jwt_alg(s: const u8[:]) -> JwtAlg
@@ -380,9 +380,9 @@ fn verify_jwt_eddsa_signature(public_key: const u8[32], signing_input: const u8[
 fn verify_jwt_rsa_signature(alg: JwtAlg, n_be: const u8[:], e_be: const u8[:], signing_input: const u8[:], sig_bytes: const u8[:]) -> bool
 fn sign_jwt_hmac<B>(header: const JwtHeader&, claims: const JwtClaims&, secret_key: const u8[:], out: B&) -> bool
 fn verify_jwt_hmac(token: const u8[:], secret_key: const u8[:], options: const JwtValidationOptions&, now_unix_sec: i64, out_header: JwtHeader&, out_claims: JwtClaims&) -> JwtError
-fn sign_jwt_eddsa<B>(header: const JwtHeader&, claims: const JwtClaims&, seed_key: const u8[32], out: B&) -> bool
+fn sign_jwt_eddsa<B>(header: const JwtHeader&, claims: const JwtClaims&, seed_key: const u8[32]&, out: B&) -> bool
 fn verify_jwt_eddsa(token: const u8[:], public_key: const u8[32], options: const JwtValidationOptions&, now_unix_sec: i64, out_header: JwtHeader&, out_claims: JwtClaims&) -> JwtError
-fn sign_jwt_es256<B>(header: const JwtHeader&, claims: const JwtClaims&, priv_key: const u8[32], out: B&) -> bool
+fn sign_jwt_es256<B>(header: const JwtHeader&, claims: const JwtClaims&, priv_key: const u8[32]&, out: B&) -> bool
 fn verify_jwt_es256(token: const u8[:], public_key: const u8[:], options: const JwtValidationOptions&, now_unix_sec: i64, out_header: JwtHeader&, out_claims: JwtClaims&) -> JwtError
 fn sign_jwt_rs256<B>(header: const JwtHeader&, claims: const JwtClaims&, n_be: const u8[:], d_be: const u8[:], out: B&) -> bool
 fn sign_jwt_ps256<B>(header: const JwtHeader&, claims: const JwtClaims&, n_be: const u8[:], d_be: const u8[:], salt: const u8[:], out: B&) -> bool
@@ -392,8 +392,9 @@ fn decode_jwt_claims(clm_b64: const u8[:], out_claims: JwtClaims&) -> JwtError
 fn parse_jwt_header_only(token: const u8[:], out_header: JwtHeader&) -> JwtError
 fn parse_jwt_unverified(token: const u8[:], out_header: JwtHeader&, out_claims: JwtClaims&) -> JwtError
 fn verify_jws_unencoded_hs256(compact_token: const u8[:], secret: const u8[:]) -> bool
-fn concat_kdf_sha256(z: const u8[32]&, alg_id: const u8[:], apu: const u8[:], apv: const u8[:], key_bits: u32) -> u8[32]
+fn concat_kdf_sha256(z: const u8[32]&, alg_id: const u8[:], apu: const u8[:], apv: const u8[:], key_bits: u32) -> u8[32], bool
 fn jwe_seal_dir_a256gcm<B>(protected_b64: const u8[:], cek: const u8[32]&, iv: const u8[12]&, plaintext: const u8[:], out: B&) -> bool
+fn jwe_seal_dir_a256gcm_random_iv<B>(protected_b64: const u8[:], cek: const u8[32]&, plaintext: const u8[:], out: B&) -> bool
 fn jwe_open_dir_a256gcm<B>(compact_token: const u8[:], cek: const u8[32]&, out: B&) -> bool
 ```
 

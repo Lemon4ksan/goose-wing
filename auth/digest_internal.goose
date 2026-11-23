@@ -139,6 +139,14 @@ inline fn skip_digest_scheme(raw: const u8[:], idx: i64&) {
     idx = core::add_sat_i64(idx, 7);
 }
 
+inline fn is_ascii_hex_str(s: const u8[:]) -> bool {
+    guard s.len > 0 else { return false; }
+    for b in s {
+        guard core::is_ascii_hexdigit(b) else { return false; }
+    }
+    return true;
+}
+
 fn append_escaped_digest_param<B>(out: B&, val: const u8[:]) -> bool {
     for b in val {
         guard b != '\r' && b != '\n' && b != 0 else { return false; }

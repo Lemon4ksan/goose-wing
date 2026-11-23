@@ -46,15 +46,26 @@ fn compute_dpop_ath<B>(access_token: const u8[:], out: B&) -> bool {
 fn generate_dpop_jti<B>(out: B&, entropy: const u8[:] = "") -> bool {
     var jti_buf: u8[..128] = [];
     defer core::secure_zeroize_slice(jti_buf[..]);
+    guard entropy.len == 0 || entropy.len >= 16 else {
+        out.resize(0);
+        return false;
+    }
     if entropy.len >= 16 {
         let max_ent = min(entropy.len, 96);
         core::base64url_encode(entropy[..max_ent], jti_buf);
     } else {
-        var seed_bytes: u8[8] = [0; 8];
-        core::write_le_u64_at(seed_bytes[..], 0, auth_internal::next_dpop_entropy());
-        var digest = core::sha256(seed_bytes[..]);
-        defer core::secure_zeroize_32(digest);
-        core::base64url_encode(digest[..16], jti_buf);
+        var rand16: u8[16] = [0; 16];
+        defer core::secure_zeroize_16(rand16);
+        let got_rng = if core::sim_rng_is_active() {
+            core::sim_rng_fill(rand16[..])
+        } else {
+            core::csprng_fill(rand16[..])
+        };
+        guard got_rng else {
+            out.resize(0);
+            return false;
+        }
+        core::base64url_encode(rand16[..], jti_buf);
     }
     guard out.try_set(jti_buf[..]) else {
         out.resize(0);
@@ -82,29 +93,23 @@ fn build_dpop_claims_json<B>(
     out.clear();
     guard out.try_append("{\"jti\":") else { return false; }
     if jti.len > 0 {
-        core::format_json_string(out, jti);
+        guard core::try_format_json_string(out, jti) else { return false; }
     } else {
         var auto_jti: u8[..32] = [];
-        guard generate_dpop_jti(auto_jti) else { return false; }
-        core::format_json_string(out, auto_jti[..]);
+        guard generate_dpop_jti(auto_jti) && core::try_format_json_string(out, auto_jti[..]) else { return false; }
     }
-    guard out.try_append(",\"htm\":") else { return false; }
-    core::format_json_string(out, method);
-    guard out.try_append(",\"htu\":") else { return false; }
-    core::format_json_string(out, norm_uri);
-    guard out.try_append(",\"iat\":") else { return false; }
-    now_sec.format_i64_dec(out);
+    guard out.try_append(",\"htm\":") && core::try_format_json_string(out, method) else { return false; }
+    guard out.try_append(",\"htu\":") && core::try_format_json_string(out, norm_uri) else { return false; }
+    guard out.try_append(",\"iat\":") && core::try_format_i64_dec(now_sec, out) else { return false; }
 
     if nonce.len > 0 {
         guard rfc::is_valid_dpop_nonce(nonce) else { return false; }
-        guard out.try_append(",\"nonce\":") else { return false; }
-        core::format_json_string(out, nonce);
+        guard out.try_append(",\"nonce\":") && core::try_format_json_string(out, nonce) else { return false; }
     }
     if access_token.len > 0 {
         var ath: u8[..64] = [];
         guard compute_dpop_ath(access_token, ath) else { return false; }
-        guard out.try_append(",\"ath\":") else { return false; }
-        core::format_json_string(out, ath[..]);
+        guard out.try_append(",\"ath\":") && core::try_format_json_string(out, ath[..]) else { return false; }
     }
     guard out.try_push('}' as u8) else { return false; }
     committed = true;
@@ -316,7 +321,7 @@ fn verify_dpop_claims(
     guard now_sec > 0 && max_age_sec >= 0 && max_skew_sec >= 0 else { return false; }
     guard claims.has_iat && claims.iat > 0 else { return false; }
     guard claims.iat <= core::add_sat_i64(now_sec, max_skew_sec) else { return false; }
-    return core::sub_sat_i64(now_sec, claims.iat) <= core::add_sat_i64(max_age_sec, max_skew_sec);
+    return claims.iat >= core::sub_sat_i64(now_sec, max_age_sec);
 }
 
 // RFC 7638 / RFC 9449: Verifies an Ed25519 public key against `expected_jkt` (and optional `claims_jkt`).

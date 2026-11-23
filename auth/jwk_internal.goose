@@ -277,24 +277,30 @@ fn finalize_rsa_key(raw_n: const u8[:], raw_e: const u8[:], key_item: auth::Jwks
     return true;
 }
 
-// RFC 7517 Section 4.7: "x5c" (X.509 Certificate Chain) Parameter - leaf DER must parse and match JWK key
+// RFC 7517 Section 4.7: "x5c" (X.509 Certificate Chain) Parameter - leaf DER must parse and match JWK alg & key.
 inline fn validate_jwk_x5c_spki(leaf_der: const u8[:], key_item: const auth::JwksKey&) -> bool {
     guard key_item.kty != auth::JwkKeyType.Oct && key_item.kty != auth::JwkKeyType.Unknown else { return false; }
     var cert = tls::ParsedCert { .. };
     guard tls::parse_x509_certificate(leaf_der, cert) else { return false; }
+    let spki_oid = tls::span_slice(leaf_der, cert.spki_alg_oid);
     var spki_pub = tls::span_slice(leaf_der, cert.spki_pubkey);
     if spki_pub.len >= 2 && spki_pub[0] == 0 {
         spki_pub = spki_pub[1..];
     }
     if key_item.kty == auth::JwkKeyType.OKP {
-        return spki_pub.len == 32 && core::ct_eq_bytes(spki_pub, key_item.public_key[..]);
+        return spki_oid == rfc::OID_ED25519[..] &&
+            spki_pub.len == 32 &&
+            core::ct_eq_bytes(spki_pub, key_item.public_key[..]);
     }
     if key_item.kty == auth::JwkKeyType.EC {
-        guard spki_pub.len == 65 && spki_pub[0] == 0x04 else { return false; }
+        guard spki_oid == rfc::OID_SECP256R1[..] && spki_pub.len == 65 && spki_pub[0] == 0x04 else {
+            return false;
+        }
         let x_ok = core::ct_eq_bytes(spki_pub[1..33], key_item.ec_x[..]);
         return x_ok && core::ct_eq_bytes(spki_pub[33..65], key_item.ec_y[..]);
     }
     if key_item.kty == auth::JwkKeyType.RSA {
+        guard spki_oid == rfc::OID_RSA_ENCRYPTION[..] else { return false; }
         let cert_n, cert_e, ok_rsa = core::parse_rsa_public_key_der(spki_pub);
         guard ok_rsa else { return false; }
         return core::ct_eq_bytes(cert_n, key_item.rsa_n[..]) && core::ct_eq_bytes(cert_e, key_item.rsa_e[..]);

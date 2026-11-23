@@ -82,6 +82,84 @@ fn format_json_key<B>(out: B&, key: const u8[:]) {
     out.append("\":");
 }
 
+// Returns the 2-byte RFC 8259 §7 short escape sequence for `b`, or empty if none applies.
+inline fn json_short_escape_seq(b: u8) -> const u8[:] {
+    if b == '"' { return "\\\""; }
+    if b == '\\' { return "\\\\"; }
+    if b == '\r' { return "\\r"; }
+    if b == '\n' { return "\\n"; }
+    if b == '\t' { return "\\t"; }
+    if b == 8 { return "\\b"; }
+    if b == 12 { return "\\f"; }
+    return "";
+}
+
+inline fn try_escape_json_byte<B>(b: u8, out: B&) -> bool {
+    let seq = json_short_escape_seq(b);
+    if seq.len > 0 {
+        return out.try_append(seq);
+    }
+    if b < 0x20 {
+        let hex = "0123456789abcdef";
+        return out.try_append("\\u00") &&
+            out.try_push(hex[(b >> 4) as i64]) &&
+            out.try_push(hex[(b & 0x0F) as i64]);
+    }
+    return out.try_push(b);
+}
+
+// Fallibly appends `s` to `out` with RFC 8259 §7 escape sequences (without surrounding quotes).
+// Rolls back `out` and returns false if capacity is exceeded.
+fn try_escape_json_string<B>(s: const u8[:], out: B&) -> bool {
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+    for b in s {
+        guard try_escape_json_byte(b, out) else { return false; }
+    }
+    committed = true;
+    return true;
+}
+
+// Fallibly formats `s` as a double-quoted RFC 8259 §7 JSON string into `out`.
+fn try_format_json_string<B>(out: B&, s: const u8[:]) -> bool {
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+    guard out.try_push('"' as u8) else { return false; }
+    if is_json_plain_string(s) {
+        guard out.try_append(s) else { return false; }
+    } else {
+        guard try_escape_json_string(s, out) else { return false; }
+    }
+    guard out.try_push('"' as u8) else { return false; }
+    committed = true;
+    return true;
+}
+
+// Fallibly formats `key` as a double-quoted JSON object member name followed by ':' into `out`.
+fn try_format_json_key<B>(out: B&, key: const u8[:]) -> bool {
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+    guard out.try_push('"' as u8) else { return false; }
+    if is_json_plain_string(key) {
+        guard out.try_append(key) else { return false; }
+    } else {
+        guard try_escape_json_string(key, out) else { return false; }
+    }
+    guard out.try_append("\":") else { return false; }
+    committed = true;
+    return true;
+}
+
+// Fallibly formats a signed 64-bit integer as base-10 ASCII into `out`.
+fn try_format_i64_dec<B>(val: i64, out: B&) -> bool {
+    var tmp: u8[..32] = [];
+    val.format_i64_dec(tmp);
+    return out.try_append(tmp[..]);
+}
+
 // Encodes a Unicode scalar `cp` into 1..4 UTF-8 bytes without branches.
 // crap:ignore
 inline fn encode_utf8_scalar_bytes(cp: u32) -> u8, u8, u8, u8 {

@@ -17,7 +17,7 @@ fn is_valid_code_verifier(v: const u8[:]) -> bool {
 }
 
 // RFC 7636 Section 4.2: Client Creates the Code Challenge - validates S256 (43 unpadded base64url chars) or plain.
-fn is_valid_code_challenge(challenge: const u8[:], method: const u8[:] = "plain") -> bool {
+fn is_valid_code_challenge(challenge: const u8[:], method: const u8[:] = "S256") -> bool {
     if method == rfc::PKCE_METHOD_S256 {
         return challenge.len == 43 && challenge.is_valid_base64url();
     }
@@ -78,7 +78,7 @@ fn compute_code_challenge<B>(verifier: const u8[:], method: const u8[:], out: B&
 fn validate_code_challenge(
     verifier:  const u8[:],
     challenge: const u8[:],
-    method:    const u8[:] = "plain",
+    method:    const u8[:] = "S256",
 ) -> bool {
     guard is_valid_code_verifier(verifier) && is_valid_code_challenge(challenge, method) else { return false; }
     var expected: u8[..128] = [];
@@ -91,14 +91,13 @@ fn validate_code_challenge(
 // Creates a verified PKCE verifier/challenge pair using the requested method (defaults to "S256").
 fn create_pkce_pair(entropy: const u8[:] = "", method: const u8[:] = "S256") -> PkcePair, bool {
     let empty_pair = PkcePair { method: "", .. };
-    let eff_method = if method.len == 0 { rfc::PKCE_METHOD_PLAIN } else { method };
-    guard eff_method == rfc::PKCE_METHOD_S256 || eff_method == rfc::PKCE_METHOD_PLAIN else {
+    guard method == rfc::PKCE_METHOD_S256 || method == rfc::PKCE_METHOD_PLAIN else {
         return empty_pair, false;
     }
     var pair = PkcePair { method: "", .. };
-    guard pair.method.try_set(eff_method) else { return empty_pair, false; }
+    guard pair.method.try_set(method) else { return empty_pair, false; }
     guard generate_code_verifier(pair.verifier, entropy) else { return empty_pair, false; }
-    guard compute_code_challenge(pair.verifier[..], eff_method, pair.challenge) else {
+    guard compute_code_challenge(pair.verifier[..], method, pair.challenge) else {
         core::secure_zeroize_slice(pair.verifier[..]);
         return empty_pair, false;
     }

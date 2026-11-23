@@ -9,20 +9,42 @@ import core;
 import .types;
 import .internal;
 
-// RFC 7518 Section 4.6.2: Key Derivation for ECDH Key Agreement - single-round ConcatKDF-SHA256.
+// RFC 7518 Section 4.6.2: Key Derivation for ECDH Key Agreement - single-round 256-bit ConcatKDF-SHA256.
 fn concat_kdf_sha256(
     z:        const u8[32]&,
     alg_id:   const u8[:],
     apu:      const u8[:],
     apv:      const u8[:],
     key_bits: u32,
-) -> u8[32] {
+) -> u8[32], bool {
+    guard key_bits == 256 && alg_id.len > 0 else { return [0; 32], false; }
     var input_buf: u8[>..] = [];
     defer core::secure_zeroize_slice(input_buf[..]);
     guard auth_internal::build_concat_kdf_input(input_buf, z, alg_id, apu, apv, key_bits) else {
-        return [0; 32];
+        return [0; 32], false;
     }
-    return core::sha256(input_buf[..]);
+    return core::sha256(input_buf[..]), true;
+}
+
+// RFC 7516 Section 5.1: Seals plaintext under "dir"+"A256GCM" with a fresh 96-bit CSPRNG IV into `out`.
+fn jwe_seal_dir_a256gcm_random_iv<B>(
+    protected_b64: const u8[:],
+    cek:           const u8[32]&,
+    plaintext:     const u8[:],
+    out:           B&,
+) -> bool {
+    var iv: u8[12] = [0; 12];
+    defer core::secure_zeroize_slice(iv[..]);
+    let got_rng = if core::sim_rng_is_active() {
+        core::sim_rng_fill(iv[..])
+    } else {
+        core::csprng_fill(iv[..])
+    };
+    guard got_rng else {
+        out.resize(0);
+        return false;
+    }
+    return jwe_seal_dir_a256gcm(protected_b64, cek, iv, plaintext, out);
 }
 
 // RFC 7516 Section 5.1: Message Encryption - seals plaintext under "dir"+"A256GCM" into compact JWE `out`.

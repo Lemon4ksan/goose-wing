@@ -89,7 +89,8 @@ fn test_jwe_dir_a256gcm_and_concat_kdf() {
         0xfb, 0x31, 0x6e, 0xa3, 0xda, 0x80, 0x6a, 0x48,
         0xf6, 0xda, 0xa7, 0x79, 0x8c, 0xfe, 0x90, 0xc4,
     ];
-    let cek = auth::concat_kdf_sha256(z, "A256GCM", "Alice", "Bob", 256);
+    let cek, ok_cek = auth::concat_kdf_sha256(z, "A256GCM", "Alice", "Bob", 256);
+    assert(ok_cek);
     let iv: u8[12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
     let protected_b64 = "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0";
     var compact: u8[..512] = [];
@@ -660,9 +661,9 @@ fn run_04_rfc_repro_auth_digest_vector() {
     let qop = "auth";
     let algo = "SHA-512-256";
 
-    // 1. Verify Userhash (RFC 7616 Section 3.9.2)
+    // 1. Verify Userhash (RFC 7616 Section 3.9.2 / Verified Errata 4868 & 5480: FIPS 180-4 SHA-512/256)
     let userhash = auth::resolve_userhash(username, realm, algo);
-    let expected_userhash = "488869477bf257147b804c45308cd62ac4e25eb717b12b298c79e62dcea254ec";
+    let expected_userhash = "793263caabb707a56211940d90411ea4a575adeccb7e360aeb624ed06ece9b0b";
     assert(userhash[..] == expected_userhash);
 
     // 2. Calculate HA1 (A1 = username:realm:password)
@@ -674,7 +675,7 @@ fn run_04_rfc_repro_auth_digest_vector() {
     // 4. Calculate Response
     let resp = auth::calculate_digest_response(algo, ha1[..], nonce, nc, cnonce, qop, ha2[..]);
 
-    let expected_resp = "ae66e67d6b427bd3f120414a82e4acff38e8ecd9101d6c861229025f607a79dd";
+    let expected_resp = "3798d4131c277846293534c3edc11bd8a5e4cdcbff78b05db9d95eeb1cec68a5";
     assert(resp[..] == expected_resp);
 
     print("RFC7616_SHA512_256_RESPONSE: OK\n");
@@ -725,7 +726,7 @@ fn run_05_rfc_repro_auth_dpop_edge() {
     // Valid standard DPoP proof (contains NO payload jkt claim) MUST verify against bound token's jkt
     let ok_verify = auth::verify_dpop_proof(
         proof[..],
-        key,
+        pub_key[..],
         "POST",
         "https://api.example.com/token",
         "",
@@ -736,6 +737,19 @@ fn run_05_rfc_repro_auth_dpop_edge() {
         expected_jkt[..],
     );
     assert(ok_verify);
+    // Private seed MUST be rejected by verify_dpop_proof (AUTH-01)
+    assert(!auth::verify_dpop_proof(
+        proof[..],
+        key,
+        "POST",
+        "https://api.example.com/token",
+        "",
+        "",
+        now_sec,
+        300,
+        60,
+        expected_jkt[..],
+    ));
     print("DPOP_JKT_VERIFICATION: OK");
 
     // ---- 2. RFC 9449 Section 11.1 & 4.2: JTI Replay Cache Limits -----------
@@ -835,7 +849,7 @@ fn run_05_rfc_repro_auth_dpop_edge() {
     var padded_proof: u8[>..] = [];
     padded_proof.append(proof[..]);
     padded_proof.push('=');
-    assert(!auth::verify_dpop_proof(padded_proof[..], key, "POST", "https://api.example.com/token", "", "", now_sec, 300, 60, expected_jkt[..]));
+    assert(!auth::verify_dpop_proof(padded_proof[..], pub_key[..], "POST", "https://api.example.com/token", "", "", now_sec, 300, 60, expected_jkt[..]));
 
     var bad_iat_claims = auth::DPoPClaims { .. };
     assert(!auth::parse_dpop_claims("{\"jti\":\"id1\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/\",\"iat\":1e100}", bad_iat_claims));

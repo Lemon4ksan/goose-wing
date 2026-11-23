@@ -176,7 +176,7 @@ struct JwtValidationOptions {
     require_exp:               bool           = true,
     require_nbf:               bool           = false,
     allow_none_alg:            bool           = false, // RFC 8725 §3.1: Strictly false by default
-    validate_aud_when_present: bool           = false, // RFC 7519 §4.1.3: Reject non-empty aud when unconfigured
+    validate_aud_when_present: bool           = true,  // RFC 7519 §4.1.3: Reject non-empty aud when unconfigured
 }
 
 // ---- JSON Web Keys & Key Sets (RFC 7517 / RFC 7518 / RFC 8037) -----------
@@ -242,10 +242,10 @@ struct DPoPJwkInfo {
 }
 
 struct DPoPJtiEntry {
-    jti:            u8[..512] = [],
-    expires_at_sec: i64       = 0,
+    jti_hash:       u8[32] = [0; 32],
+    expires_at_sec: i64    = 0,
 }
 
 struct DPoPReplayCache {
-    entries: DPoPJtiEntry[..128] = [],
+    entries: DPoPJtiEntry[..1024] = [],
 }

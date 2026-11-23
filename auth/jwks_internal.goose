@@ -121,43 +121,31 @@ inline fn append_jwk_kty_material<B>(k: const auth::JwksKey&, out: B&) -> bool {
     if k.kty == auth::JwkKeyType.OKP {
         var x_b64: u8[..64] = [];
         core::base64url_encode(k.public_key[..], x_b64);
-        guard out.try_append(",\"crv\":") else { return false; }
-        core::format_json_string(out, k.crv[..]);
-        guard out.try_append(",\"x\":") else { return false; }
-        core::format_json_string(out, x_b64[..]);
-        return true;
+        guard out.try_append(",\"crv\":") && core::try_format_json_string(out, k.crv[..]) else { return false; }
+        return out.try_append(",\"x\":") && core::try_format_json_string(out, x_b64[..]);
     }
     if k.kty == auth::JwkKeyType.EC {
         var x_b64: u8[..64] = [];
         var y_b64: u8[..64] = [];
         core::base64url_encode(k.ec_x[..], x_b64);
         core::base64url_encode(k.ec_y[..], y_b64);
-        guard out.try_append(",\"crv\":") else { return false; }
-        core::format_json_string(out, k.crv[..]);
-        guard out.try_append(",\"x\":") else { return false; }
-        core::format_json_string(out, x_b64[..]);
-        guard out.try_append(",\"y\":") else { return false; }
-        core::format_json_string(out, y_b64[..]);
-        return true;
+        guard out.try_append(",\"crv\":") && core::try_format_json_string(out, k.crv[..]) else { return false; }
+        guard out.try_append(",\"x\":") && core::try_format_json_string(out, x_b64[..]) else { return false; }
+        return out.try_append(",\"y\":") && core::try_format_json_string(out, y_b64[..]);
     }
     if k.kty == auth::JwkKeyType.Oct {
         var k_b64: u8[..192] = [];
         defer core::secure_zeroize_slice(k_b64[..]);
         core::base64url_encode(k.symmetric_key[..], k_b64);
-        guard out.try_append(",\"k\":") else { return false; }
-        core::format_json_string(out, k_b64[..]);
-        return true;
+        return out.try_append(",\"k\":") && core::try_format_json_string(out, k_b64[..]);
     }
     if k.kty == auth::JwkKeyType.RSA {
         var n_b64: u8[..768] = [];
         var e_b64: u8[..16]  = [];
         core::base64url_encode(k.rsa_n[..], n_b64);
         core::base64url_encode(k.rsa_e[..], e_b64);
-        guard out.try_append(",\"n\":") else { return false; }
-        core::format_json_string(out, n_b64[..]);
-        guard out.try_append(",\"e\":") else { return false; }
-        core::format_json_string(out, e_b64[..]);
-        return true;
+        guard out.try_append(",\"n\":") && core::try_format_json_string(out, n_b64[..]) else { return false; }
+        return out.try_append(",\"e\":") && core::try_format_json_string(out, e_b64[..]);
     }
     return false;
 }
@@ -167,23 +155,24 @@ fn serialize_jwk_key<B>(k: const auth::JwksKey&, out: B&) -> bool {
     var committed = false;
     defer if !committed { out.resize(saved_len); };
 
-    guard out.try_append("{\"kty\":") else { return false; }
-    core::format_json_string(out, jwk_key_type_to_string(k.kty));
+    guard out.try_append("{\"kty\":") && core::try_format_json_string(out, jwk_key_type_to_string(k.kty)) else {
+        return false;
+    }
     if k.kid.len > 0 {
-        guard out.try_append(",\"kid\":") else { return false; }
-        core::format_json_string(out, k.kid[..]);
+        guard out.try_append(",\"kid\":") && core::try_format_json_string(out, k.kid[..]) else { return false; }
     }
     if k.alg != auth::JwtAlg.Unspecified {
-        guard out.try_append(",\"alg\":") else { return false; }
-        core::format_json_string(out, jwt_alg_to_string(k.alg));
+        guard out.try_append(",\"alg\":") && core::try_format_json_string(out, jwt_alg_to_string(k.alg)) else {
+            return false;
+        }
     }
     if k.use.len > 0 {
-        guard out.try_append(",\"use\":") else { return false; }
-        core::format_json_string(out, k.use[..]);
+        guard out.try_append(",\"use\":") && core::try_format_json_string(out, k.use[..]) else { return false; }
     }
     if k.x5t_s256.len > 0 {
-        guard out.try_append(",\"x5t#S256\":") else { return false; }
-        core::format_json_string(out, k.x5t_s256[..]);
+        guard out.try_append(",\"x5t#S256\":") && core::try_format_json_string(out, k.x5t_s256[..]) else {
+            return false;
+        }
     }
     guard append_jwk_kty_material(k, out) && out.try_push('}' as u8) else { return false; }
     committed = true;

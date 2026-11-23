@@ -30,6 +30,7 @@ fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> boo
     }
 
     var hdr = JwtHeader { .. };
+    hdr.typ.clear();
     var seen_alg = false;
     var seen_typ = false;
     var seen_kid = false;
@@ -194,7 +195,7 @@ fn sign_jwt_hmac<B>(
 fn sign_jwt_eddsa<B>(
     header:   const JwtHeader&,
     claims:   const JwtClaims&,
-    seed_key: const u8[32],
+    seed_key: const u8[32]&,
     out:      B&,
 ) -> bool {
     guard header.alg == JwtAlg.EdDSA else { return false; }
@@ -213,7 +214,7 @@ fn sign_jwt_eddsa<B>(
 fn sign_jwt_es256<B>(
     header:   const JwtHeader&,
     claims:   const JwtClaims&,
-    priv_key: const u8[32],
+    priv_key: const u8[32]&,
     out:      B&,
 ) -> bool {
     guard header.alg == JwtAlg.ES256 && auth_internal::has_nonzero_byte_32(priv_key) else { return false; }
@@ -236,7 +237,9 @@ fn sign_jwt_rs256<B>(
     d_be:   const u8[:],
     out:    B&,
 ) -> bool {
-    guard header.alg == JwtAlg.RS256 else { return false; }
+    guard header.alg == JwtAlg.RS256 && n_be.len >= 256 && n_be.len <= 512 && (n_be[0] & 0x80) != 0 else {
+        return false;
+    }
 
     if auth_internal::jwt_fits_stack_4096(header, claims) {
         var token_buf: u8[..4096] = [];
@@ -257,7 +260,9 @@ fn sign_jwt_ps256<B>(
     salt:   const u8[:],
     out:    B&,
 ) -> bool {
-    guard header.alg == JwtAlg.PS256 else { return false; }
+    guard header.alg == JwtAlg.PS256 && n_be.len >= 256 && n_be.len <= 512 && (n_be[0] & 0x80) != 0 else {
+        return false;
+    }
 
     if auth_internal::jwt_fits_stack_4096(header, claims) {
         var token_buf: u8[..4096] = [];
@@ -561,6 +566,7 @@ fn verify_jwt_rsa(
 
 // Verifies an RFC 7797 unencoded detached/inline payload JWS using HS256 (`"b64":false` + `"crit":["b64"]`).
 fn verify_jws_unencoded_hs256(compact_token: const u8[:], secret: const u8[:]) -> bool {
+    guard secret.len >= rfc::HMAC_SHA256_MAC_LEN else { return false; }
     guard compact_token.len >= 3 && compact_token.len <= MAX_JWT_TOKEN_LEN else { return false; }
     let dot1 = compact_token.index_of_byte('.');
     let dot2 = compact_token.last_index_of_byte('.');
@@ -570,7 +576,7 @@ fn verify_jws_unencoded_hs256(compact_token: const u8[:], secret: const u8[:]) -
     var hdr = JwtHeader { .. };
     guard decode_jwt_header(compact_token[..dot1], hdr) == JwtError.None else { return false; }
     guard hdr.alg == JwtAlg.HS256 && hdr.has_b64 && !hdr.b64 else { return false; }
-    guard auth_internal::has_crit_param_in_header(hdr, "b64") else { return false; }
+    guard auth_internal::has_only_crit_param_in_header(hdr, "b64") else { return false; }
 
     let sig_b64 = compact_token[dot2 + 1..];
     guard sig_b64.len == 43 && sig_b64.index_of_byte('=') == -1 else { return false; }

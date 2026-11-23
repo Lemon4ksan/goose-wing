@@ -46,25 +46,24 @@ fn serialize_jwt_header<B>(header: const JwtHeader&, out: B&) -> bool {
     let saved_len = out.len;
     var committed = false;
     defer if !committed { out.resize(saved_len); };
-    guard out.try_append("{\"alg\":") else { return false; }
-    core::format_json_string(out, auth_internal::jwt_alg_to_string(header.alg));
+    guard out.try_append("{\"alg\":")
+        && core::try_format_json_string(out, auth_internal::jwt_alg_to_string(header.alg)) else {
+        return false;
+    }
     if header.typ.len > 0 {
-        guard out.try_append(",\"typ\":") else { return false; }
-        core::format_json_string(out, header.typ[..]);
+        guard out.try_append(",\"typ\":") && core::try_format_json_string(out, header.typ[..]) else { return false; }
     }
     if header.kid.len > 0 {
-        guard out.try_append(",\"kid\":") else { return false; }
-        core::format_json_string(out, header.kid[..]);
+        guard out.try_append(",\"kid\":") && core::try_format_json_string(out, header.kid[..]) else { return false; }
     }
     if header.cty.len > 0 {
-        guard out.try_append(",\"cty\":") else { return false; }
-        core::format_json_string(out, header.cty[..]);
+        guard out.try_append(",\"cty\":") && core::try_format_json_string(out, header.cty[..]) else { return false; }
     }
     if header.crit.len > 0 {
         guard out.try_append(",\"crit\":[") else { return false; }
         for i in header.crit.len {
             if i > 0 { guard out.try_push(',' as u8) else { return false; } }
-            core::format_json_string(out, header.crit[i].name[..]);
+            guard core::try_format_json_string(out, header.crit[i].name[..]) else { return false; }
         }
         guard out.try_push(']' as u8) else { return false; }
     }
@@ -267,16 +266,18 @@ fn split_jwt_parts(token: const u8[:]) -> i64, i64, bool {
     return d1, d2, true;
 }
 
-// RFC 7519 Section 4.1.4: "exp" (Expiration Time) Claim - checks expiration with bounded leeway.
+// RFC 7519 Section 4.1.4: "exp" (Expiration Time) Claim - current time MUST be strictly before exp.
 fn validate_jwt_expiration(exp: i64, require_exp: bool, leeway: i64, now_unix_sec: i64) -> bool {
+    guard now_unix_sec > 0 else { return false; }
     if exp == -1 { return !require_exp; }
     if exp < 0 { return false; }
     let safe_leeway = max(leeway, 0);
-    return core::sub_sat_i64(now_unix_sec, safe_leeway) <= exp;
+    return core::sub_sat_i64(now_unix_sec, safe_leeway) < exp;
 }
 
 // RFC 7519 Section 4.1.5: "nbf" (Not Before) Claim - checks activation time with bounded leeway.
 fn validate_jwt_not_before(nbf: i64, require_nbf: bool, leeway: i64, now_unix_sec: i64) -> bool {
+    guard now_unix_sec > 0 else { return false; }
     if nbf == -1 { return !require_nbf; }
     if nbf < 0 { return false; }
     let safe_leeway = max(leeway, 0);
@@ -289,7 +290,11 @@ fn verify_jwt_algorithm(header_alg: JwtAlg, expected_alg: JwtAlg, allow_none: bo
         return JwtError.UnsupportedAlgorithm;
     }
     if header_alg == JwtAlg.None {
-        return if allow_none { JwtError.None } else { JwtError.UnsupportedAlgorithm };
+        return if allow_none && expected_alg == JwtAlg.None {
+            JwtError.None
+        } else {
+            JwtError.UnsupportedAlgorithm
+        };
     }
     if header_alg != expected_alg {
         return JwtError.AlgorithmMismatch;
@@ -366,6 +371,8 @@ fn verify_jwt_rsa_signature(
     signing_input: const u8[:],
     sig_bytes:     const u8[:],
 ) -> bool {
+    // RFC 7518 Sections 3.3 & 3.5: A key of size 2048 bits or larger MUST be used with RS256/PS256.
+    guard n_be.len >= 256 && n_be.len <= 512 && (n_be[0] & 0x80) != 0 else { return false; }
     if alg == JwtAlg.RS256 {
         return core::rsa_pkcs1_sha256_verify(n_be, e_be, signing_input, sig_bytes);
     }

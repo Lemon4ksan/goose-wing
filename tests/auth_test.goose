@@ -183,11 +183,14 @@ fn test_rfc7616_userhash_options(t: lit::T&) {
         let ok_resp = auth::compute_digest_response(chal, creds, method, uri, 1, cnonce, "", out_hdr);
         sub.assert_true(ok_resp, "Digest response computed for SHA-512-256");
 
-        let expected_userhash = "488869477bf257147b804c45308cd62ac4e25eb717b12b298c79e62dcea254ec";
-        let expected_response = "ae66e67d6b427bd3f120414a82e4acff38e8ecd9101d6c861229025f607a79dd";
+        // RFC 7616 Section 3.9.2 (Verified Errata 4868 / 5480): FIPS 180-4 SHA-512/256 with distinct IVs.
+        // The published RFC text accidentally used truncated SHA-512 (48886947... / ae66e67d...).
+        let expected_userhash = "793263caabb707a56211940d90411ea4a575adeccb7e360aeb624ed06ece9b0b";
+        let expected_response = "3798d4131c277846293534c3edc11bd8a5e4cdcbff78b05db9d95eeb1cec68a5";
 
-        sub.assert_true(core::contains(out_hdr[..], expected_userhash), "Hashed username matches official RFC 7616 Section 3.9.2 vector");
-        sub.assert_true(core::contains(out_hdr[..], expected_response), "Response hash matches official RFC 7616 Section 3.9.2 vector");
+        sub.assert_true(core::contains(out_hdr[..], expected_userhash), "Hashed username matches FIPS 180-4 SHA-512/256 (RFC 7616 Errata 5480)");
+        sub.assert_true(core::contains(out_hdr[..], expected_response), "Response hash matches FIPS 180-4 SHA-512/256 (RFC 7616 Errata 5480)");
+        sub.assert_false(core::contains(out_hdr[..], "488869477bf257147b804c45308cd62ac4e25eb717b12b298c79e62dcea254ec"), "Must NOT use truncated SHA-512");
     };
 }
 
@@ -495,8 +498,13 @@ fn test_jwt_security_defenses(t: lit::T&) {
         opts_aud.expected_audience.append("app.fake.com");
         sub.assert_eq(auth::verify_jwt_hmac(token[..], secret, opts_aud, now_sec, out_h, out_c), auth::JwtError.AudienceMismatch, "Audience mismatch");
 
-        // Mismatched Subject
+        // Omitted expected_audience rejects token carrying aud claim by default (RFC 8725 §3.9)
+        var opts_no_aud = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+        sub.assert_eq(auth::verify_jwt_hmac(token[..], secret, opts_no_aud, now_sec, out_h, out_c), auth::JwtError.AudienceMismatch, "Omitted expected_audience rejects aud-bearing token by default");
+
+        // Mismatched Subject (with matching expected_audience)
         var opts_sub = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+        opts_sub.expected_audience.append("app.real.com");
         opts_sub.expected_subject.append("user.fake");
         sub.assert_eq(auth::verify_jwt_hmac(token[..], secret, opts_sub, now_sec, out_h, out_c), auth::JwtError.SubjectMismatch, "Subject mismatch");
     };
@@ -1284,9 +1292,12 @@ fn test_pkce_rfc7636(t: lit::T&) {
         sub.assert_true(auth::validate_code_challenge(rfc_verifier, challenge_s256[..], "S256"), "Validation succeeds for valid S256");
         sub.assert_false(auth::validate_code_challenge(rfc_verifier, "invalid_challenge_hash_123456789012345678901", "S256"), "Validation fails for wrong challenge");
 
-        // RFC 7636 §4.3: code_challenge_method defaults to 'plain' when omitted
-        sub.assert_true(auth::validate_code_challenge(rfc_verifier, challenge_plain[..]), "Validation defaults to plain when method omitted");
-        sub.assert_true(auth::is_valid_code_challenge(challenge_plain[..]), "is_valid_code_challenge defaults to plain when method omitted");
+        // OAuth 2.1 / RFC 9700: omitted code_challenge_method defaults safely to S256 (not plain)
+        sub.assert_true(auth::validate_code_challenge(rfc_verifier, challenge_s256[..]), "Validation defaults to S256 when method omitted");
+        sub.assert_false(auth::validate_code_challenge(rfc_verifier, challenge_plain[..]), "Plain challenge rejected when method omitted (defaults to S256)");
+        sub.assert_true(auth::validate_code_challenge(rfc_verifier, challenge_plain[..], "plain"), "Explicit plain method validates plain challenge");
+        sub.assert_true(auth::is_valid_code_challenge(challenge_s256[..]), "is_valid_code_challenge defaults to S256 when method omitted");
+        sub.assert_true(auth::is_valid_code_challenge(challenge_plain[..], "plain"), "is_valid_code_challenge accepts explicit plain method");
 
         // RFC 7636 §4.2: S256 challenge MUST be unpadded base64url (no '=' padding)
         let padded_challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM=";
@@ -1426,6 +1437,9 @@ fn test_dpop_rfc9449(t: lit::T&) {
 
     t.run("DPoP Proof JWT Generation and Verification") { sub =>
         let key = "super_secret_dpop_key_32_bytes!!";
+        var dpop_seed: u8[32] = [0; 32];
+        for i in 32 { dpop_seed[i] = key[i]; }
+        let dpop_pub = core::ed25519_public_key(dpop_seed);
         let method = "POST";
         let uri = "https://resource.example.org/protected/resource?query=1";
         let token = "access_token_xyz_987";
@@ -1438,10 +1452,10 @@ fn test_dpop_rfc9449(t: lit::T&) {
         sub.assert_true(ok_gen, "DPoP proof generated");
         sub.assert_true(proof_jwt.len > 50, "JWT has substantial length");
 
-        // Verify valid proof
+        // Verify valid proof using Ed25519 public key (private seed MUST be rejected per AUTH-01)
         let ok_ver = auth::verify_dpop_proof(
             proof_jwt[..],
-            key,
+            dpop_pub[..],
             "POST",
             "https://resource.example.org/protected/resource",
             token,
@@ -1450,10 +1464,21 @@ fn test_dpop_rfc9449(t: lit::T&) {
         );
         sub.assert_true(ok_ver, "DPoP proof successfully verified");
 
+        let seed_rejected = auth::verify_dpop_proof(
+            proof_jwt[..],
+            key,
+            "POST",
+            "https://resource.example.org/protected/resource",
+            token,
+            nonce,
+            now_sec,
+        );
+        sub.assert_false(seed_rejected, "Private seed MUST be rejected by verify_dpop_proof (AUTH-01)");
+
         // Verify failure on mismatched method
         let fail_method = auth::verify_dpop_proof(
             proof_jwt[..],
-            key,
+            dpop_pub[..],
             "GET", // Expected GET but proof was for POST
             "https://resource.example.org/protected/resource",
             token,
@@ -1465,7 +1490,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         // Verify failure on wrong access token
         let fail_token = auth::verify_dpop_proof(
             proof_jwt[..],
-            key,
+            dpop_pub[..],
             "POST",
             "https://resource.example.org/protected/resource",
             "different_token",
@@ -1477,7 +1502,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         // Verify failure on wrong nonce
         let fail_nonce = auth::verify_dpop_proof(
             proof_jwt[..],
-            key,
+            dpop_pub[..],
             "POST",
             "https://resource.example.org/protected/resource",
             token,
@@ -1589,10 +1614,10 @@ fn test_dpop_rfc9449(t: lit::T&) {
         sub.assert_false(auth::verify_dpop_jkt(c_json[..], "wrong_thumbprint_value_12345678901234567890"), "verify_dpop_jkt fails on wrong thumbprint");
 
         // Proof verification with expected_jkt
-        let ok_proof = auth::verify_dpop_proof(token[..], key, "POST", "https://api.example.com/token", "", "", 1714000000, 300, 60, real_jkt[..]);
+        let ok_proof = auth::verify_dpop_proof(token[..], pub_key[..], "POST", "https://api.example.com/token", "", "", 1714000000, 300, 60, real_jkt[..]);
         sub.assert_true(ok_proof, "verify_dpop_proof succeeds when jkt matches");
 
-        let fail_proof = auth::verify_dpop_proof(token[..], key, "POST", "https://api.example.com/token", "", "", 1714000000, 300, 60, "wrong_thumbprint_value_12345678901234567890");
+        let fail_proof = auth::verify_dpop_proof(token[..], pub_key[..], "POST", "https://api.example.com/token", "", "", 1714000000, 300, 60, "wrong_thumbprint_value_12345678901234567890");
         sub.assert_false(fail_proof, "verify_dpop_proof fails when jkt does not match");
     };
 
@@ -1652,13 +1677,16 @@ fn test_dpop_rfc9449(t: lit::T&) {
 
     t.run("DPoP Claims JSON Parser defends against duplicate keys & claim smuggling") { sub =>
         let key = "super_secret_dpop_key_32_bytes!!";
+        var dpop_seed: u8[32] = [0; 32];
+        for i in 32 { dpop_seed[i] = key[i]; }
+        let dpop_pub = core::ed25519_public_key(dpop_seed);
 
         // Duplicate htm claim
         let c_dup_htm = "{\"jti\":\"jti-dup\",\"htm\":\"POST\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}";
         var tok_dup: u8[..1024] = [];
         make_test_dpop_token(key, c_dup_htm, tok_dup);
 
-        let ok_dup = auth::verify_dpop_proof(tok_dup[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
+        let ok_dup = auth::verify_dpop_proof(tok_dup[..], dpop_pub[..], "POST", "https://api.example.com/data", "", "", 1714000000);
         sub.assert_false(ok_dup, "Proof with duplicate htm claim MUST be rejected (JSON smuggling defense)");
 
         // Substring spoofing in custom claim value
@@ -1666,10 +1694,10 @@ fn test_dpop_rfc9449(t: lit::T&) {
         var tok_spoof: u8[..1024] = [];
         make_test_dpop_token(key, c_spoof, tok_spoof);
 
-        let ok_spoof_get = auth::verify_dpop_proof(tok_spoof[..], key, "GET", "https://api.example.com/data", "", "", 1714000000);
+        let ok_spoof_get = auth::verify_dpop_proof(tok_spoof[..], dpop_pub[..], "GET", "https://api.example.com/data", "", "", 1714000000);
         sub.assert_false(ok_spoof_get, "Fake htm inside custom string value MUST NOT fool method verification");
 
-        let ok_spoof_post = auth::verify_dpop_proof(tok_spoof[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
+        let ok_spoof_post = auth::verify_dpop_proof(tok_spoof[..], dpop_pub[..], "POST", "https://api.example.com/data", "", "", 1714000000);
         sub.assert_true(ok_spoof_post, "Real htm claim matches correctly despite custom field noise");
     };
 
@@ -1686,6 +1714,9 @@ fn test_dpop_rfc9449(t: lit::T&) {
 
     t.run("DPoP Replay Cache & DoS Bounds (RFC 9449 §4.3 Rule 4)") { sub =>
         let key = "super_secret_dpop_key_32_bytes!!";
+        var dpop_seed: u8[32] = [0; 32];
+        for i in 32 { dpop_seed[i] = key[i]; }
+        let dpop_pub = core::ed25519_public_key(dpop_seed);
         let now_sec: i64 = 1714000000;
         var cache = auth::DPoPReplayCache { .. };
 
@@ -1706,7 +1737,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         let ok_first = auth::verify_dpop_proof_with_replay_cache(
             cache,
             proof_valid[..],
-            key,
+            dpop_pub[..],
             "POST",
             "https://api.example.com/data",
             now_sec,
@@ -1717,7 +1748,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         let ok_replay = auth::verify_dpop_proof_with_replay_cache(
             cache,
             proof_valid[..],
-            key,
+            dpop_pub[..],
             "POST",
             "https://api.example.com/data",
             now_sec + 5,
@@ -1730,7 +1761,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         let ok_diff = auth::verify_dpop_proof_with_replay_cache(
             cache,
             proof_diff[..],
-            key,
+            dpop_pub[..],
             "POST",
             "https://api.example.com/data",
             now_sec + 6,
@@ -1741,7 +1772,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         var huge_proof: u8[>..] = [];
         for i in 4100 { huge_proof.push('A' as u8); }
         sub.assert_false(
-            auth::verify_dpop_proof(huge_proof[..], key, "POST", "https://api.example.com/data"),
+            auth::verify_dpop_proof(huge_proof[..], dpop_pub[..], "POST", "https://api.example.com/data"),
             "Oversized DPoP proof (> 4096) rejected without decoding",
         );
     };
@@ -2441,7 +2472,7 @@ fn test_digest_auth_serialization_security(t: lit::T&) {
         var out_hdr: u8[..512] = [];
         let ok = auth::serialize_digest_auth(
             "user", "realm", "nonce\"with\"quotes", "/api",
-            "SHA-256", "0123456789abcdef", "auth",
+            "SHA-256", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "auth",
             "00000001", "cnonce", "opaque", false,
             out_hdr,
         );
@@ -2455,7 +2486,7 @@ fn test_digest_auth_serialization_security(t: lit::T&) {
         var out_hdr: u8[..512] = [];
         let ok = auth::serialize_digest_auth(
             "user", "realm\r\nEvil: true", "nonce", "/api",
-            "SHA-256", "0123456789abcdef", "auth",
+            "SHA-256", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "auth",
             "00000001", "cnonce", "opaque", false,
             out_hdr,
         );
@@ -3023,8 +3054,9 @@ fn test_goose2rfc_auth_audit_regressions(t: lit::T&) {
         let hs256_empty_sig = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1MSJ9.";
         sub.assert_eq(auth::parse_jwt_unverified(hs256_empty_sig, uh, uc), auth::JwtError.InvalidBase64, "alg=HS256 with empty signature rejected");
 
-        // 6. verify_jwt_algorithm with allow_none=true accepts JwtAlg.None, and exp < -1 rejected
-        sub.assert_eq(auth::verify_jwt_algorithm(auth::JwtAlg.None, auth::JwtAlg.HS256, true), auth::JwtError.None, "JwtAlg.None allowed when allow_none=true");
+        // 6. verify_jwt_algorithm with allow_none=true requires expected_alg == JwtAlg.None (EDGE-13), and exp < -1 rejected
+        sub.assert_eq(auth::verify_jwt_algorithm(auth::JwtAlg.None, auth::JwtAlg.HS256, true), auth::JwtError.UnsupportedAlgorithm, "JwtAlg.None rejected when HS256 expected even if allow_none=true");
+        sub.assert_eq(auth::verify_jwt_algorithm(auth::JwtAlg.None, auth::JwtAlg.None, true), auth::JwtError.None, "JwtAlg.None allowed when allow_none=true and expected_alg=None");
         sub.assert_false(auth::validate_jwt_expiration(-5, false, 60, 1700000000), "exp < -1 rejected even when require_exp=false");
         sub.assert_false(auth::validate_jwt_not_before(-5, false, 60, 1700000000), "nbf < -1 rejected even when require_nbf=false");
 
@@ -3036,6 +3068,208 @@ fn test_goose2rfc_auth_audit_regressions(t: lit::T&) {
         sub.assert_false(auth::find_acme_challenge(bad_acme_table, "/.well-known/acme-challenge/", acme_body), "ACME slot with empty token rejected");
         var form_out: u8[..256] = [];
         sub.assert_false(auth::encode_token_endpoint_form("tok\x07en", auth::TokenTypeHint.AccessToken, form_out), "CTL byte in encode_token_endpoint_form rejected");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 34. Wave 5 Cryptographic Audit Regressions (AUTH-01..21, EDGE-02/05/06/11/13/14)
+// ----------------------------------------------------------------------------
+fn test_wave5_auth_audit_regressions(t: lit::T&) {
+    t.run("AUTH-03: DPoPReplayCache fail-closed saturation & future-skew iat expiry") { sub =>
+        var cache = auth::DPoPReplayCache { .. };
+        let base_now: i64 = 1714000000;
+        // Record with future-skewed iat (now + 50): expires at max(now, iat) + 300 + 60 = base_now + 410
+        sub.assert_true(
+            auth::check_and_record_dpop_jti(cache, "jti-skew", base_now, 300, 60, base_now + 50),
+            "Future-skewed JTI recorded",
+        );
+        // At base_now + 370 (past now+360, before iat+360=410) replay must STILL be blocked
+        sub.assert_false(
+            auth::check_and_record_dpop_jti(cache, "jti-skew", base_now + 370, 300, 60, base_now + 50),
+            "Future-skewed JTI remains blocked until iat + ttl + skew",
+        );
+        // After base_now + 410 it expires and may be reused
+        sub.assert_true(
+            auth::check_and_record_dpop_jti(cache, "jti-skew", base_now + 411, 300, 60, base_now + 411),
+            "Expired JTI slot reclaimed after expiry",
+        );
+
+        // Fill all 1024 slots with unexpired entries; 1025th must fail closed without evicting active JTIs
+        var full_cache = auth::DPoPReplayCache { .. };
+        var jti_buf: u8[..32] = [];
+        for i in 1024 {
+            jti_buf.clear();
+            jti_buf.append("jti-");
+            (i as u64).format_u64_dec(jti_buf);
+            sub.assert_true(
+                auth::check_and_record_dpop_jti(full_cache, jti_buf[..], base_now, 300, 60, base_now),
+                "Active slot populated",
+            );
+        }
+        sub.assert_false(
+            auth::check_and_record_dpop_jti(full_cache, "jti-overflow-1025", base_now, 300, 60, base_now),
+            "Full DPoPReplayCache fails closed instead of evicting unexpired JTI",
+        );
+        sub.assert_false(
+            auth::check_and_record_dpop_jti(full_cache, "jti-0", base_now, 300, 60, base_now),
+            "First active JTI still retained after overflow rejection",
+        );
+    };
+
+    t.run("AUTH-09/10/11/20 & EDGE-11/13/14: JWT typ, b64 crit, key_ops, RSA-2048, exp boundary, JWE") { sub =>
+        let secret = "0123456789abcdef0123456789abcdef";
+        let now_sec: i64 = 1714000000;
+
+        // AUTH-09: omitted typ in header must parse as "" and fail expected_typ="JWT"
+        var h_notyp = auth::JwtHeader { .. };
+        sub.assert_true(auth::parse_jwt_header_json("{\"alg\":\"HS256\"}", h_notyp), "Omitted typ parses");
+        sub.assert_eq(h_notyp.typ.len, 0, "Omitted typ is empty rather than synthesized JWT");
+
+        // AUTH-10: verify_jws_unencoded_hs256 rejects < 32B secret and unknown crit alongside b64
+        var h_b64_evil: u8[..128] = [];
+        core::base64url_encode("{\"alg\":\"HS256\",\"b64\":false,\"crit\":[\"b64\",\"evil\"],\"evil\":true}", h_b64_evil);
+        var sign_in: u8[..256] = [];
+        sign_in.append(h_b64_evil[..]);
+        sign_in.push('.' as u8);
+        sign_in.append("payload");
+        let mac = core::hmac_sha256(secret, sign_in[..]);
+        var sig_b64: u8[..64] = [];
+        core::base64url_encode(mac[..], sig_b64);
+        var jws_evil: u8[..384] = [];
+        jws_evil.append(sign_in[..]);
+        jws_evil.push('.' as u8);
+        jws_evil.append(sig_b64[..]);
+        sub.assert_false(
+            auth::verify_jws_unencoded_hs256(jws_evil[..], secret),
+            "Unencoded JWS with extra crit parameter rejected",
+        );
+        var h_b64_ok: u8[..128] = [];
+        core::base64url_encode("{\"alg\":\"HS256\",\"b64\":false,\"crit\":[\"b64\"]}", h_b64_ok);
+        sign_in.clear();
+        sign_in.append(h_b64_ok[..]);
+        sign_in.push('.' as u8);
+        sign_in.append("payload");
+        let mac_ok = core::hmac_sha256(secret, sign_in[..]);
+        sig_b64.clear();
+        core::base64url_encode(mac_ok[..], sig_b64);
+        var jws_ok: u8[..384] = [];
+        jws_ok.append(sign_in[..]);
+        jws_ok.push('.' as u8);
+        jws_ok.append(sig_b64[..]);
+        sub.assert_false(
+            auth::verify_jws_unencoded_hs256(jws_ok[..], "short_key"),
+            "Unencoded JWS rejects < 32-byte HMAC secret",
+        );
+        sub.assert_true(
+            auth::verify_jws_unencoded_hs256(jws_ok[..], secret),
+            "Valid unencoded JWS accepted with >= 32B secret",
+        );
+
+        // AUTH-11: JWK key_ops without verify MUST be rejected for JWT verification
+        var sign_only_jwk = auth::JwksKey {
+            kty:     auth::JwkKeyType.Oct,
+            alg:     auth::JwtAlg.HS256,
+            key_ops: auth::JWK_OP_SIGN,
+            valid:   true,
+            ..
+        };
+        sub.assert_true(
+            auth::validate_jwks_key_compatibility(sign_only_jwk, auth::JwtAlg.HS256) != auth::JwtError.None,
+            "JWK with key_ops=[sign] rejected for verification",
+        );
+        sign_only_jwk.key_ops = auth::JWK_OP_VERIFY;
+        sub.assert_eq(
+            auth::validate_jwks_key_compatibility(sign_only_jwk, auth::JwtAlg.HS256),
+            auth::JwtError.None,
+            "JWK with key_ops=[verify] accepted",
+        );
+
+        // AUTH-20 / EDGE-14: now_unix_sec <= 0 rejected and strict now < exp boundary enforced
+        sub.assert_false(auth::validate_jwt_expiration(now_sec, true, 0, 0), "now_unix_sec == 0 rejected in exp check");
+        sub.assert_false(auth::validate_jwt_not_before(now_sec - 10, true, 0, 0), "now_unix_sec == 0 rejected in nbf check");
+        sub.assert_false(auth::validate_jwt_expiration(now_sec, true, 0, now_sec), "now == exp rejected per RFC 7519 §4.1.4");
+        sub.assert_true(auth::validate_jwt_expiration(now_sec + 1, true, 0, now_sec), "now < exp accepted");
+
+        // EDGE-11: RSA JWT verification rejects < 2048-bit modulus
+        let weak_n: u8[128] = [0x80; 128];
+        let rsa_e:  u8[3]   = [0x01, 0x00, 0x01];
+        var sig_dummy: u8[128] = [0x11; 128];
+        sub.assert_false(
+            auth::verify_jwt_rsa_signature(auth::JwtAlg.RS256, "a.b", sig_dummy[..], weak_n[..], rsa_e[..]),
+            "1024-bit RSA modulus rejected in JWT verification",
+        );
+
+        // AUTH-20: concat_kdf_sha256 validates key_bits & alg_id; jwe_seal_dir_a256gcm_random_iv round-trips
+        let z32: u8[32] = [0x11; 32];
+        let _, ok_kdf_bad_bits = auth::concat_kdf_sha256(z32, "A256GCM", "", "", 128);
+        sub.assert_false(ok_kdf_bad_bits, "concat_kdf_sha256 rejects key_bits != 256");
+        let _, ok_kdf_empty_alg = auth::concat_kdf_sha256(z32, "", "", "", 256);
+        sub.assert_false(ok_kdf_empty_alg, "concat_kdf_sha256 rejects empty alg_id");
+        let cek: u8[32] = [0x42; 32];
+        var prot_b64: u8[..128] = [];
+        core::base64url_encode("{\"alg\":\"dir\",\"enc\":\"A256GCM\"}", prot_b64);
+        var jwe1: u8[..512] = [];
+        var jwe2: u8[..512] = [];
+        sub.assert_true(auth::jwe_seal_dir_a256gcm_random_iv(prot_b64[..], cek, "secret-msg", jwe1), "Random-IV JWE 1 sealed");
+        sub.assert_true(auth::jwe_seal_dir_a256gcm_random_iv(prot_b64[..], cek, "secret-msg", jwe2), "Random-IV JWE 2 sealed");
+        sub.assert_false(jwe1[..] == jwe2[..], "Random-IV JWE produces distinct ciphertexts");
+        var jwe_pt: u8[..256] = [];
+        sub.assert_true(auth::jwe_open_dir_a256gcm(jwe1[..], cek, jwe_pt), "Random-IV JWE decrypted");
+        sub.assert_bytes_eq(jwe_pt[..], "secret-msg", "Decrypted JWE plaintext matches");
+    };
+
+    t.run("AUTH-12/13/18/19/21: DPoP JTI/method, PKCE empty method, Digest hardening, OAuth HTTPS") { sub =>
+        // AUTH-12: short explicit entropy rejected in generate_dpop_jti
+        var jti_out: u8[..64] = [];
+        sub.assert_false(auth::generate_dpop_jti(jti_out, "too_short"), "Short explicit entropy rejected in generate_dpop_jti");
+        sub.assert_true(auth::generate_dpop_jti(jti_out, "0123456789abcdef"), "16-byte explicit entropy accepted");
+
+        // AUTH-13: create_pkce_pair rejects empty method
+        let _, ok_empty_pkce = auth::create_pkce_pair("", "");
+        sub.assert_false(ok_empty_pkce, "create_pkce_pair rejects empty method");
+
+        // AUTH-18: DPoP method > 16 bytes rejected; try_format_json_string fails cleanly on small cap
+        var dpop_clm_out: u8[..256] = [];
+        sub.assert_false(
+            auth::build_dpop_claims_json("OVERLY_LONG_HTTP_METHOD", "https://api.example.com/", "", "", 1714000000, "jti-1", dpop_clm_out),
+            "DPoP method > 16 bytes rejected",
+        );
+        var tiny_json: u8[..4] = [];
+        sub.assert_false(core::try_format_json_string(tiny_json, "abcdef"), "try_format_json_string fails on cap overflow");
+        sub.assert_eq(tiny_json.len, 0, "try_format_json_string rolls back buffer on overflow");
+
+        // AUTH-19: Digest serialization rejects invalid algo/qop/nc/hex; stale sync blocks auth-int -> auth downgrade
+        var out_hdr: u8[..512] = [];
+        let good_sha256_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        sub.assert_false(
+            auth::serialize_digest_auth("u", "r", "n", "/", "SHA-1", good_sha256_hex, "auth", "00000001", "cn", "", false, out_hdr),
+            "Unsupported Digest algorithm rejected",
+        );
+        sub.assert_false(
+            auth::serialize_digest_auth("u", "r", "n", "/", "SHA-256", "not-hex", "auth", "00000001", "cn", "", false, out_hdr),
+            "Invalid Digest response_hex rejected",
+        );
+        sub.assert_false(
+            auth::serialize_digest_auth("u", "r", "n", "/", "SHA-256", good_sha256_hex, "auth", "0001", "cn", "", false, out_hdr),
+            "Non-8-hex nc rejected",
+        );
+        let stored_chal, ok_sc = auth::parse_digest_challenge("Digest realm=\"api\", nonce=\"n1\", algorithm=SHA-256, qop=\"auth-int\"");
+        let down_chal, ok_dc = auth::parse_digest_challenge("Digest realm=\"api\", nonce=\"n2\", algorithm=SHA-256, qop=\"auth\", stale=true");
+        sub.assert_true(ok_sc && ok_dc, "Stale challenges parsed");
+        var stored_mut = stored_chal;
+        var nc_val: u32 = 5;
+        var dummy_creds = auth::DigestCredentials { .. };
+        dummy_creds.username.try_set("alice");
+        sub.assert_false(
+            auth::sync_digest_stale_challenge(stored_mut, down_chal, dummy_creds, nc_val),
+            "Stale challenge cannot downgrade auth-int to auth",
+        );
+
+        // AUTH-21: Device Authorization rejects plaintext http:// verification_uri
+        let _, ok_http_dev = auth::parse_device_auth_response(
+            "{\"device_code\":\"dc\",\"user_code\":\"uc\",\"verification_uri\":\"http://ex.com/dev\",\"expires_in\":600}",
+        );
+        sub.assert_false(ok_http_dev, "Plaintext http:// device verification_uri rejected");
     };
 }
 
@@ -3075,6 +3309,7 @@ fn main() {
     lit::run_case(runner, "31. Auth DPoP, Digest & PrivacyPass (auth/*, security/*)", test_auth_dpop_digest_privacypass);
     lit::run_case(runner, "32. JWT Expiry Integer Overflow Defense", test_jwt_exp_overflow);
     lit::run_case(runner, "33. goose2rfc Auth Package Audit Regressions", test_goose2rfc_auth_audit_regressions);
+    lit::run_case(runner, "34. Wave 5 Cryptographic Audit Regressions", test_wave5_auth_audit_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);

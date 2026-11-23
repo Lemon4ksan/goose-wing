@@ -429,7 +429,7 @@ inline fn append_jwt_hmac_signature<B>(
 }
 
 inline fn append_jwt_eddsa_signature<B>(
-    seed_key:      const u8[32],
+    seed_key:      const u8[32]&,
     signing_input: const u8[:],
     out:           B&,
 ) -> bool {
@@ -478,7 +478,7 @@ inline fn finish_sign_jwt_hmac<T, B>(
 inline fn finish_sign_jwt_eddsa<T, B>(
     header:    const auth::JwtHeader&,
     claims:    const auth::JwtClaims&,
-    seed_key:  const u8[32],
+    seed_key:  const u8[32]&,
     token_buf: T&,
     out:       B&,
 ) -> bool {
@@ -497,7 +497,7 @@ inline fn finish_sign_jwt_eddsa<T, B>(
 inline fn finish_sign_jwt_es256<T, B>(
     header:    const auth::JwtHeader&,
     claims:    const auth::JwtClaims&,
-    priv_key:  const u8[32],
+    priv_key:  const u8[32]&,
     token_buf: T&,
     out:       B&,
 ) -> bool {
@@ -585,11 +585,8 @@ inline fn is_crit_param_supported(
     return false;
 }
 
-inline fn has_crit_param_in_header(header: const auth::JwtHeader&, name: const u8[:]) -> bool {
-    for &cp in header.crit {
-        if cp.name[..] == name { return true; }
-    }
-    return false;
+inline fn has_only_crit_param_in_header(header: const auth::JwtHeader&, name: const u8[:]) -> bool {
+    return header.crit.len == 1 && header.crit[0].name[..] == name;
 }
 
 // Validates compact JWT signature segment syntax for unverified parsing (RFC 7515 §7.1).

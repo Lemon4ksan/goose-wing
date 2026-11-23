@@ -91,8 +91,8 @@ inline fn read_positive_oauth_int(reader: json::Reader&, dst: i64&, had_err: boo
 inline fn is_valid_device_verification_uri(uri: const u8[:]) -> bool {
     let parsed, err = core::parse_url(uri);
     guard err == core::UrlParseError.None && parsed.hostname().len > 0 else { return false; }
-    let scheme = parsed.scheme();
-    return scheme.eq_ascii_fold("https") || scheme.eq_ascii_fold("http");
+    // RFC 8628 Section 3.2 & Section 5.4: Device verification URIs MUST use HTTPS.
+    return parsed.scheme().eq_ascii_fold("https");
 }
 
 inline fn mark_device_auth_key_seen(seen_mask: u32&, bit: u32, had_err: bool&) {
@@ -156,15 +156,7 @@ fn parse_device_auth_field(
     json::skip(reader);
 }
 
-// ---- PKCE Entropy Pool & Helpers (RFC 7636) ------------------------------
-
-var g_pkce_entropy_counter: u64 = 1;
-var g_pkce_entropy_state: u8[32] = [
-    0x6a, 0x09, 0xe6, 0x67, 0xf3, 0xbc, 0xc9, 0x08,
-    0xbb, 0x67, 0xae, 0x85, 0x84, 0xca, 0xa7, 0x3b,
-    0x3c, 0x6e, 0xf3, 0x72, 0xfe, 0x94, 0xf8, 0x2b,
-    0x5f, 0x1d, 0x36, 0xf1, 0x51, 0x0e, 0x52, 0x7f,
-];
+// ---- PKCE Entropy Helpers (RFC 7636) -------------------------------------
 
 inline fn is_uri_unreserved_bytes(s: const u8[:]) -> bool {
     for b in s {
@@ -173,29 +165,16 @@ inline fn is_uri_unreserved_bytes(s: const u8[:]) -> bool {
     return true;
 }
 
-inline fn derive_pkce_seed(now_ns: u64, counter: u64) -> u8[32] {
-    var buf: u8[..64] = [];
-    defer core::secure_zeroize_slice(buf[..]);
-    buf.append(g_pkce_entropy_state[..]);
-    var meta: u8[16] = [0; 16];
-    core::write_le_u64_at(meta[..], 0, now_ns);
-    core::write_le_u64_at(meta[..], 8, counter);
-    buf.append(meta[..]);
-
-    let round1 = core::sha256(buf[..]);
-    for i in 32 {
-        g_pkce_entropy_state[i] = round1[i];
-    }
-    return core::sha256(g_pkce_entropy_state[..]);
-}
-
 inline fn generate_derived_verifier<B>(out: B&) -> bool {
     var raw_entropy: u8[32] = [0; 32];
     defer core::secure_zeroize_32(raw_entropy);
-    if !core::sim_rng_fill(raw_entropy[..]) {
-        g_pkce_entropy_counter = core::add_sat_i64(g_pkce_entropy_counter as i64, 1) as u64;
-        raw_entropy = derive_pkce_seed(core::sim_now_ns() as u64, g_pkce_entropy_counter);
-    }
+    // RFC 7636 Section 4.1: Code verifier entropy MUST come from a CSPRNG (or active DST sim RNG).
+    let got_rng = if core::sim_rng_is_active() {
+        core::sim_rng_fill(raw_entropy[..])
+    } else {
+        core::csprng_fill(raw_entropy[..])
+    };
+    guard got_rng else { return false; }
     var encoded: u8[..64] = [];
     defer core::secure_zeroize_slice(encoded[..]);
     core::base64url_encode(raw_entropy[..], encoded);

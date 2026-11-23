@@ -78,9 +78,16 @@ fn serialize_digest_auth<B>(
     defer if !committed { out.resize(0); };
 
     guard effective_user.len > 0 && realm.len > 0 && nonce.len > 0 else { return false; }
-    guard uri.len > 0 && algo.len > 0 && response_hex.len > 0 else { return false; }
+    guard uri.len > 0 && rfc::is_supported_digest_algo(algo) else { return false; }
+    guard auth_internal::is_ascii_hex_str(response_hex) && (response_hex.len == 32 || response_hex.len == 64) else {
+        return false;
+    }
     if active_qop.len > 0 {
-        guard nc_str.len > 0 && cnonce.len > 0 else { return false; }
+        let valid_qop = active_qop.eq_ascii_fold(rfc::DIGEST_QOP_AUTH)
+            || active_qop.eq_ascii_fold(rfc::DIGEST_QOP_AUTH_INT);
+        guard valid_qop && nc_str.len == 8 && auth_internal::is_ascii_hex_str(nc_str) && cnonce.len > 0 else {
+            return false;
+        }
     }
 
     out.clear();
@@ -105,6 +112,12 @@ fn sync_digest_stale_challenge(
     guard creds.username.len > 0 && incoming.nonce.len > 0 else { return false; }
 
     let resolved_algo, algo_ok = auth_internal::resolve_stale_digest_algo(stored.algorithm[..], incoming);
+    // RFC 7616 Section 5: Reject stale-challenge qop downgrade from auth-int to auth-only.
+    if qop_list_has_token(stored.qop[..], rfc::DIGEST_QOP_AUTH_INT)
+        && incoming.qop.len > 0
+        && !qop_list_has_token(incoming.qop[..], rfc::DIGEST_QOP_AUTH_INT) {
+        return false;
+    }
     var next = copy(stored);
     guard algo_ok && next.algorithm.try_set(resolved_algo) else { return false; }
     guard next.nonce.try_set(incoming.nonce[..]) else { return false; }

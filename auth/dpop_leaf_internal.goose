@@ -13,17 +13,6 @@ import .internal;
 
 const MAX_DPOP_PROOF_LEN: i64 = 4096;
 
-var g_dpop_jti_seq: u64 = 0x853c49e6748fea9b;
-
-// RFC 9449 Section 4.2: DPoP Proof JWT Syntax - Stateful entropy mixer for negligible collision probability.
-inline fn next_dpop_entropy() -> u64 {
-    if core::sim_rng_is_active() {
-        return core::sim_rng_next_u64();
-    }
-    g_dpop_jti_seq = g_dpop_jti_seq + 0x9e3779b97f4a7c15;
-    return (core::sim_now_ns() as u64) ^ g_dpop_jti_seq;
-}
-
 fn validate_dpop_jwk_params(info: const auth::DPoPJwkInfo&) -> bool {
     let no_rsa = info.n.len == 0 && info.e.len == 0;
     let is_okp_shape = info.crv[..] == "Ed25519" && info.x.len > 0 && info.y.len == 0 && no_rsa;
@@ -396,9 +385,9 @@ inline fn parse_dpop_claim_str<B>(
     }
 }
 
-// RFC 9110 Section 9.1: Overview - HTTP method is a case-sensitive token (1*tchar)
+// RFC 9110 Section 9.1: Overview - HTTP method is a case-sensitive token (1..16 tchar)
 inline fn is_valid_dpop_method(m: const u8[:]) -> bool {
-    guard m.len > 0 else { return false; }
+    guard m.len > 0 && m.len <= 16 else { return false; }
     for b in m {
         guard core::is_tchar(b) else { return false; }
     }
@@ -468,16 +457,13 @@ fn matches_dpop_jkt_thumbprint_jwk(
     return core::ct_eq_bytes(computed_jkt[..], expected_jkt);
 }
 
+// RFC 9449 Section 4.3: Verifies embedded Ed25519 JWK matches the expected 32-byte public key.
 inline fn verify_dpop_eddsa_key_binding(key: const u8[:], jwk_info: const auth::DPoPJwkInfo&) -> bool {
     guard key.len == 32 && jwk_info.kty[..] == "OKP" && jwk_info.crv[..] == "Ed25519" else { return false; }
     guard jwk_info.x[..].index_of_byte('=') == -1 else { return false; }
     var jwk_pub: u8[..64] = [];
     guard core::base64url_decode(jwk_info.x[..], jwk_pub) && jwk_pub.len == 32 else { return false; }
-    var key_seed: u8[32] = [0; 32];
-    defer core::secure_zeroize_32(key_seed);
-    for i in 32 { key_seed[i] = key[i]; }
-    let derived_pub = core::ed25519_public_key(key_seed);
-    return core::ct_eq_bytes(jwk_pub[..], key) || core::ct_eq_bytes(jwk_pub[..], derived_pub[..]);
+    return core::ct_eq_bytes(jwk_pub[..], key);
 }
 
 inline fn verify_dpop_es256_key_binding(key: const u8[:], jwk_info: const auth::DPoPJwkInfo&) -> bool {
