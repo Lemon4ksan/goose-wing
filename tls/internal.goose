@@ -11,6 +11,9 @@ import core;
 
 const ASN1_UNUSED_BITS_MASK_LUT: const u8[8] = [0x00, 0x01, 0x03, 0x07, 0x0F, 0x1F, 0x3F, 0x7F];
 
+// Maximum age (10 days) accepted for OCSP responses and CRLs that omit nextUpdate (RFC 6960 §4.2.2.1).
+const MAX_REVOCATION_AGE_SECS: i64 = 864000;
+
 // Parses a 2-digit decimal integer from a slice at the given offset.
 //
 // Example:
@@ -183,6 +186,33 @@ inline fn pem_skip_end_line(raw: const u8[:], pos: i64) -> i64, bool {
     return p, true;
 }
 
+inline fn pem_is_label_char(b: u8) -> bool {
+    return b >= 0x21 && b <= 0x7E && b != '-';
+}
+
+// RFC 7468 Section 2: label = [ labelchar *( ["-" / " "] labelchar ) ].
+inline fn pem_is_valid_label(label: const u8[:]) -> bool {
+    guard label.len > 0 && label.len <= PEM_MAX_LABEL_LEN else { return false; }
+    guard pem_is_label_char(label[0]) && pem_is_label_char(label[core::sub_sat_i64(label.len, 1)]) else {
+        return false;
+    }
+    var prev_sep = false;
+    for b in label {
+        if b == ' ' || b == '-' {
+            guard !prev_sep else { return false; }
+            prev_sep = true;
+            continue;
+        }
+        guard pem_is_label_char(b) else { return false; }
+        prev_sep = false;
+    }
+    return true;
+}
+
+inline fn pem_is_line_start(raw: const u8[:], pos: i64) -> bool {
+    return pos == 0 || raw[core::sub_sat_i64(pos, 1)] == '\n' || raw[core::sub_sat_i64(pos, 1)] == '\r';
+}
+
 inline fn pem_find_begin_line(
     raw:            const u8[:],
     start_idx:      i64,
@@ -190,22 +220,31 @@ inline fn pem_find_begin_line(
     out_body_start: i64&,
 ) -> bool {
     guard start_idx >= 0 && start_idx < raw.len else { return false; }
-    let rel_begin = core::find(raw[start_idx..], PEM_PRE_EB);
-    guard rel_begin >= 0 else { return false; }
-    let begin_pos = core::add_sat_i64(start_idx, rel_begin);
-    let label_start = core::add_sat_i64(begin_pos, PEM_PRE_EB.len);
-    guard label_start < raw.len else { return false; }
+    var search_from = start_idx;
+    while search_from < raw.len {
+        let rel_begin = core::find(raw[search_from..], PEM_PRE_EB);
+        guard rel_begin >= 0 else { return false; }
+        let begin_pos = core::add_sat_i64(search_from, rel_begin);
+        if !pem_is_line_start(raw, begin_pos) {
+            search_from = core::add_sat_i64(begin_pos, 1);
+            continue;
+        }
+        let label_start = core::add_sat_i64(begin_pos, PEM_PRE_EB.len);
+        guard label_start < raw.len else { return false; }
 
-    let rel_dash = core::find(raw[label_start..], PEM_DASHES);
-    guard rel_dash > 0 && rel_dash <= PEM_MAX_LABEL_LEN else { return false; }
-    let label_end = core::add_sat_i64(label_start, rel_dash);
-    guard out_label.try_set(raw[label_start..label_end]) else { return false; }
+        let rel_dash = core::find(raw[label_start..], PEM_DASHES);
+        guard rel_dash > 0 && rel_dash <= PEM_MAX_LABEL_LEN else { return false; }
+        let label_end = core::add_sat_i64(label_start, rel_dash);
+        let lbl = raw[label_start..label_end];
+        guard pem_is_valid_label(lbl) && out_label.try_set(lbl) else { return false; }
 
-    let line_pos = core::add_sat_i64(label_end, PEM_DASHES.len);
-    let next_p, ok_p = pem_skip_to_next_line(raw, line_pos);
-    guard ok_p else { return false; }
-    out_body_start = next_p;
-    return true;
+        let line_pos = core::add_sat_i64(label_end, PEM_DASHES.len);
+        let next_p, ok_p = pem_skip_to_next_line(raw, line_pos);
+        guard ok_p else { return false; }
+        out_body_start = next_p;
+        return true;
+    }
+    return false;
 }
 
 inline fn pem_find_end_line(
@@ -216,26 +255,34 @@ inline fn pem_find_end_line(
     out_next_idx: i64&,
 ) -> bool {
     guard body_start >= 0 && body_start < raw.len else { return false; }
-    let rel_end = core::find(raw[body_start..], PEM_POST_EB);
-    guard rel_end >= 0 else { return false; }
-    let end_pos = core::add_sat_i64(body_start, rel_end);
-    let lbl_start = core::add_sat_i64(end_pos, PEM_POST_EB.len);
-    let lbl_end = core::add_sat_i64(lbl_start, label.len);
-    let dash_end = core::add_sat_i64(lbl_end, PEM_DASHES.len);
-    guard dash_end <= raw.len else { return false; }
-    guard raw[lbl_start..lbl_end] == label && raw[lbl_end..dash_end] == PEM_DASHES else {
-        return false;
-    }
+    var search_from = body_start;
+    while search_from < raw.len {
+        let rel_end = core::find(raw[search_from..], PEM_POST_EB);
+        guard rel_end >= 0 else { return false; }
+        let end_pos = core::add_sat_i64(search_from, rel_end);
+        if !pem_is_line_start(raw, end_pos) {
+            search_from = core::add_sat_i64(end_pos, 1);
+            continue;
+        }
+        let lbl_start = core::add_sat_i64(end_pos, PEM_POST_EB.len);
+        let lbl_end = core::add_sat_i64(lbl_start, label.len);
+        let dash_end = core::add_sat_i64(lbl_end, PEM_DASHES.len);
+        guard dash_end <= raw.len else { return false; }
+        guard raw[lbl_start..lbl_end] == label && raw[lbl_end..dash_end] == PEM_DASHES else {
+            return false;
+        }
 
-    let next_p, ok_p = pem_skip_end_line(raw, dash_end);
-    guard ok_p else { return false; }
-    out_body_end = end_pos;
-    out_next_idx = next_p;
-    return true;
+        let next_p, ok_p = pem_skip_end_line(raw, dash_end);
+        guard ok_p else { return false; }
+        out_body_end = end_pos;
+        out_next_idx = next_p;
+        return true;
+    }
+    return false;
 }
 
-inline fn pem_decode_body(body: const u8[:], out_der: u8[..4096]&) -> bool {
-    var b64_clean: u8[..6144] = [];
+inline fn pem_decode_body<B>(body: const u8[:], out_der: B&) -> bool {
+    var b64_clean: u8[..12288] = [];
     defer core::secure_zeroize_slice(b64_clean[..]);
     for b in body {
         if pem_is_ws(b) { continue; }

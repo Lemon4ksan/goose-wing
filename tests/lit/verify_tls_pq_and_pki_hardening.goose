@@ -666,7 +666,71 @@ fn test_sct_hygiene_and_signature_verify() {
     assert(tls::verify_sct_signature(parsed_pre, raw_pre_sct[..], cert_der[..], log_spki[..], true, issuer_kh[..]));
     assert(!tls::verify_sct_signature(parsed_pre, raw_pre_sct[..], cert_der[..], log_spki[..], false));
 
+    // PKI-07: parse_sct_list offsets relative to raw_list, raw key rejected, future timestamp rejected.
+    var sct_list_wire: u8[..200] = [];
+    sct_list_wire.append_u16_be((raw_sct.len + 2) as u16);
+    sct_list_wire.append_u16_be(raw_sct.len as u16);
+    assert(sct_list_wire.try_append(raw_sct[..]));
+    var scts_from_list: tls::ParsedSct[..8] = [];
+    assert(tls::parse_sct_list(sct_list_wire[..], scts_from_list) && scts_from_list.len == 1);
+    assert(tls::verify_sct_signature(scts_from_list[0], sct_list_wire[..], cert_der[..], log_spki[..], false, "", ts_ms));
+    assert(!tls::verify_sct_signature(scts_from_list[0], sct_list_wire[..], cert_der[..], log_spki[..], false, "", ts_ms - 1));
+    assert(!tls::verify_sct_signature(scts_from_list[0], sct_list_wire[..], cert_der[..], log_pub[..], false));
+
     print("SCT_HYGIENE_AND_VERIFY: OK");
+}
+
+fn test_wave3_pki_audit_regressions() {
+    // PKI-03: Unbracketed IPv6 literal ("fd00::1") MUST NOT be accepted as URI SAN or match URI SAN.
+    let v6_uri_san = tls::SanEntry { san_type: tls::SanType.Uri, val: "fd00::1" };
+    assert(!tls::match_san(v6_uri_san, "fd00::1"));
+
+    // PKI-04: Excluded URI & Email NameConstraints fail closed on userinfo, IPv4, non-canonical IPv6, dots, quoted @.
+    var nc_uri_ex: tls::NameConstraintEntry[..16] = [];
+    assert(nc_uri_ex.try_push(tls::NameConstraintEntry { san_type: tls::SanType.Uri, is_excluded: true, val: "evil.com" }));
+    let u_userinfo = tls::SanEntry { san_type: tls::SanType.Uri, val: "https://user@evil.com/" };
+    let u_ip4 = tls::SanEntry { san_type: tls::SanType.Uri, val: "https://127.0.0.1/" };
+    assert(!tls::check_name_constraints(nc_uri_ex, u_userinfo));
+    assert(!tls::check_name_constraints(nc_uri_ex, u_ip4));
+
+    var nc_v6_ex: tls::NameConstraintEntry[..16] = [];
+    assert(nc_v6_ex.try_push(tls::NameConstraintEntry { san_type: tls::SanType.Uri, is_excluded: true, val: "[2001:db8::1]" }));
+    let u_v6 = tls::SanEntry { san_type: tls::SanType.Uri, val: "https://[2001:0db8::1]/" };
+    assert(!tls::check_name_constraints(nc_v6_ex, u_v6));
+
+    var nc_email_ex: tls::NameConstraintEntry[..16] = [];
+    assert(nc_email_ex.try_push(tls::NameConstraintEntry { san_type: tls::SanType.Email, is_excluded: true, val: "evil.com" }));
+    let e_dot = tls::SanEntry { san_type: tls::SanType.Email, val: "admin@evil.com." };
+    let e_quoted = tls::SanEntry { san_type: tls::SanType.Email, val: "\"a@b\"@evil.com" };
+    assert(!tls::check_name_constraints(nc_email_ex, e_dot));
+    assert(!tls::check_name_constraints(nc_email_ex, e_quoted));
+
+    // PKI-02: Subject DN checked against directoryName NameConstraints with RFC 5280 §7.1 canonicalization.
+    var dn_upper: u8[..160] = [];
+    encode_name_cn("  FORBIDDEN   CORP ", dn_upper);
+    var dn_lower: u8[..160] = [];
+    encode_name_cn("forbidden corp", dn_lower);
+    assert(tls_internal::match_dn_name_constraint(dn_upper[..], dn_lower[..]));
+
+    // PKI-09: Multi-byte high-tag-number (0x9F) MUST be rejected by get_any_asn1_element.
+    let high_tag: u8[4] = [0x9F, 0x20, 0x01, 0x00];
+    var c_ht = core::cursor_from(high_tag[..]);
+    var out_t: u8 = 0;
+    var out_v = core::cursor_from(high_tag[..0]);
+    assert(!tls::get_any_asn1_element(c_ht, out_t, out_v));
+
+    // PKI-13: Leading-zero IPv4 literal and mid-line PEM boundary rejected.
+    var ip4: u8[4] = [0; 4];
+    assert(!tls_internal::parse_ipv4_literal("010.0.0.1", ip4));
+    assert(tls_internal::parse_ipv4_literal("10.0.0.1", ip4));
+
+    let spoofed_pem = "comment -----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n";
+    var p_idx: i64       = 0;
+    var p_lbl: u8[..64]  = [];
+    var p_der: u8[..128] = [];
+    assert(!tls::pem_next_block(spoofed_pem, p_idx, p_lbl, p_der));
+
+    print("WAVE3_PKI_AUDIT_REGRESSIONS: OK");
 }
 
 // CHECK: MLKEM768_CT_BARRETT_AND_FIPS203: OK
@@ -675,6 +739,7 @@ fn test_sct_hygiene_and_signature_verify() {
 // CHECK: TRUST_ANCHOR_NAME_CONSTRAINTS: OK
 // CHECK: CRL_SHA256_1024_AND_SLOTS_4096: OK
 // CHECK: SCT_HYGIENE_AND_VERIFY: OK
+// CHECK: WAVE3_PKI_AUDIT_REGRESSIONS: OK
 fn main() {
     test_mlkem_barrett_and_compress_exactness();
     test_rsa_min_2048_and_strict_pss();
@@ -682,4 +747,5 @@ fn main() {
     test_trust_anchor_name_constraints();
     test_crl_sha256_capacity_and_cipher_slots();
     test_sct_hygiene_and_signature_verify();
+    test_wave3_pki_audit_regressions();
 }

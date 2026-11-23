@@ -10,6 +10,16 @@ import .internal;
 import .asn1;
 import .record;
 import .types;
+import .pki_ocsp_internal;
+
+// OID 1.2.840.113549.1.9.1 (pkcs-9-at-emailAddress) for Subject DN fallback in NameConstraints (RFC 5280 §4.2.1.10).
+const OID_EMAIL_ADDRESS: const u8[9] = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x01];
+
+enum NcMatchResult {
+    Match,
+    NoMatch,
+    Invalid,
+}
 
 fn x509_process_ipv4_char(
     b:         u8,
@@ -27,6 +37,8 @@ fn x509_process_ipv4_char(
         return true;
     }
     guard core::is_ascii_digit(b) else { return false; }
+    // RFC 3986 Section 3.2.2: Reject leading-zero decimal octets (e.g. "010.0.0.1") to prevent octal ambiguity.
+    guard !(digits == 1 && current == 0) else { return false; }
     let digit = core::sub_sat_u64(b, '0');
     current = core::add_sat_u64(core::mul_sat_u64(current, 10), digit) as u32;
     digits = core::add_sat_i64(digits, 1);
@@ -80,6 +92,9 @@ inline fn x509_has_valid_uri_scheme(uri: const u8[:]) -> bool {
         let b = uri[i];
         guard x509_is_dns_label_char(b) || b == '+' || b == '.' else { return false; }
     }
+    // Reject unbracketed IPv6 literals (e.g. "fd00::1", "fe80::1") masquerading as URI schemes (PKI-03).
+    let _, is_v6 = core::parse_ipv6_octets(uri);
+    guard !is_v6 else { return false; }
     return true;
 }
 
@@ -156,16 +171,17 @@ fn x509_extract_uri_authority(candidate_uri: const u8[:]) -> const u8[:] {
     return s[..auth_end];
 }
 
-fn x509_match_ipv6_uri_constraint(host_part: const u8[:], constraint: const u8[:]) -> bool {
+fn x509_match_ipv6_uri_constraint_3state(host_part: const u8[:], constraint: const u8[:]) -> NcMatchResult {
     let close_bracket = host_part.index_of_byte(']');
-    guard close_bracket > 1 else { return false; }
-    var inner_ip = host_part[1..close_bracket];
-
-    let pct_idx = inner_ip.index_of_byte('%');
-    if pct_idx >= 0 {
-        inner_ip = inner_ip[..pct_idx];
+    guard close_bracket > 1 else { return NcMatchResult.Invalid; }
+    let after_bracket = core::add_sat_i64(close_bracket, 1);
+    if after_bracket < host_part.len {
+        guard host_part[after_bracket] == ':' else { return NcMatchResult.Invalid; }
     }
-    guard inner_ip.len > 0 else { return false; }
+    let inner_ip = host_part[1..close_bracket];
+    guard !inner_ip.contains_byte('%') else { return NcMatchResult.Invalid; }
+    let cand_v6, ok_cand = core::parse_ipv6_octets(inner_ip);
+    guard ok_cand else { return NcMatchResult.Invalid; }
 
     var cons_cmp = constraint;
     if cons_cmp.len > 2 {
@@ -174,7 +190,9 @@ fn x509_match_ipv6_uri_constraint(host_part: const u8[:], constraint: const u8[:
             cons_cmp = cons_cmp[1..^1];
         }
     }
-    return inner_ip.eq_ascii_fold(cons_cmp);
+    let cons_v6, ok_cons = core::parse_ipv6_octets(cons_cmp);
+    guard ok_cons else { return NcMatchResult.NoMatch; }
+    return if cand_v6[..] == cons_v6[..] { NcMatchResult.Match } else { NcMatchResult.NoMatch };
 }
 
 inline fn x509_is_ipv4_literal(host_part: const u8[:]) -> bool {
@@ -205,47 +223,47 @@ fn x509_parse_general_subtree_base(
 ) -> bool {
     var base_tag: u8 = 0;
     if !tls::get_any_asn1_element(subtree, base_tag, out_val) { return false; }
-    let tag_num = base_tag & 0x1F;
-    if tag_num == 1 { // rfc822Name [1]
+    // RFC 5280 Section 4.2.1.6: GeneralName - Exact context-specific class and primitive/constructed tags.
+    if base_tag == 0x81 { // rfc822Name [1] IMPLICIT IA5String
         out_type = tls::SanType.Email;
         return x509_validate_subtree_nonempty_text(out_val.buf, false);
     }
-    if tag_num == 2 { // dNSName
+    if base_tag == 0x82 { // dNSName [2] IMPLICIT IA5String
         out_type = tls::SanType.Dns;
         // RFC 5280 Section 4.2.1.10: Name Constraints - dNSName base MUST NOT start with a leading period.
         return x509_validate_subtree_nonempty_text(out_val.buf, true);
     }
-    if tag_num == 7 { // iPAddress
+    if base_tag == 0x87 { // iPAddress [7] IMPLICIT OCTET STRING
         out_type = tls::SanType.Ip;
         return x509_validate_subtree_ip(out_val.buf);
     }
-    if tag_num == 4 { // directoryName [4] EXPLICIT Name
+    if base_tag == 0xA4 { // directoryName [4] EXPLICIT Name
         out_type = tls::SanType.DirName;
         return out_val.buf.len > 0;
     }
-    if tag_num == 6 { // uniformResourceIdentifier [6]
+    if base_tag == 0x86 { // uniformResourceIdentifier [6] IMPLICIT IA5String
         out_type = tls::SanType.Uri;
         return x509_validate_subtree_nonempty_text(out_val.buf, false);
+    }
+    guard base_tag == 0xA0 || base_tag == 0xA3 || base_tag == 0xA5 || base_tag == 0x88 else {
+        return false;
     }
     out_type = tls::SanType.Other;
     return true;
 }
 
-inline fn x509_validate_subtree_bound_opt(opt_tag: u8, opt_elem: core::ByteCursor&) -> bool {
-    let opt_num = opt_tag & 0x1F;
-    if opt_num == 0 { // minimum MUST be zero
-        var min_val: i64 = 0;
-        return tls::get_asn1_integer(opt_elem, min_val) && min_val == 0;
-    }
-    return false; // maximum (opt_num == 1) or other tags forbidden
-}
-
 inline fn x509_parse_general_subtree_bounds(subtree: core::ByteCursor&) -> bool {
+    // RFC 5280 Section 4.2.1.10: GeneralSubtree minimum [0] IMPLICIT BaseDistance MUST be 0 (or omitted);
+    // maximum [1] is forbidden and repeated minimum fields are malformed.
+    var seen_min = false;
     while subtree.cursor_len() > 0 {
         var opt_tag: u8 = 0;
         var opt_elem = core::cursor_from(subtree.buf[..0]);
         if !tls::get_any_asn1_element(subtree, opt_tag, opt_elem) { return false; }
-        guard x509_validate_subtree_bound_opt(opt_tag, opt_elem) else { return false; }
+        guard opt_tag == 0x80 && !seen_min && opt_elem.buf.len == 1 && opt_elem.buf[0] == 0x00 else {
+            return false;
+        }
+        seen_min = true;
     }
     return true;
 }
@@ -261,11 +279,10 @@ fn x509_parse_general_subtree(
     guard x509_parse_general_subtree_base(subtree, st, base_elem) else { return false; }
     guard x509_parse_general_subtree_bounds(subtree) else { return false; }
 
-    let span = tls::make_span(nc_der, base_elem.buf);
     return out_constraints.try_push(tls::NameConstraintEntry {
         san_type:    st,
         is_excluded: is_excluded,
-        val:         tls::span_slice(nc_der, span),
+        val:         base_elem.buf,
     });
 }
 
@@ -300,31 +317,33 @@ fn x509_parse_subtrees_sequence(
 
 inline fn x509_validate_san_uri(elem_buf: const u8[:]) -> bool {
     guard elem_buf.len > 0 && x509_has_valid_uri_scheme(elem_buf) else { return false; }
-    return !elem_buf.contains_byte('%') && !elem_buf.contains_byte(0);
+    guard !elem_buf.contains_byte('%') && !elem_buf.contains_byte(0) else { return false; }
+    return core::find(elem_buf, "://") > 0;
 }
 
-inline fn x509_classify_san_element(tag_num: u8, elem_buf: const u8[:], out_type: tls::SanType&) -> bool {
-    if tag_num == 1 { // rfc822Name [1] IA5String
+inline fn x509_classify_san_element(tag: u8, elem_buf: const u8[:], out_type: tls::SanType&) -> bool {
+    // RFC 5280 Section 4.2.1.6: GeneralName - Match exact context-specific tag and primitive/constructed bit.
+    if tag == 0x81 { // rfc822Name [1] IMPLICIT IA5String
         out_type = tls::SanType.Email;
         return elem_buf.len > 0 && !elem_buf.contains_byte(0);
     }
-    if tag_num == 2 { // dNSName [2] IA5String
+    if tag == 0x82 { // dNSName [2] IMPLICIT IA5String
         out_type = tls::SanType.Dns;
         return tls::validate_san_dns_name(elem_buf);
     }
-    if tag_num == 7 { // iPAddress [7] OCTET STRING
+    if tag == 0x87 { // iPAddress [7] IMPLICIT OCTET STRING
         out_type = tls::SanType.Ip;
         return elem_buf.len == 4 || elem_buf.len == 16;
     }
-    if tag_num == 4 { // directoryName [4] EXPLICIT Name
+    if tag == 0xA4 { // directoryName [4] EXPLICIT Name
         out_type = tls::SanType.DirName;
         return elem_buf.len > 0;
     }
-    if tag_num == 6 { // uniformResourceIdentifier [6] IA5String
+    if tag == 0x86 { // uniformResourceIdentifier [6] IMPLICIT IA5String
         out_type = tls::SanType.Uri;
         return x509_validate_san_uri(elem_buf);
     }
-    guard tag_num <= 8 else { return false; }
+    guard tag == 0xA0 || tag == 0xA3 || tag == 0xA5 || tag == 0x88 else { return false; }
     out_type = tls::SanType.Other;
     return true;
 }
@@ -351,9 +370,8 @@ fn x509_next_san_entry(names_seq: core::ByteCursor&) -> tls::SanEntry, bool {
         return tls::SanEntry { san_type: tls::SanType.Other, val: names_seq.buf[..0] }, false;
     }
 
-    let tag_num = tag & 0x1F;
     var st = tls::SanType.Other;
-    guard x509_classify_san_element(tag_num, elem.buf, st) else {
+    guard x509_classify_san_element(tag, elem.buf, st) else {
         return tls::SanEntry { san_type: tls::SanType.Other, val: names_seq.buf[..0] }, false;
     }
     return tls::SanEntry { san_type: st, val: elem.buf }, true;
@@ -383,42 +401,190 @@ fn validate_cert_san_extension(cert: const tls::ParsedCert&, raw_cert: const u8[
     return validate_san_extension(tls::span_slice(raw_cert, cert.san_raw));
 }
 
-// RFC 5280 Section 4.2.1.10: Name Constraints - Matches DirectoryName RDNSequence prefix.
+inline fn x509_is_dn_foldable_string_tag(tag: u8) -> bool {
+    return tag == rfc::ASN1_TAG_UTF8_STRING ||
+        tag == rfc::ASN1_TAG_PRINTABLE_STRING ||
+        tag == rfc::ASN1_TAG_IA5_STRING ||
+        tag == 0x14; // TeletexString
+}
+
+// RFC 5280 Section 7.1: Canonicalizes a Distinguished Name string attribute by trimming outer
+// spaces, collapsing internal runs of ASCII spaces to a single space, and lowercasing ASCII.
+fn x509_canonicalize_dn_value(raw: const u8[:], out: u8[..256]&) -> bool {
+    out.clear();
+    let trimmed = raw.trim_lws();
+    var in_space = false;
+    for b in trimmed {
+        if b == ' ' || b == '\t' {
+            if !in_space {
+                guard out.try_push(' ') else { return false; }
+                in_space = true;
+            }
+            continue;
+        }
+        in_space = false;
+        guard out.try_push(core::to_lower_ascii_byte(b)) else { return false; }
+    }
+    return true;
+}
+
+fn x509_dn_ava_equal(cand_ava: core::ByteCursor&, cons_ava: core::ByteCursor&) -> bool {
+    var cand_oid = core::cursor_from(cand_ava.buf[..0]);
+    var cons_oid = core::cursor_from(cons_ava.buf[..0]);
+    guard tls::get_asn1_element(cand_ava, rfc::ASN1_TAG_OID, cand_oid) &&
+        tls::get_asn1_element(cons_ava, rfc::ASN1_TAG_OID, cons_oid) &&
+        cand_oid.buf == cons_oid.buf else {
+        return false;
+    }
+    var cand_tag: u8 = 0;
+    var cons_tag: u8 = 0;
+    var cand_val = core::cursor_from(cand_ava.buf[..0]);
+    var cons_val = core::cursor_from(cons_ava.buf[..0]);
+    guard tls::get_any_asn1_element(cand_ava, cand_tag, cand_val) &&
+        tls::get_any_asn1_element(cons_ava, cons_tag, cons_val) &&
+        cand_ava.cursor_len() == 0 && cons_ava.cursor_len() == 0 else {
+        return false;
+    }
+    if x509_is_dn_foldable_string_tag(cand_tag) && x509_is_dn_foldable_string_tag(cons_tag) {
+        var norm_cand: u8[..256] = [];
+        var norm_cons: u8[..256] = [];
+        guard x509_canonicalize_dn_value(cand_val.buf, norm_cand) &&
+            x509_canonicalize_dn_value(cons_val.buf, norm_cons) else {
+            return false;
+        }
+        return norm_cand[..] == norm_cons[..];
+    }
+    return cand_tag == cons_tag && cand_val.buf == cons_val.buf;
+}
+
+fn x509_dn_rdn_equal(cand_rdn: core::ByteCursor&, cons_rdn: core::ByteCursor&) -> bool {
+    guard cand_rdn.cursor_len() > 0 && cons_rdn.cursor_len() > 0 else { return false; }
+    while cons_rdn.cursor_len() > 0 {
+        var cons_ava = core::cursor_from(cons_rdn.buf[..0]);
+        var cand_ava = core::cursor_from(cand_rdn.buf[..0]);
+        guard tls::get_asn1_element(cons_rdn, rfc::ASN1_TAG_SEQUENCE, cons_ava) &&
+            tls::get_asn1_element(cand_rdn, rfc::ASN1_TAG_SEQUENCE, cand_ava) &&
+            x509_dn_ava_equal(cand_ava, cons_ava) else {
+            return false;
+        }
+    }
+    return cand_rdn.cursor_len() == 0;
+}
+
+// RFC 5280 Section 4.2.1.10 & Section 7.1: Matches DirectoryName RDNSequence prefix RDN-by-RDN.
 fn match_dn_name_constraint(candidate_dn: const u8[:], constraint_dn: const u8[:]) -> bool {
     guard candidate_dn.len > 0 && constraint_dn.len > 0 else { return false; }
-    if candidate_dn == constraint_dn {
-        return true;
-    }
     var cand_c = core::cursor_from(candidate_dn);
     var cons_c = core::cursor_from(constraint_dn);
     var cand_seq = core::cursor_from(candidate_dn[..0]);
     var cons_seq = core::cursor_from(constraint_dn[..0]);
     guard tls::get_asn1_element(cand_c, rfc::ASN1_TAG_SEQUENCE, cand_seq) &&
         tls::get_asn1_element(cons_c, rfc::ASN1_TAG_SEQUENCE, cons_seq) &&
-        cand_c.cursor_len() == 0 &&
-        cons_c.cursor_len() == 0 else {
+        cand_c.cursor_len() == 0 && cons_c.cursor_len() == 0 else {
         return false;
     }
-    return core::starts_with(cand_seq.buf, cons_seq.buf);
+    while cons_seq.cursor_len() > 0 {
+        var cons_rdn = core::cursor_from(cons_seq.buf[..0]);
+        var cand_rdn = core::cursor_from(cand_seq.buf[..0]);
+        guard tls::get_asn1_element(cons_seq, rfc::ASN1_TAG_SET, cons_rdn) &&
+            tls::get_asn1_element(cand_seq, rfc::ASN1_TAG_SET, cand_rdn) &&
+            x509_dn_rdn_equal(cand_rdn, cons_rdn) else {
+            return false;
+        }
+    }
+    return true;
 }
 
-inline fn x509_match_constraint_entry(nc: const tls::NameConstraintEntry&, san: const tls::SanEntry&) -> bool {
+inline fn x509_match_host_constraint_3state(cand_host: const u8[:], cons_host: const u8[:]) -> NcMatchResult {
+    guard cons_host.len > 0 && find(cons_host, "..") < 0 else { return NcMatchResult.Invalid; }
+    // RFC 5280 Section 4.2.1.10: Leading '.' matches subdomains; without '.' matches exact host.
+    let matched = if cons_host[0] == '.' {
+        x509_match_dns_dotted_constraint(cand_host, cons_host)
+    } else {
+        cand_host.eq_ascii_fold(cons_host)
+    };
+    return if matched { NcMatchResult.Match } else { NcMatchResult.NoMatch };
+}
+
+fn x509_match_uri_nc_3state(candidate_uri: const u8[:], constraint: const u8[:]) -> NcMatchResult {
+    guard x509_validate_subtree_nonempty_text(candidate_uri, false)
+        && x509_validate_subtree_nonempty_text(constraint, false) else {
+        return NcMatchResult.Invalid;
+    }
+
+    var host_part = x509_extract_uri_authority(candidate_uri);
+    guard host_part.len > 0 && !host_part.contains_byte('@') else { return NcMatchResult.Invalid; }
+
+    if host_part[0] == '[' {
+        return x509_match_ipv6_uri_constraint_3state(host_part, constraint);
+    }
+
+    let colon_idx = host_part.index_of_byte(':');
+    if colon_idx >= 0 {
+        host_part = host_part[..colon_idx];
+    }
+    guard host_part.len > 0 && !x509_is_ipv4_literal(host_part) else { return NcMatchResult.Invalid; }
+
+    let cand = tls::x509_strip_trailing_dot(host_part);
+    guard x509_validate_dns_candidate(cand) else { return NcMatchResult.Invalid; }
+    return x509_match_host_constraint_3state(cand, tls::x509_strip_trailing_dot(constraint));
+}
+
+fn x509_match_email_nc_3state(candidate_email: const u8[:], constraint: const u8[:]) -> NcMatchResult {
+    guard x509_validate_subtree_nonempty_text(candidate_email, false)
+        && x509_validate_subtree_nonempty_text(constraint, false) else {
+        return NcMatchResult.Invalid;
+    }
+
+    // RFC 5321 Section 4.1.2: Split on the last '@' so quoted local-parts cannot smuggle '@'.
+    let cand_local, cand_host_raw, has_cand_at = candidate_email.rsplit_once_byte('@');
+    guard has_cand_at && cand_local.len > 0 && cand_host_raw.len > 0 else { return NcMatchResult.Invalid; }
+    let cand_host = tls::x509_strip_trailing_dot(cand_host_raw);
+    guard x509_validate_dns_candidate(cand_host) else { return NcMatchResult.Invalid; }
+
+    let cons_local, cons_host_raw, has_cons_at = constraint.rsplit_once_byte('@');
+    if has_cons_at {
+        guard cons_local.len > 0 && cons_host_raw.len > 0 else { return NcMatchResult.Invalid; }
+        let cons_host = tls::x509_strip_trailing_dot(cons_host_raw);
+        let ok = cand_local == cons_local && cand_host.eq_ascii_fold(cons_host);
+        return if ok { NcMatchResult.Match } else { NcMatchResult.NoMatch };
+    }
+
+    return x509_match_host_constraint_3state(cand_host, tls::x509_strip_trailing_dot(constraint));
+}
+
+inline fn x509_match_constraint_entry_3state(
+    nc:  const tls::NameConstraintEntry&,
+    san: const tls::SanEntry&,
+) -> NcMatchResult {
     if nc.san_type == tls::SanType.Dns {
-        return tls::match_dns_name_constraint(san.val, nc.val);
+        return if tls::match_dns_name_constraint(san.val, nc.val) {
+            NcMatchResult.Match
+        } else {
+            NcMatchResult.NoMatch
+        };
     }
     if nc.san_type == tls::SanType.Ip {
-        return tls::match_ip_name_constraint(san.val, nc.val);
+        return if tls::match_ip_name_constraint(san.val, nc.val) {
+            NcMatchResult.Match
+        } else {
+            NcMatchResult.NoMatch
+        };
     }
     if nc.san_type == tls::SanType.Uri {
-        return tls::match_uri_name_constraint(san.val, nc.val);
+        return x509_match_uri_nc_3state(san.val, nc.val);
     }
     if nc.san_type == tls::SanType.Email {
-        return tls::match_email_name_constraint(san.val, nc.val);
+        return x509_match_email_nc_3state(san.val, nc.val);
     }
     if nc.san_type == tls::SanType.DirName {
-        return match_dn_name_constraint(san.val, nc.val);
+        return if match_dn_name_constraint(san.val, nc.val) {
+            NcMatchResult.Match
+        } else {
+            NcMatchResult.NoMatch
+        };
     }
-    return false;
+    return NcMatchResult.Invalid;
 }
 
 fn x509_eval_single_nc(
@@ -434,7 +600,9 @@ fn x509_eval_single_nc(
     if nc.san_type == tls::SanType.Other {
         return false;
     }
-    let matched = x509_match_constraint_entry(nc, san);
+    let res = x509_match_constraint_entry_3state(nc, san);
+    guard res != NcMatchResult.Invalid else { return false; }
+    let matched = res == NcMatchResult.Match;
     if nc.is_excluded {
         // CVE-2025-61727: Reject wildcard DNS SAN (e.g. *.example.com) that can match an excluded DNS subtree.
         let wildcard_overlap = nc.san_type == tls::SanType.Dns && tls::match_dns_san(san.val, nc.val);
@@ -447,21 +615,69 @@ fn x509_eval_single_nc(
     return true;
 }
 
-// Streams and enforces parsed NameConstraints against every SAN on `cert` without any entry-count cap.
+// Checks every pkcs-9-at-emailAddress AVA inside `subject_inner` against Email NameConstraints (RFC 5280 §4.2.1.10).
+fn check_subject_dn_emails_against_nc(
+    nc_entries:    const tls::NameConstraintEntry[..16]&,
+    subject_inner: const u8[:],
+) -> bool {
+    var rdn_seq = core::cursor_from(subject_inner);
+    while rdn_seq.cursor_len() > 0 {
+        var rdn = core::cursor_from(rdn_seq.buf[..0]);
+        guard tls::get_asn1_element(rdn_seq, rfc::ASN1_TAG_SET, rdn) else { return false; }
+        while rdn.cursor_len() > 0 {
+            var ava = core::cursor_from(rdn.buf[..0]);
+            var oid = core::cursor_from(rdn.buf[..0]);
+            var val_tag: u8 = 0;
+            var val = core::cursor_from(rdn.buf[..0]);
+            guard tls::get_asn1_element(rdn, rfc::ASN1_TAG_SEQUENCE, ava) &&
+                tls::get_asn1_element(ava, rfc::ASN1_TAG_OID, oid) &&
+                tls::get_any_asn1_element(ava, val_tag, val) &&
+                ava.cursor_len() == 0 else {
+                return false;
+            }
+            if oid.buf == OID_EMAIL_ADDRESS[..] {
+                let email_san = tls::SanEntry { san_type: tls::SanType.Email, val: val.buf };
+                guard tls::check_name_constraints(nc_entries, email_san) else { return false; }
+            }
+        }
+    }
+    return true;
+}
+
+// Streams and enforces parsed NameConstraints against Subject DN, Subject emailAddress (when no
+// rfc822Name SAN is present), and every SAN on `cert` without any entry-count cap (RFC 5280 §4.2.1.10).
 fn check_cert_sans_against_nc(
     nc_entries: const tls::NameConstraintEntry[..16]&,
     cert:       const tls::ParsedCert&,
     raw_cert:   const u8[:],
 ) -> bool {
-    guard cert.has_san else { return true; }
-    var names_seq = core::cursor_from(raw_cert[..0]);
-    guard x509_open_san_sequence(tls::span_slice(raw_cert, cert.san_raw), names_seq) else { return false; }
-    var seen_any = false;
-    while names_seq.cursor_len() > 0 {
-        let entry, ok = x509_next_san_entry(names_seq);
-        guard ok else { return false; }
-        guard tls::check_name_constraints(nc_entries, entry) else { return false; }
-        seen_any = true;
+    let subj_inner = tls::span_slice(raw_cert, cert.subject_raw);
+    if subj_inner.len > 0 {
+        var dn_tlv: u8[..1024] = [];
+        guard encode_der_name_tlv(subj_inner, dn_tlv) else { return false; }
+        let dn_san = tls::SanEntry { san_type: tls::SanType.DirName, val: dn_tlv[..] };
+        guard tls::check_name_constraints(nc_entries, dn_san) else { return false; }
     }
-    return seen_any;
+
+    var has_email_san = false;
+    if cert.has_san {
+        var names_seq = core::cursor_from(raw_cert[..0]);
+        guard x509_open_san_sequence(tls::span_slice(raw_cert, cert.san_raw), names_seq) else { return false; }
+        var seen_any = false;
+        while names_seq.cursor_len() > 0 {
+            let entry, ok = x509_next_san_entry(names_seq);
+            guard ok else { return false; }
+            if entry.san_type == tls::SanType.Email {
+                has_email_san = true;
+            }
+            guard tls::check_name_constraints(nc_entries, entry) else { return false; }
+            seen_any = true;
+        }
+        guard seen_any else { return false; }
+    }
+
+    if !has_email_san && subj_inner.len > 0 {
+        guard check_subject_dn_emails_against_nc(nc_entries, subj_inner) else { return false; }
+    }
+    return true;
 }

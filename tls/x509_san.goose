@@ -22,10 +22,14 @@ fn matches_trust_anchor(store: const TrustAnchorStore&, cert: const ParsedCert&,
     let spki_slice = span_slice(raw_cert, cert.spki_raw);
     let s_hash = core::sha256(s_slice);
     let spki_hash = core::sha256(spki_slice);
+    let cert_hash = core::sha256(raw_cert);
 
     for i in store.anchors.len {
         let a .= store.anchors[i];
-        if a.is_valid && core::ct_eq_tag32(a.subject_dn_sha256, s_hash) && core::ct_eq_tag32(a.spki_sha256, spki_hash) {
+        if a.is_valid &&
+            core::ct_eq_tag32(a.subject_dn_sha256, s_hash) &&
+            core::ct_eq_tag32(a.spki_sha256, spki_hash) &&
+            (!a.has_cert_der_hash || core::ct_eq_tag32(a.cert_der_sha256, cert_hash)) {
             return true;
         }
     }
@@ -153,7 +157,8 @@ fn parse_san_extension<S>(san_der: const u8[:], out_sans: S&) -> bool {
     return true;
 }
 
-// Streams and validates all SAN entries on `cert`, returning true iff valid and at least one matches `host`.
+// Streams and validates all SAN entries on `cert`, returning true iff valid and at least one
+// dNSName or iPAddress SAN matches `host` (RFC 6125 / RFC 9525: URI SANs never match TLS hosts).
 fn match_cert_san_host(cert: const ParsedCert&, raw_cert: const u8[:], host: const u8[:]) -> bool {
     guard cert.has_san else { return false; }
     var names_seq = core::cursor_from(raw_cert[..0]);
@@ -163,7 +168,8 @@ fn match_cert_san_host(cert: const ParsedCert&, raw_cert: const u8[:], host: con
     while names_seq.cursor_len() > 0 {
         let entry, ok = tls_internal::x509_next_san_entry(names_seq);
         guard ok else { return false; }
-        if !matched && match_san(entry, host) {
+        let is_tls_host_san = entry.san_type == SanType.Dns || entry.san_type == SanType.Ip;
+        if !matched && is_tls_host_san && match_san(entry, host) {
             matched = true;
         }
         seen_any = true;
@@ -267,60 +273,16 @@ fn match_ip_name_constraint(candidate_ip: const u8[:], constraint: const u8[:]) 
 // Extracts the host component from candidate URI and matches it against the constraint.
 // Rejects candidate URIs with userinfo, path/query @ smuggling, or IPv4 literals for dNSName constraints.
 fn match_uri_name_constraint(candidate_uri: const u8[:], constraint: const u8[:]) -> bool {
-    guard candidate_uri.len > 0 && constraint.len > 0 else { return false; }
-    guard !candidate_uri.contains_byte(0) && !constraint.contains_byte(0) else { return false; }
-
-    var host_part = tls_internal::x509_extract_uri_authority(candidate_uri);
-    guard host_part.len > 0 else { return false; }
-
-    // RFC 5280 §4.2.1.10: URI authority cannot contain userinfo (@) to satisfy DNS name constraint
-    guard !host_part.contains_byte('@') else { return false; }
-
-    if host_part[0] == '[' {
-        return tls_internal::x509_match_ipv6_uri_constraint(host_part, constraint);
-    }
-
-    let colon_idx = host_part.index_of_byte(':');
-    if colon_idx >= 0 {
-        host_part = host_part[..colon_idx];
-    }
-
-    guard host_part.len > 0 else { return false; }
-    guard !tls_internal::x509_is_ipv4_literal(host_part) else { return false; }
-
-    let cand = x509_strip_trailing_dot(host_part);
-    let cons = x509_strip_trailing_dot(constraint);
-    guard tls_internal::x509_validate_dns_candidate(cand) else { return false; }
-    guard cons.len > 0 && find(cons, "..") < 0 else { return false; }
-    // RFC 5280 Section 4.2.1.10: Name Constraints - URI constraint with leading '.' matches subdomains; without '.' matches exact host.
-    if cons[0] == '.' {
-        return tls_internal::x509_match_dns_dotted_constraint(cand, cons);
-    }
-    return cand.eq_ascii_fold(cons);
+    return tls_internal::x509_match_uri_nc_3state(candidate_uri, constraint) == tls_internal::NcMatchResult.Match;
 }
 
 // RFC 5280 §4.2.1.10: rfc822Name (email) name constraint matching.
+// - Splits on the last `@` (RFC 5321), strips trailing dots, and folds domain ASCII case.
 // - With `@`: local-part matches case-sensitively and host matches case-insensitively.
 // - Leading `.`: candidate host after `@` ends with `constraint` case-insensitively.
 // - Otherwise: candidate host after `@` matches `constraint` case-insensitively.
 fn match_email_name_constraint(candidate_email: const u8[:], constraint: const u8[:]) -> bool {
-    guard candidate_email.len > 0 && constraint.len > 0 else { return false; }
-    guard !candidate_email.contains_byte(0) && !constraint.contains_byte(0) else { return false; }
-
-    let cand_local, cand_host, has_cand_at = candidate_email.split_once_byte('@');
-    guard has_cand_at && cand_local.len > 0 && cand_host.len > 0 else { return false; }
-    guard !cand_host.contains_byte('@') else { return false; }
-
-    let cons_local, cons_host, has_cons_at = constraint.split_once_byte('@');
-    if has_cons_at {
-        guard cons_local.len > 0 && cons_host.len > 0 else { return false; }
-        return cand_local == cons_local && cand_host.eq_ascii_fold(cons_host);
-    }
-
-    if core::starts_with(constraint, ".") {
-        return tls_internal::x509_match_dns_dotted_constraint(cand_host, constraint);
-    }
-    return cand_host.eq_ascii_fold(constraint);
+    return tls_internal::x509_match_email_nc_3state(candidate_email, constraint) == tls_internal::NcMatchResult.Match;
 }
 
 // Parses NameConstraints extension (RFC 5280 §4.2.1.10) into bounded stack storage.

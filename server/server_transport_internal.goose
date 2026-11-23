@@ -552,18 +552,21 @@ fn poll_http_connection_ingress_buf<InBuf>(
 }
 
 fn step_page_ring_conn<Stage>(
-    server:  server::HttpServer&,
-    conn:    i64,
-    peer_ip: const u8[:],
-    ring:    core::PageRingBuffer&,
-    cork:    core::CorkBuffer&,
-    stage:   Stage&,
+    server:     server::HttpServer&,
+    conn:       i64,
+    peer_ip:    const u8[:],
+    ring:       core::PageRingBuffer&,
+    cork:       core::CorkBuffer&,
+    peek_chunk: ReactorIngressBuf&,
+    stage:      Stage&,
 ) -> bool {
     let recv_ms = resolve_server_recv_timeout_ms(server, ring.count > 0);
     let recvd = ring.page_ring_recv(conn, 65536, recv_ms);
     guard recvd > 0 else { return false; }
     let now_ns = core::monotonic_now().as_nanos();
-    let _, ok_handle = server::handle_connection_page_ring(server, peer_ip, ring, now_ns, cork, stage);
+    let _, ok_handle = server::handle_connection_page_ring_scratch(
+        server, peer_ip, ring, now_ns, cork, peek_chunk, stage,
+    );
     let should_close = !ok_handle || server::response_wire_has_connection_close(cork.cork_as_slice());
     if !ok_handle {
         if cork.cork_pending() > 0 { net::tcp_flush_cork(conn, cork); }
@@ -585,6 +588,7 @@ fn serve_page_ring_loop<Stage>(
     stage:           Stage&,
 ) -> i64 {
     var cork = core::new_cork_buffer();
+    var peek_chunk = ReactorIngressBuf { .. };
     var peer_ip:      u8[..64] = [];
     var total_served: i64      = 0;
     server::init_run_state(server);
@@ -602,7 +606,7 @@ fn serve_page_ring_loop<Stage>(
         net::tcp_get_peer_ip(conn, peer_ip);
 
         while !server::should_stop(server) {
-            if !step_page_ring_conn(server, conn, peer_ip[..], ring, cork, stage) {
+            if !step_page_ring_conn(server, conn, peer_ip[..], ring, cork, peek_chunk, stage) {
                 break;
             }
         }

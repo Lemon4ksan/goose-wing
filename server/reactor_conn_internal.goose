@@ -246,9 +246,12 @@ struct ReactorState {
     h2_sessions:           server_internal::H2ServerSession[>..] = [],
 }
 
+const REACTOR_ZERO_PAD: u8[1024] = [0; 1024];
+
 inline fn ensure_reactor_ingress_buf(chunk: ReactorIngressBuf&) {
-    if chunk.bytes.len < REACTOR_INGRESS_CAP {
-        chunk.bytes.resize(REACTOR_INGRESS_CAP, 0);
+    while chunk.bytes.len < REACTOR_INGRESS_CAP {
+        let rem = core::sub_sat_i64(REACTOR_INGRESS_CAP, chunk.bytes.len);
+        chunk.bytes.append(REACTOR_ZERO_PAD[..min(rem, REACTOR_ZERO_PAD.len)]);
     }
 }
 

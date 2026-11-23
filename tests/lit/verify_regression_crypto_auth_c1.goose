@@ -135,36 +135,42 @@ fn test_bug3_tls_crl_verification_and_tickets() {
     b_tbs.buf.push(leaf_issuer.len as u8);
     core::put_bytes(b_tbs, leaf_issuer);
     let time_der: u8[15] = [0x17, 0x0D, '2', '6', '0', '1', '0', '1', '0', '0', '0', '0', '0', '0', 'Z'];
+    let next_der: u8[15] = [0x17, 0x0D, '3', '5', '0', '1', '0', '1', '0', '0', '0', '0', '0', '0', 'Z'];
     core::put_bytes(b_tbs, time_der[..]);
+    core::put_bytes(b_tbs, next_der[..]);
     assert(core::finish_u8_prefix(b_tbs));
 
-    var forged_crl = core::builder_init();
-    forged_crl.buf.push(0x30);
-    assert(core::start_u8_prefix(forged_crl));
-    core::put_bytes(forged_crl, b_tbs.buf[..]);
-    core::put_bytes(forged_crl, sig_der[..]);
-    forged_crl.buf.push(0x03);
-    forged_crl.buf.push(0x41);
-    forged_crl.buf.push(0x00);
-    for _ in 64 { forged_crl.buf.push(0xAA); }
-    assert(core::finish_u8_prefix(forged_crl));
+    var forged_body: u8[..256] = [];
+    forged_body.append(b_tbs.buf[..]);
+    forged_body.append(sig_der[..]);
+    forged_body.push(0x03);
+    forged_body.push(0x41);
+    forged_body.push(0x00);
+    for _ in 64 { forged_body.push(0xAA); }
+    var forged_crl: u8[..256] = [];
+    forged_crl.push(0x30);
+    if forged_body.len >= 128 { forged_crl.push(0x81); }
+    forged_crl.push(forged_body.len as u8);
+    forged_crl.append(forged_body[..]);
 
-    let forged_crl_accepted = tls_internal::verify_crl_for_chain(forged_crl.buf[..], chain_parsed, chain_slices);
+    let forged_crl_accepted = tls_internal::verify_crl_for_chain(forged_crl[..], chain_parsed, chain_slices);
 
     // Build a validly signed CRL using ca_seed -> verify_crl_for_chain MUST accept it (serial 1 not revoked).
     let valid_crl_sig = core::ed25519_sign(ca_seed, b_tbs.buf[..]);
-    var valid_crl = core::builder_init();
-    valid_crl.buf.push(0x30);
-    assert(core::start_u8_prefix(valid_crl));
-    core::put_bytes(valid_crl, b_tbs.buf[..]);
-    core::put_bytes(valid_crl, sig_der[..]);
-    valid_crl.buf.push(0x03);
-    valid_crl.buf.push(0x41);
-    valid_crl.buf.push(0x00);
-    core::put_bytes(valid_crl, valid_crl_sig[..]);
-    assert(core::finish_u8_prefix(valid_crl));
+    var valid_body: u8[..256] = [];
+    valid_body.append(b_tbs.buf[..]);
+    valid_body.append(sig_der[..]);
+    valid_body.push(0x03);
+    valid_body.push(0x41);
+    valid_body.push(0x00);
+    valid_body.append(valid_crl_sig[..]);
+    var valid_crl: u8[..256] = [];
+    valid_crl.push(0x30);
+    if valid_body.len >= 128 { valid_crl.push(0x81); }
+    valid_crl.push(valid_body.len as u8);
+    valid_crl.append(valid_body[..]);
 
-    let valid_crl_accepted = tls_internal::verify_crl_for_chain(valid_crl.buf[..], chain_parsed, chain_slices);
+    let valid_crl_accepted = tls_internal::verify_crl_for_chain(valid_crl[..], chain_parsed, chain_slices);
 
     // 3B. CRL with mismatched inner TBSCertList.signature OID vs outer signatureAlgorithm OID must fail parse_x509_crl.
     var mismatch_crl = core::builder_init();

@@ -1544,6 +1544,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         var ca_no_sign = tls::ParsedCert {
             is_ca:                 true,
             has_basic_constraints: true,
+            bc_is_critical:        true,
             key_usage:             rfc::KEY_USAGE_DIGITAL_SIGNATURE, // Missing keyCertSign
             has_key_usage:         true,
         };
@@ -1554,6 +1555,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         var ca_valid = tls::ParsedCert {
             is_ca:                 true,
             has_basic_constraints: true,
+            bc_is_critical:        true,
             path_len_constraint:   -1,
             key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
@@ -1623,6 +1625,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         var ca_depth1 = tls::ParsedCert {
             is_ca:                 true,
             has_basic_constraints: true,
+            bc_is_critical:        true,
             path_len_constraint:   0,
             key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
@@ -1634,6 +1637,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         var ca_depth2 = tls::ParsedCert {
             is_ca:                 true,
             has_basic_constraints: true,
+            bc_is_critical:        true,
             path_len_constraint:   0,
             key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
@@ -1645,6 +1649,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         var ca_depth2_ok = tls::ParsedCert {
             is_ca:                 true,
             has_basic_constraints: true,
+            bc_is_critical:        true,
             path_len_constraint:   1,
             key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
@@ -1689,9 +1694,12 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         let root_spki: u8[4] = [5, 6, 7, 8];
         sub.assert_true(tls::add_trust_anchor(store, root_sub[..], root_spki[..]), "add anchor");
 
-        var bad_sig_raw: u8[20] = [0; 20];
-        // Put OID_SIG_SHA1_RSA at offset 10 (length 9)
+        var bad_sig_raw: u8[24] = [0; 24];
+        for i in 4 { bad_sig_raw[i] = root_sub[i]; }
+        for i in 4 { bad_sig_raw[4 + i] = root_spki[i]; }
+        // Put OID_SIG_SHA1_RSA at offset 10 (length 9) and OID_ED25519 at offset 20 (length 3)
         for i in 9 { bad_sig_raw[10 + i] = rfc::OID_SIG_SHA1_RSA[i]; }
+        for i in 3 { bad_sig_raw[20 + i] = rfc::OID_ED25519[i]; }
 
         var bad_cert = tls::ParsedCert {
             sig_alg_oid:         tls::Span16 { offset: 10, length: 9 },
@@ -1699,6 +1707,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
             validity_not_after:  5000,
             subject_raw:         tls::Span16 { offset: 0, length: 4 },
             spki_raw:            tls::Span16 { offset: 4, length: 4 },
+            spki_alg_oid:        tls::Span16 { offset: 20, length: 3 },
         };
         var chain_bad: tls::ParsedCert[..8] = [];
         chain_bad.push(bad_cert);
@@ -1782,33 +1791,66 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         let alert_dup_spki = tls::verify_certificate_chain(chain_dup_spki, raw_dup_spki, store, 2000);
         sub.assert_eq(tls::alert_to_u8(alert_dup_spki), tls::alert_to_u8(tls::Alert.BadCertificate), "duplicate SPKI returns BadCertificate");
 
-        // 3. Valid multi-cert chain (EE -> Intermediate -> Root Anchor)
+        // 3. Valid multi-cert chain (EE -> Intermediate -> Root Anchor) with real Ed25519 signatures
+        let root3_seed: u8[32] = [0x31; 32];
+        let ca3_seed:   u8[32] = [0x32; 32];
+        let root3_pub = core::ed25519_public_key(root3_seed);
+        let ca3_pub = core::ed25519_public_key(ca3_seed);
+        var buf3: u8[256] = [0; 256];
+        for i in 4 { buf3[i] = root_dn[i]; }
+        for i in 32 { buf3[4 + i] = root3_pub[i]; }   // 4..36: Root pubkey / SPKI
+        buf3[36] = 0xEE; buf3[37] = 0x01;             // 36..38: EE DN
+        buf3[38] = 0xEE; buf3[39] = 0x02;             // 38..40: EE SPKI
+        buf3[40] = 0xCA; buf3[41] = 0x01;             // 40..42: CA DN
+        for i in 32 { buf3[42 + i] = ca3_pub[i]; }    // 42..74: CA pubkey / SPKI
+        for i in 3 { buf3[74 + i] = rfc::OID_ED25519[i]; } // 74..77: OID_ED25519
+        let sig_ee3 = core::ed25519_sign(ca3_seed, buf3[36..40]);
+        let sig_ca3 = core::ed25519_sign(root3_seed, buf3[40..74]);
+        for i in 64 { buf3[80 + i] = sig_ee3[i]; }    // 80..144: EE sig
+        for i in 64 { buf3[144 + i] = sig_ca3[i]; }   // 144..208: CA sig
+
+        var store3 = tls::TrustAnchorStore { anchors: [] };
+        sub.assert_true(tls::add_trust_anchor(store3, root_dn[..], root3_pub[..]), "root3 anchor added");
+
         var cert_ee_good = tls::ParsedCert {
-            issuer_raw:          tls::Span16 { offset: 12, length: 2 }, // Issued by CA
+            tbs_cert:            tls::Span16 { offset: 36, length: 4 },
+            sig_alg_oid:         tls::Span16 { offset: 74, length: 3 },
+            issuer_raw:          tls::Span16 { offset: 40, length: 2 },
             validity_not_before: 1000,
             validity_not_after:  5000,
-            subject_raw:         tls::Span16 { offset: 8, length: 2 },
-            spki_raw:            tls::Span16 { offset: 10, length: 2 },
+            subject_raw:         tls::Span16 { offset: 36, length: 2 },
+            spki_raw:            tls::Span16 { offset: 38, length: 2 },
+            spki_alg_oid:        tls::Span16 { offset: 74, length: 3 },
+            signature_value:     tls::Span16 { offset: 80, length: 64 },
         };
         var cert_ca_good = tls::ParsedCert {
-            issuer_raw:            tls::Span16 { offset: 0, length: 4 }, // Issued by Root
+            tbs_cert:              tls::Span16 { offset: 40, length: 34 },
+            sig_alg_oid:           tls::Span16 { offset: 74, length: 3 },
+            issuer_raw:            tls::Span16 { offset: 0, length: 4 },
             validity_not_before:   1000,
             validity_not_after:    5000,
-            subject_raw:           tls::Span16 { offset: 12, length: 2 },
-            spki_raw:              tls::Span16 { offset: 14, length: 2 },
+            subject_raw:           tls::Span16 { offset: 40, length: 2 },
+            spki_raw:              tls::Span16 { offset: 42, length: 32 },
+            spki_alg_oid:          tls::Span16 { offset: 74, length: 3 },
+            spki_pubkey:           tls::Span16 { offset: 42, length: 32 },
             is_ca:                 true,
             has_basic_constraints: true,
+            bc_is_critical:        true,
             key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
+            signature_value:       tls::Span16 { offset: 144, length: 64 },
         };
         var cert_root_good = tls::ParsedCert {
             issuer_raw:            tls::Span16 { offset: 0, length: 4 },
             validity_not_before:   1000,
             validity_not_after:    5000,
             subject_raw:           tls::Span16 { offset: 0, length: 4 },
-            spki_raw:              tls::Span16 { offset: 4, length: 4 },
+            spki_raw:              tls::Span16 { offset: 4, length: 32 },
+            spki_alg_oid:          tls::Span16 { offset: 74, length: 3 },
+            spki_pubkey:           tls::Span16 { offset: 4, length: 32 },
             is_ca:                 true,
             has_basic_constraints: true,
+            bc_is_critical:        true,
             key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
         };
@@ -1818,11 +1860,11 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         chain_3.push(cert_ca_good);
         chain_3.push(cert_root_good);
         var raw_3: const u8[:][..8] = [];
-        raw_3.push(raw_buf[..]);
-        raw_3.push(raw_buf[..]);
-        raw_3.push(raw_buf[..]);
+        raw_3.push(buf3[..]);
+        raw_3.push(buf3[..]);
+        raw_3.push(buf3[..]);
 
-        let alert_chain3 = tls::verify_certificate_chain(chain_3, raw_3, store, 2000);
+        let alert_chain3 = tls::verify_certificate_chain(chain_3, raw_3, store3, 2000);
         sub.assert_eq(tls::alert_to_u8(alert_chain3), tls::alert_to_u8(tls::Alert.CloseNotify), "valid 3-cert chain verified successfully");
 
         // 4. Empty chain rejection
@@ -2013,55 +2055,74 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         let akid_slice = tls::span_slice(b_akid.buf[..], cert_parsed_akid.akid_key_id);
         sub.assert_eq(akid_slice, "\x11\x22\x33\x44", "AKID key ID matches");
 
-        // 3. Chain Linking with AKID / SKID: Matching key IDs
+        // 3. Chain Linking with AKID / SKID: Matching key IDs (with real Ed25519 signatures)
+        let ak_root_seed: u8[32] = [0x41; 32];
+        let ak_ca_seed:   u8[32] = [0x42; 32];
+        let ak_root_pub = core::ed25519_public_key(ak_root_seed);
+        let ak_ca_pub = core::ed25519_public_key(ak_ca_seed);
         var store = tls::TrustAnchorStore { anchors: [] };
-        let root_dn:   u8[4] = [0x52, 0x4F, 0x4F, 0x54]; // "ROOT"
-        let root_spki: u8[4] = [0xAA, 0xBB, 0xCC, 0xDD];
-        sub.assert_true(tls::add_trust_anchor(store, root_dn[..], root_spki[..]), "add anchor");
+        let root_dn: u8[4] = [0x52, 0x4F, 0x4F, 0x54]; // "ROOT"
+        sub.assert_true(tls::add_trust_anchor(store, root_dn[..], ak_root_pub[..]), "add anchor");
 
-        var raw_buf: u8[64] = [0; 64];
-        for i in 4 { raw_buf[0 + i] = root_dn[i]; }     // offset 0: ROOT DN
-        for i in 4 { raw_buf[4 + i] = root_spki[i]; }   // offset 4: ROOT SPKI
-        raw_buf[8] = 0xEE; raw_buf[9] = 0x01;           // offset 8: EE DN
-        raw_buf[10] = 0xEE; raw_buf[11] = 0x02;         // offset 10: EE SPKI
-        raw_buf[12] = 0xCA; raw_buf[13] = 0x01;         // offset 12: CA DN
-        raw_buf[14] = 0xCA; raw_buf[15] = 0x02;         // offset 14: CA SPKI
-        // Key IDs:
-        // offset 20..24: "KID1"
-        raw_buf[20] = 0x4B; raw_buf[21] = 0x49; raw_buf[22] = 0x44; raw_buf[23] = 0x31;
-        // offset 24..28: "KID2"
-        raw_buf[24] = 0x4B; raw_buf[25] = 0x49; raw_buf[26] = 0x44; raw_buf[27] = 0x32;
+        var raw_buf: u8[256] = [0; 256];
+        for i in 4 { raw_buf[i] = root_dn[i]; }            // 0..4: ROOT DN
+        for i in 32 { raw_buf[4 + i] = ak_root_pub[i]; }   // 4..36: ROOT SPKI / pubkey
+        raw_buf[36] = 0xEE; raw_buf[37] = 0x01;            // 36..38: EE DN
+        raw_buf[38] = 0xEE; raw_buf[39] = 0x02;            // 38..40: EE SPKI
+        raw_buf[40] = 0xCA; raw_buf[41] = 0x01;            // 40..42: CA DN
+        for i in 32 { raw_buf[42 + i] = ak_ca_pub[i]; }    // 42..74: CA SPKI / pubkey
+        for i in 3 { raw_buf[74 + i] = rfc::OID_ED25519[i]; } // 74..77: OID_ED25519
+        // offset 80..84: "KID1", offset 84..88: "KID2"
+        raw_buf[80] = 0x4B; raw_buf[81] = 0x49; raw_buf[82] = 0x44; raw_buf[83] = 0x31;
+        raw_buf[84] = 0x4B; raw_buf[85] = 0x49; raw_buf[86] = 0x44; raw_buf[87] = 0x32;
+        let ak_ee_sig = core::ed25519_sign(ak_ca_seed, raw_buf[36..40]);
+        let ak_ca_sig = core::ed25519_sign(ak_root_seed, raw_buf[40..74]);
+        for i in 64 { raw_buf[96 + i] = ak_ee_sig[i]; }    // 96..160: EE sig
+        for i in 64 { raw_buf[160 + i] = ak_ca_sig[i]; }   // 160..224: CA sig
 
         var cert_ee_match = tls::ParsedCert {
-            issuer_raw:          tls::Span16 { offset: 12, length: 2 }, // Issued by CA
+            tbs_cert:            tls::Span16 { offset: 36, length: 4 },
+            sig_alg_oid:         tls::Span16 { offset: 74, length: 3 },
+            issuer_raw:          tls::Span16 { offset: 40, length: 2 },
             validity_not_before: 1000,
             validity_not_after:  5000,
-            subject_raw:         tls::Span16 { offset: 8, length: 2 },
-            spki_raw:            tls::Span16 { offset: 10, length: 2 },
-            akid_key_id:         tls::Span16 { offset: 20, length: 4 }, // AKID = KID1
+            subject_raw:         tls::Span16 { offset: 36, length: 2 },
+            spki_raw:            tls::Span16 { offset: 38, length: 2 },
+            spki_alg_oid:        tls::Span16 { offset: 74, length: 3 },
+            akid_key_id:         tls::Span16 { offset: 80, length: 4 }, // AKID = KID1
             has_akid:            true,
+            signature_value:     tls::Span16 { offset: 96, length: 64 },
         };
         var cert_ca_match = tls::ParsedCert {
-            issuer_raw:            tls::Span16 { offset: 0, length: 4 }, // Issued by Root
+            tbs_cert:              tls::Span16 { offset: 40, length: 34 },
+            sig_alg_oid:           tls::Span16 { offset: 74, length: 3 },
+            issuer_raw:            tls::Span16 { offset: 0, length: 4 },
             validity_not_before:   1000,
             validity_not_after:    5000,
-            subject_raw:           tls::Span16 { offset: 12, length: 2 },
-            spki_raw:              tls::Span16 { offset: 14, length: 2 },
+            subject_raw:           tls::Span16 { offset: 40, length: 2 },
+            spki_raw:              tls::Span16 { offset: 42, length: 32 },
+            spki_alg_oid:          tls::Span16 { offset: 74, length: 3 },
+            spki_pubkey:           tls::Span16 { offset: 42, length: 32 },
             is_ca:                 true,
             has_basic_constraints: true,
+            bc_is_critical:        true,
             key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
-            skid_key_id:           tls::Span16 { offset: 20, length: 4 }, // SKID = KID1
+            skid_key_id:           tls::Span16 { offset: 80, length: 4 }, // SKID = KID1
             has_skid:              true,
+            signature_value:       tls::Span16 { offset: 160, length: 64 },
         };
         var cert_root = tls::ParsedCert {
             issuer_raw:            tls::Span16 { offset: 0, length: 4 },
             validity_not_before:   1000,
             validity_not_after:    5000,
             subject_raw:           tls::Span16 { offset: 0, length: 4 },
-            spki_raw:              tls::Span16 { offset: 4, length: 4 },
+            spki_raw:              tls::Span16 { offset: 4, length: 32 },
+            spki_alg_oid:          tls::Span16 { offset: 74, length: 3 },
+            spki_pubkey:           tls::Span16 { offset: 4, length: 32 },
             is_ca:                 true,
             has_basic_constraints: true,
+            bc_is_critical:        true,
             key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,
         };
@@ -2079,15 +2140,8 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         sub.assert_eq(tls::alert_to_u8(alert_match), tls::alert_to_u8(tls::Alert.CloseNotify), "matching AKID->SKID succeeds");
 
         // 4. Chain Linking with AKID / SKID: Mismatched key IDs
-        var cert_ee_mismatch = tls::ParsedCert {
-            issuer_raw:          tls::Span16 { offset: 12, length: 2 },
-            validity_not_before: 1000,
-            validity_not_after:  5000,
-            subject_raw:         tls::Span16 { offset: 8, length: 2 },
-            spki_raw:            tls::Span16 { offset: 10, length: 2 },
-            akid_key_id:         tls::Span16 { offset: 24, length: 4 }, // AKID = KID2 != KID1
-            has_akid:            true,
-        };
+        var cert_ee_mismatch = cert_ee_match;
+        cert_ee_mismatch.akid_key_id = tls::Span16 { offset: 84, length: 4 }; // AKID = KID2 != KID1
         var chain_mismatch: tls::ParsedCert[..8] = [];
         chain_mismatch.push(cert_ee_mismatch);
         chain_mismatch.push(cert_ca_match);
@@ -2244,7 +2298,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         put_der_tlv(b_responses_body, 0x30, b_single_body.buf[..]);
 
         var b_tbs_body = core::builder_init();
-        put_der_tlv(b_tbs_body, 0xA1, iss_dn); // responderID [1] EXPLICIT byName
+        put_der_tlv(b_tbs_body, 0xA1, b_iss_dn_tlv.buf[..]); // responderID [1] EXPLICIT Name
         put_der_tlv(b_tbs_body, 0x18, "20261028000000Z"); // producedAt
         put_der_tlv(b_tbs_body, 0x30, b_responses_body.buf[..]); // responses
 
@@ -2290,8 +2344,13 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
             serial_number: tls::Span16 { offset: 0, length: 1 },
         };
         let mid_time = (parsed_ok.this_update + parsed_ok.next_update) / 2;
-        let alert_ocsp_ok = tls::validate_ocsp_stapling(b_ocsp.buf[..], leaf_matching, raw_leaf_serial[..], mid_time);
-        sub.assert_eq(tls::alert_to_u8(alert_ocsp_ok), tls::alert_to_u8(tls::Alert.CloseNotify), "valid OCSP stapling succeeds");
+        // PKI-06: Omitting issuer_raw_der MUST fail closed (no unauthenticated OCSP acceptance).
+        let alert_no_issuer = tls::validate_ocsp_stapling(b_ocsp.buf[..], leaf_matching, raw_leaf_serial[..], mid_time);
+        sub.assert_eq(
+            tls::alert_to_u8(alert_no_issuer),
+            tls::alert_to_u8(tls::Alert.BadCertificateStatusResponse),
+            "OCSP without issuer_raw_der fails closed (PKI-06)",
+        );
 
         // Full cryptographic signature + CertID issuer verification (RFC 6960 §4.1.1 & §4.2.1)
         let alert_with_issuer = tls::validate_ocsp_stapling(b_ocsp.buf[..], leaf_matching, raw_leaf_serial[..], mid_time, issuer_der[..]);
@@ -2306,11 +2365,11 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
 
         // Serial number mismatch defense: leaf cert with serial 0x99
         let raw_mismatch_serial: u8[1] = [0x99];
-        let alert_mismatch = tls::validate_ocsp_stapling(b_ocsp.buf[..], leaf_matching, raw_mismatch_serial[..], mid_time);
+        let alert_mismatch = tls::validate_ocsp_stapling(b_ocsp.buf[..], leaf_matching, raw_mismatch_serial[..], mid_time, issuer_der[..]);
         sub.assert_eq(tls::alert_to_u8(alert_mismatch), tls::alert_to_u8(tls::Alert.BadCertificateStatusResponse), "serial mismatch returns BadCertificateStatusResponse");
 
         // Temporal expiration defense: now > nextUpdate
-        let alert_expired = tls::validate_ocsp_stapling(b_ocsp.buf[..], leaf_matching, raw_leaf_serial[..], parsed_ok.next_update + 1000);
+        let alert_expired = tls::validate_ocsp_stapling(b_ocsp.buf[..], leaf_matching, raw_leaf_serial[..], parsed_ok.next_update + 1000, issuer_der[..]);
         sub.assert_eq(tls::alert_to_u8(alert_expired), tls::alert_to_u8(tls::Alert.CertificateExpired), "expired OCSP returns CertificateExpired");
     };
 
@@ -2408,21 +2467,25 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         var raw_root: u8[>..] = [];
         raw_root.append(leaf_issuer);
         raw_root.append(root_kp.public_key[..]);
+        let root_oid_off = raw_root.len as u16;
+        raw_root.append(rfc::OID_ED25519[..]);
 
         var parsed_root = tls::ParsedCert {
             raw_len:               raw_root.len as u32,
             tbs_cert:              tls::Span16 { offset: 0, length: raw_root.len as u16 },
             serial_number:         tls::Span16 { offset: 0, length: 1 },
-            sig_alg_oid:           tls::Span16 { offset: 0, length: 1 },
+            sig_alg_oid:           tls::Span16 { offset: root_oid_off, length: 3 },
             issuer_raw:            tls::Span16 { offset: 0, length: leaf_issuer.len as u16 },
             validity_not_before:   1704067200,
             validity_not_after:    1767225600,
             subject_raw:           tls::Span16 { offset: 0, length: leaf_issuer.len as u16 },
             spki_raw:              tls::Span16 { offset: leaf_issuer.len as u16, length: 32 },
+            spki_alg_oid:          tls::Span16 { offset: root_oid_off, length: 3 },
             spki_pubkey:           tls::Span16 { offset: leaf_issuer.len as u16, length: 32 },
             extensions_raw:        tls::Span16 { offset: 0, length: 0 },
             is_ca:                 true,
             has_basic_constraints: true,
+            bc_is_critical:        true,
             path_len_constraint:   -1,
             key_usage:             rfc::KEY_USAGE_KEY_CERT_SIGN,
             has_key_usage:         true,

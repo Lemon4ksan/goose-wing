@@ -60,32 +60,27 @@ fn validate_ocsp_stapling(
         return Alert.BadCertificateStatusResponse;
     }
 
-    if issuer_raw_der.len > 0 {
-        var issuer_cert = ParsedCert { .. };
-        guard parse_x509_certificate(issuer_raw_der, issuer_cert) else {
-            return Alert.BadCertificateStatusResponse;
-        }
-        guard tls_internal::x509_verify_ocsp_cert_id_with_issuer(
-            resp, raw_ocsp, leaf_cert, leaf_raw, issuer_cert, issuer_raw_der,
-        ) else {
-            return Alert.BadCertificateStatusResponse;
-        }
-        var sig_alert = x509_verify_ocsp_signature(resp, raw_ocsp, issuer_cert, issuer_raw_der);
-        if sig_alert != Alert.CloseNotify && resp.responder_cert_der.length > 0 {
-            sig_alert = tls_internal::verify_delegated_ocsp_responder(
-                resp, raw_ocsp, issuer_cert, issuer_raw_der, now_unix,
-            );
-        }
-        guard sig_alert == Alert.CloseNotify else {
-            return sig_alert;
-        }
-    } else if leaf_cert.issuer_raw.length > 0 {
-        let alg_oid = span_slice(raw_ocsp, resp.hash_alg_oid);
-        let ocsp_nh = span_slice(raw_ocsp, resp.issuer_name_hash);
-        let issuer_dn = span_slice(leaf_raw, leaf_cert.issuer_raw);
-        guard tls_internal::x509_verify_ocsp_issuer_name_hash(alg_oid, ocsp_nh, issuer_dn) else {
-            return Alert.BadCertificateStatusResponse;
-        }
+    // RFC 6960 Section 4.2.2.2: Never accept OCSP status without issuer authentication (PKI-06).
+    guard issuer_raw_der.len > 0 else {
+        return Alert.BadCertificateStatusResponse;
+    }
+    var issuer_cert = ParsedCert { .. };
+    guard parse_x509_certificate(issuer_raw_der, issuer_cert) else {
+        return Alert.BadCertificateStatusResponse;
+    }
+    guard tls_internal::x509_verify_ocsp_cert_id_with_issuer(
+        resp, raw_ocsp, leaf_cert, leaf_raw, issuer_cert, issuer_raw_der,
+    ) else {
+        return Alert.BadCertificateStatusResponse;
+    }
+    var sig_alert = x509_verify_ocsp_signature(resp, raw_ocsp, issuer_cert, issuer_raw_der);
+    if sig_alert != Alert.CloseNotify && resp.responder_cert_der.length > 0 {
+        sig_alert = tls_internal::verify_delegated_ocsp_responder(
+            resp, raw_ocsp, issuer_cert, issuer_raw_der, now_unix,
+        );
+    }
+    guard sig_alert == Alert.CloseNotify else {
+        return sig_alert;
     }
 
     return tls_internal::x509_validate_ocsp_temporal(resp, now_unix);

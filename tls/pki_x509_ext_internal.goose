@@ -35,34 +35,42 @@ inline fn is_known_extension_oid(oid: const u8[:]) -> bool {
     return is_known_pki_extension_oid(oid);
 }
 
-fn read_tbs_serial(raw_cert: const u8[:], tbs_seq: core::ByteCursor&, out: tls::ParsedCert&) -> bool {
+fn read_tbs_serial(
+    raw_cert: const u8[:],
+    tbs_seq:  core::ByteCursor&,
+    tbs_end:  i64,
+    out:      tls::ParsedCert&,
+) -> bool {
     var serial = core::cursor_from(raw_cert[..0]);
     if !tls::get_asn1_element(tbs_seq, rfc::ASN1_TAG_INTEGER, serial) { return false; }
     // RFC 5280 Section 4.1.2.2: Serial Number - Accept legacy serial 0 (e.g. GoDaddy Root G2) per interop note.
     let is_zero_serial = serial.buf.len == 1 && serial.buf[0] == 0x00;
     if !is_zero_serial && !tls::validate_asn1_integer(serial.buf, true) { return false; }
-    out.serial_number = tls::make_span(raw_cert, serial.buf);
+    out.serial_number = tls::span_from_end(tbs_end, tbs_seq.cursor_len(), serial.buf.len);
     return true;
 }
 
 fn read_tbs_sig_alg(
     raw_cert: const u8[:],
     tbs_seq:  core::ByteCursor&,
+    tbs_end:  i64,
     out:      tls::ParsedCert&,
 ) -> tls::Span16, bool {
     var sig_alg = core::cursor_from(raw_cert[..0]);
     if !tls::get_asn1_element(tbs_seq, rfc::ASN1_TAG_SEQUENCE, sig_alg) {
         return tls::Span16 { .. }, false;
     }
-    let inner_span = tls::make_span(raw_cert, sig_alg.buf);
+    let sig_alg_end = core::sub_sat_i64(tbs_end, tbs_seq.cursor_len());
+    let inner_span = tls::span_from_end(tbs_end, tbs_seq.cursor_len(), sig_alg.buf.len);
     var sig_oid = core::cursor_from(raw_cert[..0]);
-    if !tls::get_asn1_element(sig_alg, rfc::ASN1_TAG_OID, sig_oid) {
+    if !tls::get_asn1_element(sig_alg, rfc::ASN1_TAG_OID, sig_oid) || sig_oid.buf.len == 0 {
         return tls::Span16 { .. }, false;
     }
+    let sig_oid_span = tls::span_from_end(sig_alg_end, sig_alg.cursor_len(), sig_oid.buf.len);
     guard validate_x509_sig_alg_params(sig_oid.buf, sig_alg, out.pss_hash_id) else {
         return tls::Span16 { .. }, false;
     }
-    out.sig_alg_oid = tls::make_span(raw_cert, sig_oid.buf);
+    out.sig_alg_oid = sig_oid_span;
     return inner_span, true;
 }
 
@@ -88,16 +96,23 @@ fn read_tbs_validity(raw_cert: const u8[:], tbs_seq: core::ByteCursor&, out: tls
     return true;
 }
 
-fn read_tbs_spki(raw_cert: const u8[:], tbs_seq: core::ByteCursor&, out: tls::ParsedCert&) -> bool {
+fn read_tbs_spki(
+    raw_cert: const u8[:],
+    tbs_seq:  core::ByteCursor&,
+    tbs_end:  i64,
+    out:      tls::ParsedCert&,
+) -> bool {
     var spki = core::cursor_from(raw_cert[..0]);
     if !tls::get_asn1_element(tbs_seq, rfc::ASN1_TAG_SEQUENCE, spki) { return false; }
-    out.spki_raw = tls::make_span(raw_cert, spki.buf);
+    let spki_end = core::sub_sat_i64(tbs_end, tbs_seq.cursor_len());
+    out.spki_raw = tls::span_from_end(tbs_end, tbs_seq.cursor_len(), spki.buf.len);
 
     var spki_alg = core::cursor_from(raw_cert[..0]);
     if !tls::get_asn1_element(spki, rfc::ASN1_TAG_SEQUENCE, spki_alg) { return false; }
+    let spki_alg_end = core::sub_sat_i64(spki_end, spki.cursor_len());
     var spki_oid = core::cursor_from(raw_cert[..0]);
-    if !tls::get_asn1_element(spki_alg, rfc::ASN1_TAG_OID, spki_oid) { return false; }
-    guard validate_x509_spki_alg_params(spki_oid.buf, spki_alg, out.spki_alg_oid, raw_cert) else {
+    if !tls::get_asn1_element(spki_alg, rfc::ASN1_TAG_OID, spki_oid) || spki_oid.buf.len == 0 { return false; }
+    guard validate_x509_spki_alg_params(spki_oid.buf, spki_alg, spki_alg_end, out.spki_alg_oid) else {
         return false;
     }
 
@@ -110,7 +125,7 @@ fn read_tbs_spki(raw_cert: const u8[:], tbs_seq: core::ByteCursor&, out: tls::Pa
         spki_pubkey.buf[0] == 0 else {
         return false;
     }
-    out.spki_pubkey = tls::make_span(raw_cert, spki_pubkey.buf);
+    out.spki_pubkey = tls::span_from_end(spki_end, spki.cursor_len(), spki_pubkey.buf.len);
     return true;
 }
 
@@ -192,8 +207,8 @@ fn x509_parse_key_usage_ext(ext_val: core::ByteCursor&, cert: tls::ParsedCert&) 
 }
 
 fn x509_parse_akid_ext(
-    raw_cert:    const u8[:],
     ext_val:     core::ByteCursor&,
+    ext_val_end: i64,
     is_critical: bool,
     cert:        tls::ParsedCert&,
 ) {
@@ -208,6 +223,7 @@ fn x509_parse_akid_ext(
         cert.has_unsupported_critical = true;
         return;
     }
+    let akid_seq_end = core::sub_sat_i64(ext_val_end, ext_val.cursor_len());
     guard akid_seq.cursor_len() > 0 else { return; }
     if akid_seq.buf[0] != 0x80 {
         cert.akid_has_extra_fields = true;
@@ -221,13 +237,22 @@ fn x509_parse_akid_ext(
     if akid_seq.cursor_len() > 0 {
         cert.akid_has_extra_fields = true;
     }
-    guard akid_key.buf.len > 0 && akid_key.buf.len <= 64 else { return; }
+    guard akid_key.buf.len > 0 && akid_key.buf.len <= 64 else {
+        cert.has_unsupported_critical = true;
+        return;
+    }
     cert.has_akid = true;
-    cert.akid_key_id = tls::make_span(raw_cert, akid_key.buf);
+    cert.akid_key_id = tls::span_from_end(akid_seq_end, akid_seq.cursor_len(), akid_key.buf.len);
 }
 
-fn x509_parse_skid_ext(raw_cert: const u8[:], ext_val: core::ByteCursor&, cert: tls::ParsedCert&) {
-    if cert.has_skid {
+fn x509_parse_skid_ext(
+    ext_val:     core::ByteCursor&,
+    ext_val_end: i64,
+    is_critical: bool,
+    cert:        tls::ParsedCert&,
+) {
+    // RFC 5280 Section 4.2.1.2: Subject Key Identifier - Extension MUST be non-critical.
+    if cert.has_skid || is_critical {
         cert.has_unsupported_critical = true;
         return;
     }
@@ -236,13 +261,16 @@ fn x509_parse_skid_ext(raw_cert: const u8[:], ext_val: core::ByteCursor&, cert: 
         cert.has_unsupported_critical = true;
         return;
     }
-    guard skid_oct.buf.len > 0 && skid_oct.buf.len <= 64 else { return; }
+    guard skid_oct.buf.len > 0 && skid_oct.buf.len <= 64 else {
+        cert.has_unsupported_critical = true;
+        return;
+    }
     cert.has_skid = true;
-    cert.skid_key_id = tls::make_span(raw_cert, skid_oct.buf);
+    cert.skid_key_id = tls::span_from_end(ext_val_end, ext_val.cursor_len(), skid_oct.buf.len);
 }
 
 inline fn x509_check_policy_skip_certs(elem_buf: const u8[:]) -> bool {
-    return elem_buf.len > 0 && (elem_buf[0] & 0x80) == 0;
+    return tls::validate_asn1_integer(elem_buf, false) && (elem_buf[0] & 0x80) == 0;
 }
 
 fn x509_parse_policy_constraints_ext(
@@ -250,11 +278,13 @@ fn x509_parse_policy_constraints_ext(
     is_critical: bool,
     cert:        tls::ParsedCert&,
 ) {
-    // RFC 5280 Section 4.2.1.11: Policy Constraints - Extension MUST be marked critical.
+    // RFC 5280 Section 4.2.1.11: Policy Constraints - Extension MUST be marked critical;
+    // because policy path validation is not implemented, critical instances also fail closed.
     if !is_critical {
         cert.has_malformed_policy_constraints = true;
         return;
     }
+    cert.has_unsupported_critical = true;
     var pc_seq = core::cursor_from(ext_val.buf[..0]);
     if !tls::get_asn1_element(ext_val, rfc::ASN1_TAG_SEQUENCE, pc_seq) ||
         ext_val.cursor_len() != 0 ||
@@ -263,6 +293,8 @@ fn x509_parse_policy_constraints_ext(
         return;
     }
 
+    var seen_req = false;
+    var seen_inh = false;
     while pc_seq.cursor_len() > 0 {
         var pc_tag: u8 = 0;
         var pc_elem = core::cursor_from(pc_seq.buf[..0]);
@@ -270,16 +302,20 @@ fn x509_parse_policy_constraints_ext(
             cert.has_malformed_policy_constraints = true;
             return;
         }
-        let tag_num = pc_tag & 0x1F;
-        guard (tag_num == 0 || tag_num == 1) && x509_check_policy_skip_certs(pc_elem.buf) else {
+        let valid_req = pc_tag == 0x80 && !seen_req && !seen_inh;
+        let valid_inh = pc_tag == 0x81 && !seen_inh;
+        guard (valid_req || valid_inh) && x509_check_policy_skip_certs(pc_elem.buf) else {
             cert.has_malformed_policy_constraints = true;
             return;
         }
+        if pc_tag == 0x80 { seen_req = true; }
+        if pc_tag == 0x81 { seen_inh = true; }
     }
 }
 
 // Parses RFC 7633 §4 X.509 TLS Feature extension (`Features ::= SEQUENCE OF INTEGER`).
-// Sets `cert.has_must_staple = true` when feature identifier 5 (`status_request`) is present.
+// Sets `cert.has_must_staple = true` when feature identifier 5 (`status_request`) is present;
+// fails closed on any unsupported feature identifier.
 //
 // Example:
 //   ext_val = [0x30, 0x03, 0x02, 0x01, 0x05]
@@ -297,19 +333,18 @@ fn x509_parse_tls_feature_ext(ext_val: const u8[:], cert: tls::ParsedCert&) -> b
     }
     while feat_seq.cursor_len() > 0 {
         var feat_id: i64 = 0;
-        guard tls::get_asn1_integer(feat_seq, feat_id) && feat_id >= 0 && feat_id <= 65535 else {
+        guard tls::get_asn1_integer(feat_seq, feat_id) && feat_id == rfc::TLS_EXT_STATUS_REQUEST else {
             cert.has_unsupported_critical = true;
             return false;
         }
-        if feat_id == rfc::TLS_EXT_STATUS_REQUEST {
-            cert.has_must_staple = true;
-        }
+        cert.has_must_staple = true;
     }
     return true;
 }
 
-fn x509_parse_sct_ext(ext_val: core::ByteCursor&, cert: tls::ParsedCert&) -> bool {
-    if cert.has_sct_list {
+fn x509_parse_sct_ext(ext_val: core::ByteCursor&, is_critical: bool, cert: tls::ParsedCert&) -> bool {
+    // RFC 6962 Section 3.3: CT Precertificate SCTs extension MUST be non-critical.
+    if cert.has_sct_list || is_critical {
         cert.has_unsupported_critical = true;
         return false;
     }
@@ -429,7 +464,7 @@ fn x509_dispatch_pki_extension(
     } else if oid == rfc::OID_TLS_FEATURE[..] {
         return x509_parse_tls_feature_ext(ext_val.buf, cert);
     } else if oid == rfc::OID_CT_PRECERT_SCTS[..] {
-        return x509_parse_sct_ext(ext_val, cert);
+        return x509_parse_sct_ext(ext_val, is_critical, cert);
     }
     return true;
 }
@@ -444,9 +479,13 @@ fn x509_dispatch_policy_extension(
         x509_parse_policy_constraints_ext(ext_val, is_critical, cert);
         return true;
     } else if oid == rfc::OID_INHIBIT_ANY_POLICY[..] {
+        // RFC 5280 Section 4.2.1.14: Inhibit anyPolicy MUST be critical; without a policy engine, critical fails closed.
         var val: i64 = 0;
-        if !tls::get_asn1_integer(ext_val, val) || ext_val.cursor_len() != 0 || val < 0 {
+        if !is_critical || !tls::get_asn1_integer(ext_val, val) || ext_val.cursor_len() != 0 || val < 0 {
             cert.has_malformed_policy_constraints = true;
+        }
+        if is_critical {
+            cert.has_unsupported_critical = true;
         }
         return true;
     }
@@ -454,9 +493,9 @@ fn x509_dispatch_policy_extension(
 }
 
 fn x509_dispatch_extension(
-    raw_cert:    const u8[:],
     oid:         const u8[:],
     ext_val:     core::ByteCursor&,
+    ext_val_end: i64,
     cert:        tls::ParsedCert&,
     is_critical: bool = false,
 ) -> bool {
@@ -473,7 +512,7 @@ fn x509_dispatch_extension(
         }
         cert.has_san = true;
         cert.san_is_critical = is_critical;
-        cert.san_raw = tls::make_span(raw_cert, ext_val.buf);
+        cert.san_raw = tls::span_from_end(ext_val_end, 0, ext_val.buf.len);
         return true;
     } else if oid == rfc::OID_NAME_CONSTRAINTS[..] {
         if cert.has_name_constraints {
@@ -481,13 +520,13 @@ fn x509_dispatch_extension(
             return true;
         }
         cert.has_name_constraints = true;
-        cert.name_constraints_raw = tls::make_span(raw_cert, ext_val.buf);
+        cert.name_constraints_raw = tls::span_from_end(ext_val_end, 0, ext_val.buf.len);
         return true;
     } else if oid == rfc::OID_AUTH_KEY_IDENTIFIER[..] {
-        x509_parse_akid_ext(raw_cert, ext_val, is_critical, cert);
+        x509_parse_akid_ext(ext_val, ext_val_end, is_critical, cert);
         return true;
     } else if oid == rfc::OID_SUBJECT_KEY_IDENTIFIER[..] {
-        x509_parse_skid_ext(raw_cert, ext_val, cert);
+        x509_parse_skid_ext(ext_val, ext_val_end, is_critical, cert);
         return true;
     }
     return x509_dispatch_policy_extension(oid, ext_val, is_critical, cert);
@@ -506,13 +545,28 @@ inline fn x509_check_ext_critical(single_ext: core::ByteCursor&, out_ok: bool&) 
     return maybe_crit.buf[0] == 0xFF;
 }
 
+inline fn x509_record_seen_ext_oid(seen_oids: (const u8[:])[..64]&, oid: const u8[:]) -> bool {
+    for prev in seen_oids {
+        if prev == oid {
+            return false;
+        }
+    }
+    return seen_oids.try_push(oid);
+}
+
 fn x509_parse_single_cert_extension(
-    raw_cert:   const u8[:],
-    single_ext: core::ByteCursor&,
-    cert:       tls::ParsedCert&,
+    single_ext:     core::ByteCursor&,
+    single_ext_end: i64,
+    seen_oids:      (const u8[:])[..64]&,
+    cert:           tls::ParsedCert&,
 ) -> bool {
     var oid = core::cursor_from(single_ext.buf[..0]);
-    if !tls::get_asn1_element(single_ext, rfc::ASN1_TAG_OID, oid) {
+    if !tls::get_asn1_element(single_ext, rfc::ASN1_TAG_OID, oid) || oid.buf.len == 0 {
+        cert.has_unsupported_critical = true;
+        return false;
+    }
+    // RFC 5280 Section 4.2: Extensions - A certificate MUST NOT include more than one instance of an extension.
+    if !x509_record_seen_ext_oid(seen_oids, oid.buf) {
         cert.has_unsupported_critical = true;
         return false;
     }
@@ -529,6 +583,7 @@ fn x509_parse_single_cert_extension(
         cert.has_unsupported_critical = true;
         return false;
     }
+    let ext_val_end = core::sub_sat_i64(single_ext_end, single_ext.cursor_len());
 
     if single_ext.cursor_len() > 0 {
         cert.has_unsupported_critical = true;
@@ -542,18 +597,26 @@ fn x509_parse_single_cert_extension(
         return true;
     }
 
-    return x509_dispatch_extension(raw_cert, oid.buf, ext_val, cert, is_critical);
+    return x509_dispatch_extension(oid.buf, ext_val, ext_val_end, cert, is_critical);
 }
 
 // Parses X.509 extensions for BasicConstraints, KeyUsage, and SubjectAltName.
-fn read_cert_extensions(raw_cert: const u8[:], ext_seq: core::ByteCursor&, cert: tls::ParsedCert&) -> bool {
+fn read_cert_extensions(
+    raw_cert:    const u8[:],
+    ext_seq:     core::ByteCursor&,
+    cert:        tls::ParsedCert&,
+    ext_seq_end: i64 = -1,
+) -> bool {
+    let eff_end = if ext_seq_end >= 0 { ext_seq_end } else { raw_cert.len };
+    var seen_oids: (const u8[:])[..64] = [];
     while ext_seq.cursor_len() > 0 {
         var single_ext = core::cursor_from(ext_seq.buf[..0]);
         if !tls::get_asn1_element(ext_seq, rfc::ASN1_TAG_SEQUENCE, single_ext) {
             cert.has_unsupported_critical = true;
             return false;
         }
-        if !x509_parse_single_cert_extension(raw_cert, single_ext, cert) {
+        let single_ext_end = core::sub_sat_i64(eff_end, ext_seq.cursor_len());
+        if !x509_parse_single_cert_extension(single_ext, single_ext_end, seen_oids, cert) {
             return false;
         }
     }
@@ -561,12 +624,13 @@ fn read_cert_extensions(raw_cert: const u8[:], ext_seq: core::ByteCursor&, cert:
 }
 
 fn read_tbs_optional_elem(
-    raw_cert:      const u8[:],
-    ext_tag:       u8,
-    ext_container: core::ByteCursor&,
-    tbs_ver:       u8,
-    last_ctx_tag:  i32&,
-    out:           tls::ParsedCert&,
+    raw_cert:          const u8[:],
+    ext_tag:           u8,
+    ext_container:     core::ByteCursor&,
+    ext_container_end: i64,
+    tbs_ver:           u8,
+    last_ctx_tag:      i32&,
+    out:               tls::ParsedCert&,
 ) -> bool {
     if ext_tag == 0x81 || ext_tag == 0x82 {
         let cur_idx: i32 = if ext_tag == 0x81 { 1 } else { 2 };
@@ -587,11 +651,18 @@ fn read_tbs_optional_elem(
         out.has_unsupported_critical = true;
         return false;
     }
-    out.extensions_raw = tls::make_span(raw_cert, ext_seq.buf);
-    return read_cert_extensions(raw_cert, ext_seq, out);
+    let ext_seq_end = core::sub_sat_i64(ext_container_end, ext_container.cursor_len());
+    out.extensions_raw = tls::span_from_end(ext_container_end, ext_container.cursor_len(), ext_seq.buf.len);
+    return read_cert_extensions(raw_cert, ext_seq, out, ext_seq_end);
 }
 
-fn read_tbs_extensions(raw_cert: const u8[:], tbs_seq: core::ByteCursor&, tbs_ver: u8, out: tls::ParsedCert&) -> bool {
+fn read_tbs_extensions(
+    raw_cert: const u8[:],
+    tbs_seq:  core::ByteCursor&,
+    tbs_end:  i64,
+    tbs_ver:  u8,
+    out:      tls::ParsedCert&,
+) -> bool {
     var last_ctx_tag: i32 = 0;
     while tbs_seq.cursor_len() > 0 {
         var ext_container = core::cursor_from(raw_cert[..0]);
@@ -600,7 +671,8 @@ fn read_tbs_extensions(raw_cert: const u8[:], tbs_seq: core::ByteCursor&, tbs_ve
             out.has_unsupported_critical = true;
             return false;
         }
-        if !read_tbs_optional_elem(raw_cert, ext_tag, ext_container, tbs_ver, last_ctx_tag, out) {
+        let container_end = core::sub_sat_i64(tbs_end, tbs_seq.cursor_len());
+        if !read_tbs_optional_elem(raw_cert, ext_tag, ext_container, container_end, tbs_ver, last_ctx_tag, out) {
             return false;
         }
     }
@@ -628,39 +700,48 @@ fn x509_read_tbs_version(tbs_seq: core::ByteCursor&, out_ver: u8&) -> bool {
     return true;
 }
 
-fn read_tbs_identity(raw_cert: const u8[:], tbs_seq: core::ByteCursor&, tbs_ver: u8, out: tls::ParsedCert&) -> bool {
+fn read_tbs_identity(
+    raw_cert: const u8[:],
+    tbs_seq:  core::ByteCursor&,
+    tbs_end:  i64,
+    tbs_ver:  u8,
+    out:      tls::ParsedCert&,
+) -> bool {
     var issuer = core::cursor_from(raw_cert[..0]);
     if !tls::get_asn1_element(tbs_seq, rfc::ASN1_TAG_SEQUENCE, issuer) { return false; }
-    out.issuer_raw = tls::make_span(raw_cert, issuer.buf);
+    // RFC 5280 Section 4.1.2.4: Issuer - The issuer field MUST contain a non-empty distinguished name.
+    guard issuer.buf.len > 0 else { return false; }
+    out.issuer_raw = tls::span_from_end(tbs_end, tbs_seq.cursor_len(), issuer.buf.len);
 
     if !read_tbs_validity(raw_cert, tbs_seq, out) { return false; }
 
     var subject = core::cursor_from(raw_cert[..0]);
     if !tls::get_asn1_element(tbs_seq, rfc::ASN1_TAG_SEQUENCE, subject) { return false; }
-    let subj_hint = core::add_sat_i64(out.issuer_raw.offset, out.issuer_raw.length);
-    out.subject_raw = tls::make_span(raw_cert, subject.buf, subj_hint);
+    out.subject_raw = tls::span_from_end(tbs_end, tbs_seq.cursor_len(), subject.buf.len);
 
-    if !read_tbs_spki(raw_cert, tbs_seq, out) { return false; }
-    return read_tbs_extensions(raw_cert, tbs_seq, tbs_ver, out);
+    if !read_tbs_spki(raw_cert, tbs_seq, tbs_end, out) { return false; }
+    return read_tbs_extensions(raw_cert, tbs_seq, tbs_end, tbs_ver, out);
 }
 
 fn x509_read_tbs_components(
     raw_cert: const u8[:],
     tbs_seq:  core::ByteCursor&,
+    tbs_end:  i64,
     out:      tls::ParsedCert&,
 ) -> tls::Span16, bool {
     var tbs_ver: u8 = 0;
     guard x509_read_tbs_version(tbs_seq, tbs_ver) else { return tls::Span16 { .. }, false; }
-    if !read_tbs_serial(raw_cert, tbs_seq, out) { return tls::Span16 { .. }, false; }
-    let inner_span, ok_sig = read_tbs_sig_alg(raw_cert, tbs_seq, out);
+    if !read_tbs_serial(raw_cert, tbs_seq, tbs_end, out) { return tls::Span16 { .. }, false; }
+    let inner_span, ok_sig = read_tbs_sig_alg(raw_cert, tbs_seq, tbs_end, out);
     if !ok_sig { return tls::Span16 { .. }, false; }
-    if !read_tbs_identity(raw_cert, tbs_seq, tbs_ver, out) { return tls::Span16 { .. }, false; }
+    if !read_tbs_identity(raw_cert, tbs_seq, tbs_end, tbs_ver, out) { return tls::Span16 { .. }, false; }
     return inner_span, true;
 }
 
 fn x509_read_outer_signature(
     raw_cert:      const u8[:],
     cert_seq:      core::ByteCursor&,
+    cert_seq_end:  i64,
     inner_sig_alg: const u8[:],
     out:           tls::ParsedCert&,
 ) -> bool {
@@ -678,7 +759,7 @@ fn x509_read_outer_signature(
     var unused_bits: u8 = 0;
     if !tls::get_asn1_bit_string(cert_seq, sig_bits, unused_bits) { return false; }
     guard unused_bits == 0 && sig_bits.buf.len > 0 else { return false; }
-    out.signature_value = tls::make_span(raw_cert, sig_bits.buf);
+    out.signature_value = tls::span_from_end(cert_seq_end, cert_seq.cursor_len(), sig_bits.buf.len);
 
     guard cert_seq.cursor_len() == 0 else { return false; }
     return true;

@@ -313,7 +313,7 @@ fn verify_certificate_chain(chain_certs: const ParsedCert[..8]&, raw_certs: cons
 fn match_cert_san_host(cert: const ParsedCert&, raw_cert: const u8[:], host: const u8[:]) -> bool
 fn match_dns_san(san_pattern: const u8[:], host: const u8[:]) -> bool
 fn match_ip_san(san_ip: const u8[:], host: const u8[:]) -> bool
-fn pem_next_block(raw: const u8[:], idx: i64&, out_label: u8[..64]&, out_der: u8[..4096]&) -> bool
+fn pem_next_block<B>(raw: const u8[:], idx: i64&, out_label: u8[..64]&, out_der: B&) -> bool
 fn add_trust_anchors_pem(store: TrustAnchorStore&, pem_bundle: const u8[:]) -> i64, bool
 fn load_trust_anchors_pem_file(store: TrustAnchorStore&, path: const u8[:]) -> i64, bool
 fn parse_private_key_pem(pem: const u8[:], out_key: u8[32]&) -> PrivateKeyKind, bool

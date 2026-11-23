@@ -166,7 +166,7 @@ fn lookup_server_ticket_by_identity(
 inline fn compute_obfuscated_ticket_age(cur_ms: i64, issued_at_ms: i64, age_add: u32) -> u32 {
     let elapsed_ms = core::sub_sat_i64(cur_ms, issued_at_ms);
     let elapsed_u64 = (if elapsed_ms > 0 { elapsed_ms } else { 0 }) as u64;
-    let sum = core::add_sat_u64(elapsed_u64 & 0xFFFFFFFF, age_add as u64);
+    let sum = core::add_sat_u64(elapsed_u64 & 0xFFFFFFFF, age_add);
     return (sum & 0xFFFFFFFF) as u32;
 }
 

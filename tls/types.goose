@@ -75,12 +75,16 @@ struct ParsedCert {
 struct TrustAnchor {
     subject_dn_sha256:     u8[32]    = [0; 32],
     spki_sha256:           u8[32]    = [0; 32],
+    cert_der_sha256:       u8[32]    = [0; 32],
+    has_cert_der_hash:     bool      = false,
     subject_raw:           u8[..384] = [],
     spki_pubkey:           u8[..600] = [],
     skid_key_id:           u8[..64]  = [],
     name_constraints_raw:  u8[..512] = [],
     key_usage:             u16       = 0,
     has_key_usage:         bool      = false,
+    has_eku:               bool      = false,
+    eku_mask:              u8        = 0,
     has_basic_constraints: bool      = false,
     bc_is_critical:        bool      = false,
     is_ca:                 bool      = false,
@@ -95,7 +99,7 @@ struct TrustAnchor {
 }
 
 struct TrustAnchorStore {
-    anchors: TrustAnchor[..16] = [],
+    anchors: TrustAnchor[..32] = [],
 }
 
 enum SanType {
@@ -137,6 +141,8 @@ enum OcspCertStatus {
 struct ParsedOcspResponse {
     status:             OcspResponseStatus = OcspResponseStatus.Unknown,
     cert_status:        OcspCertStatus     = OcspCertStatus.Unknown,
+    responder_id_tag:   u8                 = 0,
+    responder_id:       Span16             = Span16 { offset: 0, length: 0 },
     serial_number:      Span16             = Span16 { offset: 0, length: 0 },
     issuer_name_hash:   Span16             = Span16 { offset: 0, length: 0 },
     issuer_key_hash:    Span16             = Span16 { offset: 0, length: 0 },
@@ -154,15 +160,16 @@ struct ParsedOcspResponse {
 // Parsed X.509 Certificate Revocation List (RFC 5280 Section 5.1) with sorted
 // inline serial storage for O(log N) binary-search revocation lookup.
 struct ParsedCrl {
-    issuer:       const u8[:] = "",
-    serials:      u64[..1024] = [],
-    serial_count: i32         = 0,
-    this_update:  i64         = 0,
-    next_update:  i64         = 0,
-    tbs_raw:      Span16      = Span16 { offset: 0, length: 0 },
-    sig_alg_oid:  Span16      = Span16 { offset: 0, length: 0 },
-    pss_hash_id:  u8          = 0,
-    signature:    Span16      = Span16 { offset: 0, length: 0 },
+    issuer:          const u8[:] = "",
+    serials:         u64[..1024] = [],
+    serial_count:    i32         = 0,
+    this_update:     i64         = 0,
+    next_update:     i64         = 0,
+    has_next_update: bool        = false,
+    tbs_raw:         Span16      = Span16 { offset: 0, length: 0 },
+    sig_alg_oid:     Span16      = Span16 { offset: 0, length: 0 },
+    pss_hash_id:     u8          = 0,
+    signature:       Span16      = Span16 { offset: 0, length: 0 },
 }
 
 enum PrivateKeyKind {

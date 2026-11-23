@@ -128,8 +128,7 @@ fn run_01_verify_tls_handshake_wire() {
     core::start_u8_prefix(b_tbs);
     core::put_u8(b_tbs, 0x30); // certID SEQUENCE
     core::start_u8_prefix(b_tbs);
-    core::put_u8(b_tbs, 0x30);
-    core::put_u8(b_tbs, 0);
+    core::put_bytes(b_tbs, "\x30\x0B\x06\x09\x60\x86\x48\x01\x65\x03\x04\x02\x01"); // SHA-256 hashAlgorithm
     core::put_u8(b_tbs, 0x04); // issuerNameHash OCTET STRING (16 bytes - malformed, neither 20 nor 32!)
     core::put_u8(b_tbs, 16);
     for i in 16 { core::put_u8(b_tbs, 0xAA); }
@@ -152,34 +151,44 @@ fn run_01_verify_tls_handshake_wire() {
     assert(core::finish_u8_prefix(b_tbs));
     assert(core::finish_u8_prefix(b_tbs));
     assert(core::finish_u8_prefix(b_tbs));
-    var b_basic = core::builder_init();
-    core::put_u8(b_basic, 0x30);
-    core::start_u8_prefix(b_basic);
-    core::put_bytes(b_basic, b_tbs.buf[..]);
-    assert(core::finish_u8_prefix(b_basic));
-    var b_ocsp = core::builder_init();
-    core::put_u8(b_ocsp, 0x30);
-    core::start_u8_prefix(b_ocsp);
-    core::put_u8(b_ocsp, 0x0A);
-    core::put_u8(b_ocsp, 1);
-    core::put_u8(b_ocsp, 0);
-    core::put_u8(b_ocsp, 0xA0);
-    core::start_u8_prefix(b_ocsp);
-    core::put_u8(b_ocsp, 0x30);
-    core::start_u8_prefix(b_ocsp);
-    core::put_u8(b_ocsp, 0x06);
-    core::put_u8(b_ocsp, 9);
-    core::put_bytes(b_ocsp, "\x2B\x06\x01\x05\x05\x07\x30\x01\x01");
-    core::put_u8(b_ocsp, 0x04);
-    core::start_u8_prefix(b_ocsp);
-    core::put_bytes(b_ocsp, b_basic.buf[..]);
-    assert(core::finish_u8_prefix(b_ocsp));
-    assert(core::finish_u8_prefix(b_ocsp));
-    assert(core::finish_u8_prefix(b_ocsp));
-    assert(core::finish_u8_prefix(b_ocsp));
+    var b_basic:      u8[..256] = [];
+    var b_basic_body: u8[..256] = [];
+    b_basic_body.append(b_tbs.buf[..]);
+    b_basic_body.append("\x30\x05\x06\x03\x2B\x65\x70"); // Ed25519 signatureAlgorithm
+    b_basic_body.append("\x03\x02\x00\x01"); // non-empty signature BIT STRING
+    b_basic.push(0x30);
+    if b_basic_body.len >= 128 { b_basic.push(0x81); }
+    b_basic.push(b_basic_body.len as u8);
+    b_basic.append(b_basic_body[..]);
+
+    var b_rb_body: u8[..256] = [];
+    b_rb_body.append("\x06\x09\x2B\x06\x01\x05\x05\x07\x30\x01\x01");
+    b_rb_body.push(0x04);
+    if b_basic.len >= 128 { b_rb_body.push(0x81); }
+    b_rb_body.push(b_basic.len as u8);
+    b_rb_body.append(b_basic[..]);
+
+    var b_rb_seq: u8[..256] = [];
+    b_rb_seq.push(0x30);
+    if b_rb_body.len >= 128 { b_rb_seq.push(0x81); }
+    b_rb_seq.push(b_rb_body.len as u8);
+    b_rb_seq.append(b_rb_body[..]);
+
+    var b_ocsp_body: u8[..256] = [];
+    b_ocsp_body.append("\x0A\x01\x00");
+    b_ocsp_body.push(0xA0);
+    if b_rb_seq.len >= 128 { b_ocsp_body.push(0x81); }
+    b_ocsp_body.push(b_rb_seq.len as u8);
+    b_ocsp_body.append(b_rb_seq[..]);
+
+    var b_ocsp: u8[..256] = [];
+    b_ocsp.push(0x30);
+    if b_ocsp_body.len >= 128 { b_ocsp.push(0x81); }
+    b_ocsp.push(b_ocsp_body.len as u8);
+    b_ocsp.append(b_ocsp_body[..]);
 
     var parsed_ocsp_16 = tls::ParsedOcspResponse {};
-    assert(tls::parse_ocsp_response(b_ocsp.buf[..], parsed_ocsp_16));
+    assert(tls::parse_ocsp_response(b_ocsp[..], parsed_ocsp_16));
     let raw_leaf_16: u8[5] = [0x42, 0x30, 0x02, 0x05, 0x00];
     var leaf_16 = tls::ParsedCert {
         serial_number: tls::Span16 { offset: 0, length: 1 },
@@ -187,7 +196,7 @@ fn run_01_verify_tls_handshake_wire() {
         ..
     };
     let mid_ts = (parsed_ocsp_16.this_update + parsed_ocsp_16.next_update) / 2;
-    let ocsp_alert = tls::validate_ocsp_stapling(b_ocsp.buf[..], leaf_16, raw_leaf_16[..], mid_ts);
+    let ocsp_alert = tls::validate_ocsp_stapling(b_ocsp[..], leaf_16, raw_leaf_16[..], mid_ts);
     assert(ocsp_alert != tls::Alert.CloseNotify);
     print("OCSP_MALFORMED_HASH_LEN_REJECTED: OK");
 
@@ -831,7 +840,7 @@ fn verify_x509_crl_binary_search() {
 
     assert(core::finish_u8_prefix(b)); // finish tbsCertList
     core::put_bytes(b, sig_der[..]);
-    let sig_val: u8[3] = [0x03, 0x01, 0x00];
+    let sig_val: u8[4] = [0x03, 0x02, 0x00, 0x01];
     core::put_bytes(b, sig_val[..]);
     assert(core::finish_u8_prefix(b)); // finish outer length
     b.offsets.pop();
@@ -1560,7 +1569,7 @@ fn test_tlsc02_sct_list_parsing() {
     ext_oct.append(sct_list_raw[..]);
     var ext_cur = core::cursor_from(ext_oct[..]);
     var cert = tls::ParsedCert { .. };
-    tls_internal::x509_dispatch_extension(ext_oct[..], rfc::OID_CT_PRECERT_SCTS[..], ext_cur, cert);
+    tls_internal::x509_dispatch_extension(rfc::OID_CT_PRECERT_SCTS[..], ext_cur, ext_oct.len, cert);
     assert(cert.has_sct_list && cert.sct_count == 1);
     print("TLSC02_SCT_LIST_PARSED: OK");
 }

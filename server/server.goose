@@ -505,24 +505,23 @@ fn handle_connection_wire_pipelined_stream<Stage, B>(
     if server.trust_proxy_headers { server.pipeline.trust_proxy_headers = true; }
     wire_out.clear();
     let wire_in_len = wire_in.len;
-    var stream = wire_in;
     var total_handled:    i64  = 0;
     var total_consumed:   i64  = 0;
     var conn_wants_close: bool = false;
 
     if server_internal::can_try_fast_l0_static(server, stage) {
-        let rem_stream, fast_done = server_internal::drain_fast_l0_static_stream(
-            server, stream, now_ns, wire_out, total_handled, total_consumed, conn_wants_close,
+        let _, fast_done = server_internal::drain_fast_l0_static_stream(
+            server, wire_in, now_ns, wire_out, total_handled, total_consumed, conn_wants_close,
         );
         if fast_done {
             return total_handled, total_consumed, true, conn_wants_close;
         }
-        stream = rem_stream;
     }
 
+    let rem_off = min(total_consumed, wire_in.len);
     var has_fast_req = false;
     let is_fast = server_internal::try_prepare_single_pipeline_turn(
-        server, stream, wire_out, total_consumed, has_fast_req,
+        server, wire_in[rem_off..], wire_out, total_consumed, has_fast_req,
     );
     var local_ip: u8[..64] = [];
     let _ = local_ip.try_set(client_ip[..min(client_ip.len, 64)]);
@@ -530,7 +529,7 @@ fn handle_connection_wire_pipelined_stream<Stage, B>(
         var req = http::new_request("GET", "");
         var res = http::Response { .. };
         let ok = server_internal::drain_pipelined_stream_turns(
-            server, local_ip[..], stream, wire_in_len, now_ns,
+            server, local_ip[..], wire_in[rem_off..], wire_in_len, now_ns,
             req, res, wire_out,
             total_handled, total_consumed, conn_wants_close, stage,
         );
@@ -1204,24 +1203,25 @@ fn serve_tls(
     return total_served;
 }
 
-fn handle_connection_page_ring<Stage, B>(
-    server:    HttpServer&,
-    client_ip: const u8[:],
-    ring:      core::PageRingBuffer&,
-    now_ns:    u64,
-    wire_out:  B&,
-    stage:     Stage&,
+fn handle_connection_page_ring_scratch<Stage, B>(
+    server:     HttpServer&,
+    client_ip:  const u8[:],
+    ring:       core::PageRingBuffer&,
+    now_ns:     u64,
+    wire_out:   B&,
+    peek_chunk: server_internal::ReactorIngressBuf&,
+    stage:      Stage&,
 ) -> i64, bool {
     if server.trust_proxy_headers {
         server.pipeline.trust_proxy_headers = true;
     }
     guard ring.count > 0 else { return 0, true; }
 
-    server_internal::ensure_reactor_ingress_buf(g_reactor_chunk);
-    g_reactor_chunk.len = 0;
-    let peek_n = ring.page_ring_peek(g_reactor_chunk.bytes[..]);
+    server_internal::ensure_reactor_ingress_buf(peek_chunk);
+    peek_chunk.len = 0;
+    let peek_n = ring.page_ring_peek(peek_chunk.bytes[..]);
     guard peek_n > 0 else { return 0, true; }
-    let peek_slice = g_reactor_chunk.bytes[..peek_n];
+    let peek_slice = peek_chunk.bytes[..peek_n];
 
     if is_partial_h2_client_preface(peek_slice) || is_h2_client_preface(peek_slice) {
         var h2_done = false;
@@ -1229,9 +1229,7 @@ fn handle_connection_page_ring<Stage, B>(
         let h2_cnt = server_internal::handle_page_ring_h2_preface(
             server, client_ip, ring, peek_slice, now_ns, wire_out, h2_done, h2_ok, stage,
         );
-        if h2_done {
-            return h2_cnt, h2_ok;
-        }
+        return h2_cnt, h2_ok;
     }
 
     let total_handled, total_consumed, ok_pipe, wants_close = handle_connection_wire_pipelined_stream(
@@ -1248,6 +1246,20 @@ fn handle_connection_page_ring<Stage, B>(
         ring.page_ring_clear();
     }
     return total_handled, true;
+}
+
+fn handle_connection_page_ring<Stage, B>(
+    server:    HttpServer&,
+    client_ip: const u8[:],
+    ring:      core::PageRingBuffer&,
+    now_ns:    u64,
+    wire_out:  B&,
+    stage:     Stage&,
+) -> i64, bool {
+    var peek_chunk = server_internal::ReactorIngressBuf { .. };
+    return handle_connection_page_ring_scratch(
+        server, client_ip, ring, now_ns, wire_out, peek_chunk, stage,
+    );
 }
 
 fn handle_connection_page_ring<B>(

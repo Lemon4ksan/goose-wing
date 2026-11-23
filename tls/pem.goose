@@ -25,11 +25,11 @@ import .pki_crl_internal;
 // Example:
 //   raw = "-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n", idx = 0
 //   returns: ok = true, out_label = "CERTIFICATE", out_der = [0x01, 0x02, 0x03], idx = 59
-fn pem_next_block(
+fn pem_next_block<B>(
     raw:       const u8[:],
     idx:       i64&,
     out_label: u8[..64]&,
-    out_der:   u8[..4096]&,
+    out_der:   B&,
 ) -> bool {
     let saved_idx = idx;
     var committed = false;
@@ -64,7 +64,7 @@ fn add_trust_anchors_pem(store: TrustAnchorStore&, pem_bundle: const u8[:]) -> i
     var idx:   i64        = 0;
     var count: i64        = 0;
     var label: u8[..64]   = [];
-    var der:   u8[..4096] = [];
+    var der:   u8[..8192] = [];
 
     while idx < pem_bundle.len {
         let rel_begin = core::find(pem_bundle[idx..], tls_internal::PEM_PRE_EB);
@@ -161,10 +161,20 @@ fn load_server_credentials_pem(
     guard ok_key else { return false; }
 
     let spki_oid = span_slice(der[..], parsed_cert.spki_alg_oid);
+    var cert_pub = span_slice(der[..], parsed_cert.spki_pubkey);
+    if cert_pub.len >= 2 && cert_pub[0] == 0 {
+        cert_pub = cert_pub[1..];
+    }
     if key_kind == PrivateKeyKind.Ed25519 {
-        guard spki_oid == rfc::OID_ED25519[..] else { return false; }
+        let derived_ed = core::ed25519_public_key(out_cfg.priv_seed);
+        guard spki_oid == rfc::OID_ED25519[..] && core::ct_eq_bytes(derived_ed[..], cert_pub) else {
+            return false;
+        }
     } else if key_kind == PrivateKeyKind.EcdsaP256 {
-        guard spki_oid == rfc::OID_SECP256R1[..] else { return false; }
+        let derived_p256 = core::ecdsa_p256_public_key(out_cfg.priv_seed);
+        guard spki_oid == rfc::OID_SECP256R1[..] && core::ct_eq_bytes(derived_p256[..], cert_pub) else {
+            return false;
+        }
     } else {
         return false;
     }
@@ -216,7 +226,7 @@ fn load_matching_roots_from_pem_file(
     var idx:   i64        = 0;
     var added: i64        = 0;
     var label: u8[..64]   = [];
-    var der:   u8[..4096] = [];
+    var der:   u8[..8192] = [];
     var parsed = ParsedCert { .. };
     while idx < raw_pem.len && store.anchors.len < store.anchors.cap {
         let rel = core::find(raw_pem[idx..], tls_internal::PEM_PRE_EB);

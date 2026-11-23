@@ -65,12 +65,14 @@ fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
     out = ParsedCrl { .. };
     var committed = false;
     defer if !committed { out = ParsedCrl { .. }; };
+    guard raw_crl.len > 0 && raw_crl.len <= 65535 else { return false; }
 
     var c = core::cursor_from(raw_crl);
     var crl_seq = core::cursor_from(raw_crl[..0]);
     guard get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, crl_seq) && c.cursor_len() == 0 else {
         return false;
     }
+    let crl_seq_end = raw_crl.len;
 
     let tbs_raw_start = crl_seq.buf;
     var tbs_cert_list = core::cursor_from(crl_seq.buf[..0]);
@@ -78,15 +80,16 @@ fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
         return false;
     }
     let tbs_tlv_len = core::sub_sat_i64(tbs_raw_start.len, crl_seq.buf.len);
-    out.tbs_raw = make_span(raw_crl, tbs_raw_start[..tbs_tlv_len]);
+    out.tbs_raw = span_from_end(crl_seq_end, crl_seq.cursor_len(), tbs_tlv_len);
 
     var is_v2 = false;
     if tbs_cert_list.cursor_len() > 0 && tbs_cert_list.buf[0] == rfc::ASN1_TAG_INTEGER {
         var crl_ver: i64 = -1;
-        guard get_asn1_integer(tbs_cert_list, crl_ver) && (crl_ver == 0 || crl_ver == 1) else {
+        // RFC 5280 Section 5.1.2.1: version is optional; when present it MUST be v2 (INTEGER 1).
+        guard get_asn1_integer(tbs_cert_list, crl_ver) && crl_ver == 1 else {
             return false;
         }
-        is_v2 = crl_ver == 1;
+        is_v2 = true;
     }
 
     var sig_alg = core::cursor_from(tbs_cert_list.buf[..0]);
@@ -94,12 +97,15 @@ fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
     let inner_sig_alg_raw = sig_alg.buf;
     var inner_sig_oid = core::cursor_from(sig_alg.buf[..0]);
     guard get_asn1_element(sig_alg, rfc::ASN1_TAG_OID, inner_sig_oid) &&
+        inner_sig_oid.buf.len > 0 &&
         tls_internal::validate_x509_sig_alg_params(inner_sig_oid.buf, sig_alg, out.pss_hash_id) else {
         return false;
     }
 
     var issuer_seq = core::cursor_from(tbs_cert_list.buf[..0]);
-    guard get_asn1_element(tbs_cert_list, rfc::ASN1_TAG_SEQUENCE, issuer_seq) else { return false; }
+    guard get_asn1_element(tbs_cert_list, rfc::ASN1_TAG_SEQUENCE, issuer_seq) && issuer_seq.buf.len > 0 else {
+        return false;
+    }
     out.issuer = issuer_seq.buf;
 
     var this_up_tag: u8 = 0;
@@ -108,18 +114,23 @@ fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
     let this_sec, ok_this = parse_asn1_time(this_up_tag, this_up_elem.buf);
     guard ok_this else { return false; }
     out.this_update = this_sec;
-    guard tls_internal::x509_crl_read_optional_next_update(tbs_cert_list, out.next_update) else { return false; }
+    guard tls_internal::x509_crl_read_optional_next_update(
+        tbs_cert_list, out.next_update, out.has_next_update,
+    ) else { return false; }
+    if out.has_next_update && out.this_update > out.next_update {
+        return false;
+    }
 
     if tbs_cert_list.cursor_len() > 0 && tbs_cert_list.buf[0] == rfc::ASN1_TAG_SEQUENCE {
         var revoked_seq = core::cursor_from(tbs_cert_list.buf[..0]);
         guard get_asn1_element(tbs_cert_list, rfc::ASN1_TAG_SEQUENCE, revoked_seq) &&
-            tls_internal::parse_crl_revoked_entries(revoked_seq.buf, out) else {
+            tls_internal::parse_crl_revoked_entries(revoked_seq.buf, is_v2, out) else {
             return false;
         }
     }
 
     guard tls_internal::x509_crl_read_optional_exts(tbs_cert_list, is_v2) &&
-        tls_internal::x509_crl_read_outer_sig(crl_seq, raw_crl, inner_sig_alg_raw, out) else {
+        tls_internal::x509_crl_read_outer_sig(crl_seq, crl_seq_end, inner_sig_alg_raw, out) else {
         return false;
     }
     committed = true;
@@ -166,13 +177,14 @@ fn check_crl_der_revocation(
     var pss_hash_id: u8  = 0;
     var this_sec:    i64 = 0;
     var next_sec:    i64 = 0;
+    var has_next = false;
     let inner_sig_alg_raw, hdr_alert = tls_internal::crl_parse_tbs_header(
-        tbs, span_slice(issuer_raw, issuer_cert.subject_raw), is_v2, pss_hash_id, this_sec, next_sec,
+        tbs, span_slice(issuer_raw, issuer_cert.subject_raw), is_v2, pss_hash_id, this_sec, next_sec, has_next,
     );
     guard hdr_alert == Alert.CloseNotify else { return hdr_alert; }
 
     var revoked = false;
-    guard tls_internal::crl_scan_optional_revoked(tbs, target_serial, revoked) &&
+    guard tls_internal::crl_scan_optional_revoked(tbs, is_v2, target_serial, "", revoked) &&
         tls_internal::x509_crl_read_optional_exts(tbs, is_v2) else {
         return Alert.DecodeError;
     }
@@ -180,8 +192,7 @@ fn check_crl_der_revocation(
         crl_seq, tbs_tlv, inner_sig_alg_raw, pss_hash_id, issuer_cert, issuer_raw,
     );
     guard sig_alert == Alert.CloseNotify else { return sig_alert; }
-    guard now_unix >= this_sec && (next_sec == 0 || now_unix <= next_sec) else {
-        return Alert.CertificateExpired;
-    }
+    let time_alert = tls_internal::crl_validate_temporal(this_sec, next_sec, has_next, now_unix);
+    guard time_alert == Alert.CloseNotify else { return time_alert; }
     return if revoked { Alert.CertificateRevoked } else { Alert.CloseNotify };
 }

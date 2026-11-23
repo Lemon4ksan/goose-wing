@@ -37,16 +37,22 @@ fn parse_x509_certificate(raw_cert: const u8[:], out: ParsedCert&) -> bool {
     guard tls_internal::x509_read_outer_sequence(raw_cert, cert_seq) else { return false; }
 
     // TBSCertificate SEQUENCE
+    let cert_seq_end = raw_cert.len;
     let tbs_raw_start = cert_seq.buf;
     var tbs_seq = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(cert_seq, rfc::ASN1_TAG_SEQUENCE, tbs_seq) { return false; }
     let tbs_tlv_len = core::sub_sat_i64(tbs_raw_start.len, cert_seq.buf.len);
-    out.tbs_cert = make_span(raw_cert, tbs_raw_start[..tbs_tlv_len]);
+    let tbs_end = core::sub_sat_i64(cert_seq_end, cert_seq.buf.len);
+    out.tbs_cert = span_from_end(cert_seq_end, cert_seq.buf.len, tbs_tlv_len);
 
-    let inner_sig_span, ok_tbs = tls_internal::x509_read_tbs_components(raw_cert, tbs_seq, out);
+    let inner_sig_span, ok_tbs = tls_internal::x509_read_tbs_components(raw_cert, tbs_seq, tbs_end, out);
     guard ok_tbs else { return false; }
     let inner_sig_alg = span_slice(raw_cert, inner_sig_span);
-    guard tls_internal::x509_read_outer_signature(raw_cert, cert_seq, inner_sig_alg, out) else { return false; }
+    guard tls_internal::x509_read_outer_signature(
+        raw_cert, cert_seq, cert_seq_end, inner_sig_alg, out,
+    ) else {
+        return false;
+    }
     committed = true;
     return true;
 }
@@ -83,8 +89,12 @@ fn add_trust_anchor_cert_der(store: TrustAnchorStore&, raw_cert_der: const u8[:]
     var anchor = TrustAnchor {
         subject_dn_sha256:     core::sha256(subj),
         spki_sha256:           core::sha256(spki),
+        cert_der_sha256:       core::sha256(raw_cert_der),
+        has_cert_der_hash:     true,
         key_usage:             cert.key_usage,
         has_key_usage:         cert.has_key_usage,
+        has_eku:               cert.has_eku,
+        eku_mask:              cert.eku_mask,
         has_basic_constraints: cert.has_basic_constraints,
         bc_is_critical:        cert.bc_is_critical,
         is_ca:                 cert.is_ca,
@@ -138,6 +148,9 @@ fn verify_certificate_chain(
         matches_trust_anchor(trust_store, chain_certs[0], raw_certs[0]);
 
     if chain_certs.len == 1 && chain_certs[0].is_ca && !is_direct_trust_anchor {
+        if tls_internal::x509_find_matching_trust_anchor(trust_store, chain_certs[0], raw_certs[0]) >= 0 {
+            return Alert.BadCertificate;
+        }
         return Alert.UnknownCa;
     }
 

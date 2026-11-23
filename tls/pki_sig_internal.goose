@@ -128,28 +128,51 @@ fn validate_x509_sig_alg_params(
 fn validate_x509_spki_alg_params(
     spki_oid:     const u8[:],
     spki_alg:     core::ByteCursor&,
+    spki_alg_end: i64,
     out_alg_span: tls::Span16&,
-    raw_cert:     const u8[:],
 ) -> bool {
+    guard spki_oid.len > 0 else { return false; }
+    // RFC 5480 Section 2.1.1: Named curve OIDs are only valid as parameters to id-ecPublicKey, never bare SPKI OIDs.
+    if spki_oid == rfc::OID_SECP256R1[..] || spki_oid == rfc::OID_SECP384R1[..] {
+        return false;
+    }
     if spki_oid == rfc::OID_EC_PUBLIC_KEY[..] {
-        var spki_curve = core::cursor_from(raw_cert[..0]);
-        guard tls::get_asn1_element(spki_alg, rfc::ASN1_TAG_OID, spki_curve) && spki_alg.cursor_len() == 0 else {
+        var spki_curve = core::cursor_from(spki_oid[..0]);
+        guard tls::get_asn1_element(spki_alg, rfc::ASN1_TAG_OID, spki_curve) &&
+            spki_curve.buf.len > 0 &&
+            spki_alg.cursor_len() == 0 else {
             return false;
         }
-        out_alg_span = tls::make_span(raw_cert, spki_curve.buf);
+        out_alg_span = tls::span_from_end(spki_alg_end, spki_alg.cursor_len(), spki_curve.buf.len);
         return true;
     }
-    out_alg_span = tls::make_span(raw_cert, spki_oid);
+    out_alg_span = tls::span_from_end(spki_alg_end, spki_alg.cursor_len(), spki_oid.len);
     if spki_oid == rfc::OID_ED25519[..] {
         return spki_alg.cursor_len() == 0;
     }
-    if spki_oid == rfc::OID_RSA_ENCRYPTION[..] && spki_alg.cursor_len() > 0 {
-        var null_el = core::cursor_from(raw_cert[..0]);
+    if spki_oid == rfc::OID_RSA_ENCRYPTION[..] {
+        guard spki_alg.cursor_len() > 0 else { return true; }
+        var null_el = core::cursor_from(spki_oid[..0]);
         return tls::get_asn1_element(spki_alg, rfc::ASN1_TAG_NULL, null_el) &&
             null_el.cursor_len() == 0 &&
             spki_alg.cursor_len() == 0;
     }
     return true;
+}
+
+inline fn x509_check_cert_spki_policy(cert: const tls::ParsedCert&, raw_cert: const u8[:]) -> bool {
+    let spki_oid = tls::span_slice(raw_cert, cert.spki_alg_oid);
+    guard spki_oid.len > 0 else { return false; }
+    if spki_oid == rfc::OID_RSA_ENCRYPTION[..] {
+        var spki_pk = tls::span_slice(raw_cert, cert.spki_pubkey);
+        if spki_pk.len >= 2 && spki_pk[0] == 0 {
+            spki_pk = spki_pk[1..];
+        }
+        return is_valid_rsa_pubkey_min_bits(spki_pk);
+    }
+    return spki_oid == rfc::OID_SECP256R1[..] ||
+        spki_oid == rfc::OID_SECP384R1[..] ||
+        spki_oid == rfc::OID_ED25519[..];
 }
 
 // Extracts raw public key bytes from DER SubjectPublicKeyInfo or raw key material.

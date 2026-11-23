@@ -68,9 +68,11 @@ checkfree fn get_asn1_length(c: core::ByteCursor&, out_len: i64&) -> bool {
 }
 
 // Consumes any ASN.1 TLV element, returning tag and value cursor.
+// Rejects X.690 Section 8.1.2.4 high-tag-number multi-octet tags (`(tag & 0x1F) == 0x1F`).
 checkfree fn get_any_asn1_element(c: core::ByteCursor&, out_tag: u8&, out_val: core::ByteCursor&) -> bool {
     guard c.buf.len >= 1 else { return false; }
     out_tag = c.buf[0];
+    guard (out_tag & 0x1F) != 0x1F else { return false; }
     c.buf = c.buf[1..];
     var length: i64 = 0;
     if !get_asn1_length(c, length) { return false; }
@@ -246,6 +248,21 @@ checkfree fn span_slice(raw: const u8[:], span: Span16) -> const u8[:] {
     let length = span.length as i64;
     guard length >= 0 && length <= tail.len else { return raw[..0]; }
     return tail[..length];
+}
+
+// Computes a Span16 in O(1) time from an enclosing container's end offset in the root buffer,
+// the remaining unconsumed bytes in that container, and the extracted element length.
+checkfree inline fn span_from_end(container_end: i64, rem_after: i64, elem_len: i64) -> Span16 {
+    guard elem_len > 0 && elem_len <= 65535 && rem_after >= 0 && container_end >= rem_after else {
+        return Span16 { offset: 0, length: 0 };
+    }
+    let elem_end = core::sub_sat_i64(container_end, rem_after);
+    guard elem_end >= elem_len && elem_end <= 65536 else {
+        return Span16 { offset: 0, length: 0 };
+    }
+    let start = core::sub_sat_i64(elem_end, elem_len);
+    guard start <= 65535 else { return Span16 { offset: 0, length: 0 }; }
+    return Span16 { offset: start as u16, length: elem_len as u16 };
 }
 
 fn make_span(base: const u8[:], target: const u8[:], start_hint: i64 = 0) -> Span16 {

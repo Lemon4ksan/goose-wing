@@ -396,7 +396,8 @@ fn verify_ocsp_against_trust_store(
     trust_store: const tls::TrustAnchorStore&,
 ) -> bool, bool {
     let leaf_issuer_dn = tls::span_slice(leaf_raw, leaf_cert.issuer_raw);
-    guard leaf_issuer_dn.len > 0 else { return false, false; }
+    let leaf_serial = tls::span_slice(leaf_raw, leaf_cert.serial_number);
+    guard leaf_issuer_dn.len > 0 && leaf_serial.len > 0 else { return false, false; }
     var matched_idx: i64 = -1;
     for i in trust_store.anchors.len {
         let a .= trust_store.anchors[i];
@@ -407,17 +408,26 @@ fn verify_ocsp_against_trust_store(
     }
     guard matched_idx >= 0 else { return false, false; }
     let a .= trust_store.anchors[matched_idx];
-    let alert = tls::validate_ocsp_stapling(leaf_ocsp, leaf_cert, leaf_raw, eff_clock);
-    guard alert == tls::Alert.CloseNotify else { return true, false; }
     var ocsp_parsed = tls::ParsedOcspResponse { .. };
-    guard tls::parse_ocsp_response(leaf_ocsp, ocsp_parsed) else { return true, false; }
-    guard x509_verify_ocsp_cert_id_material(
-        ocsp_parsed, leaf_ocsp, a.subject_raw[..], a.spki_pubkey[..],
-    ) else { return true, false; }
-    let sig_alert = x509_verify_ocsp_signature_with_pubkey(
-        ocsp_parsed, leaf_ocsp, a.spki_pubkey[..],
-    );
-    return true, sig_alert == tls::Alert.CloseNotify;
+    guard parse_ocsp_response_for_serial(leaf_ocsp, leaf_serial, ocsp_parsed) &&
+        ocsp_parsed.status == tls::OcspResponseStatus.Successful &&
+        ocsp_parsed.cert_status == tls::OcspCertStatus.Good &&
+        ocsp_parsed.signature.length > 0 &&
+        ocsp_parsed.sig_alg_oid.length > 0 else {
+        return true, false;
+    }
+    guard x509_validate_ocsp_cert_id_alg(ocsp_parsed, leaf_ocsp) &&
+        x509_verify_ocsp_cert_id_material(ocsp_parsed, leaf_ocsp, a.subject_raw[..], a.spki_pubkey[..]) else {
+        return true, false;
+    }
+    var sig_alert = x509_verify_ocsp_signature_with_pubkey(ocsp_parsed, leaf_ocsp, a.spki_pubkey[..]);
+    if sig_alert != tls::Alert.CloseNotify && ocsp_parsed.responder_cert_der.length > 0 {
+        sig_alert = verify_delegated_ocsp_responder_with_material(
+            ocsp_parsed, leaf_ocsp, a.subject_raw[..], a.spki_pubkey[..], eff_clock,
+        );
+    }
+    guard sig_alert == tls::Alert.CloseNotify else { return true, false; }
+    return true, x509_validate_ocsp_temporal(ocsp_parsed, eff_clock) == tls::Alert.CloseNotify;
 }
 
 fn verify_stapled_ocsp_for_chain(
@@ -450,42 +460,46 @@ fn verify_stapled_ocsp_for_chain(
     ) == tls::Alert.CloseNotify;
 }
 
-// RFC 5280 Section 6.3.3: CRL Processing - Resolves the CRL issuer certificate or trust anchor and verifies cRLSign key usage and signature.
-fn verify_crl_signer_for_cert(
-    crl_parsed:   const tls::ParsedCrl&,
+// RFC 5280 Section 6.3.3: CRL Processing - Streams CRL verification with exact canonical DER serials
+// (avoiding 64 KB Span16, 1,024-entry, and 63-bit serial hash truncation limits).
+fn verify_crl_for_cert_streaming(
     crl_der:      const u8[:],
+    crl_issuer:   const u8[:],
     cert_idx:     i64,
     chain_parsed: const tls::ParsedCert[..8]&,
     chain_slices: const (const u8[:])[..8]&,
+    now_sec:      i64,
     trust_store:  const tls::TrustAnchorStore&,
 ) -> bool {
+    let target_serial = tls::span_slice(chain_slices[cert_idx], chain_parsed[cert_idx].serial_number);
     let next_idx = core::add_sat_i64(cert_idx, 1);
     if next_idx < chain_parsed.len {
         let iss .= chain_parsed[next_idx];
-        guard !iss.has_key_usage || (iss.key_usage & rfc::KEY_USAGE_CRL_SIGN) != 0 else { return false; }
-        let sig_alert = tls::x509_verify_crl_signature(crl_parsed, crl_der, iss, chain_slices[next_idx]);
-        return sig_alert == tls::Alert.CloseNotify;
+        var iss_pk = tls::span_slice(chain_slices[next_idx], iss.spki_pubkey);
+        if iss_pk.len >= 2 && iss_pk[0] == 0 { iss_pk = iss_pk[1..]; }
+        return check_crl_der_revocation_with_material(
+            crl_der, target_serial, tls::span_slice(chain_slices[next_idx], iss.subject_raw),
+            iss_pk, iss.has_key_usage, iss.key_usage, now_sec,
+        ) == tls::Alert.CloseNotify;
     }
-    var matched_anchor: i64 = -1;
     for j in trust_store.anchors.len {
         let a .= trust_store.anchors[j];
-        if a.is_valid && a.has_pub_material && a.subject_raw[..] == crl_parsed.issuer {
-            matched_anchor = j;
-            break;
+        if a.is_valid && a.has_pub_material && a.subject_raw[..] == crl_issuer {
+            return check_crl_der_revocation_with_material(
+                crl_der, target_serial, a.subject_raw[..],
+                a.spki_pubkey[..], a.has_key_usage, a.key_usage, now_sec,
+            ) == tls::Alert.CloseNotify;
         }
-    }
-    if matched_anchor >= 0 {
-        let a .= trust_store.anchors[matched_anchor];
-        guard !a.has_key_usage || (a.key_usage & rfc::KEY_USAGE_CRL_SIGN) != 0 else { return false; }
-        let alert = x509_verify_crl_signature_with_pubkey(crl_parsed, crl_der, a.spki_pubkey[..]);
-        return alert == tls::Alert.CloseNotify;
     }
     let self_cert .= chain_parsed[cert_idx];
     let self_subj = tls::span_slice(chain_slices[cert_idx], self_cert.subject_raw);
-    guard self_subj.len > 0 && self_subj == crl_parsed.issuer else { return false; }
-    guard !self_cert.has_key_usage || (self_cert.key_usage & rfc::KEY_USAGE_CRL_SIGN) != 0 else { return false; }
-    let self_alert = tls::x509_verify_crl_signature(crl_parsed, crl_der, self_cert, chain_slices[cert_idx]);
-    return self_alert == tls::Alert.CloseNotify;
+    guard self_subj.len > 0 && self_subj == crl_issuer else { return false; }
+    var self_pk = tls::span_slice(chain_slices[cert_idx], self_cert.spki_pubkey);
+    if self_pk.len >= 2 && self_pk[0] == 0 { self_pk = self_pk[1..]; }
+    return check_crl_der_revocation_with_material(
+        crl_der, target_serial, self_subj,
+        self_pk, self_cert.has_key_usage, self_cert.key_usage, now_sec,
+    ) == tls::Alert.CloseNotify;
 }
 
 // RFC 5280 Section 6.3.3: CRL Processing - Verifies CRL freshness, issuer signature, and revocation status across matching chain certificates.
@@ -498,24 +512,17 @@ fn verify_crl_for_chain_with_store(
 ) -> bool {
     guard crl_der.len > 0 else { return true; }
     guard chain_parsed.len > 0 && chain_slices.len == chain_parsed.len else { return false; }
-    var crl_parsed = tls::ParsedCrl { .. };
-    guard tls::parse_x509_crl(crl_der, crl_parsed) else { return false; }
+    let crl_issuer, ok_iss = crl_peek_issuer_dn(crl_der);
+    guard ok_iss else { return false; }
     let now_sec = if now_unix > 0 { now_unix } else { core::unix(core::now()) };
-    guard crl_parsed.this_update <= now_sec else { return false; }
-    if crl_parsed.next_update > 0 {
-        guard now_sec <= crl_parsed.next_update else { return false; }
-    }
     var matched_any = false;
     for i in chain_parsed.len {
         let cert_issuer = tls::span_slice(chain_slices[i], chain_parsed[i].issuer_raw);
-        if cert_issuer == crl_parsed.issuer {
+        if cert_issuer == crl_issuer {
             matched_any = true;
-            guard verify_crl_signer_for_cert(
-                crl_parsed, crl_der, i, chain_parsed, chain_slices, trust_store,
+            guard verify_crl_for_cert_streaming(
+                crl_der, crl_issuer, i, chain_parsed, chain_slices, now_sec, trust_store,
             ) else { return false; }
-            let ser_bytes = tls::span_slice(chain_slices[i], chain_parsed[i].serial_number);
-            let ser_u64, ok_ser = tls::parse_asn1_serial_u64(ser_bytes);
-            guard ok_ser && !tls::crl_is_revoked(crl_parsed, ser_u64) else { return false; }
         }
     }
     return matched_any;

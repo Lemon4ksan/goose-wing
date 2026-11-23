@@ -495,18 +495,23 @@ fn drain_pipelined_stream_turns<Stage, B>(
     conn_wants_close: bool&,
     stage:            Stage&,
 ) -> bool {
-    var stream = stream_in;
-    while stream.len > 0 {
-        stream = strip_pipelined_crlf(stream, total_consumed);
-        if stream.len == 0 { break; }
+    var offset: i64 = 0;
+    while offset < stream_in.len {
+        var crlf_skip: i64 = 0;
+        let cur = strip_pipelined_crlf(stream_in[offset..], crlf_skip);
+        if crlf_skip > 0 {
+            total_consumed = core::add_sat_i64(total_consumed, crlf_skip);
+            offset = core::add_sat_i64(offset, crlf_skip);
+        }
+        if cur.len == 0 { break; }
 
         let turn_res, step_consumed = process_pipelined_stream_turn(
-            server, client_ip, stream, now_ns, req, res,
+            server, client_ip, cur, now_ns, req, res,
             wire_out, wire_in_len, total_handled, total_consumed, conn_wants_close, stage,
         );
         match turn_res {
             Continue => {
-                stream = stream[step_consumed..];
+                offset = core::add_sat_i64(offset, step_consumed);
             },
             Stop => {
                 break;

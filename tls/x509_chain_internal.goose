@@ -46,9 +46,12 @@ fn validate_end_entity_constraints(
     if cert.is_ca {
         return tls::Alert.BadCertificate;
     }
-    // End-entity MUST NOT assert keyCertSign
-    if cert.has_key_usage && (cert.key_usage & rfc::KEY_USAGE_KEY_CERT_SIGN) != 0 {
-        return tls::Alert.UnsupportedCertificate;
+    // End-entity MUST NOT assert keyCertSign; TLS 1.3 requires digitalSignature (RFC 8446 §4.4.2.2).
+    if cert.has_key_usage {
+        if (cert.key_usage & rfc::KEY_USAGE_KEY_CERT_SIGN) != 0 ||
+            (cert.key_usage & rfc::KEY_USAGE_DIGITAL_SIGNATURE) == 0 {
+            return tls::Alert.UnsupportedCertificate;
+        }
     }
     // RFC 5280 Section 4.2.1.12 & CABF BR 7.1.2.7.10: End-entity EKU must be non-critical,
     // must not assert anyExtendedKeyUsage, and must permit the TLS peer role.
@@ -72,8 +75,8 @@ fn validate_intermediate_ca_constraints(
     depth: i64,
     role:  tls::CertValidationRole = tls::CertValidationRole.Server,
 ) -> tls::Alert {
-    // Intermediate CA MUST have basicConstraints asserted with cA: TRUE
-    if !cert.has_basic_constraints || !cert.is_ca {
+    // RFC 5280 Section 4.2.1.9: Basic Constraints - Conforming CA certificates MUST mark basicConstraints critical with cA=TRUE.
+    if !cert.has_basic_constraints || !cert.is_ca || !cert.bc_is_critical {
         return tls::Alert.BadCertificate;
     }
     // Intermediate CA MUST assert keyCertSign if KeyUsage is present
@@ -101,7 +104,7 @@ fn x509_is_cert_duplicate(
     let spki_j = tls::span_slice(raw_j, cert_j.spki_raw);
     let s_k = tls::span_slice(raw_k, cert_k.subject_raw);
     let spki_k = tls::span_slice(raw_k, cert_k.spki_raw);
-    return s_j.len > 0 && s_j == s_k && spki_j.len > 0 && spki_j == spki_k;
+    return s_j == s_k && spki_j.len > 0 && spki_j == spki_k;
 }
 
 inline fn x509_is_self_issued(cert: const tls::ParsedCert&, raw_cert: const u8[:]) -> bool {
@@ -137,21 +140,6 @@ fn x509_detect_chain_cycles(chain_certs: const tls::ParsedCert[..8]&, raw_certs:
         }
     }
     return false;
-}
-
-inline fn x509_check_cert_spki_policy(cert: const tls::ParsedCert&, raw_cert: const u8[:]) -> bool {
-    let spki_oid = tls::span_slice(raw_cert, cert.spki_alg_oid);
-    guard spki_oid.len > 0 else { return true; }
-    if spki_oid == rfc::OID_RSA_ENCRYPTION[..] {
-        var spki_pk = tls::span_slice(raw_cert, cert.spki_pubkey);
-        if spki_pk.len >= 2 && spki_pk[0] == 0 {
-            spki_pk = spki_pk[1..];
-        }
-        return is_valid_rsa_pubkey_min_bits(spki_pk);
-    }
-    return spki_oid == rfc::OID_SECP256R1[..] ||
-        spki_oid == rfc::OID_SECP384R1[..] ||
-        spki_oid == rfc::OID_ED25519[..];
 }
 
 fn x509_verify_cert_sig_with_pss(
@@ -193,9 +181,12 @@ fn x509_validate_single_chain_cert(
     guard x509_check_cert_spki_policy(cert, raw_cert) else {
         return tls::Alert.BadCertificate;
     }
-    // RFC 5280 Section 4.2.1.6: Subject Alternative Name - Empty Subject DN requires critical SAN.
-    if cert.subject_raw.length == 0 && cert.has_san && !cert.san_is_critical {
-        return tls::Alert.BadCertificate;
+    // RFC 5280 Section 4.1.2.6 & 4.2.1.6: CA and SAN-less certs require non-empty Subject DN;
+    // end-entity certs with empty Subject DN MUST mark SAN critical.
+    if cert.subject_raw.length == 0 {
+        guard !cert.is_ca && i == 0 && cert.has_san && cert.san_is_critical else {
+            return tls::Alert.BadCertificate;
+        }
     }
     // CABF BR Section 7.1.2.7.12: Non-empty Subject DN forbids critical SAN on end-entity certificates.
     if i == 0 && !is_direct_trust_anchor && cert.subject_raw.length > 0 && cert.has_san && cert.san_is_critical {
@@ -247,10 +238,7 @@ fn x509_validate_chain_linkage(
             return tls::Alert.UnknownCa;
         }
     }
-    if child_cert.signature_value.length > 0 {
-        return x509_verify_cert_sig_with_pss(child_cert, child_raw, parent_cert, parent_raw);
-    }
-    return tls::Alert.CloseNotify;
+    return x509_verify_cert_sig_with_pss(child_cert, child_raw, parent_cert, parent_raw);
 }
 
 fn x509_enforce_single_cert_nc(
@@ -326,12 +314,9 @@ fn x509_enforce_anchor_name_constraints(
     return tls::Alert.CloseNotify;
 }
 
-fn x509_verify_cert_against_anchor(
-    cert:                  const tls::ParsedCert&,
-    raw_cert:              const u8[:],
+inline fn x509_validate_anchor_ca_role(
     anchor:                const tls::TrustAnchor&,
     non_self_issued_count: i64,
-    now_unix:              i64,
 ) -> tls::Alert {
     if anchor.has_validity {
         // RFC 5280 Section 4.2.1.9: Basic Constraints - Conforming CA anchors MUST assert critical cA=TRUE.
@@ -347,20 +332,87 @@ fn x509_verify_cert_against_anchor(
     if anchor.path_len_constraint >= 0 && non_self_issued_count > anchor.path_len_constraint {
         return tls::Alert.BadCertificate;
     }
-    if anchor.has_validity {
-        if anchor.validity_not_before > anchor.validity_not_after {
-            return tls::Alert.BadCertificate;
-        }
-        if now_unix < anchor.validity_not_before || now_unix > anchor.validity_not_after {
-            return tls::Alert.CertificateExpired;
-        }
+    return tls::Alert.CloseNotify;
+}
+
+inline fn x509_validate_anchor_validity(anchor: const tls::TrustAnchor&, now_unix: i64) -> tls::Alert {
+    guard anchor.has_validity else { return tls::Alert.CloseNotify; }
+    if anchor.validity_not_before > anchor.validity_not_after {
+        return tls::Alert.BadCertificate;
     }
+    if now_unix < anchor.validity_not_before || now_unix > anchor.validity_not_after {
+        return tls::Alert.CertificateExpired;
+    }
+    return tls::Alert.CloseNotify;
+}
+
+fn x509_validate_anchor_constraints(
+    anchor:                const tls::TrustAnchor&,
+    is_signing_children:   bool,
+    non_self_issued_count: i64,
+    now_unix:              i64,
+    role:                  tls::CertValidationRole = tls::CertValidationRole.Server,
+) -> tls::Alert {
+    if is_signing_children {
+        let ca_alert = x509_validate_anchor_ca_role(anchor, non_self_issued_count);
+        guard ca_alert == tls::Alert.CloseNotify else { return ca_alert; }
+    }
+    if anchor.has_eku && (anchor.eku_mask & required_eku_mask_for_role(role)) == 0 {
+        return tls::Alert.UnsupportedCertificate;
+    }
+    return x509_validate_anchor_validity(anchor, now_unix);
+}
+
+fn x509_verify_cert_against_anchor(
+    cert:                  const tls::ParsedCert&,
+    raw_cert:              const u8[:],
+    anchor:                const tls::TrustAnchor&,
+    non_self_issued_count: i64,
+    now_unix:              i64,
+    role:                  tls::CertValidationRole = tls::CertValidationRole.Server,
+) -> tls::Alert {
+    let c_alert = x509_validate_anchor_constraints(anchor, true, non_self_issued_count, now_unix, role);
+    guard c_alert == tls::Alert.CloseNotify else { return c_alert; }
     let sig_oid = tls::span_slice(raw_cert, cert.sig_alg_oid);
     let tbs_data = tls::span_slice(raw_cert, cert.tbs_cert);
     let sig_bytes = tls::span_slice(raw_cert, cert.signature_value);
     return x509_verify_signature_by_oid(
         sig_oid, tbs_data, sig_bytes, anchor.spki_pubkey[..], tls::Alert.BadCertificate, cert.pss_hash_id,
     );
+}
+
+fn x509_validate_direct_anchor_node(
+    chain_certs: const tls::ParsedCert[..8]&,
+    raw_certs:   const u8[:][..8]&,
+    top_idx:     i64,
+    anchor:      const tls::TrustAnchor&,
+    now_unix:    i64,
+    role:        tls::CertValidationRole,
+) -> tls::Alert {
+    let cert .= chain_certs[top_idx];
+    let raw_cert = raw_certs[top_idx];
+    // For directly pinned single certs, require full DER digest match when the anchor came from a cert.
+    if top_idx == 0 && anchor.has_cert_der_hash {
+        let cert_hash = core::sha256(raw_cert);
+        guard core::ct_eq_tag32(anchor.cert_der_sha256, cert_hash) else {
+            return tls::Alert.BadCertificate;
+        }
+    }
+    let below_anchor = if top_idx > 0 {
+        x509_count_non_self_issued_below(chain_certs, raw_certs, top_idx)
+    } else {
+        0
+    };
+    let anchor_alert = x509_validate_anchor_constraints(anchor, top_idx > 0, below_anchor, now_unix, role);
+    guard anchor_alert == tls::Alert.CloseNotify else { return anchor_alert; }
+
+    let issuer_slice = tls::span_slice(raw_cert, cert.issuer_raw);
+    let subject_slice = tls::span_slice(raw_cert, cert.subject_raw);
+    if issuer_slice == subject_slice && cert.signature_value.length > 0 {
+        let self_alert = x509_verify_cert_sig_with_pss(cert, raw_cert, cert, raw_cert);
+        guard self_alert == tls::Alert.CloseNotify else { return self_alert; }
+    }
+    return x509_enforce_anchor_name_constraints(anchor, chain_certs, raw_certs, top_idx);
 }
 
 fn x509_validate_trust_anchor_node(
@@ -370,19 +422,14 @@ fn x509_validate_trust_anchor_node(
     trust_store:           const tls::TrustAnchorStore&,
     non_self_issued_count: i64,
     now_unix:              i64,
+    role:                  tls::CertValidationRole = tls::CertValidationRole.Server,
 ) -> tls::Alert {
     let cert .= chain_certs[top_idx];
     let raw_cert = raw_certs[top_idx];
     let direct_idx = x509_find_matching_trust_anchor(trust_store, cert, raw_cert);
     if direct_idx >= 0 {
-        let issuer_slice = tls::span_slice(raw_cert, cert.issuer_raw);
-        let subject_slice = tls::span_slice(raw_cert, cert.subject_raw);
-        if issuer_slice == subject_slice && cert.signature_value.length > 0 {
-            let self_alert = x509_verify_cert_sig_with_pss(cert, raw_cert, cert, raw_cert);
-            guard self_alert == tls::Alert.CloseNotify else { return self_alert; }
-        }
-        return x509_enforce_anchor_name_constraints(
-            trust_store.anchors[direct_idx], chain_certs, raw_certs, top_idx,
+        return x509_validate_direct_anchor_node(
+            chain_certs, raw_certs, top_idx, trust_store.anchors[direct_idx], now_unix, role,
         );
     }
 
@@ -402,7 +449,7 @@ fn x509_validate_trust_anchor_node(
             guard tls::span_slice(raw_cert, cert.akid_key_id) == anchor.skid_key_id[..] else { continue; }
         }
         saw_candidate = true;
-        var alert = x509_verify_cert_against_anchor(cert, raw_cert, anchor, non_self_issued_count, now_unix);
+        var alert = x509_verify_cert_against_anchor(cert, raw_cert, anchor, non_self_issued_count, now_unix, role);
         if alert == tls::Alert.CloseNotify {
             alert = x509_enforce_anchor_name_constraints(anchor, chain_certs, raw_certs, child_count);
         }
@@ -432,7 +479,7 @@ fn x509_validate_chain_nodes(
         if i + 1 == n {
             let total_non_si = x509_count_non_self_issued_below(chain_certs, raw_certs, n);
             let ta_alert = x509_validate_trust_anchor_node(
-                chain_certs, raw_certs, i, trust_store, total_non_si, now_unix,
+                chain_certs, raw_certs, i, trust_store, total_non_si, now_unix, role,
             );
             guard ta_alert == tls::Alert.CloseNotify else { return ta_alert; }
         }
