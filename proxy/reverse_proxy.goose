@@ -172,11 +172,17 @@ fn finish_proxy_request(rp: ReverseProxy&, target_idx: i32, success: bool) {
 
 // Finalizes an upstream exchange by evaluating the HTTP status code (5xx server errors
 // count as upstream failures for circuit breaking) and releasing active connection state.
-fn complete_upstream_exchange(rp: ReverseProxy&, target_idx: i32, status_code: i32, transport_ok: bool) {
+fn complete_upstream_exchange(
+    rp:           ReverseProxy&,
+    target_idx:   i32,
+    status_code:  i32,
+    transport_ok: bool,
+    rtt_us:       u32 = 0,
+) {
     let ok = transport_ok && status_code >= 100 && status_code < 500;
     finish_proxy_request(rp, target_idx, ok);
     if ok {
-        let _ = on_probe_success(rp.health_checker, rp.cluster, target_idx, 1000);
+        let _ = on_probe_success(rp.health_checker, rp.cluster, target_idx, rtt_us);
     } else {
         let _ = on_probe_failure(rp.health_checker, rp.cluster, target_idx);
     }
@@ -639,6 +645,7 @@ fn execute_proxy_exchange(
     }
 
     pool.conns[c_idx].rx_buf.clear();
+    let start_inst = core::monotonic_now();
     let reuse, ok_ex = exchange_prepared_wire_on_conn(
         pool.conns[c_idx], method, wire_req[..], out_resp, timeout_ms,
     );
@@ -668,6 +675,7 @@ fn execute_proxy_exchange(
         out_resp.set_header("Proxy-Status", ps_buf[..]);
     }
     let recorded_status = if headers_valid { out_resp.status_code } else { 0 };
-    complete_upstream_exchange(rp, target_idx, recorded_status, headers_valid);
+    let rtt_us = if headers_valid { proxy_internal::calc_probe_rtt_us(start_inst) } else { 0 };
+    complete_upstream_exchange(rp, target_idx, recorded_status, headers_valid, rtt_us);
     return headers_valid;
 }

@@ -15,6 +15,8 @@ import net.pool;
 import net.upstream_pool;
 import wire.h1;
 import wire.h1_exchange;
+import tls.types;
+import tls.client_handshake;
 import .load_balancer;
 import .health_check;
 import .reverse_proxy;
@@ -596,4 +598,83 @@ fn exchange_prepared_wire_impl(
         hdr_buf.compact_wire_buffer(leftover_start);
     }
     return proxy::WireReuse.Close, false;
+}
+
+// ---- Active Probe I/O & RTT Helpers ----------------------------------------
+
+inline fn calc_probe_rtt_us(start_inst: core::MonotonicInstant) -> u32 {
+    let elapsed_us = core::as_micros(core::duration_since(core::monotonic_now(), start_inst));
+    return min(max(elapsed_us, 1), 0xFFFFFFFF) as u32;
+}
+
+fn setup_probe_tls_transport(
+    fd:         i64,
+    target:     const proxy::UpstreamTarget&,
+    timeout_ms: u32,
+    ca_store:   const tls::TrustAnchorStore?,
+) -> net::Transport, bool {
+    var tls_cfg = tls::ClientHandshakeConfig {
+        handshake_timeout_ms: timeout_ms,
+        ..
+    };
+    let sni = if target.sni_host.len > 0 { target.sni_host[..] } else { target.host[..] };
+    guard tls_cfg.server_name.try_set(sni) else { return net::Transport.Tcp { fd: fd }, false; }
+    guard tls_cfg.alpn.try_set("http/1.1") else { return net::Transport.Tcp { fd: fd }, false; }
+    if ca_store {
+        tls_cfg.trust_store = ca_store;
+        tls_cfg.use_system_roots = false;
+    }
+    let slot_idx, ok_tls = tls::client_handshake(fd, tls_cfg);
+    guard ok_tls else { return net::Transport.Tcp { fd: fd }, false; }
+    return net::Transport.Tls {
+        fd:            fd,
+        record_seq_rx: 0,
+        record_seq_tx: 0,
+        cipher_slot:   slot_idx,
+    }, true;
+}
+
+fn read_probe_status_wire(
+    trans:      net::Transport&,
+    rx_buf:     u8[..512]&,
+    timeout_ms: u32,
+) {
+    var chunk: u8[512] = [0; 512];
+    while rx_buf.len < rx_buf.cap {
+        let rem = core::sub_sat_i64(rx_buf.cap, rx_buf.len);
+        let n = trans.recv_slice(chunk[..rem], timeout_ms);
+        guard n > 0 else { break; }
+        guard rx_buf.try_append(chunk[..n]) else { break; }
+        let _, _, has_crlf = rx_buf[..].split_once("\r\n");
+        if has_crlf { break; }
+    }
+}
+
+fn run_active_probe_io(
+    target:          const proxy::UpstreamTarget&,
+    req_wire:        const u8[:],
+    expected_status: u16,
+    timeout_ms:      u64,
+    ca_store:        const tls::TrustAnchorStore?,
+) -> u32, bool {
+    let eff_timeout = min(max(timeout_ms, 1), 0xFFFFFFFF) as u32;
+    let start_inst = core::monotonic_now();
+    let fd = net::tcp_connect(target.host[..], target.port, eff_timeout);
+    guard fd > 0 else { return 0, false; }
+
+    var trans: net::Transport = net::Transport.Tcp { fd: fd };
+    defer trans.close();
+
+    if target.use_tls {
+        let tls_trans, ok_tls = setup_probe_tls_transport(fd, target, eff_timeout, ca_store);
+        guard ok_tls else { return 0, false; }
+        trans = tls_trans;
+    }
+
+    guard wing::send_all(trans, req_wire) else { return 0, false; }
+
+    var rx_buf: u8[..512] = [];
+    read_probe_status_wire(trans, rx_buf, eff_timeout);
+    guard proxy::evaluate_probe_response(rx_buf[..], expected_status) else { return 0, false; }
+    return calc_probe_rtt_us(start_inst), true;
 }

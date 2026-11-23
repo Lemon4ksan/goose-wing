@@ -9,6 +9,7 @@ namespace proxy;
 
 import std;
 import core;
+import tls.types;
 import .load_balancer;
 import .internal;
 
@@ -254,4 +255,88 @@ fn check_probe_timeouts(
         proxy_internal::inc_timeouts_count(timed_out_count);
     }
     return timed_out_count;
+}
+
+// Unregisters `target_idx` from active probing, compacts slots, and shifts higher indices down by 1.
+fn unregister_target_for_probing(checker: ClusterHealthChecker&, target_idx: i32) -> bool {
+    guard target_idx >= 0 else { return false; }
+    let slot_idx = proxy_internal::find_probe_slot(checker, target_idx);
+    let found = slot_idx != proxy_internal::HEALTH_SLOT_NONE && slot_idx < checker.slots.len;
+    if found {
+        var i = slot_idx as i64;
+        let last = core::sub_sat_i64(checker.slots.len, 1);
+        while i < last {
+            let next_i = core::add_sat_i64(i, 1);
+            checker.slots[i] = checker.slots[next_i];
+            i = next_i;
+        }
+        checker.slots.resize(last);
+    }
+    for &slot in checker.slots {
+        if slot.in_use && slot.target_idx > target_idx {
+            slot.target_idx = core::sub_sat_i64(slot.target_idx, 1) as i32;
+        }
+    }
+    return found;
+}
+
+// Executes a live HTTP/HTTPS health probe against `cluster.targets[target_idx]` and updates health state.
+fn execute_active_health_probe(
+    checker:    ClusterHealthChecker&,
+    cluster:    UpstreamCluster&,
+    target_idx: i32,
+    now_ms:     u64,
+    ca_store:   const tls::TrustAnchorStore? = null,
+) -> HealthState {
+    guard target_idx >= 0 && target_idx < cluster.targets.len else { return HealthState.Down; }
+    let slot_idx = proxy_internal::find_probe_slot(checker, target_idx);
+    guard slot_idx != proxy_internal::HEALTH_SLOT_NONE && slot_idx < checker.slots.len else {
+        return HealthState.Down;
+    }
+
+    checker.total_checks_dispatched = core::add_sat_u64(checker.total_checks_dispatched, 1);
+    checker.slots[slot_idx].health.last_probe_time_ms = now_ms;
+
+    let target .= cluster.targets[target_idx];
+    var host_buf: u8[..160] = [];
+    var req_buf:  u8[..512] = [];
+    let ok_fmt = proxy_internal::format_upstream_authority(target.host[..], target.port, false, host_buf) &&
+        format_health_probe_request(host_buf[..], checker.config.path[..], req_buf);
+    guard ok_fmt else {
+        return on_probe_failure(checker, cluster, target_idx);
+    }
+
+    let rtt_us, ok_probe = proxy_internal::run_active_probe_io(
+        target,
+        req_buf[..],
+        checker.config.expected_status,
+        checker.config.timeout_ms,
+        ca_store,
+    );
+    if ok_probe {
+        return on_probe_success(checker, cluster, target_idx, rtt_us);
+    }
+    return on_probe_failure(checker, cluster, target_idx);
+}
+
+// Executes active probes for all registered slots whose probe interval has elapsed at `now_ms`.
+fn step_due_health_probes(
+    checker:  ClusterHealthChecker&,
+    cluster:  UpstreamCluster&,
+    now_ms:   u64,
+    ca_store: const tls::TrustAnchorStore? = null,
+) -> i32 {
+    var executed: i32 = 0;
+    for i in checker.slots.len {
+        guard checker.slots[i].in_use else { continue; }
+        let t_idx = checker.slots[i].target_idx;
+        guard t_idx >= 0 && t_idx < cluster.targets.len else { continue; }
+        let last_ms = checker.slots[i].health.last_probe_time_ms;
+        let total = checker.slots[i].health.total_probes;
+        let elapsed = core::sub_sat_u64(now_ms, last_ms);
+        guard total == 0 || elapsed >= checker.config.interval_ms else { continue; }
+        let _ = execute_active_health_probe(checker, cluster, t_idx, now_ms, ca_store);
+        executed = (core::add_sat_u64(executed as u64, 1)) as i32;
+    }
+    return executed;
 }
