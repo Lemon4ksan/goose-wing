@@ -904,7 +904,11 @@ uint16_t wing_get_env_port(uint16_t default_port) {
 int64_t wing_tcp_listen(wing_bytes_ro host, uint16_t port, int32_t backlog) {
     wing_tcp_init();
 
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    char host_str[128];
+    slice_to_cstr(host, host_str, sizeof(host_str));
+
+    int is_v6 = (strchr(host_str, ':') != NULL);
+    SOCKET s = socket(is_v6 ? AF_INET6 : AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) {
         return -1;
     }
@@ -931,25 +935,48 @@ int64_t wing_tcp_listen(wing_bytes_ro host, uint16_t port, int32_t backlog) {
 #endif
 #endif
 
-    char host_str[128];
-    slice_to_cstr(host, host_str, sizeof(host_str));
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-
-    if (host_str[0] == '\0' || strcmp(host_str, "0.0.0.0") == 0) {
-        addr.sin_addr.s_addr = INADDR_ANY;
-    } else if (strcmp(host_str, "127.0.0.1") == 0 || strcmp(host_str, "localhost") == 0) {
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    if (is_v6) {
+        int v6only = (strcmp(host_str, "::") == 0) ? 0 : 1;
+        if (setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&v6only, sizeof(v6only)) == SOCKET_ERROR) {
+            closesocket(s);
+            return -1;
+        }
+        struct sockaddr_in6 addr6;
+        memset(&addr6, 0, sizeof(addr6));
+        addr6.sin6_family = AF_INET6;
+        addr6.sin6_port = htons(port);
+        if (inet_pton(AF_INET6, host_str, &addr6.sin6_addr) != 1) {
+            closesocket(s);
+            return -1;
+        }
+        if (bind(s, (struct sockaddr *)&addr6, sizeof(addr6)) == SOCKET_ERROR) {
+            closesocket(s);
+            return -1;
+        }
     } else {
-        addr.sin_addr.s_addr = inet_addr(host_str);
-    }
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
 
-    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
-        closesocket(s);
-        return -1;
+        if (host_str[0] == '\0' || strcmp(host_str, "0.0.0.0") == 0) {
+            addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        } else if (strcmp(host_str, "localhost") == 0) {
+            if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
+                closesocket(s);
+                return -1;
+            }
+        } else {
+            if (inet_pton(AF_INET, host_str, &addr.sin_addr) != 1) {
+                closesocket(s);
+                return -1;
+            }
+        }
+
+        if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
+            closesocket(s);
+            return -1;
+        }
     }
 
     if (listen(s, backlog > 0 ? backlog : 128) == SOCKET_ERROR) {
@@ -1142,19 +1169,34 @@ int32_t wing_tcp_get_peer_ip(int64_t sock_fd, wing_bytes_rw out_ip) {
     if (out_ip.data == NULL || out_ip.len <= 0) return -1;
     const char *fallback = "127.0.0.1";
     if (sock_fd > 0) {
-        struct sockaddr_in addr;
+        struct sockaddr_storage ss;
 #ifdef _WIN32
-        int len = sizeof(addr);
+        int len = (int)sizeof(ss);
 #else
-        socklen_t len = sizeof(addr);
+        socklen_t len = (socklen_t)sizeof(ss);
 #endif
-        memset(&addr, 0, sizeof(addr));
-        if (getpeername((SOCKET)sock_fd, (struct sockaddr *)&addr, &len) == 0 && addr.sin_family == AF_INET) {
-            const char *ip_str = inet_ntoa(addr.sin_addr);
-            if (ip_str && ip_str[0] != '\0') {
-                int64_t ip_len = (int64_t)strlen(ip_str);
+        memset(&ss, 0, sizeof(ss));
+        if (getpeername((SOCKET)sock_fd, (struct sockaddr *)&ss, &len) == 0) {
+            char ip_buf[INET6_ADDRSTRLEN];
+            ip_buf[0] = '\0';
+            const char *res = NULL;
+            if (ss.ss_family == AF_INET) {
+                const struct sockaddr_in *sin = (const struct sockaddr_in *)&ss;
+                res = inet_ntop(AF_INET, &sin->sin_addr, ip_buf, sizeof(ip_buf));
+            } else if (ss.ss_family == AF_INET6) {
+                const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)&ss;
+                if (IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr)) {
+                    struct in_addr mapped;
+                    memcpy(&mapped, &sin6->sin6_addr.s6_addr[12], sizeof(mapped));
+                    res = inet_ntop(AF_INET, &mapped, ip_buf, sizeof(ip_buf));
+                } else {
+                    res = inet_ntop(AF_INET6, &sin6->sin6_addr, ip_buf, sizeof(ip_buf));
+                }
+            }
+            if (res != NULL && ip_buf[0] != '\0') {
+                int64_t ip_len = (int64_t)strlen(ip_buf);
                 if (ip_len > out_ip.len) ip_len = out_ip.len;
-                memcpy(out_ip.data, ip_str, (size_t)ip_len);
+                memcpy(out_ip.data, ip_buf, (size_t)ip_len);
                 return (int32_t)ip_len;
             }
         }
