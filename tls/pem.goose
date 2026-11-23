@@ -143,9 +143,10 @@ fn bind_server_rsa_key(
     guard ok_pub && core::ct_eq_bytes(n_be, cert_n) && core::ct_eq_bytes(e_be, cert_e) else {
         return false;
     }
-    let slot = alloc_rsa_key_slot(n_be, e_be, d_be);
-    guard slot >= 0 else { return false; }
+    let slot, gen = alloc_rsa_key_slot(n_be, e_be, d_be);
+    guard slot >= 0 && gen != 0 else { return false; }
     out_cfg.rsa_key_slot = slot;
+    out_cfg.rsa_key_gen = gen;
     out_cfg.key_kind = PrivateKeyKind.Rsa;
     return true;
 }
@@ -211,6 +212,7 @@ fn pem_load_extra_certs(
     var idx = start_idx;
     var label: u8[..64]   = [];
     var der:   u8[..4096] = [];
+    defer core::secure_zeroize_slice(der[..]);
     var parsed = ParsedCert { .. };
     while idx < cert_pem.len {
         let rel_begin = core::find(cert_pem[idx..], tls_internal::PEM_PRE_EB);
@@ -219,6 +221,9 @@ fn pem_load_extra_certs(
         if label[..] == "CERTIFICATE" {
             guard parse_x509_certificate(der[..], parsed) else { return false; }
             guard out_cfg.extra_certs_der.try_push(copy(der)) else { return false; }
+        } else {
+            core::secure_zeroize_slice(der[..]);
+            der.clear();
         }
     }
     return true;

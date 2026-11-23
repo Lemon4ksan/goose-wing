@@ -457,10 +457,11 @@ struct ClientHandshakeConfig {
 const MAX_RSA_SERVER_KEYS: i64 = 256;
 
 struct RsaServerKey {
-    in_use: bool      = false,
-    n:      u8[..512] = [],
-    e:      u8[..512] = [],
-    d:      u8[..512] = [],
+    in_use:     bool      = false,
+    generation: u32       = 0,
+    n:          u8[..512] = [],
+    e:          u8[..512] = [],
+    d:          u8[..512] = [],
 }
 
 struct ServerHandshakeConfig {
@@ -469,6 +470,7 @@ struct ServerHandshakeConfig {
     priv_seed:            u8[32]           = [0; 32],
     key_kind:             PrivateKeyKind   = PrivateKeyKind.Unknown,
     rsa_key_slot:         i32              = -1,
+    rsa_key_gen:          u32              = 0,
     alpn:                 u8[..255]        = [],
     compressed_cert_algo: u16              = 0,
     compressed_cert_data: u8[..4096]       = [],
@@ -489,6 +491,16 @@ var g_tls_entropy_pool:    u8[32]            = [0; 32];
 var g_tls_entropy_counter: u64               = 0;
 var g_tls_cipher_slots:    CipherSlot[>..]   = [];
 var g_tls_rsa_keys:        RsaServerKey[>..] = [];
+var g_tls_rsa_next_gen:    u32               = 0;
+
+inline fn next_rsa_key_generation() -> u32 {
+    g_tls_rsa_next_gen = if g_tls_rsa_next_gen == 0xFFFFFFFF {
+        1
+    } else {
+        core::add_sat_u32(g_tls_rsa_next_gen, 1)
+    };
+    return g_tls_rsa_next_gen;
+}
 
 fn zeroize_rsa_server_key(key: RsaServerKey&) {
     core::secure_zeroize_slice(key.n[..]);
@@ -515,36 +527,45 @@ fn fill_rsa_server_key(
     return true;
 }
 
-fn alloc_rsa_key_slot(n_be: const u8[:], e_be: const u8[:], d_be: const u8[:]) -> i32 {
+fn alloc_rsa_key_slot(n_be: const u8[:], e_be: const u8[:], d_be: const u8[:]) -> i32, u32 {
     guard n_be.len >= 256 && n_be.len <= 512 &&
         e_be.len >= 1 && e_be.len <= n_be.len &&
         d_be.len >= 1 && d_be.len <= 512 else {
-        return -1;
+        return -1, 0;
     }
     for i in g_tls_rsa_keys.len {
         let slot .= g_tls_rsa_keys[i];
         if !slot.in_use {
-            return if fill_rsa_server_key(slot, n_be, e_be, d_be) { i as i32 } else { -1 };
+            guard fill_rsa_server_key(slot, n_be, e_be, d_be) else { return -1, 0; }
+            let gen = next_rsa_key_generation();
+            slot.generation = gen;
+            return i as i32, gen;
         }
     }
-    guard g_tls_rsa_keys.len < MAX_RSA_SERVER_KEYS else { return -1; }
+    guard g_tls_rsa_keys.len < MAX_RSA_SERVER_KEYS else { return -1, 0; }
     let new_idx = g_tls_rsa_keys.len;
     g_tls_rsa_keys.push(RsaServerKey { .. });
     let slot .= g_tls_rsa_keys[new_idx];
-    guard fill_rsa_server_key(slot, n_be, e_be, d_be) else { return -1; }
-    return new_idx as i32;
+    guard fill_rsa_server_key(slot, n_be, e_be, d_be) else { return -1, 0; }
+    let gen = next_rsa_key_generation();
+    slot.generation = gen;
+    return new_idx as i32, gen;
 }
 
-fn release_rsa_key_slot(slot_idx: i32) {
+fn release_rsa_key_slot(slot_idx: i32, generation: u32) {
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < g_tls_rsa_keys.len else { return; }
-    zeroize_rsa_server_key(g_tls_rsa_keys[idx]);
+    guard generation != 0 && idx >= 0 && idx < g_tls_rsa_keys.len else { return; }
+    let slot .= g_tls_rsa_keys[idx];
+    guard slot.in_use && slot.generation == generation else { return; }
+    zeroize_rsa_server_key(slot);
+    slot.generation = next_rsa_key_generation();
 }
 
 fn release_server_credentials(cfg: ServerHandshakeConfig&) {
     core::secure_zeroize_32(cfg.priv_seed);
-    release_rsa_key_slot(cfg.rsa_key_slot);
+    release_rsa_key_slot(cfg.rsa_key_slot, cfg.rsa_key_gen);
     cfg.rsa_key_slot = -1;
+    cfg.rsa_key_gen = 0;
     cfg.key_kind = PrivateKeyKind.Unknown;
     cfg.cert_der.clear();
     cfg.extra_certs_der.clear();

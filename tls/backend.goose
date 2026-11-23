@@ -221,7 +221,9 @@ fn tls_endpoint_client_sni(ep: const TlsEndpoint&) -> u8[..255] {
         tls_internal::is_live_pure_slot(tls_internal::g_pure_tls_slots[idx], ep.pure_gen) else {
         return out;
     }
-    let _ = out.try_set(tls_internal::g_pure_tls_slots[idx].server_name[..]);
+    let slot .= tls_internal::g_pure_tls_slots[idx];
+    guard slot.is_server && slot.client_hello_parsed else { return out; }
+    let _ = out.try_set(slot.server_name[..]);
     return out;
 }
 
@@ -257,14 +259,17 @@ fn tls_endpoint_set_server_credentials_pem(
         return TlsBackendStatus.HandshakeError;
     }
     if slot.rsa_key_slot >= 0 {
-        release_rsa_key_slot(slot.rsa_key_slot);
+        release_rsa_key_slot(slot.rsa_key_slot, slot.rsa_key_gen);
         slot.rsa_key_slot = -1;
+        slot.rsa_key_gen = 0;
     }
     slot.extra_certs_der = copy(srv_cfg.extra_certs_der);
     slot.priv_seed = srv_cfg.priv_seed;
     slot.key_kind = srv_cfg.key_kind;
     slot.rsa_key_slot = srv_cfg.rsa_key_slot;
+    slot.rsa_key_gen = srv_cfg.rsa_key_gen;
     srv_cfg.rsa_key_slot = -1;
+    srv_cfg.rsa_key_gen = 0;
     slot.defer_sni_credentials = false;
     slot.stage = tls_internal::PureHsStage.ServerWaitClientHello;
     return TlsBackendStatus.Ok;

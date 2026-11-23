@@ -50,6 +50,7 @@ struct PureTlsSlot {
     generation:             u32                   = 0,
     is_server:              bool                  = false,
     defer_sni_credentials:  bool                  = false,
+    client_hello_parsed:    bool                  = false,
     require_client_cert:    bool                  = false,
     insecure_skip_verify:   bool                  = false,
     use_system_roots:       bool                  = true,
@@ -77,6 +78,7 @@ struct PureTlsSlot {
     extra_certs_der:        u8[..4096][..3]       = [],
     key_kind:               tls::PrivateKeyKind   = tls::PrivateKeyKind.Unknown,
     rsa_key_slot:           i32                   = -1,
+    rsa_key_gen:            u32                   = 0,
     priv_seed:              u8[32]                = [0; 32],
     trust_store:            tls::TrustAnchorStore = tls::TrustAnchorStore { .. },
     crl_der:                u8[..4096]            = [],
@@ -138,7 +140,7 @@ fn reset_and_wipe_pure_slot(slot: PureTlsSlot&) {
         tls::free_cipher_slot(slot.cipher_slot);
     }
     if slot.rsa_key_slot >= 0 {
-        tls::release_rsa_key_slot(slot.rsa_key_slot);
+        tls::release_rsa_key_slot(slot.rsa_key_slot, slot.rsa_key_gen);
     }
     wipe_pure_hs_secrets(slot);
     core::secure_zeroize_32(slot.priv_seed);

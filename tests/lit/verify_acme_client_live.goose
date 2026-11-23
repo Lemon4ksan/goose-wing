@@ -938,6 +938,32 @@ fn test_acme_client_boundary_guards() {
     assert(!client::acme_fetch_directory(sess, "https://acme.example/dir-big", dir));
     assert(dir.new_nonce.len == 0);
 
+    // Deactivated authz with cached "valid" http-01 challenge MUST fail closed without publishing HTTP-01
+    sess.max_response_body_bytes = 65536;
+    let _ = sess.mock_route(
+        "POST",
+        "https://acme.example/o-deact",
+        201,
+        "{\"status\":\"pending\",\"authorizations\":[\"https://acme.example/az-deact\"],\"finalize\":\"https://acme.example/fin-deact\"}",
+    );
+    sess.add_mock_header("Replay-Nonce", "n-deact-1");
+    sess.add_mock_header("Location", "https://acme.example/ord-deact");
+    let _ = sess.mock_route(
+        "POST",
+        "https://acme.example/az-deact",
+        200,
+        "{\"status\":\"deactivated\",\"challenges\":[{\"type\":\"http-01\",\"url\":\"https://acme.example/ch-deact\",\"status\":\"valid\",\"token\":\"LoqXcYV8q5ONbJQxbmR7SC\"}]}",
+    );
+    sess.add_mock_header("Replay-Nonce", "n-deact-2");
+    assert(acme_m.dir.new_order.try_set("https://acme.example/o-deact"));
+    assert(acme_m.nonce.try_set("n-deact-0"));
+    var hook_deact = MockHttp01Hook { .. };
+    pem.append("stale");
+    assert(!client::acme_obtain_cert_http01(
+        sess, acme_m, acct_priv, cert_priv, cfg_tos, ok_doms[..], hook_deact, pem,
+    ));
+    assert(pem.len == 0 && hook_deact.publish_count == 0 && acme_m.nonce[..] == "n-deact-2");
+
     print("ACME_CLIENT_BOUNDARY_GUARDS: PASS\n");
 }
 

@@ -42,12 +42,24 @@ struct AcmeOrder {
     certificate_url: u8[..256]       = [],
 }
 
+// RFC 8555 Section 7.1.6: Status Changes - Authorization lifecycle states.
+enum AcmeAuthzStatus {
+    Pending,
+    Valid,
+    Invalid,
+    Deactivated,
+    Expired,
+    Revoked,
+    Unknown,
+}
+
 // RFC 8555 Section 7.1.5 / 8.3: HTTP-01 challenge metadata and precomputed key authorization.
 struct AcmeHttp01Challenge {
-    url:      u8[..256]       = [],
-    token:    u8[..64]        = [],
-    key_auth: u8[..256]       = [],
-    status:   AcmeOrderStatus = AcmeOrderStatus.Unknown,
+    url:          u8[..256]       = [],
+    token:        u8[..64]        = [],
+    key_auth:     u8[..256]       = [],
+    status:       AcmeOrderStatus = AcmeOrderStatus.Unknown,
+    authz_status: AcmeAuthzStatus = AcmeAuthzStatus.Unknown,
 }
 
 // ---- Internal Key, URL, and Status Helpers ---------------------------------
@@ -106,9 +118,19 @@ fn parse_acme_challenge_status(raw: const u8[:]) -> AcmeOrderStatus {
     return AcmeOrderStatus.Unknown;
 }
 
-inline fn is_valid_acme_authz_status(raw: const u8[:]) -> bool {
-    return raw == "pending" || raw == "valid" || raw == "invalid" ||
-        raw == "deactivated" || raw == "expired" || raw == "revoked";
+// Parses an RFC 8555 Section 7.1.6 authorization status string, failing closed to `Unknown`.
+//
+// Example:
+//   raw = "deactivated"
+//   returns: AcmeAuthzStatus.Deactivated
+fn parse_acme_authz_status(raw: const u8[:]) -> AcmeAuthzStatus {
+    if raw == "pending" { return AcmeAuthzStatus.Pending; }
+    if raw == "valid" { return AcmeAuthzStatus.Valid; }
+    if raw == "invalid" { return AcmeAuthzStatus.Invalid; }
+    if raw == "deactivated" { return AcmeAuthzStatus.Deactivated; }
+    if raw == "expired" { return AcmeAuthzStatus.Expired; }
+    if raw == "revoked" { return AcmeAuthzStatus.Revoked; }
+    return AcmeAuthzStatus.Unknown;
 }
 
 inline fn read_acme_url_field<B>(reader: json::Reader&, dst: B&, had_err: bool&) {
@@ -376,73 +398,100 @@ fn acme_parse_order(raw_json: const u8[:], out_ord: AcmeOrder&) -> bool {
     return true;
 }
 
-inline fn read_acme_challenge_status_field(
-    reader:  json::Reader&,
-    out_st:  AcmeOrderStatus&,
-    had_err: bool&,
-) {
+struct AcmeChallengeCandidate {
+    ch_type:   u8[..32]        = [],
+    type_ok:   bool            = false,
+    url:       u8[..256]       = [],
+    url_ok:    bool            = false,
+    status:    AcmeOrderStatus = AcmeOrderStatus.Unknown,
+    status_ok: bool            = false,
+    token:     u8[..64]        = [],
+    token_ok:  bool            = false,
+    seen_mask: u32             = 0,
+    had_err:   bool            = false,
+}
+
+inline fn read_challenge_type_field(reader: json::Reader&, cand: AcmeChallengeCandidate&) {
     if json::peek(reader) != '"' {
         json::skip(reader);
-        had_err = true;
+        cand.had_err = true;
+        return;
+    }
+    let ok_str = core::read_json_string_into(reader, cand.ch_type);
+    if ok_str && cand.ch_type.len == 0 {
+        cand.had_err = true;
+        return;
+    }
+    cand.type_ok = ok_str;
+}
+
+inline fn read_challenge_url_candidate(reader: json::Reader&, cand: AcmeChallengeCandidate&) {
+    if json::peek(reader) != '"' {
+        json::skip(reader);
+        cand.url_ok = false;
+        return;
+    }
+    cand.url_ok = core::read_json_string_into(reader, cand.url) && is_valid_acme_http_url(cand.url[..]);
+}
+
+inline fn read_challenge_status_candidate(reader: json::Reader&, cand: AcmeChallengeCandidate&) {
+    if json::peek(reader) != '"' {
+        json::skip(reader);
+        cand.status_ok = false;
         return;
     }
     var st_buf: u8[..32] = [];
-    if !core::read_json_string_into(reader, st_buf) {
-        had_err = true;
-        return;
+    if core::read_json_string_into(reader, st_buf) {
+        cand.status = parse_acme_challenge_status(st_buf[..]);
+        cand.status_ok = cand.status != AcmeOrderStatus.Unknown;
+    } else {
+        cand.status_ok = false;
     }
-    out_st = parse_acme_challenge_status(st_buf[..]);
-    if out_st == AcmeOrderStatus.Unknown { had_err = true; }
 }
 
-inline fn read_acme_challenge_str_field<B>(reader: json::Reader&, dst: B&, had_err: bool&) {
+inline fn read_challenge_token_candidate(reader: json::Reader&, cand: AcmeChallengeCandidate&) {
     if json::peek(reader) != '"' {
         json::skip(reader);
-        had_err = true;
+        cand.token_ok = false;
         return;
     }
-    if !core::read_json_string_into(reader, dst) {
-        had_err = true;
-    }
+    cand.token_ok = core::read_json_string_into(reader, cand.token);
 }
 
-// Parses one member of an RFC 8555 Section 7.1.5 Challenge JSON object.
+// Parses one member of an RFC 8555 Section 7.1.5 Challenge JSON object without failing
+// on sibling challenge token/url/status sizes or unknown sibling challenge statuses.
 //
 // Example:
 //   key = "type", reader at "\"http-01\""
-//   sets: ch_type = "http-01", seen_mask |= 1
+//   sets: cand.ch_type = "http-01", cand.seen_mask |= 1
 inline fn parse_acme_challenge_member(
-    key:       const u8[:],
-    reader:    json::Reader&,
-    ch_type:   u8[..32]&,
-    ch:        AcmeHttp01Challenge&,
-    seen_mask: u32&,
-    had_err:   bool&,
+    key:    const u8[:],
+    reader: json::Reader&,
+    cand:   AcmeChallengeCandidate&,
 ) {
     if key.contains('\\') {
-        had_err = true;
+        cand.had_err = true;
         json::skip(reader);
         return;
     }
     if key == "type" {
-        mark_acme_key_seen(seen_mask, 1, had_err);
-        read_acme_challenge_str_field(reader, ch_type, had_err);
-        if ch_type.len == 0 { had_err = true; }
+        mark_acme_key_seen(cand.seen_mask, 1, cand.had_err);
+        read_challenge_type_field(reader, cand);
         return;
     }
     if key == "url" {
-        mark_acme_key_seen(seen_mask, 2, had_err);
-        read_acme_url_field(reader, ch.url, had_err);
+        mark_acme_key_seen(cand.seen_mask, 2, cand.had_err);
+        read_challenge_url_candidate(reader, cand);
         return;
     }
     if key == "status" {
-        mark_acme_key_seen(seen_mask, 4, had_err);
-        read_acme_challenge_status_field(reader, ch.status, had_err);
+        mark_acme_key_seen(cand.seen_mask, 4, cand.had_err);
+        read_challenge_status_candidate(reader, cand);
         return;
     }
     if key == "token" {
-        mark_acme_key_seen(seen_mask, 8, had_err);
-        read_acme_challenge_str_field(reader, ch.token, had_err);
+        mark_acme_key_seen(cand.seen_mask, 8, cand.had_err);
+        read_challenge_token_candidate(reader, cand);
         return;
     }
     json::skip(reader);
@@ -469,38 +518,52 @@ inline fn parse_single_acme_challenge_obj(
         state_mask |= ACME_AUTHZ_HAD_ERROR;
         return;
     }
-    var ch_type: u8[..32] = [];
-    var cand = AcmeHttp01Challenge { .. };
-    var seen_mask: u32 = 0;
-    var item_err = false;
+    var cand = AcmeChallengeCandidate { .. };
     json::each_member(reader) { key =>
-        parse_acme_challenge_member(key, reader, ch_type, cand, seen_mask, item_err);
+        parse_acme_challenge_member(key, reader, cand);
     };
-    if item_err || (seen_mask & 1) == 0 {
+    if cand.had_err || (cand.seen_mask & 1) == 0 {
         state_mask |= ACME_AUTHZ_HAD_ERROR;
         return;
     }
-    if ch_type[..] != "http-01" { return; }
-    if (state_mask & ACME_AUTHZ_FOUND_HTTP01) != 0 || (seen_mask & 15) != 15 {
+    if !cand.type_ok || cand.ch_type[..] != "http-01" {
+        return;
+    }
+    if (state_mask & ACME_AUTHZ_FOUND_HTTP01) != 0 ||
+        (cand.seen_mask & 15) != 15 ||
+        !cand.url_ok ||
+        !cand.status_ok ||
+        !cand.token_ok {
         state_mask |= ACME_AUTHZ_HAD_ERROR;
         return;
     }
-    guard build_acme_key_authorization(cand.token[..], thumbprint, cand.key_auth) else {
+    guard build_acme_key_authorization(cand.token[..], thumbprint, out_ch.key_auth) else {
         state_mask |= ACME_AUTHZ_HAD_ERROR;
         return;
     }
+    out_ch.url = cand.url;
+    out_ch.token = cand.token;
+    out_ch.status = cand.status;
     state_mask |= ACME_AUTHZ_FOUND_HTTP01;
-    out_ch = cand;
 }
 
-inline fn read_acme_authz_status_field(reader: json::Reader&, state_mask: u32&) {
+inline fn read_acme_authz_status_field(
+    reader:     json::Reader&,
+    out_status: AcmeAuthzStatus&,
+    state_mask: u32&,
+) {
     if json::peek(reader) != '"' {
         json::skip(reader);
         state_mask |= ACME_AUTHZ_HAD_ERROR;
         return;
     }
     var st_buf: u8[..32] = [];
-    if !core::read_json_string_into(reader, st_buf) || !is_valid_acme_authz_status(st_buf[..]) {
+    if !core::read_json_string_into(reader, st_buf) {
+        state_mask |= ACME_AUTHZ_HAD_ERROR;
+        return;
+    }
+    out_status = parse_acme_authz_status(st_buf[..]);
+    if out_status == AcmeAuthzStatus.Unknown {
         state_mask |= ACME_AUTHZ_HAD_ERROR;
     }
 }
@@ -509,7 +572,7 @@ inline fn read_acme_authz_status_field(reader: json::Reader&, state_mask: u32&) 
 //
 // Example:
 //   key = "status", reader at "\"pending\""
-//   sets: ACME_AUTHZ_SEEN_STATUS in state_mask
+//   sets: ACME_AUTHZ_SEEN_STATUS in state_mask, ch.authz_status = Pending
 inline fn parse_acme_authz_member(
     key:        const u8[:],
     reader:     json::Reader&,
@@ -525,7 +588,7 @@ inline fn parse_acme_authz_member(
     if key == "status" {
         if (state_mask & ACME_AUTHZ_SEEN_STATUS) != 0 { state_mask |= ACME_AUTHZ_HAD_ERROR; }
         state_mask |= ACME_AUTHZ_SEEN_STATUS;
-        read_acme_authz_status_field(reader, state_mask);
+        read_acme_authz_status_field(reader, ch.authz_status, state_mask);
         return;
     }
     if key == "challenges" {

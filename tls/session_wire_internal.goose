@@ -351,6 +351,7 @@ fn sign_certificate_verify<B>(
     cv_msg:       const u8[:],
     out_sig:      B&,
     rsa_key_slot: i32 = -1,
+    rsa_key_gen:  u32 = 0,
 ) -> u16, bool {
     out_sig.clear();
     let scheme = detect_cert_sig_scheme(cert_der);
@@ -364,9 +365,11 @@ fn sign_certificate_verify<B>(
     }
     if scheme == rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA256 {
         let slot_i = rsa_key_slot as i64;
-        guard slot_i >= 0 && slot_i < tls::g_tls_rsa_keys.len else { return 0, false; }
+        guard rsa_key_gen != 0 && slot_i >= 0 && slot_i < tls::g_tls_rsa_keys.len else {
+            return 0, false;
+        }
         let rkey .= tls::g_tls_rsa_keys[slot_i];
-        guard rkey.in_use else { return 0, false; }
+        guard rkey.in_use && rkey.generation == rsa_key_gen else { return 0, false; }
         var salt: u8[32] = [0; 32];
         defer core::secure_zeroize_32(salt);
         guard random_bytes_32_checked(salt) else { return 0, false; }

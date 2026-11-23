@@ -66,21 +66,46 @@ inline fn header_map_has_token(
 }
 
 // Validates RFC 6455 Section 4.1 WebSocket upgrade headers under `UpgradePolicy.AllowWebSocket`.
-fn is_valid_websocket_upgrade_headers(in_headers: const http::HeaderMap&, config: const proxy::Config&) -> bool {
+fn is_valid_websocket_upgrade_headers(
+    in_headers: const http::HeaderMap&,
+    config:     const proxy::Config&,
+    method:     const u8[:] = "GET",
+) -> bool {
     guard config.upgrade_policy == proxy::UpgradePolicy.AllowWebSocket else { return false; }
-    // RFC 6455 Section 4.1: Client Requirements - require Connection: upgrade, Upgrade: websocket, key, and version 13.
+    guard method.eq_ascii_fold("GET") && !config.http_version[..].eq_ascii_fold("HTTP/1.0") else {
+        return false;
+    }
+    // RFC 6455 Section 4.1: Client Requirements - require Connection: upgrade, Upgrade: websocket, 16B key, and v13.
     guard http::is_token_in_connection_header_map(in_headers, "upgrade") else { return false; }
     guard header_map_has_token(in_headers, "upgrade", "websocket") else { return false; }
-    let ws_key = http::get_header(in_headers, "sec-websocket-key").trim_lws();
-    let ws_ver = http::get_header(in_headers, "sec-websocket-version").trim_lws();
-    return ws_key.len > 0 && ws_ver == "13";
+
+    var key_count: i64 = 0;
+    var ver_count: i64 = 0;
+    var key_valid = false;
+    var ver_valid = false;
+    for &entry in in_headers.entries {
+        let name = http::entry_name(in_headers, entry);
+        if name.eq_ascii_fold("sec-websocket-key") {
+            key_count = core::add_sat_i64(key_count, 1);
+            let ws_key = http::entry_value(in_headers, entry).trim_lws();
+            var decoded_key: u8[..24] = [];
+            key_valid = ws_key.len == 24 &&
+                core::base64_decode(ws_key, decoded_key) &&
+                decoded_key.len == 16;
+        } else if name.eq_ascii_fold("sec-websocket-version") {
+            ver_count = core::add_sat_i64(ver_count, 1);
+            ver_valid = http::entry_value(in_headers, entry).trim_lws() == "13";
+        }
+    }
+    return key_count == 1 && ver_count == 1 && key_valid && ver_valid;
 }
 
 fn should_forward_header(
-    name:       const u8[:],
-    val:        const u8[:],
-    in_headers: const http::HeaderMap&,
-    config:     const proxy::Config&,
+    name:               const u8[:],
+    val:                const u8[:],
+    in_headers:         const http::HeaderMap&,
+    config:             const proxy::Config&,
+    ws_upgrade_allowed: bool,
 ) -> bool {
     if name.eq_ascii_fold("host") {
         return config.preserve_host;
@@ -94,6 +119,16 @@ fn should_forward_header(
     // RFC 9112 Section 6.3: Message Body Length - remove Content-Length if Transfer-Encoding is present.
     if name.eq_ascii_fold("content-length") && http::has_header(in_headers, "transfer-encoding") {
         return false;
+    }
+    // RFC 9110 Section 7.8: Strip Upgrade and Sec-WebSocket-* under Strip, or under AllowWebSocket unless valid.
+    if name.eq_ascii_fold("upgrade") || name.starts_with_fold("sec-websocket-") {
+        guard config.upgrade_policy == proxy::UpgradePolicy.AllowWebSocket && ws_upgrade_allowed else {
+            return false;
+        }
+        if name.starts_with_fold("sec-websocket-") {
+            return true;
+        }
+        return !config.strip_hop_by_hop;
     }
     guard config.strip_hop_by_hop else { return true; }
 
@@ -165,8 +200,9 @@ fn copy_filtered_headers(
     in_headers:  const http::HeaderMap&,
     out_headers: http::HeaderMap&,
     config:      const proxy::Config&,
+    method:      const u8[:] = "GET",
 ) -> bool {
-    let allow_ws = config.strip_hop_by_hop && is_valid_websocket_upgrade_headers(in_headers, config);
+    let allow_ws = is_valid_websocket_upgrade_headers(in_headers, config, method);
     for &entry in in_headers.entries {
         let name = http::entry_name(in_headers, entry);
         let val = http::entry_value(in_headers, entry);
@@ -176,11 +212,7 @@ fn copy_filtered_headers(
         }
         // RFC 9113 Section 8.3: HTTP Control Data - reject non-standard or unstripped pseudo-headers.
         guard http::is_valid_header_name(name) && http::is_valid_header_value(val) else { return false; }
-        if allow_ws && name.starts_with_fold("sec-websocket-") {
-            guard http::append_header(out_headers, name, val) else { return false; }
-            continue;
-        }
-        if !should_forward_header(name, val, in_headers, config) {
+        if !should_forward_header(name, val, in_headers, config, allow_ws) {
             continue;
         }
         if name.eq_ascii_fold("content-length") {

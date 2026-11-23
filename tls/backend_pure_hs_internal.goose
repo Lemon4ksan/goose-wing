@@ -305,7 +305,8 @@ fn pure_server_emit_encrypted_flight(slot: PureTlsSlot&) -> bool {
     let cv_len, ok_cv = tls::build_certificate_verify_message(true, h_to_cert[..], cv_input[..]);
     var sig_buf: u8[..512] = [];
     let sig_scheme, ok_sig = sign_certificate_verify(
-        slot.cert_der[..], slot.priv_seed, cv_input[..cv_len], sig_buf, slot.rsa_key_slot,
+        slot.cert_der[..], slot.priv_seed, cv_input[..cv_len],
+        sig_buf, slot.rsa_key_slot, slot.rsa_key_gen,
     );
     var cv_pay: u8[..1024] = [];
     guard ok_cv &&
@@ -386,7 +387,8 @@ fn pure_server_stash_deferred_sni(
     var pre_ch = ServerClientHelloChoice { .. };
     defer zeroize_server_ch_choice(pre_ch);
     guard parse_server_client_hello(
-        ch_msg, slot.alpn_csv[..], 0, 0, hrr_mode, pre_ch, slot.require_client_cert,
+        ch_msg, slot.alpn_csv[..], 0, 0, hrr_mode, pre_ch,
+        slot.require_client_cert, ServerPskPolicy.DisableResumption,
     ) else {
         return tls::TlsBackendStatus.HandshakeError;
     }
@@ -394,6 +396,7 @@ fn pure_server_stash_deferred_sni(
         slot.pending_ch_msg.try_set(ch_msg) else {
         return tls::TlsBackendStatus.Error;
     }
+    slot.client_hello_parsed = true;
     slot.stage = PureHsStage.ServerNeedSniCredentials;
     return tls::TlsBackendStatus.NeedSniCredentials;
 }
@@ -413,12 +416,15 @@ fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     defer zeroize_server_ch_choice(ch_choice);
     let req_sig = detect_cert_sig_scheme(slot.cert_der[..]);
     guard parse_server_client_hello(
-        ch_msg[..], slot.alpn_csv[..], req_sig, 0, hrr_mode, ch_choice, slot.require_client_cert,
+        ch_msg[..], slot.alpn_csv[..], req_sig, 0, hrr_mode, ch_choice,
+        slot.require_client_cert, ServerPskPolicy.DisableResumption,
     ) else { return tls::TlsBackendStatus.HandshakeError; }
 
     if !slot.hrr_sent && ch_choice.needs_hrr {
         slot.hrr_sni_recorded = true;
         let _ = slot.hrr_sni.try_set(ch_choice.client_sni[..]);
+        let _ = slot.server_name.try_set(ch_choice.client_sni[..]);
+        slot.client_hello_parsed = true;
         transcript_update(slot.transcript, ch_msg[..]);
         return pure_server_emit_hrr(slot, ch_choice);
     }
@@ -435,6 +441,7 @@ fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     slot.cipher_suite = ch_choice.cipher_suite;
     slot.client_random = ch_choice.client_random;
     let _ = slot.server_name.try_set(ch_choice.client_sni[..]);
+    slot.client_hello_parsed = true;
     let _ = slot.selected_alpn.try_set(ch_choice.negotiated_alpn[..]);
 
     var srv_rand:  u8[32]   = [0; 32];
@@ -596,7 +603,9 @@ fn pure_load_server_pem_files(
     slot.priv_seed = srv_cfg.priv_seed;
     slot.key_kind = srv_cfg.key_kind;
     slot.rsa_key_slot = srv_cfg.rsa_key_slot;
+    slot.rsa_key_gen = srv_cfg.rsa_key_gen;
     srv_cfg.rsa_key_slot = -1;
+    srv_cfg.rsa_key_gen = 0;
     return true;
 }
 

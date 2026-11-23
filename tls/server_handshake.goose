@@ -105,6 +105,7 @@ fn server_emit_hrr_and_recv_ch2(
     guard tls_internal::parse_server_client_hello(
         ch2_msg[..], config.alpn[..], req_sig, config.compressed_cert_algo,
         tls_internal::ServerHrrMode.Reject, ch_choice, config.require_client_cert,
+        tls_internal::ServerPskPolicy.AllowResumption,
     ) else { return false; }
     guard ch_choice.cipher_suite == hrr_cipher &&
         ch_choice.selected_group == hrr_group &&
@@ -137,6 +138,7 @@ fn server_handshake_with_ch(
     guard tls_internal::parse_server_client_hello(
         ch_msg, config.alpn[..], req_sig, config.compressed_cert_algo,
         tls_internal::ServerHrrMode.Allow, ch_choice, config.require_client_cert,
+        tls_internal::ServerPskPolicy.AllowResumption,
     ) else { return 0xFFFF, false; }
 
     let did_hrr = ch_choice.needs_hrr;

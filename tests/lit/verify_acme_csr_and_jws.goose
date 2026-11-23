@@ -396,11 +396,43 @@ fn test_acme_json_parsers() {
     assert(ch.token[..] == "LoqXcYV8q5ONbJQxbmR7SC");
     assert(ch.key_auth[..] == "LoqXcYV8q5ONbJQxbmR7SC.NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs");
     assert(ch.status == auth::AcmeOrderStatus.Pending);
+    assert(ch.authz_status == auth::AcmeAuthzStatus.Pending);
+
+    // Sibling dns-01 with >64B token (120 bytes), unfamiliar status, >256B url, and fields before "type" must NOT abort http-01!
+    var tok120: u8[..128] = [];
+    for _ in 120 { tok120.push('A'); }
+    var url300: u8[..320] = "https://acme.example/chall/dns/";
+    for _ in 270 { url300.push('z'); }
+    let sibling_json = str(
+        "{\"challenges\":[{\"token\":\"", tok120[..],
+        "\",\"status\":\"custom-sibling-status\",\"url\":\"", url300[..],
+        "\",\"type\":\"dns-01\"},{\"token\":\"LoqXcYV8q5ONbJQxbmR7SC\",\"status\":\"valid\",\"url\":\"https://acme.example/chall/http2\",\"type\":\"http-01\"}],\"status\":\"pending\"}",
+    );
+    var ch_sib = auth::AcmeHttp01Challenge { .. };
+    assert(auth::acme_parse_authz_http01(sibling_json[..], tp, ch_sib));
+    assert(ch_sib.url[..] == "https://acme.example/chall/http2");
+    assert(ch_sib.status == auth::AcmeOrderStatus.Valid);
+    assert(ch_sib.authz_status == auth::AcmeAuthzStatus.Pending);
+
+    // Top-level deactivated / revoked / expired / valid / invalid authz statuses parsed accurately
+    let deact_json = "{\"status\":\"deactivated\",\"challenges\":[{\"type\":\"http-01\",\"url\":\"https://acme.example/chall/http\",\"status\":\"valid\",\"token\":\"LoqXcYV8q5ONbJQxbmR7SC\"}]}";
+    assert(auth::acme_parse_authz_http01(deact_json, tp, ch_sib));
+    assert(ch_sib.authz_status == auth::AcmeAuthzStatus.Deactivated);
+
+    let rev_json = "{\"challenges\":[{\"type\":\"http-01\",\"url\":\"https://acme.example/chall/http\",\"status\":\"pending\",\"token\":\"LoqXcYV8q5ONbJQxbmR7SC\"}],\"status\":\"revoked\"}";
+    assert(auth::acme_parse_authz_http01(rev_json, tp, ch_sib));
+    assert(ch_sib.authz_status == auth::AcmeAuthzStatus.Revoked);
+
+    let exp_json = "{\"status\":\"expired\",\"challenges\":[{\"type\":\"http-01\",\"url\":\"https://acme.example/chall/http\",\"status\":\"pending\",\"token\":\"LoqXcYV8q5ONbJQxbmR7SC\"}]}";
+    assert(auth::acme_parse_authz_http01(exp_json, tp, ch_sib));
+    assert(ch_sib.authz_status == auth::AcmeAuthzStatus.Expired);
 
     // Reject unknown challenge status, bad token, missing http-01, and reset out_ch
     let bad_ch_status = "{\"status\":\"pending\",\"challenges\":[{\"type\":\"http-01\",\"url\":\"https://acme.example/chall/http\",\"status\":\"ready\",\"token\":\"LoqXcYV8q5ONbJQxbmR7SC\"}]}";
     assert(!auth::acme_parse_authz_http01(bad_ch_status, tp, ch));
-    assert(ch.url.len == 0 && ch.token.len == 0 && ch.status == auth::AcmeOrderStatus.Unknown);
+    assert(ch.url.len == 0 && ch.token.len == 0 &&
+        ch.status == auth::AcmeOrderStatus.Unknown &&
+        ch.authz_status == auth::AcmeAuthzStatus.Unknown);
 
     let bad_ch_tok = "{\"status\":\"pending\",\"challenges\":[{\"type\":\"http-01\",\"url\":\"https://acme.example/chall/http\",\"status\":\"pending\",\"token\":\"bad/tok\"}]}";
     assert(!auth::acme_parse_authz_http01(bad_ch_tok, tp, ch));

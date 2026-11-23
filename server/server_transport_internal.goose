@@ -706,7 +706,7 @@ fn serve_pipe_loop(server: server::HttpServer&, listener_fd: i64, max_connection
     return serve_pipe_loop(server, listener_fd, max_connections, noop);
 }
 
-// Performs blocking pre-handshake SNI selection when `server.sni_registry.count > 0`
+// Performs blocking pre-handshake SNI selection when `server::sni_registry_count(server.sni_registry) > 0`
 // by reading ClientHello, matching SNI against `sni_registry`, and falling back to
 // `default_cfg` if configured (else failing closed).
 fn server_accept_tls_handshake(
@@ -715,7 +715,7 @@ fn server_accept_tls_handshake(
     default_cfg: const tls::ServerHandshakeConfig&,
 ) -> u16, bool {
     guard conn_fd > 0 else { return 0xFFFF, false; }
-    if server.sni_registry.count <= 0 {
+    if server::sni_registry_count(server.sni_registry) <= 0 {
         guard default_cfg.cert_der.len > 0 else { return 0xFFFF, false; }
         return tls::server_handshake(conn_fd, default_cfg);
     }

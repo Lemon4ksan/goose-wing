@@ -222,9 +222,7 @@ fn acme_post_jws(
 ) -> bool {
     http::reset_response(out_resp);
     guard is_allowed_acme_session_url(sess, url) else { return false; }
-    if auth_mode == AcmeAuthMode.Kid {
-        guard acme.kid.len > 0 else { return false; }
-    }
+    guard auth_mode != AcmeAuthMode.Kid || acme.kid.len > 0 else { return false; }
     let kid_slice = if auth_mode == AcmeAuthMode.Kid { acme.kid[..] } else { "" };
 
     var jws_buf: u8[>..] = [];
@@ -248,8 +246,8 @@ fn acme_post_jws(
         if !is_bad_nonce {
             return true;
         }
+        http::reset_response(out_resp);
         guard attempt < ACME_MAX_BAD_NONCE_RETRIES else {
-            http::reset_response(out_resp);
             return false;
         }
     }
@@ -262,7 +260,8 @@ fn build_acme_new_account_json(contact_email: const u8[:], out: u8[>..]&) -> boo
     out.clear();
     out.append("{\"termsOfServiceAgreed\":true");
     if contact_email.len > 0 {
-        guard core::swar_find_ctl(contact_email) == contact_email.len &&
+        guard contact_email.validate_utf8() &&
+            core::swar_find_ctl(contact_email) == contact_email.len &&
             !contact_email.contains_byte(' ') else {
             out.clear();
             return false;
@@ -408,6 +407,10 @@ fn process_single_http01_authz<Hook>(
 
     var ch = auth::AcmeHttp01Challenge { .. };
     guard auth::acme_parse_authz_http01(resp.body[..], thumbprint, ch) else { return false; }
+    if ch.authz_status == auth::AcmeAuthzStatus.Valid {
+        return true;
+    }
+    guard ch.authz_status == auth::AcmeAuthzStatus.Pending else { return false; }
     if ch.status == auth::AcmeOrderStatus.Valid {
         return true;
     }
@@ -509,6 +512,9 @@ fn download_acme_cert_pem(
     cert_url:          const u8[:],
     out_fullchain_pem: u8[>..]&,
 ) -> bool {
+    out_fullchain_pem.clear();
+    var committed = false;
+    defer if !committed { out_fullchain_pem.clear(); };
     guard auth::is_valid_acme_http_url(cert_url) else { return false; }
     var resp = http::Response { .. };
     guard acme_post_jws(
@@ -521,6 +527,7 @@ fn download_acme_cert_pem(
     guard resp.body.len > 0 && resp.body.len <= ACME_MAX_PEM_CERT_BYTES else { return false; }
     guard core::contains(resp.body[..], "BEGIN CERTIFICATE") else { return false; }
     out_fullchain_pem.append(resp.body[..]);
+    committed = true;
     return true;
 }
 

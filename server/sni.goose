@@ -244,6 +244,12 @@ fn sni_pattern_matches(pattern: const u8[:], hostname: const u8[:]) -> bool {
     return false;
 }
 
+// Returns the authoritative count of registered SNI entries in `reg`, or 0 for unallocated/stale handles.
+fn sni_registry_count(reg: const SniRegistry&) -> i32 {
+    guard sni_is_live_handle(reg) else { return 0; }
+    return g_sni_regs[reg.arena_slot].count;
+}
+
 // Zeroizes every private key span belonging to `reg`, marks its arena slot inactive for reuse,
 // and resets `reg` to an unallocated empty state. Ignores stale handles whose generation no longer matches.
 fn clear_sni_registry(reg: SniRegistry&) {

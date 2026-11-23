@@ -80,15 +80,17 @@ fn filter_and_forward_headers(
     proto:         const u8[:],
     upstream_host: const u8[:],
     config:        const Config&,
+    method:        const u8[:] = "GET",
 ) -> bool {
     guard proxy_internal::has_consistent_framing_headers(in_headers) else { return false; }
     http::reset_for_keep_alive(out_headers);
     var committed = false;
     defer if !committed { out_headers.clear(); };
 
-    guard proxy_internal::copy_filtered_headers(in_headers, out_headers, config) else { return false; }
+    guard proxy_internal::copy_filtered_headers(in_headers, out_headers, config, method) else { return false; }
 
-    if config.strip_hop_by_hop && proxy_internal::is_valid_websocket_upgrade_headers(in_headers, config) {
+    let allow_ws = proxy_internal::is_valid_websocket_upgrade_headers(in_headers, config, method);
+    if config.strip_hop_by_hop && allow_ws {
         guard http::append_header(out_headers, "Connection", "Upgrade") else { return false; }
         guard http::append_header(out_headers, "Upgrade", "websocket") else { return false; }
     }
@@ -253,7 +255,7 @@ fn build_and_serialize_proxy_wire<B>(
         target.host[..], target.port, rp.config.preserve_host, host_buf,
     ) else { return false; }
     guard filter_and_forward_headers(
-        in_headers, forward_headers, client_ip, proto, host_buf[..], rp.config,
+        in_headers, forward_headers, client_ip, proto, host_buf[..], rp.config, method,
     ) else { return false; }
     guard proxy_internal::apply_max_forwards_policy(method, forward_headers) else { return false; }
 
@@ -285,6 +287,13 @@ fn prepare_proxy_wire_impl<B>(
     now_ns:     u64,
     mode:       WirePrepareMode,
 ) -> i32, bool {
+    if mode == WirePrepareMode.FullRequest &&
+        rp.config.max_buffered_body_bytes > 0 &&
+        body.len > rp.config.max_buffered_body_bytes {
+        rp.total_dropped = core::add_sat_u64(rp.total_dropped, 1);
+        out_wire.clear();
+        return TARGET_NONE, false;
+    }
     let effective_now = if now_ns > 0 { now_ns } else { core::as_nanos(core::monotonic_now()) };
     guard check_proxy_ingress_rate_limit(rp, client_ip, effective_now) else {
         return TARGET_NONE, false;

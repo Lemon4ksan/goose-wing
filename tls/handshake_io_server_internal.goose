@@ -87,6 +87,11 @@ enum ServerHrrMode {
     Reject,
 }
 
+enum ServerPskPolicy {
+    AllowResumption,
+    DisableResumption,
+}
+
 struct ServerClientHelloChoice {
     session_id:      u8[..32]  = [],
     client_random:   u8[32]    = [0; 32],
@@ -149,7 +154,8 @@ fn parse_server_client_hello(
     config_comp_algo:    u16,
     hrr_mode:            ServerHrrMode,
     out:                 ServerClientHelloChoice&,
-    require_client_cert: bool = false,
+    require_client_cert: bool            = false,
+    psk_policy:          ServerPskPolicy = ServerPskPolicy.AllowResumption,
 ) -> bool {
     zeroize_server_ch_choice(out);
     var committed = false;
@@ -175,7 +181,7 @@ fn parse_server_client_hello(
         }
     }
     let psk_ext, has_psk = tls::find_extension(entries, rfc::TLS_EXT_PRE_SHARED_KEY);
-    if has_psk {
+    if has_psk && psk_policy == ServerPskPolicy.AllowResumption {
         let psk_matched, psk_ok = eval_client_hello_psk_entry(
             entries, payload, psk_ext, sel_cs, out.psk_secret, out.selected_psk_id, require_client_cert,
         );
@@ -236,7 +242,8 @@ fn parse_client_hello_for_server_full<A>(
     var ch = ServerClientHelloChoice { .. };
     defer zeroize_server_ch_choice(ch);
     guard parse_server_client_hello(
-        payload, server_alpn_csv, required_sig_scheme, 0, ServerHrrMode.Reject, ch, require_client_cert,
+        payload, server_alpn_csv, required_sig_scheme, 0, ServerHrrMode.Reject, ch,
+        require_client_cert, ServerPskPolicy.AllowResumption,
     ) else { return false; }
     guard !ch.needs_hrr && ch.selected_group == rfc::GROUP_X25519 && ch.client_share.len == 32 else {
         return false;
@@ -265,6 +272,7 @@ fn tls_server_send_cv(
     transcript:    tls::Transcript&,
     cert_der:      const u8[:] = "",
     rsa_key_slot:  i32         = -1,
+    rsa_key_gen:   u32         = 0,
 ) -> bool {
     let hash_id: u8 = if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
         tls_internal::HASH_SHA384
@@ -279,7 +287,7 @@ fn tls_server_send_cv(
     guard ok_cv_msg else { return false; }
     var sig_buf: u8[..512] = [];
     let sig_scheme, ok_sig = sign_certificate_verify(
-        cert_der, priv_seed, cv_msg_buf[..cv_len], sig_buf, rsa_key_slot,
+        cert_der, priv_seed, cv_msg_buf[..cv_len], sig_buf, rsa_key_slot, rsa_key_gen,
     );
     guard ok_sig else { return false; }
 
@@ -432,7 +440,8 @@ fn tls_server_send_flight(
 
         guard tls_server_send_cv(
             fd, cipher_suite, server_hs_key, server_hs_iv,
-            server_seq, config.priv_seed, transcript, config.cert_der[..], config.rsa_key_slot,
+            server_seq, config.priv_seed, transcript, config.cert_der[..],
+            config.rsa_key_slot, config.rsa_key_gen,
         ) else {
             return false;
         }

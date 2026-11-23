@@ -391,6 +391,48 @@ fn is_all_zero(buf: const u8[:]) -> bool {
 
 // ---- Test 1 & 2: Full-Chain & RSA PEM Loading / Expiry / Release -----------
 
+fn test_rsa_key_slot_aba_guard(
+    rsa_der: const u8[:],
+    rsa_pem: const u8[:],
+    p8_pem:  const u8[:],
+    p1_pem:  const u8[:],
+) {
+    var stale_cfg = tls::ServerHandshakeConfig { .. };
+    assert(tls::load_server_credentials_pem(rsa_pem, p8_pem, stale_cfg));
+    let aba_slot = stale_cfg.rsa_key_slot;
+    let aba_gen = stale_cfg.rsa_key_gen;
+    assert(aba_slot >= 0 && aba_gen != 0);
+    var held_stale = stale_cfg;
+    tls::release_server_credentials(stale_cfg);
+
+    let dummy_msg: u8[32] = [0xAA; 32];
+    var sig_out: u8[..512] = [];
+    let _, ok_pre = tls_internal::sign_certificate_verify(
+        rsa_der, held_stale.priv_seed, dummy_msg[..], sig_out, aba_slot, aba_gen,
+    );
+    assert(!ok_pre);
+
+    var live_cfg = tls::ServerHandshakeConfig { .. };
+    defer tls::release_server_credentials(live_cfg);
+    assert(tls::load_server_credentials_pem(rsa_pem, p1_pem, live_cfg));
+    assert(live_cfg.rsa_key_slot == aba_slot &&
+        live_cfg.rsa_key_gen != 0 &&
+        live_cfg.rsa_key_gen != aba_gen);
+
+    let _, ok_post = tls_internal::sign_certificate_verify(
+        rsa_der, held_stale.priv_seed, dummy_msg[..], sig_out, aba_slot, aba_gen,
+    );
+    assert(!ok_post);
+    tls::release_server_credentials(held_stale);
+    assert(tls::g_tls_rsa_keys[aba_slot as i64].in_use &&
+        tls::g_tls_rsa_keys[aba_slot as i64].generation == live_cfg.rsa_key_gen);
+
+    let live_sc, ok_live = tls_internal::sign_certificate_verify(
+        rsa_der, live_cfg.priv_seed, dummy_msg[..], sig_out, live_cfg.rsa_key_slot, live_cfg.rsa_key_gen,
+    );
+    assert(ok_live && live_sc == rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA256);
+}
+
 fn test_pem_fullchain_rsa_and_expiry() {
     let root_seed:  u8[32] = [0x11; 32];
     let inter_seed: u8[32] = [0x22; 32];
@@ -503,6 +545,7 @@ fn test_pem_fullchain_rsa_and_expiry() {
     assert(!ok_ze);
 
     // cert_expires_within_sec boundary & overflow safety checks.
+    test_rsa_key_slot_aba_guard(rsa_der[..], rsa_pem[..], rsa_p8_pem[..], rsa_p1_pem[..]);
     var parsed_leaf = tls::ParsedCert { .. };
     assert(tls::parse_x509_certificate(leaf_der[..], parsed_leaf));
     let na = parsed_leaf.validity_not_after;
@@ -1064,6 +1107,115 @@ fn pump_pure_endpoints(cli: tls::TlsEndpoint&, srv: tls::TlsEndpoint&) -> bool {
     return false;
 }
 
+fn build_custom_psk_ch_msg(
+    random:      const u8[32]&,
+    sig_schemes: const u16[:],
+    x25519_pub:  const u8[32]&,
+    psk_ticket:  const u8[:],
+    psk_age_add: u32,
+    psk_secret:  const u8[:],
+    out_msg:     u8[..4096]&,
+) {
+    out_msg.clear();
+    var pay: u8[..4096] = [];
+    pay.append_u16_be(rfc::TLS_LEGACY_VERSION_1_2);
+    pay.append(random[..]);
+    pay.push(32);
+    pay.append(random[..]);
+    pay.append_u16_be(2);
+    pay.append_u16_be(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+    pay.push(1);
+    pay.push(0);
+
+    var ext: u8[..2048] = [];
+    ext.append_u16_be(rfc::TLS_EXT_SUPPORTED_VERSIONS);
+    ext.append_u16_be(3);
+    ext.push(2);
+    ext.append_u16_be(rfc::TLS_VERSION_1_3);
+
+    let grps: u16[1] = [rfc::GROUP_X25519];
+    tls_internal::encode_supported_groups_extension(ext, grps[..]);
+
+    ext.append_u16_be(rfc::TLS_EXT_SIGNATURE_ALGORITHMS);
+    let sig_bytes_len = (sig_schemes.len * 2) as u16;
+    ext.append_u16_be(sig_bytes_len + 2);
+    ext.append_u16_be(sig_bytes_len);
+    for sc in sig_schemes { ext.append_u16_be(sc); }
+
+    ext.append_u16_be(rfc::TLS_EXT_KEY_SHARE);
+    ext.append_u16_be(38);
+    ext.append_u16_be(36);
+    ext.append_u16_be(rfc::GROUP_X25519);
+    ext.append_u16_be(32);
+    ext.append(x25519_pub[..]);
+
+    let sni = "localhost";
+    ext.append_u16_be(rfc::TLS_EXT_SERVER_NAME);
+    ext.append_u16_be((sni.len + 5) as u16);
+    ext.append_u16_be((sni.len + 3) as u16);
+    ext.push(0);
+    ext.append_u16_be(sni.len as u16);
+    ext.append(sni);
+
+    tls_internal::encode_psk_client_extensions(ext, psk_ticket, psk_age_add, 32);
+
+    pay.append_u16_be(ext.len as u16);
+    pay.append(ext[..]);
+    assert(tls_internal::frame_handshake_msg_4k(rfc::TLS_HS_CLIENT_HELLO, pay[..], out_msg));
+    tls_internal::patch_client_hello_psk_binder(out_msg, psk_secret, rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+}
+
+fn test_pure_endpoint_psk_requires_sig_alg(cert_path: const u8[:], key_path: const u8[:]) {
+    tls::clear_session_tickets();
+    defer tls::clear_session_tickets();
+
+    let psk32: u8[32] = [0x5A; 32];
+    tls_internal::store_server_session_ticket(
+        "localhost", "ABA_PSK_NO_RSA_SIG", psk32[..], 0x12345678,
+        3600, rfc::TLS_CIPHER_AES_128_GCM_SHA256, false, 0,
+    );
+
+    let r_psk:    u8[32] = [0x88; 32];
+    let priv_psk: u8[32] = [0x99; 32];
+    let pub_psk = core::x25519_base_scalarmult(priv_psk);
+    let sigs_ed_only: u16[1] = [rfc::SIG_SCHEME_ED25519];
+    var ch_psk: u8[..4096] = [];
+    build_custom_psk_ch_msg(
+        r_psk, sigs_ed_only[..], pub_psk, "ABA_PSK_NO_RSA_SIG", 0x12345678, psk32[..], ch_psk,
+    );
+
+    // Control: with AllowResumption the ticket/binder match bypasses RSA signature_algorithms.
+    var ch_probe = tls_internal::ServerClientHelloChoice { .. };
+    defer tls_internal::zeroize_server_ch_choice(ch_probe);
+    assert(tls_internal::parse_server_client_hello(
+        ch_psk[..], "", rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA256, 0,
+        tls_internal::ServerHrrMode.Allow, ch_probe, false,
+        tls_internal::ServerPskPolicy.AllowResumption,
+    ));
+    assert(ch_probe.psk_resumed);
+
+    // Regression: TlsEndpoint disables half-wired PSK resumption and enforces RSA signature_algorithms.
+    var srv_cfg = tls::TlsBackendConfig {
+        kind:      tls::TlsBackendKind.PureGoose,
+        is_server: true,
+        ..
+    };
+    assert(srv_cfg.cert_pem_file.try_set(cert_path));
+    assert(srv_cfg.key_pem_file.try_set(key_path));
+    var srv, srv_st = tls::tls_endpoint_open(srv_cfg);
+    assert(srv_st == tls::TlsBackendStatus.Ok);
+    defer tls::tls_endpoint_close(srv);
+
+    var ch_rec: u8[..4096] = [];
+    ch_rec.push(rfc::TLS_CONTENT_HANDSHAKE);
+    ch_rec.append_u16_be(rfc::TLS_LEGACY_VERSION_1_0);
+    ch_rec.append_u16_be(ch_psk.len as u16);
+    ch_rec.append(ch_psk[..]);
+    let fed, st_fed = tls::tls_endpoint_feed_wire(srv, ch_rec[..]);
+    assert(st_fed == tls::TlsBackendStatus.Ok && fed == ch_rec.len);
+    assert(tls::tls_endpoint_step_handshake(srv) == tls::TlsBackendStatus.HandshakeError);
+}
+
 fn test_pure_endpoint_compat() {
     // 1. Sans-IO TlsEndpoint RSA-2048 PKCS#1 handshake + RSA key slot zeroization on close
     var rsa_der: u8[..4096] = [];
@@ -1227,6 +1379,8 @@ fn test_pure_endpoint_compat() {
     var parsed_hrr = tls::ParsedServerHello { .. };
     assert(tls::parse_live_server_hello(hrr_wire[5..5 + rec_len], parsed_hrr));
     assert(parsed_hrr.is_hrr && parsed_hrr.selected_group == rfc::GROUP_X25519);
+
+    test_pure_endpoint_psk_requires_sig_alg(cert_path, key_path);
 
     print("PURE_ENDPOINT_COMPAT: OK");
     // CHECK: PURE_ENDPOINT_COMPAT: OK

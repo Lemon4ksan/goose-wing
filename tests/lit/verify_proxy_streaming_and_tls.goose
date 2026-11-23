@@ -372,6 +372,94 @@ fn test_websocket_upgrade_policy_and_prepare_head() {
     assert(!core::contains(bad_wire[..], "Connection: Upgrade"));
     proxy::release_upstream_connection(rp.cluster, b_idx);
 
+    // Strip policy MUST strip Upgrade and Sec-WebSocket-* even when strip_hop_by_hop == false.
+    rp.config.upgrade_policy = proxy::UpgradePolicy.Strip;
+    rp.config.strip_hop_by_hop = false;
+    var nohop_strip: u8[>..] = [];
+    let nh_idx, ok_nh = proxy::prepare_proxy_head_with_key_at(
+        rp, "GET", "/ws", in_hdrs, "203.0.113.9", "https", "room-1", nohop_strip, 1000000003,
+    );
+    assert(ok_nh && nh_idx == 0);
+    assert(!core::contains(nohop_strip[..], "Upgrade:"));
+    assert(!core::contains(nohop_strip[..], "Sec-WebSocket-"));
+    proxy::release_upstream_connection(rp.cluster, nh_idx);
+
+    // AllowWebSocket with strip_hop_by_hop == false MUST strip non-WS Upgrade / Sec-WebSocket-*.
+    rp.config.upgrade_policy = proxy::UpgradePolicy.AllowWebSocket;
+    var h2c_hdrs = http::HeaderMap { .. };
+    assert(http::append_header(h2c_hdrs, "Host", "edge.example.com"));
+    assert(http::append_header(h2c_hdrs, "Connection", "Upgrade"));
+    assert(http::append_header(h2c_hdrs, "Upgrade", "h2c"));
+    assert(http::append_header(h2c_hdrs, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="));
+    assert(http::append_header(h2c_hdrs, "Sec-WebSocket-Version", "13"));
+    var h2c_wire: u8[>..] = [];
+    let h2c_idx, ok_h2c = proxy::prepare_proxy_head_with_key_at(
+        rp, "GET", "/h2c", h2c_hdrs, "203.0.113.9", "https", "room-1", h2c_wire, 1000000003,
+    );
+    assert(ok_h2c && !core::contains(h2c_wire[..], "Upgrade:") && !core::contains(h2c_wire[..], "Sec-WebSocket-"));
+    proxy::release_upstream_connection(rp.cluster, h2c_idx);
+    rp.config.strip_hop_by_hop = true;
+
+    // Duplicate Sec-WebSocket-Key, non-16B key, POST method, and HTTP/1.0 MUST strip WS upgrade.
+    var dup_key_hdrs = in_hdrs;
+    assert(http::append_header(dup_key_hdrs, "Sec-WebSocket-Key", "AAAAAAAAAAAAAAAAAAAAAA=="));
+    var dup_wire: u8[>..] = [];
+    let dk_idx, ok_dk = proxy::prepare_proxy_head_with_key_at(
+        rp, "GET", "/ws", dup_key_hdrs, "203.0.113.9", "https", "room-1", dup_wire, 1000000004,
+    );
+    assert(ok_dk && !core::contains(dup_wire[..], "Upgrade:") && !core::contains(dup_wire[..], "Sec-WebSocket-"));
+    proxy::release_upstream_connection(rp.cluster, dk_idx);
+
+    var bad_key_hdrs = http::HeaderMap { .. };
+    assert(http::append_header(bad_key_hdrs, "Host", "edge.example.com"));
+    assert(http::append_header(bad_key_hdrs, "Connection", "Upgrade"));
+    assert(http::append_header(bad_key_hdrs, "Upgrade", "websocket"));
+    assert(http::append_header(bad_key_hdrs, "Sec-WebSocket-Key", "AAAAAAAAAAAAAAAAAAAAAAAA"));
+    assert(http::append_header(bad_key_hdrs, "Sec-WebSocket-Version", "13"));
+    var bk_wire: u8[>..] = [];
+    let bk_idx, ok_bk = proxy::prepare_proxy_head_with_key_at(
+        rp, "GET", "/ws", bad_key_hdrs, "203.0.113.9", "https", "room-1", bk_wire, 1000000005,
+    );
+    assert(ok_bk && !core::contains(bk_wire[..], "Upgrade:") && !core::contains(bk_wire[..], "Sec-WebSocket-"));
+    proxy::release_upstream_connection(rp.cluster, bk_idx);
+
+    var post_wire: u8[>..] = [];
+    let p_idx, ok_pm = proxy::prepare_proxy_head_with_key_at(
+        rp, "POST", "/ws", in_hdrs, "203.0.113.9", "https", "room-1", post_wire, 1000000006,
+    );
+    assert(ok_pm && !core::contains(post_wire[..], "Upgrade:") && !core::contains(post_wire[..], "Sec-WebSocket-"));
+    proxy::release_upstream_connection(rp.cluster, p_idx);
+
+    var dup_ver_hdrs = in_hdrs;
+    assert(http::append_header(dup_ver_hdrs, "Sec-WebSocket-Version", "13"));
+    var dv_wire: u8[>..] = [];
+    let dv_idx, ok_dv = proxy::prepare_proxy_head_with_key_at(
+        rp, "GET", "/ws", dup_ver_hdrs, "203.0.113.9", "https", "room-1", dv_wire, 1000000007,
+    );
+    assert(ok_dv && !core::contains(dv_wire[..], "Upgrade:") && !core::contains(dv_wire[..], "Sec-WebSocket-"));
+    proxy::release_upstream_connection(rp.cluster, dv_idx);
+
+    assert(rp.config.http_version.try_set("HTTP/1.0"));
+    var h10_wire: u8[>..] = [];
+    let h10_idx, ok_h10 = proxy::prepare_proxy_head_with_key_at(
+        rp, "GET", "/ws", in_hdrs, "203.0.113.9", "https", "room-1", h10_wire, 1000000008,
+    );
+    assert(ok_h10 && !core::contains(h10_wire[..], "Upgrade:") && !core::contains(h10_wire[..], "Sec-WebSocket-"));
+    proxy::release_upstream_connection(rp.cluster, h10_idx);
+    assert(rp.config.http_version.try_set("HTTP/1.1"));
+
+    // prepare_proxy_request_at enforces max_buffered_body_bytes and clears out_wire on rejection.
+    var cap_hdrs = http::HeaderMap { .. };
+    assert(http::append_header(cap_hdrs, "Host", "edge.example.com"));
+    rp.config.max_buffered_body_bytes = 8;
+    var body_cap_wire: u8[>..] = "dirty";
+    let cap_idx, ok_cap = proxy::prepare_proxy_request_at(
+        rp, "POST", "/cap", cap_hdrs, "203.0.113.9", "https", "0123456789", body_cap_wire, 1000000009,
+    );
+    assert(!ok_cap && cap_idx == proxy::TARGET_NONE && body_cap_wire.len == 0);
+    assert(rp.cluster.targets[0].active_conns == 0);
+    rp.config.max_buffered_body_bytes = 1048576;
+
     // Streaming request head with Content-Length: 65536 succeeds without buffering body.
     var stream_hdrs = http::HeaderMap { .. };
     assert(http::append_header(stream_hdrs, "Host", "edge.example.com"));

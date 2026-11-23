@@ -273,7 +273,7 @@ fn validate_acme_token(token: const u8[:]) -> bool
 fn build_acme_key_authorization<B>(token: const u8[:], thumbprint_b64url: const u8[:], out: B&) -> bool
 fn build_acme_http01_path<B>(token: const u8[:], out: B&) -> bool
 fn match_acme_http01(path: const u8[:], token: const u8[:]) -> bool
-fn find_acme_challenge<B>(table: const AcmeChallenge[..8]&, path: const u8[:], out: B&) -> bool
+fn find_acme_challenge<B>(table: const AcmeChallenge[:], path: const u8[:], out: B&) -> bool
 ```
 
 `validate_acme_token` checks that an HTTP-01 token has 22 to 64 Base64URL

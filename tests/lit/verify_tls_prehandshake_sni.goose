@@ -569,11 +569,13 @@ fn init_fixtures(fx: SniTestFixtures&) {
 fn test_arena_sni_registry(fx: const SniTestFixtures&) {
     var reg = server::SniRegistry { .. };
     assert(reg.count == 0 && reg.arena_slot == -1);
+    assert(server::sni_registry_count(reg) == 0);
 
     assert(server::add_sni_registry_entry(reg, "a.example.test", fx.ec_chain_pem[..], fx.ec_key_pem[..]));
     assert(server::add_sni_registry_entry(reg, "*.b.example.test", fx.rsa_cert_pem[..], fx.rsa_key_pem[..]));
     assert(server::add_sni_registry_entry(reg, "special.b.example.test", fx.ed_cert_pem[..], fx.ed_key_pem[..]));
     assert(reg.count == 3 && reg.arena_slot >= 0);
+    assert(server::sni_registry_count(reg) == 3);
 
     // Exact before wildcard resolution + trailing dot / case folding
     let c_a, ok_a = server::resolve_sni_registry(reg, "A.EXAMPLE.TEST.");
@@ -616,6 +618,8 @@ fn test_arena_sni_registry(fx: const SniTestFixtures&) {
     let regs_before = server::g_sni_regs.len;
     server::clear_sni_registry(reg);
     assert(reg.count == 0 && reg.arena_slot == -1 && reg.generation == 0);
+    assert(server::sni_registry_count(reg) == 0);
+    assert(server::sni_registry_count(stale_before_clear) == 0);
     assert(core::find(server::g_sni_key_arena[..], "CLEAR_ALL_SECRET_CHECK_888") < 0);
 
     // Stale handle before slot reuse cannot resolve, mutate, or remove
@@ -631,7 +635,8 @@ fn test_arena_sni_registry(fx: const SniTestFixtures&) {
     assert(reg2.arena_slot == old_slot && server::g_sni_regs.len == regs_before && reg2.count == 1);
     let live_copy = reg2;
     assert(server::add_sni_registry_entry(reg2, "reused2.example.test", fx.rsa_cert_pem[..], fx.rsa_key_pem[..]));
-    assert(reg2.count == 2);
+    assert(reg2.count == 2 && server::sni_registry_count(reg2) == 2);
+    assert(live_copy.count == 1 && server::sni_registry_count(live_copy) == 2);
     assert(!server::add_sni_registry_entry(reg2, "reused3.example.test", fx.ed_cert_pem[..], fx.ed_key_pem[..]));
     assert(reg2.count == 2);
     // Updating existing pattern at capacity still succeeds; live copied handle resolves newer entry too
@@ -640,6 +645,7 @@ fn test_arena_sni_registry(fx: const SniTestFixtures&) {
     assert(ok_lc && lc_res.cert_pem == fx.ed_cert_pem[..]);
 
     // Stale handle after slot reuse (ABA check) cannot resolve, add, remove, or clear reg2
+    assert(server::sni_registry_count(stale_before_clear) == 0);
     let _, ok_stale_post = server::resolve_sni_registry(stale_before_clear, "reused1.example.test");
     assert(!ok_stale_post);
     var stale_mut_post = stale_before_clear;
@@ -649,6 +655,8 @@ fn test_arena_sni_registry(fx: const SniTestFixtures&) {
     let c_r1, ok_r1 = server::resolve_sni_registry(reg2, "reused1.example.test");
     assert(ok_r1 && c_r1.cert_pem == fx.ed_cert_pem[..]);
     server::clear_sni_registry(reg2);
+    assert(server::sni_registry_count(reg2) == 0);
+    assert(server::sni_registry_count(live_copy) == 0);
 
     print("ARENA_SNI_REGISTRY: OK");
     // CHECK: ARENA_SNI_REGISTRY: OK
@@ -690,6 +698,7 @@ fn run_deferred_sni_endpoint_case(
 
     assert(tls::tls_endpoint_step_handshake(srv) == tls::TlsBackendStatus.NeedSniCredentials);
     assert(tls::tls_endpoint_step_handshake(srv) == tls::TlsBackendStatus.NeedSniCredentials);
+    assert(tls::tls_endpoint_client_sni(cli).len == 0);
     let got_sni = tls::tls_endpoint_client_sni(srv);
     assert(got_sni[..] == sni_host);
 
@@ -972,10 +981,51 @@ fn test_blocking_prehandshake_sni(fx: const SniTestFixtures&) {
     // CHECK: BLOCKING_PREHANDSHAKE_SNI: OK
 }
 
+fn test_client_sni_gating() {
+    var cli_cfg = tls::TlsBackendConfig {
+        kind:                   tls::TlsBackendKind.PureGoose,
+        is_server:              false,
+        insecure_skip_verify:   true,
+        use_system_roots:       false,
+        enable_session_tickets: false,
+        ..
+    };
+    assert(cli_cfg.server_name.try_set("cli.cfg.test"));
+    var cli, cli_st = tls::tls_endpoint_open(cli_cfg);
+    assert(cli_st == tls::TlsBackendStatus.Ok);
+    defer tls::tls_endpoint_close(cli);
+    assert(tls::tls_endpoint_client_sni(cli).len == 0);
+
+    var srv_cfg = tls::TlsBackendConfig {
+        kind:                  tls::TlsBackendKind.PureGoose,
+        is_server:             true,
+        defer_sni_credentials: true,
+        ..
+    };
+    assert(srv_cfg.server_name.try_set("stale.cfg.test"));
+    var srv, srv_st = tls::tls_endpoint_open(srv_cfg);
+    assert(srv_st == tls::TlsBackendStatus.Ok);
+    defer tls::tls_endpoint_close(srv);
+    assert(tls::tls_endpoint_client_sni(srv).len == 0);
+
+    let r_n: u8[32] = [0x31; 32];
+    let k_n: u8[32] = [0x32; 32];
+    let p_n = core::x25519_base_scalarmult(k_n);
+    var ch_no_sni: u8[..4096] = [];
+    build_custom_ch_msg(r_n, "", true, p_n, ch_no_sni);
+    var rec_no_sni: u8[..4096] = [];
+    wrap_hs_record(ch_no_sni[..], rec_no_sni);
+    let fed, st_fed = tls::tls_endpoint_feed_wire(srv, rec_no_sni[..]);
+    assert(st_fed == tls::TlsBackendStatus.Ok && fed == rec_no_sni.len);
+    assert(tls::tls_endpoint_step_handshake(srv) == tls::TlsBackendStatus.NeedSniCredentials);
+    assert(tls::tls_endpoint_client_sni(srv).len == 0);
+}
+
 fn main() {
     var fx = SniTestFixtures { .. };
     init_fixtures(fx);
     test_arena_sni_registry(fx);
     test_sans_io_prehandshake_sni(fx);
+    test_client_sni_gating();
     test_blocking_prehandshake_sni(fx);
 }
