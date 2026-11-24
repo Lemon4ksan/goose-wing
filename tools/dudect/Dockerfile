@@ -8,7 +8,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    cmake \
     gcc \
+    g++ \
+    git \
     curl \
     ca-certificates \
     python3 \
@@ -16,13 +19,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-RUN curl -sSL --retry 5 --retry-delay 2 --retry-connrefused \
-    https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz \
-    | tar -xz -C /opt && \
-    ln -s /opt/goose-v2026.3-linux-x64/goose /usr/local/bin/goose
+RUN git clone --depth 1 https://github.com/aardappel/goose.git /opt/goose && \
+    cmake -S /opt/goose -B /opt/goose/build -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build /opt/goose/build -j 1 && \
+    ln -s /opt/goose/build/goose /usr/local/bin/goose
 
 COPY . /app
 
-RUN python3 /app/tools/dudect/runner.py --local --samples 200 --rebuild || true
+RUN python3 /app/tools/dudect/runner.py --local --samples 200 --rebuild
 
 ENTRYPOINT ["python3", "/app/tools/dudect/runner.py"]

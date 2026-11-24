@@ -45,6 +45,10 @@ uint8_t wing_dudect_x25519_scalarmult(sl_u8 scalar, sl_u8 point, sl_u8 out);
 uint8_t wing_dudect_ecdsa_p256_sign(sl_u8 priv, sl_u8 msg, sl_u8 out);
 uint8_t wing_dudect_ed25519_sign(sl_u8 seed, sl_u8 msg, sl_u8 out);
 uint8_t wing_dudect_rsa_mod_exp(sl_u8 base, sl_u8 exp, sl_u8 mod_be, sl_u8 out);
+uint8_t wing_dudect_p256_public_key(sl_u8 priv, sl_u8 out);
+uint8_t wing_dudect_p256_ecdh(sl_u8 priv, sl_u8 peer_pub, sl_u8 out);
+uint8_t wing_dudect_rsa_pss_sign_blinded(sl_u8 n_be, sl_u8 d_be, sl_u8 e_be,
+                                         sl_u8 salt, sl_u8 msg, sl_u8 out);
 uint8_t wing_dudect_mlkem768_keygen(sl_u8 d_seed, sl_u8 z_seed, sl_u8 ek_out,
                                     sl_u8 dk_out);
 uint8_t wing_dudect_mlkem768_encaps(sl_u8 ek_in, sl_u8 m_seed, sl_u8 ct_out,
@@ -199,6 +203,8 @@ typedef struct {
   uint8_t msg[32];
   uint8_t rsa_base[64];
   uint8_t rsa_exp[64];
+  uint8_t rsa_d2048[256];
+  uint8_t rsa_salt32[32];
   uint8_t mlkem_ct[1088];
 } ClassSlot;
 
@@ -206,15 +212,32 @@ typedef struct {
   ClassSlot c0[POOL_SLOTS];
   ClassSlot c1[POOL_SLOTS];
   uint8_t rsa_mod[64];
+  uint8_t rsa_n2048[256];
+  uint8_t rsa_e3[1];
+  uint8_t p256_peer_pub[65];
   uint8_t mlkem_ek[1184];
   uint8_t mlkem_dk[2400];
-  uint8_t out[128];
+  uint8_t out[512];
 } DudectFixtures;
 
 static int init_fixtures(DudectFixtures *f, uint64_t *rng) {
   memset(f, 0, sizeof(*f));
   memset(f->rsa_mod, 0xFF, sizeof(f->rsa_mod));
   f->rsa_mod[63] = 0xEF;
+  memset(f->rsa_n2048, 0xFF, sizeof(f->rsa_n2048));
+  f->rsa_n2048[253] = 0xE2;
+  f->rsa_n2048[254] = 0x5C;
+  f->rsa_n2048[255] = 0xEF;
+  f->rsa_e3[0] = 0x03;
+
+  uint8_t peer_priv[32];
+  for (int i = 0; i < 32; i++) {
+    peer_priv[i] = (uint8_t)(0x41 + i);
+  }
+  if (!wing_dudect_p256_public_key(make_slice(peer_priv, 32),
+                                   make_slice(f->p256_peer_pub, 65))) {
+    return 0;
+  }
 
   uint8_t d_seed[32], z_seed[32], m_seed[32], ct_valid[1088], ss_tmp[32];
   memset(d_seed, 0x11, sizeof(d_seed));
@@ -247,6 +270,11 @@ static int init_fixtures(DudectFixtures *f, uint64_t *rng) {
     a->rsa_base[63] = 0x34;
     a->rsa_exp[0] = 0x80;
     a->rsa_exp[63] = 0x01;
+    memset(a->rsa_d2048, 0xAA, 256);
+    a->rsa_d2048[253] = 0x96;
+    a->rsa_d2048[254] = 0xE8;
+    a->rsa_d2048[255] = 0x9F;
+    memset(a->rsa_salt32, 0x42, 32);
     memcpy(a->mlkem_ct, ct_valid, 1088);
 
     fill_random(rng, b->aes128_k, 16);
@@ -266,6 +294,10 @@ static int init_fixtures(DudectFixtures *f, uint64_t *rng) {
     fill_random(rng, b->rsa_exp, 64);
     b->rsa_exp[0] |= 0x80u;
     b->rsa_exp[63] |= 0x01u;
+    fill_random(rng, b->rsa_d2048, 256);
+    b->rsa_d2048[0] |= 0x80u;
+    b->rsa_d2048[255] |= 0x01u;
+    fill_random(rng, b->rsa_salt32, 32);
     memcpy(b->mlkem_ct, ct_valid, 1088);
     b->mlkem_ct[(size_t)(i * 31) % 1088] ^= 0x80u;
   }
@@ -345,6 +377,19 @@ static uint8_t run_rsa_mod_exp(DudectFixtures *f, ClassSlot *s) {
       make_slice(f->rsa_mod, 64), make_slice(f->out, 64));
 }
 
+static uint8_t run_p256_ecdh(DudectFixtures *f, ClassSlot *s) {
+  return wing_dudect_p256_ecdh(make_slice(s->ecdsa_priv, 32),
+                               make_slice(f->p256_peer_pub, 65),
+                               make_slice(f->out, 32));
+}
+
+static uint8_t run_rsa_pss_sign_blinded(DudectFixtures *f, ClassSlot *s) {
+  return wing_dudect_rsa_pss_sign_blinded(
+      make_slice(f->rsa_n2048, 256), make_slice(s->rsa_d2048, 256),
+      make_slice(f->rsa_e3, 1), make_slice(s->rsa_salt32, 32),
+      make_slice(s->msg, 32), make_slice(f->out, 256));
+}
+
 static uint8_t run_mlkem768_decapsulate(DudectFixtures *f, ClassSlot *s) {
   return wing_dudect_mlkem768_decapsulate(make_slice(s->mlkem_ct, 1088),
                                           make_slice(f->mlkem_dk, 2400),
@@ -354,24 +399,30 @@ static uint8_t run_mlkem768_decapsulate(DudectFixtures *f, ClassSlot *s) {
 typedef struct {
   const char *name;
   TargetFn fn;
+  size_t sample_cap;
 } TargetSpec;
 
 static const TargetSpec g_targets[] = {
-    {"ct_eq_bytes", run_ct_eq_bytes},
-    {"aes128_encrypt_block", run_aes128_block},
-    {"aes_encrypt_block", run_aes256_block},
-    {"wing_aes_gcm_seal_scalar", run_aes_gcm_seal_scalar},
-    {"chacha20_poly1305", run_chacha20_poly1305},
-    {"x25519_scalarmult", run_x25519_scalarmult},
-    {"ecdsa_p256_sign", run_ecdsa_p256_sign},
-    {"ed25519_sign", run_ed25519_sign},
-    {"rsa_mod_exp", run_rsa_mod_exp},
-    {"mlkem768_decapsulate", run_mlkem768_decapsulate},
+    {"ct_eq_bytes", run_ct_eq_bytes, 0},
+    {"aes128_encrypt_block", run_aes128_block, 0},
+    {"aes_encrypt_block", run_aes256_block, 0},
+    {"wing_aes_gcm_seal_scalar", run_aes_gcm_seal_scalar, 0},
+    {"chacha20_poly1305", run_chacha20_poly1305, 0},
+    {"x25519_scalarmult", run_x25519_scalarmult, 0},
+    {"ecdsa_p256_sign", run_ecdsa_p256_sign, 0},
+    {"p256_ecdh_shared_secret", run_p256_ecdh, 0},
+    {"ed25519_sign", run_ed25519_sign, 0},
+    {"rsa_mod_exp", run_rsa_mod_exp, 0},
+    {"rsa_pss_sha256_sign_blinded", run_rsa_pss_sign_blinded, 2000},
+    {"mlkem768_decapsulate", run_mlkem768_decapsulate, 0},
 };
 
 static int measure_target(const TargetSpec *spec, DudectFixtures *f,
-                          size_t samples, double threshold, int max_retries,
+                          size_t req_samples, double threshold, int max_retries,
                           uint64_t *rng) {
+  size_t samples = (spec->sample_cap > 0 && req_samples > spec->sample_cap)
+                       ? spec->sample_cap
+                       : req_samples;
   uint8_t *classes = (uint8_t *)malloc(samples);
   uint64_t *ticks = (uint64_t *)malloc(samples * sizeof(uint64_t));
   if (!classes || !ticks) {

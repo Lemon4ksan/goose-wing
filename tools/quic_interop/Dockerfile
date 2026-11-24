@@ -14,27 +14,32 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    cmake \
     gcc \
+    g++ \
+    git \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-RUN curl -sSL --retry 5 --retry-delay 2 --retry-connrefused \
-    https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz \
-    | tar -xz -C /opt && \
-    ln -s /opt/goose-v2026.3-linux-x64/goose /usr/local/bin/goose
+RUN git clone --depth 1 https://github.com/aardappel/goose.git /opt/goose && \
+    cmake -S /opt/goose -B /opt/goose/build -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build /opt/goose/build -j 2 && \
+    ln -s /opt/goose/build/goose /usr/local/bin/goose
 
 COPY . /app
 
 RUN mkdir -p /app/tools/bin && \
-    goose build -O2 -o /app/tools/bin/quic_interop_endpoint tools/quic_interop/endpoint.goose
+    goose build -O2 -o /app/tools/bin/quic_interop_endpoint tools/quic_interop/endpoint.goose && \
+    goose build -O2 -o /app/tools/bin/edge_h3_server tools/quic_interop/edge_h3_server.goose
 
 FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ENDPOINT_BIN=/app/tools/bin/quic_interop_endpoint
+ENV EDGE_H3_BIN=/app/tools/bin/edge_h3_server
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -44,6 +49,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     mkdir -p /app/tools/bin /app/tools/quic_interop /www /downloads /logs /certs
 
 COPY --from=builder /app/tools/bin/quic_interop_endpoint /app/tools/bin/quic_interop_endpoint
+COPY --from=builder /app/tools/bin/edge_h3_server /app/tools/bin/edge_h3_server
 COPY tools/quic_interop/run_endpoint.sh /app/tools/quic_interop/run_endpoint.sh
 COPY tools/quic_interop/runner.py /app/tools/quic_interop/runner.py
 

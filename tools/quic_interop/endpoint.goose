@@ -170,6 +170,8 @@ fn rotate_1rtt_keys(keys: InteropKeys&) -> bool {
         return false;
     }
     keys.key_phase = !keys.key_phase;
+    keys.c_space.key_phase = keys.key_phase;
+    keys.s_space.key_phase = keys.key_phase;
     keys.phase_flips = core::add_sat_u64(keys.phase_flips, 1) as u32;
     return true;
 }

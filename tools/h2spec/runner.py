@@ -46,17 +46,21 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 TOOLS_DIR = ROOT_DIR / "tools"
 BIN_DIR = TOOLS_DIR / "bin"
 SERVER_SRC = TOOLS_DIR / "h2spec" / "server.goose"
+EDGE_SERVER_SRC = TOOLS_DIR / "h2spec" / "edge_server.goose"
 SERVER_EXE = BIN_DIR / ("h2spec_server.exe" if sys.platform == "win32" else "h2spec_server")
+EDGE_SERVER_EXE = BIN_DIR / ("h2spec_edge_server.exe" if sys.platform == "win32" else "h2spec_edge_server")
 H2SPEC_EXE = BIN_DIR / ("h2spec.exe" if sys.platform == "win32" else "h2spec")
 
 
-def ensure_server_binary(force_rebuild: bool = False) -> Path:
+def ensure_server_binary(force_rebuild: bool = False, edge_session: bool = False) -> Path:
     """Ensures the native Goose HTTP/2 server is compiled and ready."""
     BIN_DIR.mkdir(parents=True, exist_ok=True)
-    if not force_rebuild and SERVER_EXE.is_file() and SERVER_EXE.stat().st_mtime >= SERVER_SRC.stat().st_mtime:
-        return SERVER_EXE
+    server_src = EDGE_SERVER_SRC if edge_session else SERVER_SRC
+    server_exe = EDGE_SERVER_EXE if edge_session else SERVER_EXE
+    if not force_rebuild and server_exe.is_file() and server_exe.stat().st_mtime >= server_src.stat().st_mtime:
+        return server_exe
 
-    print(f"[*] Building native HTTP/2 h2spec server: {SERVER_SRC} -> {SERVER_EXE}...")
+    print(f"[*] Building native HTTP/2 h2spec server: {server_src} -> {server_exe}...")
     env = os.environ.copy()
     opt_flag = "-O2"
     if sys.platform == "win32":
@@ -65,7 +69,7 @@ def ensure_server_binary(force_rebuild: bool = False) -> Path:
             stack_cc = ROOT_DIR / "tools" / "gcc_stack.bat"
             if stack_cc.is_file():
                 env["GOOSE_CC"] = str(stack_cc)
-    cmd = ["goose", "build", str(SERVER_SRC), "-o", str(SERVER_EXE), opt_flag]
+    cmd = ["goose", "build", str(server_src), "-o", str(server_exe), opt_flag]
     res = subprocess.run(cmd, check=False, cwd=str(ROOT_DIR), capture_output=True, text=True, env=env)
     if res.returncode != 0:
         print("[!] Failed to build h2spec server:", file=sys.stderr)
@@ -75,8 +79,8 @@ def ensure_server_binary(force_rebuild: bool = False) -> Path:
             print(res.stderr, file=sys.stderr)
         sys.exit(1)
 
-    print(f"[+] Successfully built {SERVER_EXE.name}")
-    return SERVER_EXE
+    print(f"[+] Successfully built {server_exe.name}")
+    return server_exe
 
 
 def find_h2spec() -> Path:
@@ -383,9 +387,10 @@ def run_h2spec(
     verbose: bool = False,
     force_rebuild: bool = False,
     check_backpressure: bool = True,
+    edge_session: bool = False,
 ) -> int:
     """Executes h2spec against the server and prints formatted results."""
-    server_exe = ensure_server_binary(force_rebuild=force_rebuild)
+    server_exe = ensure_server_binary(force_rebuild=force_rebuild, edge_session=edge_session)
     h2spec_bin = find_h2spec()
 
     server = GooseH2Server(server_exe)
@@ -466,6 +471,11 @@ def main():
         action="store_true",
         help="Skip supplemental RFC 9113 Section 6.9 WINDOW_UPDATE backpressure checks",
     )
+    parser.add_argument(
+        "--edge-session",
+        action="store_true",
+        help="Run h2spec against http2::H2EdgeSession server (tools/h2spec/edge_server.goose)",
+    )
 
     args = parser.parse_args()
     rc = run_h2spec(
@@ -475,6 +485,7 @@ def main():
         verbose=args.verbose,
         force_rebuild=args.rebuild,
         check_backpressure=not args.no_backpressure,
+        edge_session=args.edge_session,
     )
     sys.exit(rc)
 

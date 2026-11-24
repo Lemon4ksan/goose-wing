@@ -8,7 +8,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    cmake \
     gcc \
+    g++ \
+    git \
     valgrind \
     binutils \
     curl \
@@ -18,17 +21,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-RUN curl -sSL --retry 5 --retry-delay 2 --retry-connrefused \
-    https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz \
-    | tar -xz -C /opt && \
-    ln -s /opt/goose-v2026.3-linux-x64/goose /usr/local/bin/goose
+RUN git clone --depth 1 https://github.com/aardappel/goose.git /opt/goose && \
+    cmake -S /opt/goose -B /opt/goose/build -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build /opt/goose/build -j 1 && \
+    ln -s /opt/goose/build/goose /usr/local/bin/goose
 
 COPY . /app
 
 RUN mkdir -p /app/.lit/cache/ctgrind && \
     goose --standalone --header /app/.lit/cache/ctgrind/ctgrind_target.h \
         -o /app/.lit/cache/ctgrind/ctgrind_target.c tools/ctgrind/ctgrind_target.goose && \
-    gcc -O2 -g -DUSE_VALGRIND=1 -fno-store-merging -mstackrealign -Wall -Wextra -Werror \
+    gcc -O2 -g -DUSE_VALGRIND=1 -DWING_CTGRIND_VALGRIND=1 -fno-store-merging -mstackrealign -Wall -Wextra -Werror \
         -c tools/ctgrind/ctgrind_harness.c -o /app/.lit/cache/ctgrind/ctgrind_harness.o && \
     gcc -O2 -g -fno-store-merging -mstackrealign \
         -c /app/.lit/cache/ctgrind/ctgrind_target.c -o /app/.lit/cache/ctgrind/ctgrind_target.o && \

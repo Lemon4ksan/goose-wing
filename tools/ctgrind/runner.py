@@ -86,7 +86,18 @@ def build_ctgrind(cc: str = "gcc", force: bool = False) -> tuple[Path, Path]:
         base_flags.append("-mstackrealign")
 
     res_drv = subprocess.run(
-        [cc, *base_flags, "-Wall", "-Wextra", "-Werror", "-c", str(HARNESS_C), "-o", str(harness_obj)],
+        [
+            cc,
+            *base_flags,
+            "-DWING_CTGRIND_VALGRIND=1",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-c",
+            str(HARNESS_C),
+            "-o",
+            str(harness_obj),
+        ],
         cwd=ROOT_DIR,
         capture_output=True,
         text=True,

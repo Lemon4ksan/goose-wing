@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Lemon4ksan
 
@@ -19,6 +20,8 @@ WWW_DIR="${WWW_DIR:-/www}"
 DOWNLOADS_DIR="${DOWNLOADS_DIR:-/downloads}"
 PORT="${PORT:-443}"
 ENDPOINT_BIN="${ENDPOINT_BIN:-/app/tools/bin/quic_interop_endpoint}"
+EDGE_H3_BIN="${EDGE_H3_BIN:-/app/tools/bin/edge_h3_server}"
+USE_EDGE_H3="${USE_EDGE_H3:-0}"
 
 case "$TESTCASE" in
     handshake|transfer|retry|resumption|keyupdate|chacha20|multiconnect|zerortt|http3)
@@ -35,6 +38,9 @@ fi
 
 if [ "$ROLE" = "server" ]; then
     mkdir -p "$WWW_DIR"
+    if [ "$USE_EDGE_H3" = "1" ]; then
+        exec "$EDGE_H3_BIN" server "$PORT" "$WWW_DIR"
+    fi
     exec "$ENDPOINT_BIN" server "$PORT" "$WWW_DIR" "$TESTCASE" "$SSLKEYLOGFILE"
 elif [ "$ROLE" = "client" ]; then
     mkdir -p "$DOWNLOADS_DIR"

@@ -113,11 +113,61 @@ export fn wing_ctgrind_rsa_mod_exp(
     mod_be: const u8[:],
     out:    u8[:],
 ) -> u8 {
-    guard mod_be.len >= 64 && mod_be.len <= 512 && out.len >= mod_be.len else { return 0; }
+    let k = mod_be.len;
+    guard k >= 64 && k <= 512 && out.len >= k else { return 0; }
     var res: u8[..512] = [];
-    guard core::rsa_mod_exp(base, exp, mod_be, res) && res.len == mod_be.len else { return 0; }
+    guard core::rsa_mod_exp(base, exp, mod_be, res) && res.len == k else { return 0; }
     for i in res.len { out[i] = res[i]; }
     return 1;
+}
+
+export fn wing_ctgrind_p256_public_key(priv: const u8[:], out: u8[:]) -> u8 {
+    var k: u8[32] = [0; 32];
+    guard copy_32(priv, k) && out.len >= 65 else { return 0; }
+    let pub = core::ecdsa_p256_public_key(k);
+    for i in 65 { out[i] = pub[i]; }
+    return 1;
+}
+
+export fn wing_ctgrind_p256_ecdh(
+    priv:     const u8[:],
+    peer_pub: const u8[:],
+    out:      u8[:],
+) -> u8 {
+    var k: u8[32] = [0; 32];
+    guard copy_32(priv, k) && out.len >= 32 else { return 0; }
+    let ss, ok = core::p256_ecdh_shared_secret(k, peer_pub);
+    guard ok else { return 0; }
+    for i in 32 { out[i] = ss[i]; }
+    return 1;
+}
+
+export fn wing_ctgrind_rsa_pss_sign_blinded(
+    n_be: const u8[:],
+    d_be: const u8[:],
+    e_be: const u8[:],
+    salt: const u8[:],
+    msg:  const u8[:],
+    out:  u8[:],
+) -> u8 {
+    let k = n_be.len;
+    guard k >= core::RSA_MIN_MODULUS_BYTES && k <= 512 && out.len >= k else { return 0; }
+    var sig: u8[..512] = [];
+    defer core::secure_zeroize_slice(sig[..]);
+    guard core::rsa_pss_sha256_sign_blinded(n_be, d_be, e_be, salt, msg, sig) && sig.len == k else {
+        return 0;
+    }
+    for i in sig.len { out[i] = sig[i]; }
+    return 1;
+}
+
+export fn wing_ctgrind_rsa_pss_verify(
+    n_be: const u8[:],
+    e_be: const u8[:],
+    msg:  const u8[:],
+    sig:  const u8[:],
+) -> u8 {
+    return if core::rsa_pss_sha256_verify(n_be, e_be, msg, sig) { 1 } else { 0 };
 }
 
 export fn wing_ctgrind_mlkem768_keygen(

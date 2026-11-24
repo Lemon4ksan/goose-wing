@@ -40,6 +40,20 @@
 
 #include "../../shim/crypto_fusion.c"
 
+#if defined(WING_CTGRIND_VALGRIND)
+void wing_ct_declassify(wing_slice s) {
+  if (s.ptr && s.len > 0) {
+    CT_UNPOISON(s.ptr, (size_t)s.len);
+  }
+}
+
+uint8_t wing_ct_declassify_u8(uint8_t v) {
+  volatile uint8_t tmp = v;
+  CT_UNPOISON(&tmp, sizeof(tmp));
+  return tmp;
+}
+#endif
+
 #pragma pack(push, 1)
 typedef struct {
   uint8_t *data;
@@ -61,6 +75,12 @@ uint8_t wing_ctgrind_ecdsa_p256_sign(sl_u8 priv, sl_u8 msg, sl_u8 out);
 uint8_t wing_ctgrind_ed25519_sign(sl_u8 seed, sl_u8 msg, sl_u8 out);
 uint8_t wing_ctgrind_rsa_mod_exp(sl_u8 base, sl_u8 exp, sl_u8 mod_be,
                                  sl_u8 out);
+uint8_t wing_ctgrind_p256_public_key(sl_u8 priv, sl_u8 out);
+uint8_t wing_ctgrind_p256_ecdh(sl_u8 priv, sl_u8 peer_pub, sl_u8 out);
+uint8_t wing_ctgrind_rsa_pss_sign_blinded(sl_u8 n_be, sl_u8 d_be, sl_u8 e_be,
+                                          sl_u8 salt, sl_u8 msg, sl_u8 out);
+uint8_t wing_ctgrind_rsa_pss_verify(sl_u8 n_be, sl_u8 e_be, sl_u8 msg,
+                                    sl_u8 sig);
 uint8_t wing_ctgrind_mlkem768_keygen(sl_u8 d_seed, sl_u8 z_seed, sl_u8 ek_out,
                                      sl_u8 dk_out);
 uint8_t wing_ctgrind_mlkem768_encaps(sl_u8 ek_in, sl_u8 m_seed, sl_u8 ct_out,
@@ -268,6 +288,70 @@ static int test_rsa_mod_exp(void) {
   return ok == 1u;
 }
 
+static int test_p256_ecdh(void) {
+  uint8_t priv[32];
+  uint8_t peer_priv[32];
+  uint8_t peer_pub[65] = {0};
+  uint8_t ss[32] = {0};
+  for (int i = 0; i < 32; i++) {
+    priv[i] = (uint8_t)(0x21 + i);
+    peer_priv[i] = (uint8_t)(0x51 + i);
+  }
+  if (!wing_ctgrind_p256_public_key(make_slice(peer_priv, 32),
+                                    make_slice(peer_pub, 65))) {
+    return 0;
+  }
+
+  CT_POISON(priv, sizeof(priv));
+  uint8_t ok = wing_ctgrind_p256_ecdh(
+      make_slice(priv, 32), make_slice(peer_pub, 65), make_slice(ss, 32));
+  CT_UNPOISON(ss, sizeof(ss));
+  CT_UNPOISON(priv, sizeof(priv));
+  uint8_t acc = 0;
+  for (int i = 0; i < 32; i++) {
+    acc |= ss[i];
+  }
+  return (ok == 1u && acc != 0u);
+}
+
+static int test_rsa_pss_sign_blinded(void) {
+  uint8_t n2048[256];
+  uint8_t d2048[256];
+  uint8_t e3[1] = {0x03};
+  uint8_t salt[32];
+  uint8_t msg[32];
+  uint8_t sig[256] = {0};
+  memset(n2048, 0xFF, sizeof(n2048));
+  n2048[253] = 0xE2;
+  n2048[254] = 0x5C;
+  n2048[255] = 0xEF;
+  memset(d2048, 0xAA, sizeof(d2048));
+  d2048[253] = 0x96;
+  d2048[254] = 0xE8;
+  d2048[255] = 0x9F;
+  memset(salt, 0x42, sizeof(salt));
+  memset(msg, 0x5A, sizeof(msg));
+
+  CT_POISON(d2048, sizeof(d2048));
+  CT_POISON(salt, sizeof(salt));
+  CT_POISON(msg, sizeof(msg));
+  uint8_t ok = wing_ctgrind_rsa_pss_sign_blinded(
+      make_slice(n2048, 256), make_slice(d2048, 256), make_slice(e3, 1),
+      make_slice(salt, 32), make_slice(msg, 32), make_slice(sig, 256));
+  CT_UNPOISON(sig, sizeof(sig));
+  CT_UNPOISON(d2048, sizeof(d2048));
+  CT_UNPOISON(salt, sizeof(salt));
+  CT_UNPOISON(msg, sizeof(msg));
+  uint8_t verified = wing_ctgrind_rsa_pss_verify(
+      make_slice(n2048, 256), make_slice(e3, 1), make_slice(msg, 32),
+      make_slice(sig, 256));
+  msg[0] ^= 0x01u;
+  uint8_t tampered_ok = wing_ctgrind_rsa_pss_verify(
+      make_slice(n2048, 256), make_slice(e3, 1), make_slice(msg, 32),
+      make_slice(sig, 256));
+  return (ok == 1u && verified == 1u && tampered_ok == 0u);
+}
+
 static int test_mlkem768_decapsulate(void) {
   uint8_t d_seed[32];
   uint8_t z_seed[32];
@@ -335,8 +419,10 @@ int main(int argc, char **argv) {
       {"chacha20_poly1305", test_chacha20_poly1305},
       {"x25519_scalarmult", test_x25519},
       {"ecdsa_p256_sign", test_ecdsa_p256_sign},
+      {"p256_ecdh_shared_secret", test_p256_ecdh},
       {"ed25519_sign", test_ed25519_sign},
       {"rsa_mod_exp", test_rsa_mod_exp},
+      {"rsa_pss_sha256_sign_blinded", test_rsa_pss_sign_blinded},
       {"mlkem768_decapsulate", test_mlkem768_decapsulate},
   };
   int all_ok = 1;
