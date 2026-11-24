@@ -375,7 +375,6 @@ fn parse_rsa_public_key_der(spki_or_pkcs1: const u8[:]) -> const u8[:], const u8
 fn rsa_pkcs1_sha256_verify(n_be: const u8[:], e_be: const u8[:], msg: const u8[:], sig: const u8[:]) -> bool
 fn rsa_pkcs1_sha384_verify(n_be: const u8[:], e_be: const u8[:], msg: const u8[:], sig: const u8[:]) -> bool
 fn rsa_pkcs1_sha256_verify_der(spki_der: const u8[:], msg: const u8[:], sig: const u8[:]) -> bool
-fn rsa_pkcs1_sha384_verify_der(spki_der: const u8[:], msg: const u8[:], sig: const u8[:]) -> bool
 fn rsa_pkcs1_sha256_sign(n_be: const u8[:], d_be: const u8[:], msg: const u8[:], out_sig: u8[:]) -> bool
 fn rsa_pss_sha256_verify(n_be: const u8[:], e_be: const u8[:], msg: const u8[:], sig: const u8[:]) -> bool
 fn rsa_pss_sha384_verify(n_be: const u8[:], e_be: const u8[:], msg: const u8[:], sig: const u8[:]) -> bool

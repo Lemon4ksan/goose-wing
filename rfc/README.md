@@ -2,11 +2,11 @@
 
 Centralized wire constants, status codes, frame types, cryptographic
 identifiers, and stateless validation predicates for HTTP, HTTP/2, HTTP/3, QUIC,
-TLS 1.3, WebSocket, and gRPC.
+DNS, TLS 1.3, WebSocket, and gRPC.
 
 Top-level umbrella module `rfc.goose` re-exports `rfc/http.goose`,
-`rfc/h2.goose`, `rfc/h3_quic.goose`, `rfc/tls.goose`, `rfc/ws.goose`, and
-`rfc/grpc.goose` into the `rfc` namespace.
+`rfc/dns.goose`, `rfc/h2.goose`, `rfc/h3_quic.goose`, `rfc/tls.goose`,
+`rfc/ws.goose`, and `rfc/grpc.goose` into the `rfc` namespace.
 
 ```goose
 import rfc;
@@ -22,6 +22,7 @@ if is_safe_http_method(METHOD_GET) && is_redirect_status(302) {
 
 ```goose
 const STATUS_CONTINUE: i32 = 100
+const STATUS_RESET_CONTENT: i32 = 205
 const STATUS_NETWORK_AUTHENTICATION_REQUIRED: i32 = 511
 const HTTP1_STATUS_200: const u8[:]
 const HTTP1_STATUS_504: const u8[:]
@@ -36,6 +37,8 @@ const METHOD_OPTIONS: const u8[:] = "OPTIONS"
 const METHOD_TRACE: const u8[:] = "TRACE"
 const METHOD_PATCH: const u8[:] = "PATCH"
 const METHOD_QUERY: const u8[:] = "QUERY"
+const MULTIPART_MAX_BOUNDARY_LEN: i64 = 70
+const QVALUE_MAX_MILLITHS: i32 = 1000
 
 const HEADER_HOST: const u8[:]
 const HEADER_CONTENT_DISPOSITION: const u8[:]
@@ -83,6 +86,30 @@ Extensible Priorities (RFC 9218), HTTP Message Signatures (RFC 9421), Digest
 Fields (RFC 9530), HTTP Digest Auth (RFC 7616), OAuth 2.0 DPoP (RFC 9449), and
 Privacy Pass (RFC 9577).
 
+### DNS, HTTPS/SVCB RR & DoH Constants (`rfc/dns.goose`)
+
+```goose
+const DNS_QTYPE_A: u16 = 1
+const DNS_QTYPE_CNAME: u16 = 5
+const DNS_QTYPE_AAAA: u16 = 28
+const DNS_QTYPE_SVCB: u16 = 64
+const DNS_QTYPE_HTTPS: u16 = 65
+const DNS_QCLASS_IN: u16 = 1
+const DNS_HEADER_LEN: i64 = 12
+const DNS_FLAG_RD: u16 = 0x0100
+const DNS_POINTER_TAG: u8 = 0xC0
+const DNS_RCODE_NOERROR: u8 = 0
+const DNS_RCODE_NXDOMAIN: u8 = 3
+const SVC_PARAM_MANDATORY: u16 = 0
+const SVC_PARAM_ALPN: u16 = 1
+const SVC_PARAM_IPV6HINT: u16 = 6
+const DOH_MAX_MESSAGE_OCTETS: i64 = 65535
+const DOH_CONTENT_TYPE: const u8[:] = "application/dns-message"
+```
+
+Defines RFC 1035 DNS record types, RCODEs, and compression pointer tags, RFC
+9460 SVCB/HTTPS parameter keys, and RFC 8484 DoH media types and message limits.
+
 ### HTTP/2 & HPACK Wire Constants (`rfc/h2.goose`, RFC 9113, RFC 7541)
 
 ```goose
@@ -93,13 +120,15 @@ const H2_FLAG_ACK: u8 = 0x01
 const H2_FLAG_END_HEADERS: u8 = 0x04
 const H2_FLAG_PADDED: u8 = 0x08
 const H2_FLAG_PRIORITY: u8 = 0x20
+const H2_ORIGIN_RESERVED_FLAGS: u8 = 0x0F
 const H2_ERR_NO_ERROR: u32 = 0x00
 const H2_ERR_HTTP_1_1_REQUIRED: u32 = 0x0D
 const H2_SETTING_HEADER_TABLE_SIZE: u16 = 0x01
 const H2_SETTING_NO_RFC7540_PRIORITIES: u16 = 0x09
 const H2_FRAME_HEADER_LEN: i64 = 9
-const H2_DEFAULT_WINDOW_SIZE: i64 = 65535
-const H2_MAX_WINDOW_SIZE: i64 = 2147483647
+const H2_MAX_STREAM_ID: u32 = 0x7FFFFFFF
+const H2_DEFAULT_WINDOW_SIZE: u32 = 65535
+const H2_MAX_WINDOW_SIZE: u32 = 2147483647
 const H2_DEFAULT_MAX_FRAME_SIZE: u32 = 16384
 const H2_MAX_FRAME_SIZE_LIMIT: u32 = 16777215
 const HPACK_STATIC_TABLE_ENTRIES: u64 = 61
@@ -109,6 +138,7 @@ let H2_CLIENT_PREFACE: const u8[24]
 
 fn validate_stream_id_association(stream_id: u32, frame_type: u8) -> u32
 fn validate_goaway_last_stream_id(last_stream_id: u32, sender_is_client: bool) -> bool
+fn is_connection_specific_header(name: const u8[:]) -> bool
 ```
 
 Defines RFC 9113 9-byte frame headers, frame types (`0x00`..`0x10`), flags,
@@ -118,7 +148,7 @@ window limits, and RFC 7541 HPACK table sizing constants.
 valid for `frame_type` (`0` for connection-level frames, non-zero for
 stream-level frames) or `H2_ERR_PROTOCOL_ERROR` otherwise.
 
-### QUIC, HTTP/3, QPACK, MASQUE & DNS Constants (`rfc/h3_quic.goose`)
+### QUIC, HTTP/3, QPACK, MASQUE & SOCKS5 Constants (`rfc/h3_quic.goose`)
 
 ```goose
 const QUIC_VERSION_1: u32 = 0x00000001
@@ -127,6 +157,10 @@ const QUIC_VERSION_NEGOTIATION: u32 = 0x00000000
 const QUIC_MIN_INITIAL_DATAGRAM_LEN: i64 = 1200
 const QUIC_MAX_CID_LEN: i64 = 20
 const QUIC_VARINT_MAX: u64 = 4611686018427387903
+const QUIC_STREAM_TYPE_MASK: u64 = 0x03
+const QUIC_CLIENT_BIDI_TYPE: u64 = 0x00
+const QUIC_CLIENT_UNI_TYPE: u64 = 0x02
+const QUIC_CRYPTO_ERROR_BASE: u64 = 0x0100
 const QUIC_ERR_NO_ERROR: u64 = 0x00
 const QUIC_ERR_NO_VIABLE_PATH: u64 = 0x10
 const QUIC_FRAME_PADDING: u64 = 0x00
@@ -135,8 +169,8 @@ const QUIC_TP_ORIGINAL_DESTINATION_CONNECTION_ID: u64 = 0x00
 const QUIC_TP_MIN_ACK_DELAY: u64
 const QUIC_V1_INITIAL_SALT: const u8[20]
 const QUIC_V2_INITIAL_SALT: const u8[20]
-const PMTU_BASE: i64 = 1200
-const PMTU_ETHERNET: i64 = 1500
+const PMTU_BASE: u32 = 1200
+const PMTU_ETHERNET: u32 = 1500
 
 const QPACK_STATIC_TABLE_SIZE: i64 = 99
 const QPACK_ENTRY_OVERHEAD: i64 = 32
@@ -150,14 +184,12 @@ const H3_STREAM_QPACK_ENCODER: u64 = 0x02
 const H3_STREAM_QPACK_DECODER: u64 = 0x03
 const H3_SETTING_QPACK_MAX_TABLE_CAPACITY: u64 = 0x01
 const H3_SETTING_H3_DATAGRAM: u64 = 0x33
+const H3_SETTINGS_H3_DATAGRAM_DRAFT00: u64 = 0x276
+const H3_SETTINGS_ENABLE_WEBTRANSPORT: u64 = 0x2b603742
+const H3_SETTINGS_WEBTRANSPORT_MAX_SESSIONS: u64 = 0xc671706a
 
 const CAPSULE_DATAGRAM: u64 = 0x00
 const WEBTRANSPORT_ERROR_LAST: u64
-const DNS_QTYPE_A: u16 = 1
-const DNS_QTYPE_AAAA: u16 = 28
-const DNS_QTYPE_HTTPS: u16 = 65
-const SVC_PARAM_ALPN: u16 = 1
-const SVC_PARAM_IPV6HINT: u16 = 6
 const SOCKS5_VER: u8 = 0x05
 const SOCKS5_CMD_CONNECT: u8 = 0x01
 const SOCKS5_ATYP_IPV4: u8 = 0x01
@@ -173,7 +205,7 @@ fn is_h2_reserved_setting_in_h3(id: u64) -> bool
 
 Covers QUIC v1 and v2 (RFC 9000, RFC 9369), HTTP/3 frame and stream rules (RFC
 9114), QPACK (RFC 9204), MASQUE and WebTransport capsules (RFC 9297, RFC 9298,
-RFC 9484), DNS SVCB/HTTPS records (RFC 9460), and SOCKS5 (RFC 1928).
+RFC 9484), Happy Eyeballs (RFC 8305), and SOCKS5 (RFC 1928).
 
 ### TLS 1.3, X.509, HPKE/ECH & Post-Quantum Constants (`rfc/tls.goose`)
 
@@ -203,16 +235,30 @@ const CERT_COMPRESSION_BROTLI: u16 = 2
 const CERT_COMPRESSION_ZSTD: u16 = 3
 const GROUP_SECP256R1: u16 = 0x0017
 const GROUP_SECP384R1: u16 = 0x0018
-const GROUP_X25519: u16 = 0x001D
-const GROUP_X25519_MLKEM768: u16 = 0x11EC
-const GROUP_SECP256R1_MLKEM768: u16
-const GROUP_SECP384R1_MLKEM1024: u16
-const ASN1_TAG_BOOLEAN: u8 = 0x01
-const ASN1_TAG_SET: u8 = 0x31
-const OID_COMMON_NAME: const u8[:]
-const OID_SIG_SHA1_DSA: const u8[:]
-const SIG_SCHEME_RSA_PKCS1_SHA256: u16 = 0x0401
-const SIG_SCHEME_ED25519: u16 = 0x0807
+const GROUP_X25519:                  u16 = 0x001D
+const GROUP_X25519_MLKEM768:         u16 = 0x11EC
+const GROUP_SECP256R1_MLKEM768:      u16
+const GROUP_SECP384R1_MLKEM1024:     u16
+const HPKE_AEAD_EXPORT_ONLY:         u16 = 0xFFFF
+const CERT_STATUS_TYPE_OCSP:         u8 = 1
+const SCT_SIG_TYPE_CERT_TIMESTAMP:   u8 = 0
+const SCT_ENTRY_TYPE_X509:           u16 = 0
+const SCT_ENTRY_TYPE_PRECERT:        u16 = 1
+const ASN1_TAG_BOOLEAN:              u8 = 0x01
+const ASN1_TAG_SET:                  u8 = 0x31
+const ASN1_TAG_CTX0_CONSTRUCTED:     u8 = 0xA0
+const ASN1_TAG_GENERAL_NAME_DNS:     u8 = 0x82
+const OID_COMMON_NAME:               const u8[:]
+const OID_PKCS9_EXTENSION_REQUEST:   const u8[:]
+const OID_EMAIL_ADDRESS:             const u8[:]
+const OID_OCSP_SHA1:                 const u8[:]
+const OID_OCSP_SHA256:               const u8[:]
+const OID_HASH_SHA384:               const u8[:]
+const OID_HASH_SHA512:               const u8[:]
+const OID_MGF1:                      const u8[:]
+const OID_SIG_SHA1_DSA:              const u8[:]
+const SIG_SCHEME_RSA_PKCS1_SHA256:   u16 = 0x0401
+const SIG_SCHEME_ED25519:            u16 = 0x0807
 
 fn is_valid_ccs_payload(payload: const u8[:]) -> bool
 fn is_known_tls_extension(ext_type: u16) -> bool
@@ -221,9 +267,7 @@ fn is_forbidden_cert_req_extension(ext_type: u16) -> bool
 fn is_forbidden_nst_extension(ext_type: u16) -> bool
 fn is_forbidden_ch_extension(ext_type: u16) -> bool
 fn is_permitted_sh_extension(ext_type: u16) -> bool
-fn is_forbidden_sh_extension(ext_type: u16) -> bool
 fn is_permitted_hrr_extension(ext_type: u16) -> bool
-fn is_forbidden_hrr_extension(ext_type: u16) -> bool
 fn is_permitted_ee_extension(ext_type: u16) -> bool
 fn is_forbidden_ee_extension(ext_type: u16) -> bool
 fn is_supported_tls13_cipher_suite(cs: u16) -> bool
@@ -254,6 +298,15 @@ const WS_OPCODE_BINARY: u8 = 0x02
 const WS_OPCODE_CLOSE: u8 = 0x08
 const WS_OPCODE_PING: u8 = 0x09
 const WS_OPCODE_PONG: u8 = 0x0A
+const WS_FIN_BIT: u8 = 0x80
+const WS_RSV1_BIT: u8 = 0x40
+const WS_RSV2_BIT: u8 = 0x20
+const WS_RSV3_BIT: u8 = 0x10
+const WS_OPCODE_MASK: u8 = 0x0F
+const WS_MASK_BIT: u8 = 0x80
+const WS_PAYLOAD_LEN_MASK: u8 = 0x7F
+const WS_LEN16_SENTINEL: u64 = 126
+const WS_MAX_CONTROL_LEN: u64 = 125
 const WS_STATUS_NORMAL: u16 = 1000
 const WS_STATUS_INTERNAL_ERROR: u16 = 1011
 let WS_HANDSHAKE_GUID: const u8[:]
@@ -264,13 +317,13 @@ fn is_valid_ws_opcode(opcode: u8) -> bool
 fn is_valid_ws_close_code(code: u16) -> bool
 ```
 
-Defines RFC 6455 frame opcodes (`0x00`..`0x0A`), close status codes
-(`1000`..`1011`), and the handshake GUID
+Defines RFC 6455 frame header bitmasks, opcodes (`0x00`..`0x0A`), close status
+codes (`1000`..`1011`), and the handshake GUID
 (`258EAFA5-E914-47DA-95CA-C5AB0DC85B11`). `is_valid_ws_close_code` rejects
 reserved wire codes (`1004`, `1005`, `1006`, `1015`) and out-of-range values
 outside `1000..4999`.
 
-### gRPC & gRPC-Web Framing Constants (`rfc/grpc.goose`)
+### gRPC, Connect-RPC & gRPC-Web Framing Constants (`rfc/grpc.goose`)
 
 ```goose
 const GRPC_DEFAULT_MAX_MESSAGE_SIZE: u32 = 4194304
@@ -290,8 +343,12 @@ const HEADER_GRPC_TIMEOUT: const u8[:]
 const HEADER_GRPC_ENCODING: const u8[:]
 const HEADER_GRPC_ACCEPT_ENCODING: const u8[:]
 const HEADER_GRPC_STATUS_DETAILS_BIN: const u8[:]
+const CONNECT_FLAG_END_STREAM: u8 = 0x02
+const CONNECT_CONTENT_PREFIX: const u8[:] = "application/connect+"
+const CONNECT_MIME_PROTO: const u8[:] = "application/proto"
+const CONNECT_MIME_JSON: const u8[:] = "application/json"
 ```
 
 Defines 5-byte Length-Prefixed Message header flags, Protobuf
-`google.rpc.Status` wire tags, MIME types, and metadata header names for gRPC
-and gRPC-Web.
+`google.rpc.Status` wire tags, MIME types, Connect-RPC framing constants, and
+metadata header names for gRPC, Connect-RPC, and gRPC-Web.

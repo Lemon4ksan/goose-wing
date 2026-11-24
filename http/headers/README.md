@@ -38,8 +38,6 @@ struct HeaderPresenceTracker
 fn track_known_header_presence(tracker: HeaderPresenceTracker&, id: KnownHeaderId, val: const u8[:], hdr_idx: i16) -> bool
 inline fn track_header_presence(tracker: HeaderPresenceTracker&, name: const u8[:], val: const u8[:], hdr_idx: i16) -> bool
 fn swar_to_lower_64(v: u64) -> u64
-fn swar_to_lower(slice: u8[:])
-checkfree inline fn is_tchar(b: u8) -> bool
 checkfree inline fn is_valid_header_value_byte(b: u8) -> bool
 fn match_http_method_u32(raw: const u8[:]) -> const u8[:], i64, bool
 fn is_valid_token_swar(src: const u8[:]) -> bool
