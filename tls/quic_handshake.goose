@@ -102,6 +102,7 @@ struct QuicTlsClientSlot {
     tx_initial_buf:  u8[..4096]                = [],
     rx_hs_buf:       u8[..24576]               = [],
     tx_hs_buf:       u8[..1024]                = [],
+    rx_app_buf:      u8[..8192]                = [],
     client_cfg:      ClientHandshakeConfig     = ClientHandshakeConfig { .. },
     ts:              Transcript                = Transcript { .. },
     ks:              tls_internal::KeySchedule = tls_internal::KeySchedule { .. },
@@ -147,6 +148,9 @@ fn zeroize_cli_slot(slot: QuicTlsClientSlot&) {
     core::secure_zeroize_32(slot.eph_priv);
     core::secure_zeroize_slice(slot.eph_pub[..]);
     core::secure_zeroize_slice(slot.client_cfg.client_priv_seed[..]);
+    core::secure_zeroize_slice(slot.rx_initial_buf[..]);
+    core::secure_zeroize_slice(slot.rx_hs_buf[..]);
+    core::secure_zeroize_slice(slot.rx_app_buf[..]);
     tls_internal::ks_zeroize(slot.ks);
     zeroize_quic_secrets_queue(slot.sec_queue);
     slot = QuicTlsClientSlot { .. };
@@ -173,20 +177,46 @@ fn lookup_live_cli_slot_idx(cli: const QuicTlsClient&) -> i64 {
 fn quic_srv_fail(slot: QuicTlsServerSlot&, alert: Alert) -> QuicTlsStatus {
     slot.stage = QuicSrvStage.Failed;
     slot.last_alert = alert;
+    if slot.rsa_key_slot >= 0 {
+        release_rsa_key_slot(slot.rsa_key_slot, slot.rsa_key_gen);
+        slot.rsa_key_slot = -1;
+        slot.rsa_key_gen = 0;
+    }
+    slot.has_creds = false;
     core::secure_zeroize_32(slot.priv_seed);
     core::secure_zeroize_slice(slot.pending_ch_msg[..]);
+    core::secure_zeroize_slice(slot.rx_initial_buf[..]);
+    core::secure_zeroize_slice(slot.rx_hs_buf[..]);
     slot.pending_ch_msg.clear();
+    slot.rx_initial_buf.clear();
+    slot.rx_hs_buf.clear();
+    slot.tx_initial_buf.clear();
+    slot.tx_hs_buf.clear();
     tls_internal::ks_zeroize(slot.ks);
+    zeroize_quic_secrets_queue(slot.sec_queue);
     return QuicTlsStatus.AlertError;
 }
 
 fn quic_cli_fail(slot: QuicTlsClientSlot&, alert: Alert) -> QuicTlsStatus {
     slot.stage = QuicCliStage.Failed;
     slot.last_alert = alert;
+    core::secure_zeroize_32(slot.client_random);
     core::secure_zeroize_32(slot.eph_priv);
+    core::secure_zeroize_slice(slot.eph_pub[..]);
+    core::secure_zeroize_slice(slot.client_cfg.client_priv_seed[..]);
     core::secure_zeroize_slice(slot.peer_cert_body[..]);
+    core::secure_zeroize_slice(slot.rx_initial_buf[..]);
+    core::secure_zeroize_slice(slot.rx_hs_buf[..]);
+    core::secure_zeroize_slice(slot.rx_app_buf[..]);
+    slot.eph_pub.clear();
     slot.peer_cert_body.clear();
+    slot.rx_initial_buf.clear();
+    slot.rx_hs_buf.clear();
+    slot.rx_app_buf.clear();
+    slot.tx_initial_buf.clear();
+    slot.tx_hs_buf.clear();
     tls_internal::ks_zeroize(slot.ks);
+    zeroize_quic_secrets_queue(slot.sec_queue);
     return QuicTlsStatus.AlertError;
 }
 
@@ -1337,6 +1367,59 @@ fn quic_tls_client_start(cli: QuicTlsClient&) -> QuicTlsStatus {
     return QuicTlsStatus.Ok;
 }
 
+fn validate_quic_post_hs_nst(body: const u8[:]) -> bool {
+    var c = core::cursor_from(body);
+    var lifetime: u32 = 0;
+    var age_add:  u32 = 0;
+    // RFC 8446 Section 4.6.1: New Session Ticket Message - Require well-formed ticket framing.
+    guard c.get_u32(lifetime) && c.get_u32(age_add) else { return false; }
+    let nonce, ok_n = c.read_u8_prefixed();
+    let ticket, ok_t = c.read_u16_prefixed();
+    var ext_c, ok_e = c.read_u16_sub_cursor();
+    guard ok_n && ok_t && ok_e && ticket.len >= 1 && c.buf.len == 0 else { return false; }
+    while ext_c.buf.len > 0 {
+        let _, ok_et = ext_c.read_u16();
+        let _, ok_ed = ext_c.read_u16_prefixed();
+        guard ok_et && ok_ed else { return false; }
+    }
+    return true;
+}
+
+fn process_cli_established_app_crypto(
+    slot:  QuicTlsClientSlot&,
+    level: QuicTlsLevel,
+    data:  const u8[:],
+) -> QuicTlsStatus {
+    if data.len == 0 { return QuicTlsStatus.Established; }
+    // RFC 9001 Section 4.5: Session Resumption - Post-handshake CRYPTO arrives only at Application level.
+    guard level == QuicTlsLevel.Application else {
+        return quic_cli_fail(slot, Alert.UnexpectedMessage);
+    }
+    guard slot.rx_app_buf.try_append(data) else {
+        return quic_cli_fail(slot, Alert.RecordOverflow);
+    }
+    while slot.rx_app_buf.len > 0 {
+        let msg_type, total_len, read_st = tls_internal::pure_peek_hs_msg_frame(
+            slot.rx_app_buf[..], 8192, 8192,
+        );
+        if read_st == tls_internal::PureHsMsgRead.NeedMore {
+            return QuicTlsStatus.Established;
+        }
+        guard read_st == tls_internal::PureHsMsgRead.Ready else {
+            return quic_cli_fail(slot, Alert.DecodeError);
+        }
+        // RFC 9001 Section 6: Key Update - Reject KeyUpdate and non-ticket messages in CRYPTO frames.
+        guard msg_type == rfc::TLS_HS_NEW_SESSION_TICKET else {
+            return quic_cli_fail(slot, Alert.UnexpectedMessage);
+        }
+        guard validate_quic_post_hs_nst(slot.rx_app_buf[4..total_len]) else {
+            return quic_cli_fail(slot, Alert.DecodeError);
+        }
+        core::compact_wire_buffer(slot.rx_app_buf, total_len);
+    }
+    return QuicTlsStatus.Established;
+}
+
 // Feeds inbound QUIC CRYPTO frame bytes at `level` into the client handshake engine.
 fn quic_tls_client_provide_crypto(
     cli:   QuicTlsClient&,
@@ -1349,8 +1432,7 @@ fn quic_tls_client_provide_crypto(
 
     if slot.stage == QuicCliStage.Failed { return QuicTlsStatus.AlertError; }
     if slot.stage == QuicCliStage.Established {
-        if data.len == 0 { return QuicTlsStatus.Established; }
-        return quic_cli_fail(slot, Alert.UnexpectedMessage);
+        return process_cli_established_app_crypto(slot, level, data);
     }
     if slot.stage == QuicCliStage.Init {
         return quic_cli_fail(slot, Alert.UnexpectedMessage);

@@ -865,6 +865,227 @@ fn test_concurrent_thread_local_arenas() {
     print("CHECK_QUIC_THREAD_OK\n");
 }
 
+fn build_ch_without_rsa_sig(
+    rand_bytes: const u8[32]&,
+    sni_host:   const u8[:],
+    alpn_proto: const u8[:],
+    tp_bytes:   const u8[:],
+    out_msg:    u8[..4096]&,
+) {
+    out_msg.clear();
+    var pay: u8[..4096] = [];
+    pay.append_u16_be(rfc::TLS_LEGACY_VERSION_1_2);
+    pay.append(rand_bytes[..]);
+    pay.push(0);
+    pay.append_u16_be(2);
+    pay.append_u16_be(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+    pay.push(1);
+    pay.push(0);
+
+    var ext: u8[..2560] = [];
+    ext.append_u16_be(rfc::TLS_EXT_SERVER_NAME);
+    ext.append_u16_be((sni_host.len + 5) as u16);
+    ext.append_u16_be((sni_host.len + 3) as u16);
+    ext.push(0);
+    ext.append_u16_be(sni_host.len as u16);
+    ext.append(sni_host);
+
+    ext.append_u16_be(rfc::TLS_EXT_ALPN);
+    ext.append_u16_be((alpn_proto.len + 3) as u16);
+    ext.append_u16_be((alpn_proto.len + 1) as u16);
+    ext.push(alpn_proto.len as u8);
+    ext.append(alpn_proto);
+
+    ext.append_u16_be(rfc::TLS_EXT_SUPPORTED_VERSIONS);
+    ext.append_u16_be(3);
+    ext.push(2);
+    ext.append_u16_be(rfc::TLS_VERSION_1_3);
+
+    ext.append_u16_be(rfc::TLS_EXT_SUPPORTED_GROUPS);
+    ext.append_u16_be(4);
+    ext.append_u16_be(2);
+    ext.append_u16_be(rfc::GROUP_X25519);
+
+    ext.append_u16_be(rfc::TLS_EXT_SIGNATURE_ALGORITHMS);
+    ext.append_u16_be(6);
+    ext.append_u16_be(4);
+    ext.append_u16_be(rfc::SIG_SCHEME_ED25519);
+    ext.append_u16_be(rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256);
+
+    var x25519_priv: u8[32] = [0x31; 32];
+    let x25519_pub = core::x25519_base_scalarmult(x25519_priv);
+    ext.append_u16_be(rfc::TLS_EXT_KEY_SHARE);
+    ext.append_u16_be(38);
+    ext.append_u16_be(36);
+    ext.append_u16_be(rfc::GROUP_X25519);
+    ext.append_u16_be(32);
+    ext.append(x25519_pub[..]);
+
+    ext.append_u16_be(rfc::TLS_EXT_QUIC_TRANSPORT_PARAMETERS);
+    ext.append_u16_be(tp_bytes.len as u16);
+    ext.append(tp_bytes);
+
+    pay.append_u16_be(ext.len as u16);
+    pay.append(ext[..]);
+    out_msg.push(rfc::TLS_HS_CLIENT_HELLO);
+    core::append_u24_be(out_msg, pay.len as u32);
+    out_msg.append(pay[..]);
+}
+
+fn build_large_nst_msg(out_msg: u8[..4096]&) {
+    out_msg.clear();
+    var body: u8[..2400] = [];
+    body.append_u32_be(3600);
+    body.append_u32_be(0x12345678);
+    body.push(4);
+    body.append("n001");
+    let ticket_len: u16 = 1600;
+    body.append_u16_be(ticket_len);
+    for _ in 1600 { body.push(0xAB); }
+    body.append_u16_be(8);
+    body.append_u16_be(rfc::TLS_EXT_EARLY_DATA);
+    body.append_u16_be(4);
+    body.append_u32_be(16384);
+
+    out_msg.push(rfc::TLS_HS_NEW_SESSION_TICKET);
+    core::append_u24_be(out_msg, body.len as u32);
+    out_msg.append(body[..]);
+}
+
+fn establish_ed25519_pair(
+    cli: tls::QuicTlsClient&,
+    srv: tls::QuicTlsServer&,
+) {
+    assert(tls::quic_tls_client_start(cli) == tls::QuicTlsStatus.Ok);
+    var c_i: u8[>..] = [];
+    assert(tls::quic_tls_client_drain_crypto(cli, tls::QuicTlsLevel.Initial, c_i) > 40);
+    assert(tls::quic_tls_server_provide_crypto(srv, tls::QuicTlsLevel.Initial, c_i[..]) == tls::QuicTlsStatus.Ok);
+    var s_i: u8[>..] = [];
+    var s_h: u8[>..] = [];
+    assert(tls::quic_tls_server_drain_crypto(srv, tls::QuicTlsLevel.Initial, s_i) > 40);
+    assert(tls::quic_tls_server_drain_crypto(srv, tls::QuicTlsLevel.Handshake, s_h) > 60);
+    assert(tls::quic_tls_client_provide_crypto(cli, tls::QuicTlsLevel.Initial, s_i[..]) == tls::QuicTlsStatus.Ok);
+    assert(tls::quic_tls_client_provide_crypto(cli, tls::QuicTlsLevel.Handshake, s_h[..]) == tls::QuicTlsStatus.Established);
+    var c_h: u8[>..] = [];
+    assert(tls::quic_tls_client_drain_crypto(cli, tls::QuicTlsLevel.Handshake, c_h) >= 36);
+    assert(tls::quic_tls_server_provide_crypto(srv, tls::QuicTlsLevel.Handshake, c_h[..]) == tls::QuicTlsStatus.Established);
+}
+
+fn test_fix_round_1_regressions() {
+    var seed:     u8[32]     = [0x88; 32];
+    var cert_der: u8[..2048] = [];
+    assert(tls::build_test_ed25519_cert_der(seed, "r1.example.test", "r1.example.test", "127.0.0.1", cert_der));
+    var cert_pem: u8[>..] = [];
+    append_pem_block("CERTIFICATE", cert_der[..], cert_pem);
+    var ed_key_pem: u8[>..] = [];
+    var pkcs8_ed: u8[>..] = [
+        0x30, 0x2E, 0x02, 0x01, 0x00,
+        0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, 0x70,
+        0x04, 0x22, 0x04, 0x20,
+    ];
+    for i in 32 { pkcs8_ed.push(seed[i]); }
+    append_pem_block("PRIVATE KEY", pkcs8_ed[..], ed_key_pem);
+
+    // 1. Queued secrets wiped immediately on server/client fail BEFORE close().
+    var cli_bad_fin = tls::quic_tls_client_open("r1.example.test", "h3", "\x01\x01\x01", cert_pem[..]);
+    var srv_bad_fin = tls::quic_tls_server_open("h3", "\x01\x01\x02", false, cert_pem[..], ed_key_pem[..]);
+    assert(tls::quic_tls_client_start(cli_bad_fin) == tls::QuicTlsStatus.Ok);
+    var ci: u8[>..] = [];
+    let _ = tls::quic_tls_client_drain_crypto(cli_bad_fin, tls::QuicTlsLevel.Initial, ci);
+    assert(tls::quic_tls_server_provide_crypto(srv_bad_fin, tls::QuicTlsLevel.Initial, ci[..]) == tls::QuicTlsStatus.Ok);
+    var si: u8[>..] = [];
+    let _ = tls::quic_tls_server_drain_crypto(srv_bad_fin, tls::QuicTlsLevel.Initial, si);
+    // Feed bad Finished on server before taking server secrets: sec_queue must wipe immediately.
+    var bad_fin: u8[36] = [0xAA; 36];
+    bad_fin[0] = rfc::TLS_HS_FINISHED;
+    bad_fin[1] = 0;
+    bad_fin[2] = 0;
+    bad_fin[3] = 32;
+    assert(tls::quic_tls_server_provide_crypto(srv_bad_fin, tls::QuicTlsLevel.Handshake, bad_fin[..]) == tls::QuicTlsStatus.AlertError);
+    assert(tls::quic_tls_server_last_alert(srv_bad_fin) == tls::Alert.DecryptError);
+    var tmp_sec = tls::QuicTlsSecrets { .. };
+    assert(!tls::quic_tls_server_take_secrets(srv_bad_fin, tmp_sec));
+    // Client processes Initial ServerHello (queues Handshake secrets), then fails on Handshake EE.
+    assert(tls::quic_tls_client_provide_crypto(cli_bad_fin, tls::QuicTlsLevel.Initial, si[..]) == tls::QuicTlsStatus.Ok);
+    let bad_ee: u8[6] = [rfc::TLS_HS_ENCRYPTED_EXTENSIONS, 0x00, 0x00, 0x02, 0x00, 0x00];
+    assert(tls::quic_tls_client_provide_crypto(cli_bad_fin, tls::QuicTlsLevel.Handshake, bad_ee[..]) == tls::QuicTlsStatus.AlertError);
+    assert(!tls::quic_tls_client_take_secrets(cli_bad_fin, tmp_sec));
+    tls::quic_tls_server_close(srv_bad_fin);
+    tls::quic_tls_client_close(cli_bad_fin);
+
+    // 2. RSA slot loaded during set_credentials_pem is freed immediately on failure BEFORE close().
+    let base_rsa = count_active_rsa_slots();
+    var rsa_der: u8[..4096] = [];
+    build_rsa_leaf_cert_der("rsa-r1.example.test", "rsa-r1.example.test", rsa_der);
+    var rsa_cert_pem: u8[>..] = [];
+    append_pem_block("CERTIFICATE", rsa_der[..], rsa_cert_pem);
+    var rsa_key_der: u8[>..] = [];
+    build_rsa_pkcs8_der(rsa_key_der);
+    var rsa_key_pem: u8[>..] = [];
+    append_pem_block("PRIVATE KEY", rsa_key_der[..], rsa_key_pem);
+
+    var rand_b:    u8[32]     = [0x42; 32];
+    var ch_no_rsa: u8[..4096] = [];
+    build_ch_without_rsa_sig(rand_b, "rsa-r1.example.test", "h3", "\x01\x01\x02", ch_no_rsa);
+    var srv_rsa_fail = tls::quic_tls_server_open("h3", "\x01\x01\x01", true);
+    assert(tls::quic_tls_server_provide_crypto(srv_rsa_fail, tls::QuicTlsLevel.Initial, ch_no_rsa[..]) == tls::QuicTlsStatus.NeedSniCredentials);
+    assert(tls::quic_tls_server_set_credentials_pem(srv_rsa_fail, rsa_cert_pem[..], rsa_key_pem[..]) == tls::QuicTlsStatus.AlertError);
+    assert(count_active_rsa_slots() == base_rsa);
+    tls::quic_tls_server_close(srv_rsa_fail);
+
+    // 3. TCP TlsEndpoint emits fatal TLS Alert UnsupportedExtension (110) on wire_out for 0x0039.
+    var ep_cfg = tls::TlsBackendConfig {
+        kind:                  tls::TlsBackendKind.PureGoose,
+        is_server:             true,
+        defer_sni_credentials: true,
+        ..
+    };
+    let _ = ep_cfg.alpn_wire.try_set("\x02h3");
+    var ep, open_st = tls::tls_endpoint_open(ep_cfg);
+    assert(open_st == tls::TlsBackendStatus.Ok);
+    var tcp_ch: u8[..4096] = [];
+    build_custom_quic_ch_msg(rand_b, "r1.example.test", "h3", "\x01\x01\x02", true, rand_b[..], tcp_ch);
+    var rec: u8[..4200] = [];
+    rec.push(rfc::TLS_CONTENT_HANDSHAKE);
+    rec.append_u16_be(rfc::TLS_LEGACY_VERSION_1_0);
+    rec.append_u16_be(tcp_ch.len as u16);
+    assert(rec.try_append(tcp_ch[..]));
+    let fed_n, feed_st = tls::tls_endpoint_feed_wire(ep, rec[..]);
+    assert(fed_n == rec.len && feed_st == tls::TlsBackendStatus.Ok);
+    assert(tls::tls_endpoint_step_handshake(ep) == tls::TlsBackendStatus.HandshakeError);
+    var alert_wire: u8[256] = [0; 256];
+    let n_alert, _ = tls::tls_endpoint_drain_wire(ep, alert_wire[..]);
+    assert(n_alert >= 7);
+    assert(alert_wire[0] == rfc::TLS_CONTENT_ALERT && alert_wire[5] == 2);
+    assert(alert_wire[6] == tls::alert_to_u8(tls::Alert.UnsupportedExtension));
+    tls::tls_endpoint_close(ep);
+
+    // 4. Client accepts fragmented post-handshake NewSessionTicket at Application, rejects KeyUpdate/Initial/Handshake.
+    var cli_nst = tls::quic_tls_client_open("r1.example.test", "h3", "\x01\x01\x01", cert_pem[..]);
+    var srv_nst = tls::quic_tls_server_open("h3", "\x01\x01\x02", false, cert_pem[..], ed_key_pem[..]);
+    establish_ed25519_pair(cli_nst, srv_nst);
+    var nst_msg: u8[..4096] = [];
+    build_large_nst_msg(nst_msg);
+    let nst_split = nst_msg.len / 2;
+    assert(tls::quic_tls_client_provide_crypto(cli_nst, tls::QuicTlsLevel.Application, nst_msg[..nst_split]) == tls::QuicTlsStatus.Established);
+    assert(tls::quic_tls_client_provide_crypto(cli_nst, tls::QuicTlsLevel.Application, nst_msg[nst_split..]) == tls::QuicTlsStatus.Established);
+    let ku_msg: u8[5] = [rfc::TLS_HS_KEY_UPDATE, 0x00, 0x00, 0x01, 0x00];
+    assert(tls::quic_tls_client_provide_crypto(cli_nst, tls::QuicTlsLevel.Application, ku_msg[..]) == tls::QuicTlsStatus.AlertError);
+    assert(tls::quic_tls_client_last_alert(cli_nst) == tls::Alert.UnexpectedMessage);
+    tls::quic_tls_server_close(srv_nst);
+    tls::quic_tls_client_close(cli_nst);
+
+    var cli_bad_lvl = tls::quic_tls_client_open("r1.example.test", "h3", "\x01\x01\x01", cert_pem[..]);
+    var srv_bad_lvl = tls::quic_tls_server_open("h3", "\x01\x01\x02", false, cert_pem[..], ed_key_pem[..]);
+    establish_ed25519_pair(cli_bad_lvl, srv_bad_lvl);
+    assert(tls::quic_tls_client_provide_crypto(cli_bad_lvl, tls::QuicTlsLevel.Handshake, nst_msg[..]) == tls::QuicTlsStatus.AlertError);
+    assert(tls::quic_tls_client_last_alert(cli_bad_lvl) == tls::Alert.UnexpectedMessage);
+    tls::quic_tls_server_close(srv_bad_lvl);
+    tls::quic_tls_client_close(cli_bad_lvl);
+
+    print("CHECK_QUIC_ROUND1_OK\n");
+}
+
 fn main() {
     test_deferred_sni_fullchain_and_fragmented();
     run_rsa_key_format_case(false);
@@ -873,6 +1094,7 @@ fn main() {
     test_p256_hrr_and_invariance();
     test_negative_rfc9001_guards();
     test_concurrent_thread_local_arenas();
+    test_fix_round_1_regressions();
 }
 
 // CHECK: CHECK_QUIC_SNI_FULLCHAIN_OK
@@ -880,3 +1102,4 @@ fn main() {
 // CHECK: CHECK_QUIC_P256_HRR_OK
 // CHECK: CHECK_QUIC_NEGATIVE_OK
 // CHECK: CHECK_QUIC_THREAD_OK
+// CHECK: CHECK_QUIC_ROUND1_OK

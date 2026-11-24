@@ -678,7 +678,8 @@ fn pure_server_pop_or_resume_ch(slot: PureTlsSlot&, out_ch: u8[..16384]&) -> tls
 }
 
 fn pure_fail_ch_parse(slot: PureTlsSlot&, fail_alert: tls::Alert) -> tls::TlsBackendStatus {
-    if fail_alert == tls::Alert.NoApplicationProtocol {
+    if fail_alert == tls::Alert.NoApplicationProtocol ||
+        fail_alert == tls::Alert.UnsupportedExtension {
         return pure_fail_with_alert(slot, fail_alert, tls::TlsBackendStatus.HandshakeError);
     }
     return tls::TlsBackendStatus.HandshakeError;
