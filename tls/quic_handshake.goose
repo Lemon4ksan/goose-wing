@@ -122,19 +122,27 @@ fn next_quic_generation(counter: u64&) -> u64 {
     return counter;
 }
 
+fn release_quic_srv_signing_creds(slot: QuicTlsServerSlot&) {
+    if slot.rsa_key_slot >= 0 {
+        release_rsa_key_slot(slot.rsa_key_slot, slot.rsa_key_gen);
+        slot.rsa_key_slot = -1;
+        slot.rsa_key_gen = 0;
+    }
+    core::secure_zeroize_32(slot.priv_seed);
+}
+
 fn zeroize_quic_secrets_queue(queue: QuicTlsSecrets[..4]&) {
+    queue.resize(queue.cap, QuicTlsSecrets { .. });
     for i in queue.len {
         core::secure_zeroize_48(queue[i].read_secret);
         core::secure_zeroize_48(queue[i].write_secret);
+        queue[i] = QuicTlsSecrets { .. };
     }
     queue.clear();
 }
 
 fn zeroize_srv_slot(slot: QuicTlsServerSlot&) {
-    if slot.rsa_key_slot >= 0 {
-        release_rsa_key_slot(slot.rsa_key_slot, slot.rsa_key_gen);
-    }
-    core::secure_zeroize_32(slot.priv_seed);
+    release_quic_srv_signing_creds(slot);
     core::secure_zeroize_slice(slot.pending_ch_msg[..]);
     core::secure_zeroize_slice(slot.rx_initial_buf[..]);
     core::secure_zeroize_slice(slot.rx_hs_buf[..]);
@@ -177,13 +185,8 @@ fn lookup_live_cli_slot_idx(cli: const QuicTlsClient&) -> i64 {
 fn quic_srv_fail(slot: QuicTlsServerSlot&, alert: Alert) -> QuicTlsStatus {
     slot.stage = QuicSrvStage.Failed;
     slot.last_alert = alert;
-    if slot.rsa_key_slot >= 0 {
-        release_rsa_key_slot(slot.rsa_key_slot, slot.rsa_key_gen);
-        slot.rsa_key_slot = -1;
-        slot.rsa_key_gen = 0;
-    }
+    release_quic_srv_signing_creds(slot);
     slot.has_creds = false;
-    core::secure_zeroize_32(slot.priv_seed);
     core::secure_zeroize_slice(slot.pending_ch_msg[..]);
     core::secure_zeroize_slice(slot.rx_initial_buf[..]);
     core::secure_zeroize_slice(slot.rx_hs_buf[..]);
@@ -231,11 +234,7 @@ fn load_srv_slot_creds_pem(
     guard load_server_credentials_pem(cert_pem, key_pem, cfg) else { return false; }
     guard slot.cert_der.try_set(cfg.cert_der[..]) else { return false; }
 
-    if slot.rsa_key_slot >= 0 {
-        release_rsa_key_slot(slot.rsa_key_slot, slot.rsa_key_gen);
-        slot.rsa_key_slot = -1;
-        slot.rsa_key_gen = 0;
-    }
+    release_quic_srv_signing_creds(slot);
     slot.extra_certs_der = copy(cfg.extra_certs_der);
     slot.priv_seed = cfg.priv_seed;
     slot.key_kind = cfg.key_kind;
@@ -283,6 +282,9 @@ fn pop_quic_secret(queue: QuicTlsSecrets[..4]&, out_sec: QuicTlsSecrets&) -> boo
     for i in 0..rem {
         queue[i] = queue[core::add_sat_i64(i, 1)];
     }
+    core::secure_zeroize_48(queue[rem].read_secret);
+    core::secure_zeroize_48(queue[rem].write_secret);
+    queue[rem] = QuicTlsSecrets { .. };
     queue.resize(rem);
     return true;
 }
@@ -367,6 +369,7 @@ fn emit_srv_ee_message(slot: QuicTlsServerSlot&) -> bool {
 }
 
 fn emit_srv_cert_and_cv_messages(slot: QuicTlsServerSlot&) -> bool {
+    defer release_quic_srv_signing_creds(slot);
     var cert_msg: u8[..20500] = [];
     guard tls_internal::encode_server_cert_chain_msg(
         slot.cert_der[..], slot.extra_certs_der[..], cert_msg,

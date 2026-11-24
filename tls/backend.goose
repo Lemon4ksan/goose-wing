@@ -257,12 +257,7 @@ fn tls_endpoint_set_server_credentials_pem(
         slot.stage = tls_internal::PureHsStage.Failed;
         return TlsBackendStatus.HandshakeError;
     }
-    if slot.owns_rsa_key_slot && slot.rsa_key_slot >= 0 {
-        release_rsa_key_slot(slot.rsa_key_slot, slot.rsa_key_gen);
-        slot.rsa_key_slot = -1;
-        slot.rsa_key_gen = 0;
-        slot.owns_rsa_key_slot = false;
-    }
+    tls_internal::release_pure_server_signing_creds(slot);
     slot.extra_certs_der = copy(srv_cfg.extra_certs_der);
     slot.priv_seed = srv_cfg.priv_seed;
     slot.key_kind = srv_cfg.key_kind;

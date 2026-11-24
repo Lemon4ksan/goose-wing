@@ -151,6 +151,16 @@ fn wipe_pure_hs_secrets(slot: PureTlsSlot&) {
     slot.hs_keys_active = false;
 }
 
+fn release_pure_server_signing_creds(slot: PureTlsSlot&) {
+    if slot.owns_rsa_key_slot && slot.rsa_key_slot >= 0 {
+        tls::release_rsa_key_slot(slot.rsa_key_slot, slot.rsa_key_gen);
+        slot.rsa_key_slot = -1;
+        slot.rsa_key_gen = 0;
+        slot.owns_rsa_key_slot = false;
+    }
+    core::secure_zeroize_32(slot.priv_seed);
+}
+
 fn reset_and_wipe_pure_slot(slot: PureTlsSlot&) {
     if slot.in_use {
         g_pure_tls_active = core::sub_sat_i64(g_pure_tls_active, 1);
@@ -158,11 +168,8 @@ fn reset_and_wipe_pure_slot(slot: PureTlsSlot&) {
     if slot.cipher_slot != 0xFFFF {
         tls::free_cipher_slot(slot.cipher_slot);
     }
-    if slot.owns_rsa_key_slot && slot.rsa_key_slot >= 0 {
-        tls::release_rsa_key_slot(slot.rsa_key_slot, slot.rsa_key_gen);
-    }
+    release_pure_server_signing_creds(slot);
     wipe_pure_hs_secrets(slot);
-    core::secure_zeroize_32(slot.priv_seed);
     core::secure_zeroize_32(slot.client_cfg.client_priv_seed);
     core::secure_zeroize_slice(slot.client_cfg.ech_config_list[..]);
     slot.pending_ch_msg.clear();

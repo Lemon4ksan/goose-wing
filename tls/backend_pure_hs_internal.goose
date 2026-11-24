@@ -561,6 +561,7 @@ inline fn pure_server_emit_cert_req(slot: PureTlsSlot&) -> bool {
 }
 
 fn pure_server_emit_cert_and_cv(slot: PureTlsSlot&) -> bool {
+    defer release_pure_server_signing_creds(slot);
     var cert_msg: u8[..20480] = [];
     guard encode_server_cert_with_optional_compression(
         slot.cert_der[..],
@@ -615,6 +616,8 @@ fn pure_server_emit_encrypted_flight(slot: PureTlsSlot&) -> bool {
             guard pure_server_emit_cert_req(slot) else { return false; }
         }
         guard pure_server_emit_cert_and_cv(slot) else { return false; }
+    } else {
+        release_pure_server_signing_creds(slot);
     }
 
     var h_to_cv: u8[..48] = [];
@@ -914,6 +917,7 @@ fn pure_step_handshake_loop(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
                 st != tls::TlsBackendStatus.WantWrite &&
                 st != tls::TlsBackendStatus.NeedSniCredentials {
                 slot.stage = PureHsStage.Failed;
+                release_pure_server_signing_creds(slot);
             }
             return st;
         }

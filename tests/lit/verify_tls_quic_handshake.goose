@@ -613,6 +613,11 @@ fn run_rsa_key_format_case(use_pkcs8: bool) {
     var buf: u8[>..] = [];
     assert(tls::quic_tls_client_drain_crypto(cli, tls::QuicTlsLevel.Initial, buf) > 40);
     assert(tls::quic_tls_server_provide_crypto(srv, tls::QuicTlsLevel.Initial, buf[..]) == tls::QuicTlsStatus.Ok);
+    // Server already emitted CertificateVerify; RSA key slot and priv_seed MUST already be scrubbed before close().
+    assert(count_active_rsa_slots() == base_rsa_slots);
+    let qslot .= tls::g_quic_tls_srv_slots[srv.slot_idx as i64];
+    assert(qslot.rsa_key_slot == -1);
+    for sb in qslot.priv_seed { assert(sb == 0); }
 
     var s_init: u8[>..] = [];
     var s_hs:   u8[>..] = [];
@@ -1082,6 +1087,42 @@ fn test_fix_round_1_regressions() {
     assert(tls::quic_tls_client_last_alert(cli_bad_lvl) == tls::Alert.UnexpectedMessage);
     tls::quic_tls_server_close(srv_bad_lvl);
     tls::quic_tls_client_close(cli_bad_lvl);
+
+    // 5. Popped QuicTlsSecrets slot and closed sec_queue capacity are scrubbed clean.
+    var sec_q: tls::QuicTlsSecrets[..4] = [];
+    var s1 = tls::QuicTlsSecrets {
+        level:        tls::QuicTlsLevel.Handshake,
+        cipher_suite: rfc::TLS_CIPHER_AES_128_GCM_SHA256,
+        hash_len:     32,
+        has_read:     true,
+        has_write:    true,
+        read_secret:  [0xA5; 48],
+        write_secret: [0x5A; 48],
+    };
+    var s2 = tls::QuicTlsSecrets {
+        level:        tls::QuicTlsLevel.Application,
+        cipher_suite: rfc::TLS_CIPHER_AES_128_GCM_SHA256,
+        hash_len:     32,
+        has_read:     true,
+        has_write:    true,
+        read_secret:  [0x3C; 48],
+        write_secret: [0xC3; 48],
+    };
+    assert(sec_q.try_push(s1) && sec_q.try_push(s2));
+    var popped = tls::QuicTlsSecrets { .. };
+    assert(tls::pop_quic_secret(sec_q, popped));
+    assert(sec_q.len == 1 && sec_q[0].level == tls::QuicTlsLevel.Application);
+    sec_q.resize(2, tls::QuicTlsSecrets { .. });
+    for b in sec_q[1].read_secret { assert(b == 0); }
+    for b in sec_q[1].write_secret { assert(b == 0); }
+    sec_q[1] = s2;
+    tls::zeroize_quic_secrets_queue(sec_q);
+    assert(sec_q.len == 0);
+    sec_q.resize(sec_q.cap, tls::QuicTlsSecrets { .. });
+    for idx_q in sec_q.len {
+        for b in sec_q[idx_q].read_secret { assert(b == 0); }
+        for b in sec_q[idx_q].write_secret { assert(b == 0); }
+    }
 
     print("CHECK_QUIC_ROUND1_OK\n");
 }

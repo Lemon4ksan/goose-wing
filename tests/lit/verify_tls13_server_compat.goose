@@ -1267,6 +1267,13 @@ fn test_pure_endpoint_compat() {
     assert(tls::tls_endpoint_step_handshake(cli) == tls::TlsBackendStatus.WantRead);
     assert(pump_pure_endpoints(cli, srv));
 
+    // RSA key slot and priv_seed MUST already be reclaimed immediately after handshake completion.
+    let srv_slot .= tls_internal::g_pure_tls_slots[srv.pure_slot as i64];
+    assert(srv_slot.rsa_key_slot == -1);
+    assert(!tls::g_tls_rsa_keys[ep_rsa_slot as i64].in_use);
+    assert(tls::g_tls_rsa_keys[ep_rsa_slot as i64].d.len == 0);
+    for sb in srv_slot.priv_seed { assert(sb == 0); }
+
     let n_wr, st_wr = tls::tls_endpoint_write_app(cli, "PING-PURE");
     assert(st_wr == tls::TlsBackendStatus.Ok && n_wr == 9);
     var ct_app: u8[256] = [0; 256];
