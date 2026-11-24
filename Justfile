@@ -20,7 +20,7 @@ lit pattern="tests":
 
 # Collect real source-to-source branch coverage (.gcrap-cov and LCOV)
 cov target="." tests_path="tests":
-    goose-lit cov "{{ target }}" --tests "{{ tests_path }}" --lcov .lit/cache/cov/merged.info
+    goose-lit cov "{{ target }}" --tests "{{ tests_path }}" -j 2 --out .lit/cache/cov/merged.gcrap-cov --lcov .lit/cache/cov/merged.info
 
 # Enforce unified quality gate on a file (format, check, G-CRAP, optional LIT test)
 gate target max_gcrap="25":

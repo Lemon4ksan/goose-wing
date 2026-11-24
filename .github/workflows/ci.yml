@@ -271,10 +271,14 @@ jobs:
       - name: Enforce G-CRAP hardware complexity gate and ratchet
         run: |
           if command -v goose-lit >/dev/null 2>&1; then
-            goose-lit gate auth/pkce.goose 25 --cov 0.85
-            goose-lit gate http/digest_fields.goose 25 --cov 0.85
+            mkdir -p .lit/cache/cov
+            goose-lit cov auth --tests tests/auth_test.goose -j 2 --lcov .lit/cache/cov/auth.info
+            goose-lit cov http --tests tests/http1_test.goose --tests tests/http_cache_test.goose --tests tests/http_multipart_test.goose --tests tests/http_ohttp_test.goose -j 2 --lcov .lit/cache/cov/http.info
+            cat .lit/cache/cov/auth.info .lit/cache/cov/http.info > .lit/cache/cov/merged.info
+            goose-lit gate auth/pkce.goose 25 --require-cov
+            goose-lit gate http/digest_fields.goose 25 --require-cov
             if [ -f ".lit/baseline" ]; then
-              goose-lit crap . --baseline .lit/baseline --cov 0.85 --delta 5.0
+              goose-lit crap . --baseline .lit/baseline --delta 5.0 --require-cov
             fi
           fi
 

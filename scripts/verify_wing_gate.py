@@ -42,7 +42,8 @@ def main() -> int:
         "--target-file", dest="opt_target", default="", help="Path to .goose source file"
     )
     parser.add_argument("--max-gcrap", type=int, default=25, help="Maximum allowable G-CRAP score")
-    parser.add_argument("--sim-cov", type=float, default=0.85, help="Simulated branch coverage")
+    parser.add_argument("--cov-profile", type=str, default="", help="Optional real .gcrap-cov profile path")
+    parser.add_argument("--require-cov", action="store_true", help="Fail if no real coverage profile is loaded")
     parser.add_argument("--lit-script", type=str, default="", help="Optional .goose LIT test suite")
     parser.add_argument(
         "--test-suite", type=str, default="", help="Optional .goose test suite to compile & run"
@@ -64,7 +65,10 @@ def main() -> int:
         return 1
 
     print(f"Verifying {target_path}")
-    print(f"Ceiling: G-CRAP {args.max_gcrap}, simulated coverage {int(args.sim_cov * 100)}%")
+    if args.cov_profile:
+        print(f"Ceiling: G-CRAP {args.max_gcrap}, coverage profile {args.cov_profile}")
+    else:
+        print(f"Ceiling: G-CRAP {args.max_gcrap}, static mode (unless .litconfig cov_profile exists)")
 
     # Phase 1: Format and typecheck
     print("\nPhase 1: Format and typecheck")
@@ -95,17 +99,12 @@ def main() -> int:
     print(f"\nPhase 2: Complexity gate (ceiling: {args.max_gcrap})")
     try:
         lit_bin = find_or_build_goose_lit(root)
-        gate_res = subprocess.run(
-            [
-                str(lit_bin),
-                "gate",
-                str(target_path),
-                str(args.max_gcrap),
-                "--cov",
-                str(args.sim_cov),
-            ],
-            text=True,
-        )
+        gate_cmd = [str(lit_bin), "gate", str(target_path), str(args.max_gcrap)]
+        if args.cov_profile:
+            gate_cmd.extend(["--cov", args.cov_profile])
+        if args.require_cov:
+            gate_cmd.append("--require-cov")
+        gate_res = subprocess.run(gate_cmd, text=True)
         if gate_res.returncode == 0:
             print_colored("  Complexity gate passed.", "green")
         else:

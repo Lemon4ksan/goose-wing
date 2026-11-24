@@ -27,7 +27,7 @@ Releases are automated via Google's `release-please` workflow on `main`.
   python tools/test_runner.py --check-only   # or: just check
   goose format --check .                     # or: just fmt-check
   python scripts/verify_wing_gate.py "<path/to/file.goose>" --max-gcrap 25
-  goose-lit gate auth/jwks.goose 25 --cov 0.85
+  goose-lit gate auth/jwks.goose 25
   goose-lit crap http/headers.goose --threshold 25.0
   goose-lit tests/lit/verify_wire_framing.goose
   python scripts/test_lit.py                 # or: just lit

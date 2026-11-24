@@ -1,8 +1,7 @@
 # goose-lit configuration
 baseline = .lit/baseline
 ceiling = 25.0
-cov = 0.85
-cov_profile = .lit/cache/cov/merged.gcrap-cov
+cov_profile = .lit/cache/cov/merged.info
 delta = 5.0
 bce = true
 include_tests = false

@@ -78,7 +78,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Goose-wing G-CRAP Ratchet Gate")
     parser.add_argument("--save", action="store_true", help="Save G-CRAP baseline snapshot")
     parser.add_argument("--delta", type=float, default=5.0, help="Allowable G-CRAP delta tolerance")
-    parser.add_argument("--cov", type=float, default=0.85, help="Simulated branch coverage")
+    parser.add_argument("--cov-profile", type=str, default="", help="Path to real .gcrap-cov profile")
+    parser.add_argument("--require-cov", action="store_true", help="Fail if no real coverage profile is loaded")
     parser.add_argument("--baseline-file", type=str, default="", help="Path to baseline file")
     args = parser.parse_args()
 
@@ -91,16 +92,21 @@ def main() -> int:
         else root / ".lit" / "baseline"
     )
 
+    cov_args = []
+    if args.cov_profile:
+        cov_args.extend(["--cov", args.cov_profile])
+    if args.require_cov:
+        cov_args.append("--require-cov")
+
     if args.save:
-        print(f"Saving G-CRAP baseline snapshot to {baseline_file} (cov={args.cov})...")
+        print(f"Saving G-CRAP baseline snapshot to {baseline_file}...")
         cmd = [
             str(lit_bin),
             "crap",
             ".",
             "--save-baseline",
             str(baseline_file),
-            "--cov",
-            str(args.cov),
+            *cov_args,
         ]
         res = subprocess.run(cmd, cwd=root)
         return res.returncode
@@ -112,7 +118,7 @@ def main() -> int:
             )
             return 1
         print(
-            f"Evaluating CI ratchet gate against {baseline_file} (delta={args.delta}, cov={args.cov})..."
+            f"Evaluating CI ratchet gate against {baseline_file} (delta={args.delta})..."
         )
         cmd = [
             str(lit_bin),
@@ -120,10 +126,9 @@ def main() -> int:
             ".",
             "--baseline",
             str(baseline_file),
-            "--cov",
-            str(args.cov),
             "--delta",
             str(args.delta),
+            *cov_args,
         ]
         res = subprocess.run(cmd, cwd=root)
         return res.returncode

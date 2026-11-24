@@ -138,8 +138,8 @@ fi
         done
 
         if [ -n "$GATE_FILES" ]; then
-            if ! $LIT_BIN gate $GATE_FILES 25 --cov 0.85 >/dev/null 2>&1; then
-                $LIT_BIN gate $GATE_FILES 25 --cov 0.85
+            if ! $LIT_BIN gate $GATE_FILES 25 >/dev/null 2>&1; then
+                $LIT_BIN gate $GATE_FILES 25
                 echo "[pre-commit] GATE REJECTED: staged files exceed G-CRAP ceiling or contain bounds safety violations."
                 exit 1
             fi
@@ -147,11 +147,11 @@ fi
 
         if [ -f "$BASELINE_FILE" ]; then
             echo "[pre-commit] Evaluating G-CRAP ratchet against baseline..."
-            $LIT_BIN crap . --baseline "$BASELINE_FILE" --cov 0.85 --delta 5.0 >/dev/null 2>&1
+            $LIT_BIN crap . --baseline "$BASELINE_FILE" --delta 5.0 >/dev/null 2>&1
             RC=$?
             if [ $RC -ne 0 ]; then
                 echo "[pre-commit] RATCHET GATE REJECTED: Safety regressions or unproven bce:keep detected."
-                $LIT_BIN crap . --baseline "$BASELINE_FILE" --cov 0.85 --delta 5.0
+                $LIT_BIN crap . --baseline "$BASELINE_FILE" --delta 5.0
                 exit 1
             fi
         fi
