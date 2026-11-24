@@ -15,15 +15,13 @@ enum KnownHeaderId {
 }
 
 inline fn header_id_to_bit(id: KnownHeaderId) -> u32
-inline fn header_id_to_u8(id: KnownHeaderId) -> u8
 fn identify_known_header(name: const u8[:]) -> KnownHeaderId
 ```
 
 `identify_known_header` classifies an ASCII header name into a `KnownHeaderId`
 in O(1) time by branching on slice length and leading byte before comparing the
-remaining characters case-insensitively. `header_id_to_bit` and
-`header_id_to_u8` convert the identifier into a 32-bit presence mask bit or a
-1-byte tag.
+remaining characters case-insensitively. `header_id_to_bit` converts the
+identifier into a 32-bit presence mask bit.
 
 ```goose
 let id = http::identify_known_header("Content-Length");
