@@ -92,6 +92,7 @@ struct H2EdgeSlot {
     in_use:                        bool                     = false,
     generation:                    u64                      = 0,
     preface_done:                  bool                     = false,
+    first_settings_received:       bool                     = false,
     conn_failed:                   bool                     = false,
     hpack_enc_pending_size_update: bool                     = false,
     hpack_enc_pending_min_size:    u64                      = rfc::HPACK_DEFAULT_MAX_DYN_SIZE,
@@ -105,6 +106,7 @@ struct H2EdgeSlot {
     hdr_stream_id:                 u32                      = 0,
     hdr_end_stream:                bool                     = false,
     hdr_is_trailer:                bool                     = false,
+    hdr_reject_err:                u32                      = 0,
     ev_head:                       i64                      = -1,
     ev_tail:                       i64                      = -1,
     conn:                          Connection               = Connection { .. },
@@ -521,12 +523,17 @@ fn finalize_edge_header_block(slot: H2EdgeSlot&) -> bool {
     }
     slot.header_accum.clear();
     slot.hdr_stream_id = 0;
+    let rej_err = slot.hdr_reject_err;
+    slot.hdr_reject_err = rfc::H2_ERR_NO_ERROR;
 
     if dec_err != rfc::H2_ERR_NO_ERROR {
         if dec_err == rfc::H2_ERR_COMPRESSION_ERROR || dec_err == rfc::H2_ERR_ENHANCE_YOUR_CALM {
             return fail_edge_connection(slot, dec_err);
         }
         return reject_edge_stream(slot, sid, dec_err);
+    }
+    if rej_err != rfc::H2_ERR_NO_ERROR {
+        return reject_edge_stream(slot, sid, rej_err);
     }
 
     if is_trailer {
@@ -560,6 +567,20 @@ fn finalize_edge_header_block(slot: H2EdgeSlot&) -> bool {
     return enqueue_edge_event(slot, H2EdgeEventKind.RequestHead, sid, h_slot, "", end_stream, 0);
 }
 
+// RFC 7540 Section 5.3.1: Stream Dependencies - Returns PROTOCOL_ERROR if HEADERS+PRIORITY depends on itself.
+inline fn headers_priority_self_dep_error(
+    hdr:                   const FrameHeader&,
+    payload:               const u8[:],
+    no_rfc7540_priorities: bool,
+) -> u32 {
+    guard !no_rfc7540_priorities && (hdr.flags & rfc::H2_FLAG_PRIORITY) != 0 else {
+        return rfc::H2_ERR_NO_ERROR;
+    }
+    let prio_off: i64 = if (hdr.flags & rfc::H2_FLAG_PADDED) != 0 { 1 } else { 0 };
+    let dep_raw = core::read_be_u32(payload, prio_off) & 0x7FFFFFFF;
+    return if dep_raw == hdr.stream_id { rfc::H2_ERR_PROTOCOL_ERROR } else { rfc::H2_ERR_NO_ERROR };
+}
+
 fn ingest_edge_headers_or_continuation(
     slot:       H2EdgeSlot&,
     hdr:        const FrameHeader&,
@@ -567,15 +588,16 @@ fn ingest_edge_headers_or_continuation(
     is_trailer: bool,
 ) -> bool {
     if hdr.frame_type == rfc::H2_FRAME_HEADERS {
-        let hpack_frag, ext_err = extract_headers_frame_payload(
-            hdr, payload, slot.conn.no_rfc7540_priorities,
-        );
+        let hpack_frag, ext_err = extract_headers_frame_payload(hdr, payload, true);
         if ext_err != rfc::H2_ERR_NO_ERROR {
             return fail_edge_connection(slot, ext_err);
         }
         slot.hdr_stream_id = hdr.stream_id;
         slot.hdr_end_stream = (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0;
         slot.hdr_is_trailer = is_trailer;
+        slot.hdr_reject_err = headers_priority_self_dep_error(
+            hdr, payload, slot.conn.no_rfc7540_priorities,
+        );
         slot.header_accum.clear();
         guard slot.header_accum.try_append(hpack_frag) else {
             return fail_edge_connection(slot, rfc::H2_ERR_ENHANCE_YOUR_CALM);
@@ -860,6 +882,17 @@ fn handle_edge_ingress_error(
     return fail_edge_connection(slot, ing_err);
 }
 
+fn ingest_edge_priority_frame(slot: H2EdgeSlot&, hdr: const FrameHeader&, payload: const u8[:]) -> bool {
+    guard payload.len == 5 else {
+        return reject_edge_stream(slot, hdr.stream_id, rfc::H2_ERR_FRAME_SIZE_ERROR);
+    }
+    let dep_raw = core::read_be_u32(payload, 0) & 0x7FFFFFFF;
+    if !slot.conn.no_rfc7540_priorities && dep_raw == hdr.stream_id {
+        return reject_edge_stream(slot, hdr.stream_id, rfc::H2_ERR_PROTOCOL_ERROR);
+    }
+    return true;
+}
+
 fn ingest_edge_priority_update_frame(slot: H2EdgeSlot&, payload: const u8[:]) -> bool {
     let psid, prio, pu_err = parse_priority_update_payload(payload, true);
     if pu_err == rfc::H2_ERR_FRAME_SIZE_ERROR || psid == 0 {
@@ -886,18 +919,16 @@ fn dispatch_edge_control_frame(
 ) -> bool {
     if hdr.frame_type == rfc::H2_FRAME_SETTINGS { return ingest_edge_settings_frame(slot, hdr, payload); }
     if hdr.frame_type == rfc::H2_FRAME_WINDOW_UPDATE { return ingest_edge_window_update(slot, hdr, payload); }
-    if hdr.frame_type == rfc::H2_FRAME_PING {
-        if (hdr.flags & rfc::H2_FLAG_ACK) == 0 {
-            guard append_edge_frame(slot.wire_out, rfc::H2_FRAME_PING, rfc::H2_FLAG_ACK, 0, payload) else {
-                return false;
-            }
-            slot.queued_control_acks = core::add_sat_u32(slot.queued_control_acks, 1);
-        }
-        return true;
-    }
+    if hdr.frame_type == rfc::H2_FRAME_PRIORITY { return ingest_edge_priority_frame(slot, hdr, payload); }
     if hdr.frame_type == rfc::H2_FRAME_GOAWAY { return ingest_edge_goaway_frame(slot, payload); }
     if hdr.frame_type == rfc::H2_FRAME_PRIORITY_UPDATE {
         return ingest_edge_priority_update_frame(slot, payload);
+    }
+    if hdr.frame_type == rfc::H2_FRAME_PING && (hdr.flags & rfc::H2_FLAG_ACK) == 0 {
+        guard append_edge_frame(slot.wire_out, rfc::H2_FRAME_PING, rfc::H2_FLAG_ACK, 0, payload) else {
+            return false;
+        }
+        slot.queued_control_acks = core::add_sat_u32(slot.queued_control_acks, 1);
     }
     return true;
 }
@@ -908,6 +939,16 @@ fn dispatch_edge_frame(slot: H2EdgeSlot&, raw_frame: const u8[:], now_ms: u64) -
         return fail_edge_connection(slot, hdr_err);
     }
     let payload = raw_frame[rfc::H2_FRAME_HEADER_LEN..];
+
+    // RFC 9113 Section 3.4: HTTP/2 Connection Preface - First peer frame MUST be non-ACK SETTINGS on stream 0.
+    if !slot.first_settings_received {
+        guard hdr.frame_type == rfc::H2_FRAME_SETTINGS
+            && (hdr.flags & rfc::H2_FLAG_ACK) == 0
+            && hdr.stream_id == 0 else {
+            return fail_edge_connection(slot, rfc::H2_ERR_PROTOCOL_ERROR);
+        }
+        slot.first_settings_received = true;
+    }
 
     if slot.refused_cont_stream_id != 0 {
         return step_refused_continuation(slot, hdr, payload, now_ms);

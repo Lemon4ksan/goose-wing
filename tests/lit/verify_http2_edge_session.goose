@@ -623,8 +623,9 @@ fn test_h2_edge_security_and_aba() {
     var sess = http2::h2_edge_open(128, 65535);
     var cli_wire: u8[>..] = [];
     cli_wire.append(rfc::H2_CLIENT_PREFACE[..]);
+    append_h2_frame(cli_wire, rfc::H2_FRAME_SETTINGS, 0, 0, "");
     let c0, ok0 = http2::h2_edge_feed(sess, cli_wire[..]);
-    assert(ok0 && c0 == 24);
+    assert(ok0 && c0 == cli_wire.len);
     var dump: u8[>..] = [];
     let _ = http2::h2_edge_drain_wire(sess, dump);
 
@@ -715,7 +716,10 @@ fn test_h2_edge_security_and_aba() {
     // 3. Rapid Reset flood (RST_STREAM burst beyond token bucket -> GOAWAY(ENHANCE_YOUR_CALM))
     var flood_sess = http2::h2_edge_open(128, 65535);
     defer http2::h2_edge_close(flood_sess);
-    let _, ok_p = http2::h2_edge_feed(flood_sess, rfc::H2_CLIENT_PREFACE[..]);
+    var flood_pref: u8[>..] = [];
+    flood_pref.append(rfc::H2_CLIENT_PREFACE[..]);
+    append_h2_frame(flood_pref, rfc::H2_FRAME_SETTINGS, 0, 0, "");
+    let _, ok_p = http2::h2_edge_feed(flood_sess, flood_pref[..]);
     assert(ok_p);
     var f_dt = http2::new_dynamic_table(4096);
     var empty_h = http::HeaderMap { .. };
@@ -758,7 +762,10 @@ fn test_h2_edge_security_and_aba() {
     // 4. CONTINUATION interleaving violation -> GOAWAY(PROTOCOL_ERROR)
     var cont_sess = http2::h2_edge_open(128, 65535);
     defer http2::h2_edge_close(cont_sess);
-    let _, ok_cp = http2::h2_edge_feed(cont_sess, rfc::H2_CLIENT_PREFACE[..]);
+    var cont_pref: u8[>..] = [];
+    cont_pref.append(rfc::H2_CLIENT_PREFACE[..]);
+    append_h2_frame(cont_pref, rfc::H2_FRAME_SETTINGS, 0, 0, "");
+    let _, ok_cp = http2::h2_edge_feed(cont_sess, cont_pref[..]);
     assert(ok_cp);
     var cw: u8[>..] = [];
     let frag: u8[2] = [0x82, 0x87];
@@ -782,6 +789,7 @@ fn test_h2_edge_security_and_aba() {
     defer http2::h2_edge_close(s5);
     var p5_cli: u8[>..] = [];
     p5_cli.append(rfc::H2_CLIENT_PREFACE[..]);
+    append_h2_frame(p5_cli, rfc::H2_FRAME_SETTINGS, 0, 0, "");
     var p5_dt = http2::new_dynamic_table(4096);
     var p5_h = http::HeaderMap { .. };
     append_h2_req_headers(p5_cli, p5_dt, 1, "POST", "/pad", p5_h, false);
@@ -836,6 +844,7 @@ thread_fn edge_worker_thread(arg: i64) {
     defer http2::h2_edge_close(sess);
     var cli_wire: u8[>..] = [];
     cli_wire.append(rfc::H2_CLIENT_PREFACE[..]);
+    append_h2_frame(cli_wire, rfc::H2_FRAME_SETTINGS, 0, 0, "");
     var dt = http2::new_dynamic_table(4096);
     var hdrs = http::HeaderMap { .. };
     append_h2_req_headers(cli_wire, dt, 1, "GET", "/thread", hdrs, true);
@@ -863,6 +872,7 @@ fn test_h2_edge_round1_regressions() {
 
     var w1: u8[>..] = [];
     w1.append(rfc::H2_CLIENT_PREFACE[..]);
+    append_h2_frame(w1, rfc::H2_FRAME_SETTINGS, 0, 0, "");
     var dt1 = http2::new_dynamic_table(4096);
     var h1 = http::HeaderMap { .. };
     append_h2_req_headers(w1, dt1, 1, "POST", "/drop", h1, false);
@@ -932,7 +942,10 @@ fn test_h2_edge_round1_regressions() {
     // 2. Drained PING frames exceed 64 cleanly; undrained PING flood triggers ENHANCE_YOUR_CALM
     var s_ping = http2::h2_edge_open(128, 65535);
     defer http2::h2_edge_close(s_ping);
-    let _, ok_pp = http2::h2_edge_feed(s_ping, rfc::H2_CLIENT_PREFACE[..]);
+    var ping_pref: u8[>..] = [];
+    ping_pref.append(rfc::H2_CLIENT_PREFACE[..]);
+    append_h2_frame(ping_pref, rfc::H2_FRAME_SETTINGS, 0, 0, "");
+    let _, ok_pp = http2::h2_edge_feed(s_ping, ping_pref[..]);
     assert(ok_pp);
     out1.clear();
     let _ = http2::h2_edge_drain_wire(s_ping, out1);
@@ -948,8 +961,10 @@ fn test_h2_edge_round1_regressions() {
 
     var s_flood = http2::h2_edge_open(128, 65535);
     defer http2::h2_edge_close(s_flood);
-    let _, ok_pf0 = http2::h2_edge_feed(s_flood, rfc::H2_CLIENT_PREFACE[..]);
+    let _, ok_pf0 = http2::h2_edge_feed(s_flood, ping_pref[..]);
     assert(ok_pf0);
+    out1.clear();
+    let _ = http2::h2_edge_drain_wire(s_flood, out1);
     var ping_flood_hit = false;
     for _ in 70 {
         let _, ok_p2 = http2::h2_edge_feed(s_flood, pf[..]);
@@ -966,6 +981,7 @@ fn test_h2_edge_round1_regressions() {
     var ref_dt = http2::new_dynamic_table(4096);
     var ref_w: u8[>..] = [];
     ref_w.append(rfc::H2_CLIENT_PREFACE[..]);
+    append_h2_frame(ref_w, rfc::H2_FRAME_SETTINGS, 0, 0, "");
     var h_empty = http::HeaderMap { .. };
     append_h2_req_headers(ref_w, ref_dt, 1, "POST", "/hold", h_empty, false);
     let _, ok_r1 = http2::h2_edge_feed(s_ref, ref_w[..]);
@@ -1110,6 +1126,7 @@ fn test_h2_edge_zero_data_and_chunk_reclaim() {
     var dtb = http2::new_dynamic_table(4096);
     var wa: u8[>..] = [];
     wa.append(rfc::H2_CLIENT_PREFACE[..]);
+    append_h2_frame(wa, rfc::H2_FRAME_SETTINGS, 0, 0, "");
     append_h2_req_headers(wa, dta, 1, "POST", "/hold", empty_h, false);
     append_h2_frame(wa, rfc::H2_FRAME_DATA, rfc::H2_FLAG_END_STREAM, 1, "held-unpolled-event");
     let _, oka = http2::h2_edge_feed(sa, wa[..]);
@@ -1117,6 +1134,7 @@ fn test_h2_edge_zero_data_and_chunk_reclaim() {
 
     var wb_init: u8[>..] = [];
     wb_init.append(rfc::H2_CLIENT_PREFACE[..]);
+    append_h2_frame(wb_init, rfc::H2_FRAME_SETTINGS, 0, 0, "");
     append_h2_req_headers(wb_init, dtb, 1, "POST", "/stream", empty_h, false);
     let _, okb0 = http2::h2_edge_feed(sb, wb_init[..]);
     assert(okb0);
@@ -1272,6 +1290,124 @@ fn test_h2_edge_rfc9218_and_hpack_regressions() {
     // CHECK: H2_EDGE_RFC9218_AND_HPACK: OK
 }
 
+fn test_h2_edge_headers_self_dep_and_pad() {
+    var s_hp = http2::h2_edge_open(128, 65535);
+    defer http2::h2_edge_close(s_hp);
+    var w: u8[>..] = [];
+    w.append(rfc::H2_CLIENT_PREFACE[..]);
+    append_h2_frame(w, rfc::H2_FRAME_SETTINGS, 0, 0, "");
+    let _, ok_0 = http2::h2_edge_feed(s_hp, w[..]);
+    assert(ok_0);
+    var dump: u8[>..] = [];
+    let _ = http2::h2_edge_drain_wire(s_hp, dump);
+
+    // HEADERS + FLAG_PRIORITY self-dependency emits RST_STREAM(PROTOCOL_ERROR) and keeps conn open.
+    var dt = http2::new_dynamic_table(4096);
+    var hpack_frag: u8[>..] = [];
+    assert(http2::encode_hpack_field(dt, hpack_frag, ":method", "GET", http2::HpackIndexing.None, false));
+    assert(http2::encode_hpack_field(dt, hpack_frag, ":scheme", "https", http2::HpackIndexing.None, false));
+    assert(http2::encode_hpack_field(dt, hpack_frag, ":path", "/self", http2::HpackIndexing.None, false));
+    var hdr_self: u8[>..] = [];
+    hdr_self.append_u32_be(1);
+    hdr_self.push(15);
+    hdr_self.append(hpack_frag[..]);
+    var wf: u8[>..] = [];
+    let flags_self = rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM | rfc::H2_FLAG_PRIORITY;
+    append_h2_frame(wf, rfc::H2_FRAME_HEADERS, flags_self, 1, hdr_self[..]);
+    let _, ok_self = http2::h2_edge_feed(s_hp, wf[..]);
+    assert(ok_self);
+    var ev = http2::H2EdgeEvent { .. };
+    assert(http2::h2_edge_poll_event(s_hp, ev) && ev.kind == http2::H2EdgeEventKind.StreamReset);
+    assert(ev.stream_id == 1 && ev.error_code == rfc::H2_ERR_PROTOCOL_ERROR);
+
+    // Connection remains usable on stream 3 after stream 1 self-dependency reset.
+    var h0 = http::HeaderMap { .. };
+    var w3: u8[>..] = [];
+    append_h2_req_headers(w3, dt, 3, "GET", "/ok", h0, true);
+    let _, ok_3 = http2::h2_edge_feed(s_hp, w3[..]);
+    assert(ok_3);
+    assert(http2::h2_edge_poll_event(s_hp, ev) && ev.kind == http2::H2EdgeEventKind.RequestHead);
+    assert(ev.stream_id == 3);
+
+    // Invalid HEADERS padding remains connection error GOAWAY(PROTOCOL_ERROR).
+    let bad_pad: u8[3] = [0x09, 0x82, 0x86];
+    var w_bad: u8[>..] = [];
+    let bad_flags = rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_PADDED;
+    append_h2_frame(w_bad, rfc::H2_FRAME_HEADERS, bad_flags, 5, bad_pad[..]);
+    let _, ok_bad = http2::h2_edge_feed(s_hp, w_bad[..]);
+    assert(!ok_bad);
+    assert(http2::h2_edge_poll_event(s_hp, ev) && ev.kind == http2::H2EdgeEventKind.ProtocolError);
+    assert(ev.error_code == rfc::H2_ERR_PROTOCOL_ERROR);
+}
+
+fn test_h2_edge_rfc9113_conformance_regressions() {
+    // 1. First frame after 24B preface MUST be non-ACK SETTINGS (RFC 9113 Section 3.4).
+    var s_noset = http2::h2_edge_open(128, 65535);
+    defer http2::h2_edge_close(s_noset);
+    var bad_first: u8[>..] = [];
+    bad_first.append(rfc::H2_CLIENT_PREFACE[..]);
+    let ping_p: u8[8] = [0x22; 8];
+    append_h2_frame(bad_first, rfc::H2_FRAME_PING, 0, 0, ping_p[..]);
+    let _, ok_bf = http2::h2_edge_feed(s_noset, bad_first[..]);
+    assert(!ok_bf);
+    var ev = http2::H2EdgeEvent { .. };
+    assert(http2::h2_edge_poll_event(s_noset, ev) && ev.kind == http2::H2EdgeEventKind.ProtocolError);
+    assert(ev.error_code == rfc::H2_ERR_PROTOCOL_ERROR);
+
+    // 2. PRIORITY frame depending on itself emits RST_STREAM(PROTOCOL_ERROR) (RFC 7540 Section 5.3.1 / h2spec 5.3.1).
+    var s_prio = http2::h2_edge_open(128, 65535);
+    defer http2::h2_edge_close(s_prio);
+    var wp: u8[>..] = [];
+    wp.append(rfc::H2_CLIENT_PREFACE[..]);
+    append_h2_frame(wp, rfc::H2_FRAME_SETTINGS, 0, 0, "");
+    var drain_p: u8[>..] = [];
+    let _, ok_wp = http2::h2_edge_feed(s_prio, wp[..]);
+    assert(ok_wp);
+    let _ = http2::h2_edge_drain_wire(s_prio, drain_p);
+    var self_prio: u8[5]   = [0x00, 0x00, 0x00, 0x01, 15];
+    var pw:        u8[>..] = [];
+    append_h2_frame(pw, rfc::H2_FRAME_PRIORITY, 0, 1, self_prio[..]);
+    let _, ok_sp = http2::h2_edge_feed(s_prio, pw[..]);
+    assert(ok_sp);
+    assert(http2::h2_edge_poll_event(s_prio, ev) && ev.kind == http2::H2EdgeEventKind.StreamReset);
+    assert(ev.stream_id == 1 && ev.error_code == rfc::H2_ERR_PROTOCOL_ERROR);
+
+    // 3. Multi-CONTINUATION header block ~8300 RFC 7541 bytes fits under 16384 limit (h2spec 6.10).
+    var dt = http2::new_dynamic_table(4096);
+    var dummy_val: u8[3950] = ['a'; 3950];
+    var hpack_big: u8[>..]  = [];
+    var inc = http2::HpackIndexing.Incremental;
+    assert(http2::encode_hpack_field(dt, hpack_big, ":method", "GET", http2::HpackIndexing.None, false));
+    assert(http2::encode_hpack_field(dt, hpack_big, ":scheme", "https", http2::HpackIndexing.None, false));
+    assert(http2::encode_hpack_field(dt, hpack_big, ":path", "/big", http2::HpackIndexing.None, false));
+    assert(http2::encode_hpack_field(dt, hpack_big, "x-d1", dummy_val[..], inc, false));
+    assert(http2::encode_hpack_field(dt, hpack_big, "x-d2", dummy_val[..], inc, false));
+    var big_w: u8[>..] = [];
+    append_h2_frame(big_w, rfc::H2_FRAME_HEADERS, rfc::H2_FLAG_END_STREAM, 3, hpack_big[..20]);
+    append_h2_frame(big_w, rfc::H2_FRAME_CONTINUATION, 0, 3, hpack_big[20..hpack_big.len - 1]);
+    append_h2_frame(big_w, rfc::H2_FRAME_CONTINUATION, rfc::H2_FLAG_END_HEADERS, 3, hpack_big[hpack_big.len - 1..]);
+    let _, ok_bw = http2::h2_edge_feed(s_prio, big_w[..]);
+    assert(ok_bw);
+    assert(http2::h2_edge_poll_event(s_prio, ev) && ev.kind == http2::H2EdgeEventKind.RequestHead);
+    assert(ev.stream_id == 3 && http::get_header(ev.headers, "x-d2").len == 3950);
+
+    // 4. Even idle stream ID in PRIORITY_UPDATE fails connection with GOAWAY(PROTOCOL_ERROR).
+    var pu_bad: u8[..16] = [];
+    pu_bad.append_u32_be(2);
+    pu_bad.append("u=0");
+    var pu_w: u8[>..] = [];
+    append_h2_frame(pu_w, rfc::H2_FRAME_PRIORITY_UPDATE, 0, 0, pu_bad[..]);
+    let _, ok_pu = http2::h2_edge_feed(s_prio, pu_w[..]);
+    assert(!ok_pu);
+    assert(http2::h2_edge_poll_event(s_prio, ev) && ev.kind == http2::H2EdgeEventKind.ProtocolError);
+    assert(ev.error_code == rfc::H2_ERR_PROTOCOL_ERROR);
+
+    test_h2_edge_headers_self_dep_and_pad();
+
+    print("H2_EDGE_RFC9113_REGRESSIONS: OK");
+    // CHECK: H2_EDGE_RFC9113_REGRESSIONS: OK
+}
+
 fn main() {
     test_tls_alpn_hardening();
     test_h2_edge_preface_multiplex_upload_sse();
@@ -1280,4 +1416,5 @@ fn main() {
     test_h2_edge_zero_data_and_chunk_reclaim();
     test_h2_edge_thread_safety();
     test_h2_edge_rfc9218_and_hpack_regressions();
+    test_h2_edge_rfc9113_conformance_regressions();
 }
