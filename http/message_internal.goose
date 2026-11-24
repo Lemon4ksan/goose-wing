@@ -67,7 +67,26 @@ fn find_raw_cookie_value(
     return "", false;
 }
 
-// Dispatches a single JSON object key to the matching field in `out` via `const for`.
+// Extracts a Bearer credential token from an RFC 6750 `Authorization` header value.
+// Returns `("", false)` when the scheme prefix is missing or the token is empty or contains CTL/whitespace.
+//
+// Example:
+//   auth_hdr = "bearer  abc.def.ghi "
+//   returns: "abc.def.ghi", true
+fn extract_bearer_token(auth_hdr: const u8[:]) -> const u8[:], bool {
+    let after_scheme, has_prefix = auth_hdr.trim_lws().strip_prefix_fold("Bearer ");
+    guard has_prefix else { return "", false; }
+    let tok = after_scheme.trim_lws();
+    guard tok.len > 0 else { return "", false; }
+    for b in tok {
+        guard b > 0x20 && b < 0x7F else { return "", false; }
+    }
+    return tok, true;
+}
+
+// Dispatches a single JSON object key to the matching JSON-body field in `out` via `const for`.
+// Non-body ingestion wrappers (`Path`, `Query`, `Header`, `Cookie`, `Bearer`, `ClientIp`) are skipped
+// so crafted JSON payloads cannot overwrite routed or authenticated metadata.
 fn bind_json_member<T>(
     key:    const u8[:],
     reader: json::Reader&,
@@ -79,11 +98,16 @@ fn bind_json_member<T>(
     const for <Name, Acc> in fields<T> {
         if !matched && key == Name {
             matched = true;
-            http::decode_json_field_val(out.Acc, reader);
-            let ok_read = reader.error.len == 0;
-            let loc = http::ValidationLocation.Body;
-            let ok_chk = http::check_field(vp, ok_read, loc, Name, "invalid_json_field", "invalid JSON field value");
-            field_ok = field_ok && ok_chk;
+            if http::field_ingest_source_kind(out.Acc) == http::INGEST_SRC_JSON_BODY {
+                http::decode_json_field_val(out.Acc, reader);
+                let ok_read = reader.error.len == 0;
+                let loc = http::ValidationLocation.Body;
+                let msg = "invalid JSON field value";
+                let ok_chk = http::check_field(vp, ok_read, loc, Name, "invalid_json_field", msg);
+                field_ok = field_ok && ok_chk;
+            } else {
+                json::skip(reader);
+            }
         }
     }
     if !matched {

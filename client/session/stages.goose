@@ -141,6 +141,10 @@ fn execute_pipeline_with_stage<UserStage>(
     };
 
     var ctx = client_internal::RequestExecutionContext { .. };
+    defer if req.is_secret_body {
+        core::secure_zeroize_slice(ctx.body[..]);
+        core::secure_zeroize_slice(ctx.rewind_buf[..]);
+    };
     var pre_resp = http::Response { .. };
     var pre_err = http::Error { .. };
     var cache_revalidate_idx: i64 = -1;

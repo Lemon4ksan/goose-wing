@@ -15,6 +15,9 @@ import fingerprint.ja4;
 import fingerprint.profile;
 import http.request;
 import http.response;
+import http.problem;
+import http.json_codec;
+import http.json_helpers;
 import client.redirect;
 import http.headers;
 import http.cache.cache_control;
@@ -1067,4 +1070,132 @@ fn resolve_ech_config(
         }
     }
     return stale_ech, false;
+}
+
+// ---- 6. Ergonomic Session Control, Credential Wipe, and Problem Decode -----
+
+// Toggles loopback SSRF allowance consistently on both `Session.allow_loopback_ssrf`
+// and `Session.ssrf_guard.deny_local_network`.
+fn set_allow_loopback_ssrf(session: Session&, allow: bool) {
+    session.allow_loopback_ssrf = allow;
+    session.ssrf_guard.deny_local_network = !allow;
+}
+
+// Configures Bearer authentication strictly scoped to `session.base_url`'s origin
+// (`scheme://host[:port]`) so credentials are never injected into third-party absolute URLs.
+fn set_base_url_bearer_auth(session: Session&, token: const u8[:]) -> bool {
+    guard session.base_url.len > 0 && token.len > 0 else { return false; }
+    let parsed, url_err = core::parse_url(session.base_url[..]);
+    guard url_err == core::UrlParseError.None && parsed.valid else { return false; }
+    return add_scoped_bearer_auth(session.pipeline, token);
+}
+
+fn wipe_sensitive_interceptor_headers(hdrs: InterceptorHeader[..4]&) {
+    for &h in hdrs {
+        if http::is_heuristic_sensitive_header(h.name[..]) {
+            core::secure_zeroize_slice(h.val[..]);
+            h.val.clear();
+        }
+    }
+}
+
+fn wipe_sensitive_default_headers(hdrs: http::HeaderMap&) {
+    var has_sens = false;
+    for &e in hdrs.entries {
+        let name = http::entry_name(hdrs, e);
+        if http::is_sensitive(e) || http::is_heuristic_sensitive_header(name) {
+            has_sens = true;
+        }
+    }
+    guard has_sens else { return; }
+    var kept_names: u8[..64][..16]  = [];
+    var kept_vals:  u8[..256][..16] = [];
+    for &e in hdrs.entries {
+        let name = http::entry_name(hdrs, e);
+        let sens = http::is_sensitive(e) || http::is_heuristic_sensitive_header(name);
+        if !sens && kept_names.len < 16 {
+            var n_buf: u8[..64]  = [];
+            var v_buf: u8[..256] = [];
+            if n_buf.try_set(name) && v_buf.try_set(http::entry_value(hdrs, e)) {
+                let _ = kept_names.try_push(n_buf);
+                let _ = kept_vals.try_push(v_buf);
+            }
+        }
+    }
+    core::secure_zeroize_slice(hdrs.raw_buf[..]);
+    hdrs.clear();
+    for i in kept_names.len {
+        http::set_header(hdrs, kept_names[i][..], kept_vals[i][..]);
+    }
+}
+
+// Wipes stored Bearer, Basic/Digest, DPoP, HTTP Signature private key, proxy URL, and
+// sensitive header credentials held inside `session`.
+fn zeroize_auth(session: Session&) {
+    core::secure_zeroize_slice(session.pipeline.bearer_token[..]);
+    session.pipeline.bearer_token.clear();
+    session.pipeline.active_mask &= ~(INTERCEPTOR_APP_AUTH_BEARER | INTERCEPTOR_APP_AUTH_BEARER_SCOPED);
+
+    core::secure_zeroize_slice(session.sig_private_key[..]);
+    session.sig_private_key.clear();
+
+    core::secure_zeroize_slice(session.proxy_url[..]);
+    session.proxy_url.clear();
+
+    core::secure_zeroize_slice(session.dpop.private_key[..]);
+    core::secure_zeroize_slice(session.dpop.access_token[..]);
+    session.dpop.access_token.clear();
+    session.dpop.has_key = false;
+
+    core::secure_zeroize_slice(session.creds.username[..]);
+    core::secure_zeroize_slice(session.creds.password[..]);
+    session.creds.username.clear();
+    session.creds.password.clear();
+    session.creds.has_credentials = false;
+
+    wipe_sensitive_interceptor_headers(session.pipeline.app_headers);
+    wipe_sensitive_interceptor_headers(session.pipeline.net_headers);
+    wipe_sensitive_default_headers(session.default_headers);
+}
+
+// Converts a non-2xx HTTP response into a bounded `http::Error` by parsing RFC 9457
+// `ProblemDetails` (if present) and UTF-8-safely truncating into `stage` (64B) and `message` (256B).
+fn error_from_problem_response(resp: const http::Response&) -> http::Error {
+    var prob = http::ProblemDetails { .. };
+    let has_prob = http::parse_problem_details(resp.body[..], prob);
+    let phrase = rfc::status_phrase(resp.status_code);
+    let st_src = if has_prob && prob.title.len > 0 { prob.title[..] } else { phrase };
+    let msg_src = if has_prob && prob.detail.len > 0 { prob.detail[..] } else { phrase };
+    var out_err = http::Error {
+        kind: http::ErrorKind.Protocol,
+        code: resp.status_code,
+        ..
+    };
+    let _ = out_err.stage.try_set(http::truncate_utf8_safe(st_src, out_err.stage.cap));
+    let _ = out_err.message.try_set(http::truncate_utf8_safe(msg_src, out_err.message.cap));
+    return out_err;
+}
+
+// Decodes a 2xx JSON response into `T`, returning transport errors unchanged, translating
+// non-2xx responses (including RFC 9457 JSON) without buffer panics, and skipping `204`/empty bodies.
+//
+// Example:
+//   resp.status_code = 422, resp.body = "{\"title\":\"Invalid\",\"detail\":\"bad field\"}"
+//   returns: (default<T>(), http::Error { kind: Protocol, code: 422, stage: "Invalid", message: "bad field" })
+fn decode_json_or_problem<T>(resp: const http::Response&, err: const http::Error&) -> T, http::Error {
+    guard http::ok(err) else { return T { .. }, err; }
+    guard resp.status_code >= 200 && resp.status_code < 300 else {
+        return T { .. }, error_from_problem_response(resp);
+    }
+    var out = T { .. };
+    var has_fields = false;
+    const for <N, A> in fields<T> {
+        let _ = N;
+        has_fields = true;
+    }
+    if resp.status_code == rfc::STATUS_NO_CONTENT || resp.body.len == 0 || !has_fields {
+        return out, http::Error { .. };
+    }
+    let dec_err = http::json(resp, out);
+    return out, dec_err;
 }

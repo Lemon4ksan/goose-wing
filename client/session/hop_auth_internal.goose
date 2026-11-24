@@ -435,7 +435,7 @@ fn record_client_har_telemetry(
     resp:         const http::Response&,
     total_dur_us: i64,
 ) {
-    guard session.enable_har_telemetry else { return; }
+    guard session.enable_har_telemetry && !req.is_secret_body else { return; }
     let clamped_status = min(max(resp.status_code, 0), 65535);
     let status_u16 = clamped_status as u16;
     var entry = client::HarEntry {

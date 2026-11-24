@@ -31,14 +31,11 @@ struct EndpointSpec<Params, Query, ReqBody, ResBody> {
     path_template: u8[..256] = "/",
 }
 
-// Populates `out_req` from `spec`, `base_url`, path `params`, `query_dto`, and JSON `body_dto`.
-// Resets `out_req` and returns `false` on any path expansion or capacity error.
-fn build_contract_request<Params, Query, ReqBody, ResBody>(
+fn build_contract_request_head<Params, Query, ReqBody, ResBody>(
     spec:      const EndpointSpec<Params, Query, ReqBody, ResBody>&,
     base_url:  const u8[:],
     params:    const Params&,
     query_dto: const Query&,
-    body_dto:  const ReqBody&,
     out_req:   http::Request&,
 ) -> bool {
     var committed = false;
@@ -55,10 +52,26 @@ fn build_contract_request<Params, Query, ReqBody, ResBody>(
     if type_is_non_empty<Query>() {
         guard client_internal::apply_contract_query(out_req, query_dto) else { return false; }
     }
+    committed = true;
+    return true;
+}
+
+// Populates `out_req` from `spec`, `base_url`, path `params`, `query_dto`, and JSON `body_dto`.
+// Resets `out_req` and returns `false` on any path expansion or capacity error.
+fn build_contract_request<Params, Query, ReqBody, ResBody>(
+    spec:      const EndpointSpec<Params, Query, ReqBody, ResBody>&,
+    base_url:  const u8[:],
+    params:    const Params&,
+    query_dto: const Query&,
+    body_dto:  const ReqBody&,
+    out_req:   http::Request&,
+) -> bool {
+    guard build_contract_request_head(spec, base_url, params, query_dto, out_req) else {
+        return false;
+    }
     if type_is_non_empty<ReqBody>() {
         http::json(out_req, body_dto);
     }
-    committed = true;
     return true;
 }
 
@@ -119,4 +132,139 @@ fn call_endpoint<Params, Query, ReqBody, ResBody, F: fn(http::Request&)>(
     }
     let out_body, dec_err = decode_contract_response<ResBody>(res);
     return out_body, res, dec_err;
+}
+
+// Executes a contract endpoint using `c.base_url` and translates non-2xx RFC 9457 problems into `http::Error`.
+fn call_session<Params, Query, ReqBody, ResBody>(
+    c:         Client&,
+    spec:      const EndpointSpec<Params, Query, ReqBody, ResBody>&,
+    params:    const Params&,
+    query_dto: const Query&,
+    body_dto:  const ReqBody&,
+) -> ResBody, http::Response, http::Error {
+    var req = http::Request { .. };
+    guard build_contract_request(spec, c.base_url[..], params, query_dto, body_dto, req) else {
+        let err = http::make_error(400, "invalid_url", "contract request build failed", http::ErrorKind.InvalidUrl);
+        return ResBody { .. }, http::Response { .. }, err;
+    }
+    let res, err = do(c, req);
+    let out_body, out_err = decode_json_or_problem<ResBody>(res, err);
+    return out_body, res, out_err;
+}
+
+// Executes a contract endpoint with `ReqBody = EmptyPart` using `c.base_url` without passing dummy `EmptyPart {}`.
+fn call_session_no_body<Params, Query, ResBody>(
+    c:         Client&,
+    spec:      const EndpointSpec<Params, Query, EmptyPart, ResBody>&,
+    params:    const Params&,
+    query_dto: const Query&,
+) -> ResBody, http::Response, http::Error {
+    var req = http::Request { .. };
+    guard build_contract_request_head(spec, c.base_url[..], params, query_dto, req) else {
+        let err = http::make_error(400, "invalid_url", "contract request build failed", http::ErrorKind.InvalidUrl);
+        return ResBody { .. }, http::Response { .. }, err;
+    }
+    let res, err = do(c, req);
+    let out_body, out_err = decode_json_or_problem<ResBody>(res, err);
+    return out_body, res, out_err;
+}
+
+// Executes a contract endpoint whose `ReqBody` carries `core::Secret` fields, encoding unredacted wire JSON
+// via `http::json_secret` and wiping body/rewind buffers before return.
+fn call_secret<Params, Query, ReqBody, ResBody>(
+    c:         Client&,
+    spec:      const EndpointSpec<Params, Query, ReqBody, ResBody>&,
+    params:    const Params&,
+    query_dto: const Query&,
+    body_dto:  const ReqBody&,
+) -> ResBody, http::Response, http::Error {
+    var req = http::Request { .. };
+    defer http::reset_request(req);
+    guard build_contract_request_head(spec, c.base_url[..], params, query_dto, req) else {
+        let err = http::make_error(400, "invalid_url", "contract request build failed", http::ErrorKind.InvalidUrl);
+        return ResBody { .. }, http::Response { .. }, err;
+    }
+    if type_is_non_empty<ReqBody>() {
+        let _ = http::json_secret(req, body_dto);
+    }
+    let res, err = do(c, req);
+    let out_body, out_err = decode_json_or_problem<ResBody>(res, err);
+    return out_body, res, out_err;
+}
+
+fn invalid_contract_url_err<ResBody>() -> ResBody, http::Response, http::Error {
+    let err = http::make_error(400, "invalid_url", "contract request build failed", http::ErrorKind.InvalidUrl);
+    return ResBody { .. }, http::Response { .. }, err;
+}
+
+fn finish_contract_request<ResBody>(
+    c:   Client&,
+    req: http::Request&,
+) -> ResBody, http::Response, http::Error {
+    let res, err = do(c, req);
+    let out_body, out_err = decode_json_or_problem<ResBody>(res, err);
+    return out_body, res, out_err;
+}
+
+// Executes a parameterless GET contract endpoint over `c.base_url` with request configuration block `F`.
+fn call_get<ResBody, F: fn(http::Request&)>(
+    c:    Client&,
+    spec: const EndpointSpec<EmptyPart, EmptyPart, EmptyPart, ResBody>&,
+) -> ResBody, http::Response, http::Error {
+    var req = http::Request { .. };
+    let empty = EmptyPart {};
+    guard build_contract_request_head(spec, c.base_url[..], empty, empty, req) else {
+        return invalid_contract_url_err<ResBody>();
+    }
+    F(&req);
+    return finish_contract_request<ResBody>(c, req);
+}
+
+// Executes a typed-query contract endpoint over `c.base_url` with request configuration block `F`.
+fn call_query<Query, ResBody, F: fn(http::Request&)>(
+    c:         Client&,
+    spec:      const EndpointSpec<EmptyPart, Query, EmptyPart, ResBody>&,
+    query_dto: const Query&,
+) -> ResBody, http::Response, http::Error {
+    var req = http::Request { .. };
+    let empty = EmptyPart {};
+    guard build_contract_request_head(spec, c.base_url[..], empty, query_dto, req) else {
+        return invalid_contract_url_err<ResBody>();
+    }
+    F(&req);
+    return finish_contract_request<ResBody>(c, req);
+}
+
+// Executes a typed-JSON-body contract endpoint over `c.base_url` with request configuration block `F`.
+fn call_body<ReqBody, ResBody, F: fn(http::Request&)>(
+    c:        Client&,
+    spec:     const EndpointSpec<EmptyPart, EmptyPart, ReqBody, ResBody>&,
+    body_dto: const ReqBody&,
+) -> ResBody, http::Response, http::Error {
+    var req = http::Request { .. };
+    let empty = EmptyPart {};
+    guard build_contract_request(spec, c.base_url[..], empty, empty, body_dto, req) else {
+        return invalid_contract_url_err<ResBody>();
+    }
+    F(&req);
+    return finish_contract_request<ResBody>(c, req);
+}
+
+// Executes a typed-JSON-body endpoint containing `core::Secret` fields with automatic request wiping.
+fn call_secret_body<ReqBody, ResBody, F: fn(http::Request&)>(
+    c:        Client&,
+    spec:     const EndpointSpec<EmptyPart, EmptyPart, ReqBody, ResBody>&,
+    body_dto: const ReqBody&,
+) -> ResBody, http::Response, http::Error {
+    var req = http::Request { .. };
+    defer http::reset_request(req);
+    let empty = EmptyPart {};
+    guard build_contract_request_head(spec, c.base_url[..], empty, empty, req) else {
+        return invalid_contract_url_err<ResBody>();
+    }
+    if type_is_non_empty<ReqBody>() {
+        let _ = http::json_secret(req, body_dto);
+    }
+    F(&req);
+    return finish_contract_request<ResBody>(c, req);
 }

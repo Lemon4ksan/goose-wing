@@ -405,7 +405,7 @@ fn log_interceptor_request(
             push_log(pipeline, h_line[..]);
         }
     }
-    if lvl == client::LogLevel.Body && req.body.len > 0 {
+    if lvl == client::LogLevel.Body && req.body.len > 0 && !req.is_secret_body {
         line.clear();
         format(line, "--> (body ", req.body.len, " bytes)");
         push_log(pipeline, line[..]);

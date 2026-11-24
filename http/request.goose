@@ -14,6 +14,7 @@ import http.trace;
 import cookie.policy;
 import .json_codec;
 import .response;
+import .secret;
 import http.message_internal;
 
 // ---- request & query item models -------------------------------------------
@@ -53,6 +54,7 @@ struct Request {
     is_http10:            bool                        = false,
     body_prechunked:      bool                        = false,
     disallow_early_data:  bool                        = false,
+    is_secret_body:       bool                        = false,
     body:                 u8[>..]                     = [],
 }
 
@@ -65,6 +67,10 @@ fn reset_request(req: Request&) {
     req.presence_mask = 0;
     req.trailers.clear();
     req.query_params.clear();
+    if req.is_secret_body {
+        core::secure_zeroize_slice(req.body[..]);
+        core::secure_zeroize_slice(req.rewind_buf[..]);
+    }
     req.rewind_buf.clear();
     req.body.clear();
     req.timeout = 0;
@@ -77,6 +83,7 @@ fn reset_request(req: Request&) {
     req.has_initiator = false;
     req.has_site_for_cookies = false;
     req.is_http10 = false;
+    req.is_secret_body = false;
 }
 
 fn new_request(method: const u8[:], url: const u8[:]) -> Request {
@@ -210,6 +217,7 @@ fn text(req: Request&, body_str: const u8[:]) {
     req.rewind_buf.clear();
     req.rewindable = req.rewind_buf.try_set(body_str);
     req.body_consumed = false;
+    req.is_secret_body = false;
 }
 
 fn raw_json(req: Request&, json_str: const u8[:]) {
@@ -219,6 +227,7 @@ fn raw_json(req: Request&, json_str: const u8[:]) {
     req.rewind_buf.clear();
     req.rewindable = req.rewind_buf.try_set(json_str);
     req.body_consumed = false;
+    req.is_secret_body = false;
 }
 
 fn json<T>(req: Request&, payload: const T&) {
@@ -228,6 +237,58 @@ fn json<T>(req: Request&, payload: const T&) {
     req.rewind_buf.clear();
     req.rewindable = req.rewind_buf.try_set(req.body[..]);
     req.body_consumed = false;
+    req.is_secret_body = false;
+}
+
+// Attaches RFC 7617 HTTP Basic authentication credentials marked sensitive and wipes stack temporaries.
+fn basic_auth(req: Request&, user: const u8[:], pass: const u8[:]) -> bool {
+    guard user.len > 0 && !user.contains_byte(':') else { return false; }
+    var cred: u8[..512] = [];
+    defer core::secure_zeroize_slice(cred[..]);
+    guard cred.try_append(user) && cred.try_push(':') && cred.try_append(pass) else { return false; }
+    var hdr_val: u8[..1024] = "Basic ";
+    defer core::secure_zeroize_slice(hdr_val[..]);
+    core::base64_encode(cred[..], hdr_val);
+    sensitive_header(req, "Authorization", hdr_val[..]);
+    return has_header(req, "Authorization");
+}
+
+// Sets `Accept: application/json` on `req`.
+fn accept_json(req: Request&) -> bool {
+    set_header(req, "Accept", "application/json");
+    return has_header(req, "Accept");
+}
+
+// Populates `req.body` with raw bytes and `Content-Type`, updating `rewind_buf` if within 4096 bytes.
+fn bytes(
+    req:          Request&,
+    raw:          const u8[:],
+    content_type: const u8[:] = "application/octet-stream",
+) -> bool {
+    guard content_type.len > 0 else { return false; }
+    set_header(req, "Content-Type", content_type);
+    req.body.clear();
+    req.body.append(raw);
+    req.rewind_buf.clear();
+    req.rewindable = req.rewind_buf.try_set(raw);
+    req.body_consumed = false;
+    req.is_secret_body = false;
+    return true;
+}
+
+// Serializes `dto` with unredacted `core::Secret` values for explicit credential requests.
+// Disables `rewind_buf` caching and flags `req.is_secret_body` so retries, logs, and HAR telemetry wipe copies.
+fn json_secret<T>(req: Request&, dto: const T&) -> bool {
+    set_header(req, "Content-Type", "application/json");
+    core::secure_zeroize_slice(req.body[..]);
+    req.body.clear();
+    core::secure_zeroize_slice(req.rewind_buf[..]);
+    req.rewind_buf.clear();
+    encode_json_struct_unredacted(dto, req.body);
+    req.is_secret_body = true;
+    req.rewindable = false;
+    req.body_consumed = false;
+    return req.body.len > 0;
 }
 
 fn set_stream_body(req: Request&, stream_bytes: const u8[:], rewindable: bool = false) {

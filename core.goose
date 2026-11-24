@@ -15,4 +15,5 @@ import core.compress;
 import core.crypto;
 import core.io;
 import core.opt;
+import core.secret;
 import core.ufcs;

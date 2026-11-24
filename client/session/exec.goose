@@ -13,7 +13,15 @@ import client.interceptor;
 import client.client;
 import client.internal;
 import .hop_auth_internal;
+import .hop_context_internal;
 import .pipeline_internal;
+
+fn zeroize_secret_request_bufs(req: http::Request&, is_secret: bool) {
+    if is_secret {
+        core::secure_zeroize_slice(req.body[..]);
+        core::secure_zeroize_slice(req.rewind_buf[..]);
+    }
+}
 
 // Executes an HTTP request through application interceptors, retry budgets, circuit breakers,
 // and the composable L7 client stage pipeline.
@@ -21,7 +29,11 @@ fn execute_request(session: Client&, req: const http::Request&) -> http::Respons
     let start_us = effective_clock_us(session);
     let now_ns = core::mul_sat_i64(start_us, 1000);
 
-    let parsed_url, url_err = core::parse_url(req.url[..]);
+    var eff_url_buf: u8[..2048] = [];
+    client_internal::build_effective_url(
+        session.base_url[..], req.url[..], req.query_params[..], eff_url_buf,
+    );
+    let parsed_url, url_err = core::parse_url(eff_url_buf[..]);
     let target_host = if url_err == core::UrlParseError.None { parsed_url.host() } else { "" };
     if target_host.len > 0 && net::is_host_circuit_broken(session.circuit_breaker, target_host, now_ns) {
         let err_cb = http::make_error(503, "circuit_breaker", "host circuit broken by Retry-After");
@@ -35,13 +47,22 @@ fn execute_request(session: Client&, req: const http::Request&) -> http::Respons
     var prev_sleep_ms: i64 = 0;
     var rng_seed:      u64 = (start_us as u64) ^ 0x9E3779B97F4A7C15;
     var final_req = copy(req);
+    defer zeroize_secret_request_bufs(final_req, req.is_secret_body);
     var final_resp = http::Response { .. };
     var final_err = http::Error { .. };
     loop {
         // Application Interceptors (Request Hook) per attempt
+        zeroize_secret_request_bufs(final_req, req.is_secret_body);
         final_req = copy(req);
+        final_req.rewindable = req.rewindable && !req.is_secret_body;
         final_req.disallow_early_data = req.disallow_early_data || attempts > 0;
-        apply_app_interceptors_request(session.pipeline, final_req, effective_clock_us(session));
+        apply_app_interceptors_request(
+            session.pipeline,
+            final_req,
+            effective_clock_us(session),
+            eff_url_buf[..],
+            session.base_url[..],
+        );
 
         let resp, err = client_internal::execute_request_inner(session, final_req);
         final_resp = copy(resp);

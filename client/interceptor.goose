@@ -17,12 +17,13 @@ import .internal;
 
 // ---- Interceptor Bitmask Constants (64-bit register layout) --------------
 
-const INTERCEPTOR_APP_LOGGING:     u64 = (1 as u64) << 0;
-const INTERCEPTOR_APP_AUTH_BEARER: u64 = (1 as u64) << 1;
-const INTERCEPTOR_APP_HEADER:      u64 = (1 as u64) << 2;
-const INTERCEPTOR_APP_REQUEST_ID:  u64 = (1 as u64) << 3;
-const INTERCEPTOR_APP_TRACEPARENT: u64 = (1 as u64) << 4;
-const INTERCEPTOR_APP_RETRY:       u64 = (1 as u64) << 5;
+const INTERCEPTOR_APP_LOGGING:            u64 = (1 as u64) << 0;
+const INTERCEPTOR_APP_AUTH_BEARER:        u64 = (1 as u64) << 1;
+const INTERCEPTOR_APP_HEADER:             u64 = (1 as u64) << 2;
+const INTERCEPTOR_APP_REQUEST_ID:         u64 = (1 as u64) << 3;
+const INTERCEPTOR_APP_TRACEPARENT:        u64 = (1 as u64) << 4;
+const INTERCEPTOR_APP_RETRY:              u64 = (1 as u64) << 5;
+const INTERCEPTOR_APP_AUTH_BEARER_SCOPED: u64 = (1 as u64) << 6;
 
 const INTERCEPTOR_NET_LOGGING: u64 = (1 as u64) << 16;
 const INTERCEPTOR_NET_HEADER:  u64 = (1 as u64) << 17;
@@ -190,10 +191,44 @@ fn add_logging(pipeline: InterceptorPipeline&, scope: InterceptorScope, level: L
 
 fn add_bearer_auth(pipeline: InterceptorPipeline&, token: const u8[:]) -> bool {
     guard "Bearer ".len + token.len <= pipeline.bearer_token.cap else { return false; }
+    pipeline.active_mask &= ~INTERCEPTOR_APP_AUTH_BEARER_SCOPED;
     pipeline.active_mask |= INTERCEPTOR_APP_AUTH_BEARER;
     let _ = pipeline.bearer_token.try_set("Bearer ");
     let _ = pipeline.bearer_token.try_append(token);
     return true;
+}
+
+// Configures Bearer token injection restricted strictly to requests matching `session.base_url`'s origin.
+fn add_scoped_bearer_auth(pipeline: InterceptorPipeline&, token: const u8[:]) -> bool {
+    guard token.len > 0 && token.len <= core::sub_sat_i64(pipeline.bearer_token.cap, 7) else {
+        return false;
+    }
+    pipeline.active_mask |= INTERCEPTOR_APP_AUTH_BEARER | INTERCEPTOR_APP_AUTH_BEARER_SCOPED;
+    let _ = pipeline.bearer_token.try_set("Bearer ");
+    let _ = pipeline.bearer_token.try_append(token);
+    return true;
+}
+
+fn should_inject_bearer(
+    pipeline:     const InterceptorPipeline&,
+    raw_url:      const u8[:],
+    resolved_url: const u8[:],
+    base_url:     const u8[:],
+) -> bool {
+    if (pipeline.active_mask & INTERCEPTOR_APP_AUTH_BEARER_SCOPED) == 0 {
+        return true;
+    }
+    let target_url = if resolved_url.len > 0 { resolved_url } else { raw_url };
+    guard base_url.len > 0 && target_url.len > 0 else { return false; }
+    let parsed_target, t_err = core::parse_url(target_url);
+    let parsed_base, b_err = core::parse_url(base_url);
+    guard t_err == core::UrlParseError.None
+        && b_err == core::UrlParseError.None
+        && parsed_target.valid
+        && parsed_base.valid else {
+        return false;
+    }
+    return parsed_target.is_same_origin_url(parsed_base);
 }
 
 fn add_header(pipeline: InterceptorPipeline&, scope: InterceptorScope, name: const u8[:], val: const u8[:]) -> bool {
@@ -261,14 +296,18 @@ fn find_retry_policy(pipeline: const InterceptorPipeline&) -> RetryPolicy, bool 
 // ---- Application & Network Interceptor Request Hooks ---------------------
 
 fn apply_app_interceptors_request(
-    pipeline: InterceptorPipeline&,
-    req:      http::Request&,
-    clock_us: i64,
+    pipeline:     InterceptorPipeline&,
+    req:          http::Request&,
+    clock_us:     i64,
+    resolved_url: const u8[:] = "",
+    base_url:     const u8[:] = "",
 ) {
     let mask = pipeline.active_mask;
     guard (mask & INTERCEPTOR_APP_ALL) != 0 else { return; }
 
-    if (mask & INTERCEPTOR_APP_AUTH_BEARER) != 0 && http::header(req, "Authorization").len == 0 {
+    if (mask & INTERCEPTOR_APP_AUTH_BEARER) != 0
+        && http::header(req, "Authorization").len == 0
+        && should_inject_bearer(pipeline, req.url[..], resolved_url, base_url) {
         http::sensitive_header(req, "Authorization", pipeline.bearer_token[..]);
     }
     if (mask & INTERCEPTOR_APP_HEADER) != 0 {
