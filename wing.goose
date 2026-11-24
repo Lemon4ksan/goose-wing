@@ -131,6 +131,7 @@ import http2.framing;
 import http2.frames;
 import http2.hpack;
 import http2.connection;
+import http2.server_session;
 
 import auth.digest;
 import auth.pkce;
