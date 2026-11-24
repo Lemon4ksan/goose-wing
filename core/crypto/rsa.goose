@@ -245,21 +245,21 @@ fn rsa_monty_exp_step(
     }
 }
 
-// Computes `out = base^exp mod m` where `m` is big-endian modulus of length `64 <= k <= 512`.
-// Executes constant-time square-and-multiply across all bits of `exp` and wipes intermediate limbs.
+// Branchless constant-time nonzero bit across a byte slice (returns 1 if any byte != 0, else 0).
 // crap:ignore
-fn rsa_mod_exp(base: const u8[:], exp: const u8[:], m: const u8[:], out: u8[..512]&) -> bool {
-    let k = m.len;
-    guard k >= 64 && k <= 512 else { return false; }
-    guard base.len == k && exp.len > 0 && exp.len <= 512 else { return false; }
-    guard (m[k - 1] & 1) == 1 && m[0] != 0 else { return false; }
-    guard rsa_be_cmp(base, m) < 0 else { return false; }
-    var exp_nonzero: u8 = 0;
-    for i in exp.len {
-        exp_nonzero |= exp[i];
+inline fn rsa_nonzero_bit(buf: const u8[:]) -> u8 {
+    var acc: u32 = 0;
+    for i in buf.len {
+        acc |= buf[i];
     }
-    guard exp_nonzero != 0 else { return false; }
+    return ((acc | (0 - acc)) >> 31) as u8;
+}
 
+// Constant-time Montgomery modular exponentiation core `out = base^exp mod m` on pre-validated operands.
+// Executes square-and-multiply across all bits of `exp` and zeroizes intermediate secret limbs.
+// crap:ignore
+fn rsa_mod_exp_monty_ct(base: const u8[:], exp: const u8[:], m: const u8[:], out: u8[..512]&) {
+    let k = m.len;
     var m_limbs:    u32[..128] = [];
     var base_limbs: u32[..128] = [];
     var r_mod:      u32[..128] = [];
@@ -297,6 +297,20 @@ fn rsa_mod_exp(base: const u8[:], exp: const u8[:], m: const u8[:], out: u8[..51
     }
     rsa_monty_mul(acc_mont[..], one_limbs[..], m_limbs[..], m0i, res_limbs);
     rsa_limbs_to_be(res_limbs[..], k, out);
+}
+
+// Computes `out = base^exp mod m` where `m` is big-endian modulus of length `64 <= k <= 512`.
+// Executes constant-time square-and-multiply across all bits of `exp` and wipes intermediate limbs.
+// crap:ignore
+fn rsa_mod_exp(base: const u8[:], exp: const u8[:], m: const u8[:], out: u8[..512]&) -> bool {
+    let k = m.len;
+    guard k >= 64 && k <= 512 else { return false; }
+    guard base.len == k && exp.len > 0 && exp.len <= 512 else { return false; }
+    guard (m[k - 1] & 1) == 1 && m[0] != 0 else { return false; }
+    let base_ok = ct_declassify_u8((((rsa_be_cmp(base, m) as! u32) >> 31) & 1) as u8);
+    let exp_ok = ct_declassify_u8(rsa_nonzero_bit(exp));
+    guard base_ok != 0 && exp_ok != 0 else { return false; }
+    rsa_mod_exp_monty_ct(base, exp, m, out);
     return true;
 }
 
@@ -422,10 +436,9 @@ fn rsa_limbs_mod_inv(r_limbs: const u32[:], m_limbs: const u32[:], out_inv: u32[
     return true;
 }
 
-// Computes Chaum-blinded `out = base^exp mod m` using public exponent `pub_exp`:
-// samples random `r in [2, m-1]` with `gcd(r, m) = 1`, evaluates `((base * r^pub_exp)^exp * r^-1) mod m`.
+// Constant-time Chaum-blinded RSA modular exponentiation core on pre-validated `base < m` and nonzero `exp`.
 // crap:ignore
-fn rsa_mod_exp_blinded(
+fn rsa_mod_exp_blinded_ct(
     base:    const u8[:],
     exp:     const u8[:],
     pub_exp: const u8[:],
@@ -433,11 +446,6 @@ fn rsa_mod_exp_blinded(
     out:     u8[..512]&,
 ) -> bool {
     let k = m.len;
-    guard k >= RSA_MIN_MODULUS_BYTES && k <= 512 && base.len == k && exp.len > 0 && exp.len <= 512 else {
-        return false;
-    }
-    guard is_valid_rsa_public_exponent(pub_exp, m) && rsa_be_cmp(base, m) < 0 else { return false; }
-
     var m_limbs:     u32[..128] = [];
     var r_limbs:     u32[..128] = [];
     var r_inv_limbs: u32[..128] = [];
@@ -470,11 +478,32 @@ fn rsa_mod_exp_blinded(
     guard found else { return false; }
 
     rsa_limbs_to_be(r_inv_limbs[..], k, r_inv_be);
-    guard rsa_mod_exp(r_be[0..k], pub_exp, m, r_e) else { return false; }
+    rsa_mod_exp_monty_ct(r_be[0..k], pub_exp, m, r_e);
     rsa_be_mul_mod(base, r_e[..], m, blind_base);
-    guard rsa_mod_exp(blind_base[..], exp, m, blind_res) else { return false; }
+    rsa_mod_exp_monty_ct(blind_base[..], exp, m, blind_res);
     rsa_be_mul_mod(blind_res[..], r_inv_be[..], m, out);
     return out.len == k;
+}
+
+// Computes Chaum-blinded `out = base^exp mod m` using public exponent `pub_exp`:
+// samples random `r in [2, m-1]` with `gcd(r, m) = 1`, evaluates `((base * r^pub_exp)^exp * r^-1) mod m`.
+// crap:ignore
+fn rsa_mod_exp_blinded(
+    base:    const u8[:],
+    exp:     const u8[:],
+    pub_exp: const u8[:],
+    m:       const u8[:],
+    out:     u8[..512]&,
+) -> bool {
+    let k = m.len;
+    guard k >= RSA_MIN_MODULUS_BYTES && k <= 512 && base.len == k && exp.len > 0 && exp.len <= 512 else {
+        return false;
+    }
+    guard m[0] != 0 && is_valid_rsa_public_exponent(pub_exp, m) else { return false; }
+    let base_ok = ct_declassify_u8((((rsa_be_cmp(base, m) as! u32) >> 31) & 1) as u8);
+    let exp_ok = ct_declassify_u8(rsa_nonzero_bit(exp));
+    guard base_ok != 0 && exp_ok != 0 else { return false; }
+    return rsa_mod_exp_blinded_ct(base, exp, pub_exp, m, out);
 }
 
 // Computes full-width exponent-blinded `out = base^exp mod m` via additive splitting `exp = (exp - r) + r`

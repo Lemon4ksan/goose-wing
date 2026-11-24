@@ -288,7 +288,9 @@ fn ct_eq_bytes(a: const u8[:], b: const u8[:]) -> bool
 fn ct_eq_tag16(a: const u8[16]&, b: const u8[16]&) -> bool
 fn ct_eq_tag32(a: const u8[32]&, b: const u8[32]&) -> bool
 fn ct_eq_tag48(a: const u8[48]&, b: const u8[48]&) -> bool
-fn ct_copy_bytes(mask: u8, dst: u8[:], src: const u8[:])
+fn ct_copy_bytes(dst: u8[:], src: const u8[:])
+fn ct_declassify_slice(buf: const u8[:])
+fn ct_declassify_u8(val: u8) -> u8
 fn secure_zeroize_32(buf: u8[32]&)          fn secure_zeroize_slice(buf: u8[:])
 fn new_key_slot(raw_key: const u8[32]&) -> KeySlot
 fn zeroize_key_slot(slot: KeySlot&)

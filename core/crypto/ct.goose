@@ -77,10 +77,23 @@ extern fn native_secure_zeroize_u32(slice: u32[:]) = "wing_secure_zeroize_u32";
 extern fn native_secure_zeroize_u64(slice: u64[:]) = "wing_secure_zeroize_u64";
 extern fn native_secure_zeroize_i32(slice: i32[:]) = "wing_secure_zeroize_i32";
 extern fn native_ct_copy_bytes(dst: u8[:], src: const u8[:]) = "wing_ct_copy_bytes";
+extern fn native_ct_declassify(buf: const u8[:]) = "wing_ct_declassify";
+extern fn native_ct_declassify_u8(val: u8) -> u8 = "wing_ct_declassify_u8";
 
 fn ct_copy_bytes(dst: u8[:], src: const u8[:]) {
     guard dst.len > 0 && src.len > 0 else { return; }
     native_ct_copy_bytes(dst, src);
+}
+
+// Marks a public slice computed from constant-time logic as defined for ctgrind verification.
+inline fn ct_declassify_slice(buf: const u8[:]) {
+    guard buf.len > 0 else { return; }
+    native_ct_declassify(buf);
+}
+
+// Marks a public single-byte condition/flag as defined for ctgrind verification.
+inline fn ct_declassify_u8(val: u8) -> u8 {
+    return native_ct_declassify_u8(val);
 }
 
 // ---- secret memory zeroization & KeySlot (secrecy pattern) -----------------

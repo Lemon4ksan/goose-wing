@@ -2042,3 +2042,13 @@ int64_t wing_aes_gcm_open_prepared(wing_slice ctx, wing_slice iv, wing_slice src
     wing_scrub_stack_1024();
     return ret;
 }
+
+void wing_ct_declassify(wing_slice s);
+uint8_t wing_ct_declassify_u8(uint8_t v);
+
+#ifndef WING_CTGRIND_VALGRIND
+// Production no-op declassification barriers (overridden by Valgrind ctgrind under -DWING_CTGRIND_VALGRIND=1).
+void wing_ct_declassify(wing_slice s) { (void)s; }
+
+uint8_t wing_ct_declassify_u8(uint8_t v) { return v; }
+#endif

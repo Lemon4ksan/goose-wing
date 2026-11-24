@@ -72,6 +72,13 @@ inline fn u256_nonzero_bit(a: U256) -> i32 {
     return ((acc | (0 - acc)) >> 31) as i32;
 }
 
+// Branchless predicate returning 1 if `1 <= a < P256_ORDER`, else 0.
+// crap:ignore
+inline fn u256_in_order_bit(a: U256) -> u8 {
+    let _, borrow = u256_sub_borrow(a, P256_ORDER);
+    return ((u256_nonzero_bit(a) as u32) & (borrow as u32)) as u8;
+}
+
 // Branchless constant-time 256-bit comparison: returns -1 if a < b, 0 if a == b, 1 if a > b.
 // crap:ignore
 inline fn u256_cmp(a: U256, b: const u32[8]&) -> i32 {
@@ -374,16 +381,15 @@ fn p256_projective_add(p1: P256Projective, p2: P256Projective) -> P256Projective
 // Converts a homogeneous projective P-256 point `(X : Y : Z)` to affine `(X / Z, Y / Z)`.
 // crap:ignore
 fn p256_projective_to_affine(pt: P256Projective) -> P256Point {
-    let z_zero = u256_is_zero(pt.z);
+    let z_zero_bit = (1 ^ u256_nonzero_bit(pt.z)) as u32;
     let z_inv = u256_inv_mod(pt.z, P256_MOD);
     let x = u256_mul_mod(pt.x, z_inv, P256_MOD);
     let y = u256_mul_mod(pt.y, z_inv, P256_MOD);
-    let inf_bit: u32 = if z_zero { 1 } else { 0 };
     let zero = U256 { .. };
     return P256Point {
-        x:        u256_select(inf_bit, zero, x),
-        y:        u256_select(inf_bit, zero, y),
-        infinity: z_zero,
+        x:        u256_select(z_zero_bit, zero, x),
+        y:        u256_select(z_zero_bit, zero, y),
+        infinity: z_zero_bit != 0,
     };
 }
 
@@ -602,9 +608,10 @@ fn p256_ecdh_shared_secret(priv_key: const u8[32]&, peer_pub: const u8[:]) -> u8
     guard ok_pt else { return zero, false; }
     var d = u256_add_mod(u256_from_be(priv_key), U256 { .. }, P256_ORDER);
     defer zeroize_u256(d);
-    guard !u256_is_zero(d) else { return zero, false; }
+    guard ct_declassify_u8(u256_nonzero_bit(d) as u8) != 0 else { return zero, false; }
     let shared_pt = p256_scalar_mul(peer_pt, d);
-    guard !shared_pt.infinity else { return zero, false; }
+    let finite_bit = (u256_nonzero_bit(shared_pt.x) | u256_nonzero_bit(shared_pt.y)) as u8;
+    guard ct_declassify_u8(finite_bit) != 0 else { return zero, false; }
     return u256_to_be(shared_pt.x), true;
 }
 
@@ -642,7 +649,7 @@ fn rfc6979_p256_next_k(k_hmac: u8[32]&, v_hmac: u8[32]&, seed_buf: u8[97]&, retr
     }
     v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
     var k_scalar = u256_from_be(v_hmac);
-    while u256_is_zero(k_scalar) || u256_cmp(k_scalar, P256_ORDER) >= 0 {
+    while ct_declassify_u8(u256_in_order_bit(k_scalar)) == 0 {
         for i in 32 { seed_buf[i] = v_hmac[i]; }
         seed_buf[32] = 0x00;
         k_hmac = hmac_sha256(k_hmac[..], seed_buf[..33]);
@@ -658,7 +665,7 @@ fn rfc6979_p256_next_k(k_hmac: u8[32]&, v_hmac: u8[32]&, seed_buf: u8[97]&, retr
 fn ecdsa_p256_sign(priv_key: const u8[32]&, message: const u8[:]) -> u8[64] {
     var d = u256_add_mod(u256_from_be(priv_key), U256 { .. }, P256_ORDER);
     defer zeroize_u256(d);
-    guard !u256_is_zero(d) else { return [0; 64]; }
+    guard ct_declassify_u8(u256_nonzero_bit(d) as u8) != 0 else { return [0; 64]; }
     let msg_hash = sha256(message);
     let z = u256_add_mod(u256_from_be(msg_hash), U256 { .. }, P256_ORDER);
     var x_be = u256_to_be(d);
@@ -684,7 +691,7 @@ fn ecdsa_p256_sign(priv_key: const u8[32]&, message: const u8[:]) -> u8[64] {
     defer zeroize_u256(rd);
     defer zeroize_u256(z_plus_rd);
     var retry = false;
-    while u256_is_zero(r_val) || u256_is_zero(s_val) {
+    while ct_declassify_u8((u256_nonzero_bit(r_val) & u256_nonzero_bit(s_val)) as u8) == 0 {
         k_scalar = rfc6979_p256_next_k(k_hmac, v_hmac, seed_buf, retry);
         retry = true;
         let r_pt = p256_scalar_mul(g, k_scalar);

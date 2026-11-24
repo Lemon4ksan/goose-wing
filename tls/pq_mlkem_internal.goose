@@ -522,6 +522,8 @@ fn mlkem768_keygen(d_seed: const u8[32]&, z_seed: const u8[32]&) -> u8[1184], u8
     var sigma: u8[32] = [0; 32];
     core::ct_copy_bytes(rho[..], g_out[0..32]);
     core::ct_copy_bytes(sigma[..], g_out[32..64]);
+    // Public matrix seed rho is exposed verbatim in ek; keep sigma tainted.
+    core::ct_declassify_slice(rho[..]);
 
     var s0 = poly_cbd2(sigma, 0);
     var s1 = poly_cbd2(sigma, 1);
