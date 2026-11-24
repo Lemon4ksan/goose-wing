@@ -344,6 +344,9 @@ struct QuicStreamTable {
     has_remote_max_streams_uni:  bool              = false,
     next_local_bidi_id:          u64               = 0,
     next_local_uni_id:           u64               = 0,
+    peer_init_sd_bidi_peer_init: u64               = 65536,
+    peer_init_sd_bidi_self_init: u64               = 65536,
+    peer_init_sd_uni:            u64               = 65536,
     role:                        QuicRole          = QuicRole.Server,
 }
 
@@ -410,7 +413,7 @@ fn get_or_open_stream(
     for &slot, i in tbl.streams {
         if is_terminal(slot, tbl.role) {
             quic_internal::record_evicted_closed_stream(tbl, slot.stream_id);
-            slot = quic_internal::new_quic_role_stream(stream_id, tbl.role, default_recv_flow);
+            slot = quic_internal::quic_table_new_stream_for_table(tbl, stream_id, default_recv_flow);
             return i as i32, true;
         }
     }
@@ -441,7 +444,7 @@ fn open_local_stream(
         if is_terminal(slot, tbl.role) {
             quic_internal::record_evicted_closed_stream(tbl, slot.stream_id);
             let stream_id = quic_internal::advance_stream_counter(tbl, is_bidi);
-            slot = quic_internal::new_quic_role_stream(stream_id, tbl.role, default_recv_flow);
+            slot = quic_internal::quic_table_new_stream_for_table(tbl, stream_id, default_recv_flow);
             return stream_id, i as i32, true;
         }
     }

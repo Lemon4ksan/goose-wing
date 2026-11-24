@@ -376,6 +376,25 @@ inline fn validate_peer_stream_limit(tbl: const quic::QuicStreamTable&, stream_i
     return stream_idx < tbl.max_streams_bidi;
 }
 
+// Creates a new stream initialized with peer transport parameter send limits from `tbl`.
+inline fn quic_table_new_stream_for_table(
+    tbl:               const quic::QuicStreamTable&,
+    stream_id:         u64,
+    default_recv_flow: u64,
+) -> quic::QuicStream {
+    var st = new_quic_role_stream(stream_id, tbl.role, default_recv_flow);
+    if (stream_id & 2) != 0 {
+        if !is_peer_initiated_stream(stream_id, tbl.role) {
+            st.send_max_data = tbl.peer_init_sd_uni;
+        }
+    } else if is_peer_initiated_stream(stream_id, tbl.role) {
+        st.send_max_data = tbl.peer_init_sd_bidi_peer_init;
+    } else {
+        st.send_max_data = tbl.peer_init_sd_bidi_self_init;
+    }
+    return st;
+}
+
 // Appends and initializes new stream into table.
 inline fn quic_table_insert_stream(
     tbl:               quic::QuicStreamTable&,
@@ -383,7 +402,7 @@ inline fn quic_table_insert_stream(
     default_recv_flow: u64,
 ) -> i32 {
     let new_idx = tbl.streams.len as i32;
-    let st = new_quic_role_stream(stream_id, tbl.role, default_recv_flow);
+    let st = quic_table_new_stream_for_table(tbl, stream_id, default_recv_flow);
     tbl.streams.push(st);
     return new_idx;
 }
