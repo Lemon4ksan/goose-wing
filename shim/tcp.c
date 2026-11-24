@@ -3481,8 +3481,12 @@ int64_t wing_udp_open_dual(wing_bytes_ro bind_ip, uint16_t bind_port, int32_t fl
     int opt = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
     if (family == AF_INET6) {
-        int v6only = 1;
-        setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&v6only, sizeof(v6only));
+        int is_wildcard_v6 = (strcmp(bind_str, "::") == 0) || (bind_str[0] == '\0' && (flags & 2) != 0);
+        int v6only = is_wildcard_v6 ? 0 : 1;
+        if (setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&v6only, sizeof(v6only)) == SOCKET_ERROR) {
+            closesocket(s);
+            return -1;
+        }
     }
 #ifdef __linux__
     if ((flags & 4) != 0) {
@@ -3520,6 +3524,30 @@ int32_t wing_udp_sendto_dual(int64_t sock_fd, wing_bytes_ro data, wing_bytes_ro 
     int family = AF_INET;
     int ss_len = 0;
     if (wing_parse_ip_sockaddr(dst_str, dst_port, 0, &ss, &family, &ss_len) != 0) return -1;
+
+    if (family == AF_INET) {
+        struct sockaddr_storage local_ss;
+        memset(&local_ss, 0, sizeof(local_ss));
+#ifdef _WIN32
+        int local_len = (int)sizeof(local_ss);
+#else
+        socklen_t local_len = (socklen_t)sizeof(local_ss);
+#endif
+        if (getsockname((SOCKET)sock_fd, (struct sockaddr *)&local_ss, &local_len) == 0 &&
+            local_ss.ss_family == AF_INET6) {
+            const struct sockaddr_in *s4 = (const struct sockaddr_in *)&ss;
+            struct sockaddr_in6 mapped;
+            memset(&mapped, 0, sizeof(mapped));
+            mapped.sin6_family = AF_INET6;
+            mapped.sin6_port = s4->sin_port;
+            mapped.sin6_addr.s6_addr[10] = 0xFF;
+            mapped.sin6_addr.s6_addr[11] = 0xFF;
+            memcpy(&mapped.sin6_addr.s6_addr[12], &s4->sin_addr, 4);
+            memcpy(&ss, &mapped, sizeof(mapped));
+            family = AF_INET6;
+            ss_len = (int)sizeof(mapped);
+        }
+    }
 
 #ifdef _WIN32
     int sent = sendto((SOCKET)sock_fd, (const char *)data.data, (int)data.len, 0, (struct sockaddr *)&ss, ss_len);

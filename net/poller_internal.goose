@@ -118,6 +118,15 @@ inline fn apply_trigger_clear_mask(t: core::PollTrigger.Level, sim: net::Simulat
     sim.ready.clear_flag(core::POLL_WRITE);
 }
 
+fn poll_flags_to_interest(events: u32) -> core::PollInterest {
+    let want_read = (events & core::POLL_READ) != 0;
+    let want_write = (events & core::POLL_WRITE) != 0;
+    if want_read && want_write { return core::PollInterest.ReadWrite; }
+    if want_read { return core::PollInterest.Read; }
+    if want_write { return core::PollInterest.Write; }
+    return core::PollInterest.None;
+}
+
 fn interest_to_epoll_flags(interest: core::PollInterest) -> u32 {
     return match interest {
         Read => net::EPOLL_READ,

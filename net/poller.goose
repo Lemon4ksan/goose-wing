@@ -260,6 +260,26 @@ fn deregister_socket(p: Poller&, fd: i32) -> bool {
     return true;
 }
 
+// Registers an `i64` socket descriptor using `core::POLL_READ` / `core::POLL_WRITE` bitflags.
+fn poller_register_fd(p: Poller&, fd: i64, events: u32, user_data: u64) -> bool {
+    guard fd >= 0 && fd <= 0x7FFFFFFF else { return false; }
+    let interest = net_internal::poll_flags_to_interest(events);
+    return register_socket(p, fd as i32, user_data, interest);
+}
+
+// Updates `events` (`core::POLL_READ` / `core::POLL_WRITE`) and `user_data` for an `i64` descriptor.
+fn poller_modify_fd(p: Poller&, fd: i64, events: u32, user_data: u64) -> bool {
+    guard fd >= 0 && fd <= 0x7FFFFFFF else { return false; }
+    let interest = net_internal::poll_flags_to_interest(events);
+    return modify_socket(p, fd as i32, user_data, interest);
+}
+
+// Deregisters an `i64` socket descriptor after checking it fits `i32`.
+fn poller_deregister_fd(p: Poller&, fd: i64) -> bool {
+    guard fd >= 0 && fd <= 0x7FFFFFFF else { return false; }
+    return deregister_socket(p, fd as i32);
+}
+
 // ---- High-Resolution Timer Management -----------------------------------
 
 fn add_timer(

@@ -1073,13 +1073,15 @@ fn net_get_local_ips(out_buf: u8[:]) -> i32 {
     return net_internal::native_net_get_local_ips(out_buf);
 }
 
-// Opens a non-blocking dual-stack UDP socket (flags: bit 1 = force IPv6, bit 2 = IP_FREEBIND).
+// Opens a non-blocking UDP socket (`"::"` uses `IPV6_V6ONLY=0` dual-stack; explicit IPv6 uses `IPV6_V6ONLY=1`).
+// `flags`: bit 1 (2) = force IPv6 on empty `bind_ip`, bit 2 (4) = `IP_FREEBIND` on Linux.
 fn udp_open_dual(bind_ip: const u8[:] = "", bind_port: u16 = 0, flags: i32 = 0) -> i64 {
     let _ = tcp_init();
     return net_internal::native_udp_open_dual(bind_ip, bind_port, flags);
 }
 
 // Sends a non-blocking UDP datagram to an IPv4 or IPv6 literal (`-2` on WouldBlock).
+// Automatically maps IPv4 destinations to `::ffff:a.b.c.d` when `sock_fd` is `AF_INET6`.
 fn udp_sendto_dual(sock_fd: i64, data: const u8[:], dst_ip: const u8[:], dst_port: u16) -> i32 {
     guard sock_fd > 0 && dst_ip.len > 0 && dst_port != 0 else { return -1; }
     return net_internal::native_udp_sendto_dual(sock_fd, data, dst_ip, dst_port);
