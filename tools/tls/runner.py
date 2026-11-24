@@ -132,19 +132,24 @@ def ensure_server_binary(force_rebuild: bool = False) -> Path:
 
 
 class NativeTlsServer:
-    def __init__(self, binary_path: Path):
+    def __init__(self, binary_path: Path, extra_args: list[str] | None = None):
         self.binary_path = binary_path
+        self.extra_args = extra_args or []
         self.proc: subprocess.Popen | None = None
         self.port: int = 0
 
     def start(self, timeout: float = 5.0) -> int:
+        env = os.environ.copy()
+        if self.extra_args:
+            env["WING_PORT"] = "0"
         self.proc = subprocess.Popen(
-            [str(self.binary_path)],
+            [str(self.binary_path), *self.extra_args],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
             cwd=str(ROOT_DIR),
+            env=env,
         )
         assert self.proc and self.proc.stdout and self.proc.stderr
 
@@ -428,6 +433,402 @@ subjectAltName = DNS:localhost,IP:127.0.0.1
         capture_output=True,
     )
     return cert_file, key_file
+
+
+def _run_openssl(openssl_bin: str, args: list[str]) -> None:
+    subprocess.run([openssl_bin, *args], check=True, capture_output=True, text=True)
+
+
+def generate_edge_pki_chain(
+    work_dir: Path, openssl_bin: str
+) -> dict[str, tuple[Path, Path] | Path]:
+    """Generates Root CA + Intermediate CA + ECDSA P-256, RSA-2048, and Ed25519 fullchains."""
+    root_key = work_dir / "root_ca.key"
+    root_pem = work_dir / "root_ca.pem"
+    root_cnf = work_dir / "root_ca.cnf"
+    root_cnf.write_text(
+        "[req]\ndistinguished_name = dn\nx509_extensions = v3_ca\nprompt = no\n"
+        "[dn]\nCN = Goose Wing Test Root CA\n"
+        "[v3_ca]\nbasicConstraints = critical, CA:TRUE, pathlen:1\n"
+        "keyUsage = critical, keyCertSign, cRLSign\n"
+        "subjectKeyIdentifier = hash\n",
+        encoding="utf-8",
+    )
+    _run_openssl(
+        openssl_bin,
+        ["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(root_key)],
+    )
+    _run_openssl(
+        openssl_bin,
+        [
+            "req",
+            "-new",
+            "-x509",
+            "-key",
+            str(root_key),
+            "-out",
+            str(root_pem),
+            "-days",
+            "365",
+            "-config",
+            str(root_cnf),
+            "-extensions",
+            "v3_ca",
+        ],
+    )
+
+    inter_key = work_dir / "inter_ca.key"
+    inter_csr = work_dir / "inter_ca.csr"
+    inter_pem = work_dir / "inter_ca.pem"
+    inter_cnf = work_dir / "inter_ca.cnf"
+    inter_cnf.write_text(
+        "[req]\ndistinguished_name = dn\nprompt = no\n"
+        "[dn]\nCN = Goose Wing Test Intermediate CA\n"
+        "[v3_inter]\nbasicConstraints = critical, CA:TRUE, pathlen:0\n"
+        "keyUsage = critical, keyCertSign, cRLSign\n"
+        "subjectKeyIdentifier = hash\n"
+        "authorityKeyIdentifier = keyid:always,issuer\n",
+        encoding="utf-8",
+    )
+    _run_openssl(
+        openssl_bin,
+        ["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(inter_key)],
+    )
+    _run_openssl(
+        openssl_bin,
+        ["req", "-new", "-key", str(inter_key), "-out", str(inter_csr), "-config", str(inter_cnf)],
+    )
+    _run_openssl(
+        openssl_bin,
+        [
+            "x509",
+            "-req",
+            "-in",
+            str(inter_csr),
+            "-CA",
+            str(root_pem),
+            "-CAkey",
+            str(root_key),
+            "-CAcreateserial",
+            "-out",
+            str(inter_pem),
+            "-days",
+            "365",
+            "-extfile",
+            str(inter_cnf),
+            "-extensions",
+            "v3_inter",
+        ],
+    )
+    inter_text = inter_pem.read_text(encoding="utf-8")
+
+    def issue_leaf(slug: str, cn: str, san: str, keygen_args: list[str]) -> tuple[Path, Path]:
+        key_path = work_dir / f"{slug}.key"
+        csr_path = work_dir / f"{slug}.csr"
+        leaf_path = work_dir / f"{slug}.leaf.pem"
+        fullchain_path = work_dir / f"{slug}.fullchain.pem"
+        cnf_path = work_dir / f"{slug}.cnf"
+        cnf_path.write_text(
+            f"[req]\ndistinguished_name = dn\nprompt = no\n[dn]\nCN = {cn}\n"
+            f"[v3_leaf]\nbasicConstraints = critical, CA:FALSE\n"
+            f"keyUsage = critical, digitalSignature\nextendedKeyUsage = serverAuth\n"
+            f"subjectAltName = DNS:{san}\n",
+            encoding="utf-8",
+        )
+        _run_openssl(openssl_bin, [*keygen_args, "-out", str(key_path)])
+        _run_openssl(
+            openssl_bin,
+            ["req", "-new", "-key", str(key_path), "-out", str(csr_path), "-config", str(cnf_path)],
+        )
+        _run_openssl(
+            openssl_bin,
+            [
+                "x509",
+                "-req",
+                "-in",
+                str(csr_path),
+                "-CA",
+                str(inter_pem),
+                "-CAkey",
+                str(inter_key),
+                "-CAcreateserial",
+                "-out",
+                str(leaf_path),
+                "-days",
+                "365",
+                "-extfile",
+                str(cnf_path),
+                "-extensions",
+                "v3_leaf",
+            ],
+        )
+        fullchain_path.write_text(
+            leaf_path.read_text(encoding="utf-8") + inter_text, encoding="utf-8"
+        )
+        return fullchain_path, key_path
+
+    ec_chain, ec_key = issue_leaf(
+        "ec_a", "a.edge.test", "a.edge.test", ["ecparam", "-name", "prime256v1", "-genkey", "-noout"]
+    )
+    rsa_chain, rsa_key = issue_leaf(
+        "rsa_b",
+        "*.b.edge.test",
+        "*.b.edge.test",
+        ["genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048"],
+    )
+    ed_chain, ed_key = issue_leaf(
+        "ed_c", "ed.edge.test", "ed.edge.test", ["genpkey", "-algorithm", "Ed25519"]
+    )
+    return {
+        "root_ca": root_pem,
+        "ec": (ec_chain, ec_key),
+        "rsa": (rsa_chain, rsa_key),
+        "ed": (ed_chain, ed_key),
+    }
+
+
+def _extract_leaf_cert_info(openssl_bin: str, sclient_stdout: str) -> str:
+    begin = "-----BEGIN CERTIFICATE-----"
+    end = "-----END CERTIFICATE-----"
+    start_idx = sclient_stdout.find(begin)
+    if start_idx < 0:
+        return ""
+    end_idx = sclient_stdout.find(end, start_idx)
+    if end_idx < 0:
+        return ""
+    pem_block = sclient_stdout[start_idx : end_idx + len(end)] + "\n"
+    res = subprocess.run(
+        [openssl_bin, "x509", "-noout", "-subject", "-ext", "subjectAltName"],
+        input=pem_block,
+        capture_output=True,
+        text=True,
+        timeout=5.0,
+        check=False,
+    )
+    return res.stdout if res.returncode == 0 else ""
+
+
+def _run_sclient_edge_cell(
+    openssl_bin: str,
+    port: int,
+    root_ca: Path,
+    sni: str,
+    groups: str | None,
+    payload: str,
+) -> tuple[int, str, str]:
+    cmd = [
+        openssl_bin,
+        "s_client",
+        "-connect",
+        f"127.0.0.1:{port}",
+        "-tls1_3",
+        "-servername",
+        sni,
+        "-verify_hostname",
+        sni,
+        "-CAfile",
+        str(root_ca),
+        "-verify_return_error",
+        "-ign_eof",
+    ]
+    if groups:
+        cmd.extend(["-groups", groups])
+    res = subprocess.run(
+        cmd,
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=10.0,
+        check=False,
+    )
+    return res.returncode, res.stdout or "", res.stderr or ""
+
+
+def run_edge_interop_matrix(server_exe: Path) -> tuple[int, int]:
+    passed = 0
+    failed = 0
+
+    def record(ok: bool, desc: str, detail: str = ""):
+        nonlocal passed, failed
+        if ok:
+            passed += 1
+            print(f"  [PASS] {desc}")
+        else:
+            failed += 1
+            msg = f"  [FAIL] {desc}"
+            if detail:
+                msg += f" ({detail})"
+            print(msg)
+
+    openssl_bin = find_openssl_cli()
+    if not openssl_bin:
+        record(False, "OpenSSL CLI availability for Edge Interop Matrix", "openssl not found")
+        return passed, failed
+
+    print("\nExecuting OpenSSL s_client Edge Interop Matrix against PureGoose TlsEndpoint...")
+    with tempfile.TemporaryDirectory(prefix="wing_tls_edge_matrix_") as td:
+        pki = generate_edge_pki_chain(Path(td), openssl_bin)
+        root_ca = pki["root_ca"]
+        ec_chain, ec_key = pki["ec"]
+        rsa_chain, rsa_key = pki["rsa"]
+        ed_chain, ed_key = pki["ed"]
+        assert isinstance(root_ca, Path)
+
+        srv = NativeTlsServer(
+            server_exe,
+            extra_args=[
+                "--port",
+                "0",
+                "--sni-map",
+                f"a.edge.test={ec_chain}:{ec_key}",
+                "--sni-map",
+                f"*.b.edge.test={rsa_chain}:{rsa_key}",
+                "--sni-map",
+                f"ed.edge.test={ed_chain}:{ed_key}",
+            ],
+        )
+        try:
+            port = srv.start()
+        except Exception as exc:
+            record(False, "Start PureGoose --sni-map TlsEndpoint edge server", str(exc))
+            return passed, failed
+
+        try:
+            cells = [
+                (
+                    "ECDSA P-256 fullchain + exact SNI a.edge.test (default groups)",
+                    "a.edge.test",
+                    None,
+                    "ecdsa_secp256r1_sha256",
+                    (),
+                    "a.edge.test",
+                    "CELL_EC_DEFAULT",
+                ),
+                (
+                    "ECDSA P-256 fullchain + exact SNI a.edge.test (-groups P-256)",
+                    "a.edge.test",
+                    "P-256",
+                    "ecdsa_secp256r1_sha256",
+                    ("prime256v1", "secp256r1", "p-256"),
+                    "a.edge.test",
+                    "CELL_EC_P256",
+                ),
+                (
+                    "ECDSA P-256 fullchain + exact SNI a.edge.test (HRR secp384r1:X25519)",
+                    "a.edge.test",
+                    "secp384r1:X25519",
+                    "ecdsa_secp256r1_sha256",
+                    ("x25519",),
+                    "a.edge.test",
+                    "CELL_EC_HRR_X25519",
+                ),
+                (
+                    "ECDSA P-256 fullchain + exact SNI a.edge.test (HRR secp384r1:P-256)",
+                    "a.edge.test",
+                    "secp384r1:P-256",
+                    "ecdsa_secp256r1_sha256",
+                    ("prime256v1", "secp256r1", "p-256"),
+                    "a.edge.test",
+                    "CELL_EC_HRR_P256",
+                ),
+                (
+                    "RSA-2048 fullchain + wildcard SNI sub.b.edge.test (default groups)",
+                    "sub.b.edge.test",
+                    None,
+                    "rsa_pss_rsae_sha256",
+                    (),
+                    "*.b.edge.test",
+                    "CELL_RSA_WILDCARD",
+                ),
+                (
+                    "RSA-2048 fullchain + wildcard SNI sub.b.edge.test (-groups P-256)",
+                    "sub.b.edge.test",
+                    "P-256",
+                    "rsa_pss_rsae_sha256",
+                    ("prime256v1", "secp256r1", "p-256"),
+                    "*.b.edge.test",
+                    "CELL_RSA_P256",
+                ),
+                (
+                    "RSA-2048 fullchain + wildcard SNI sub.b.edge.test (HRR secp384r1:P-256)",
+                    "sub.b.edge.test",
+                    "secp384r1:P-256",
+                    "rsa_pss_rsae_sha256",
+                    ("prime256v1", "secp256r1", "p-256"),
+                    "*.b.edge.test",
+                    "CELL_RSA_HRR_P256",
+                ),
+                (
+                    "Ed25519 fullchain + exact SNI ed.edge.test (default groups)",
+                    "ed.edge.test",
+                    None,
+                    "ed25519",
+                    (),
+                    "ed.edge.test",
+                    "CELL_ED25519_DEFAULT",
+                ),
+                (
+                    "Ed25519 fullchain + exact SNI ed.edge.test (HRR secp384r1:X25519)",
+                    "ed.edge.test",
+                    "secp384r1:X25519",
+                    "ed25519",
+                    ("x25519",),
+                    "ed.edge.test",
+                    "CELL_ED25519_HRR_X25519",
+                ),
+            ]
+            for label, sni, groups, expect_sig, expect_kex, expect_cn, tag in cells:
+                rc, out, err = _run_sclient_edge_cell(
+                    openssl_bin, port, root_ca, sni, groups, f"{tag}\n"
+                )
+                cert_info = _extract_leaf_cert_info(openssl_bin, out)
+                sig_lines = [
+                    line.lower()
+                    for line in out.splitlines()
+                    if "peer signature type:" in line.lower()
+                ]
+                kex_lines = [
+                    line.lower()
+                    for line in out.splitlines()
+                    if any(
+                        hdr in line.lower()
+                        for hdr in ("peer temp key:", "server temp key:", "negotiated tls1.3 group:")
+                    )
+                ]
+                ok_verify = (
+                    rc == 0
+                    and "Verify return code: 0 (ok)" in out
+                    and "1 s:" in out
+                    and "Goose Wing Test Intermediate CA" in out
+                )
+                ok_sig = any(expect_sig.lower() in line for line in sig_lines)
+                ok_kex = not expect_kex or any(
+                    k in line for line in kex_lines for k in expect_kex
+                )
+                ok_cert = f"CN={expect_cn}" in cert_info or f"CN = {expect_cn}" in cert_info
+                ok_san = f"DNS:{expect_cn}" in cert_info
+                expected_echo = f"EDGE_ECHO {sni}:{tag}"
+                ok_echo = expected_echo in out
+                ok_all = ok_verify and ok_sig and ok_kex and ok_cert and ok_san and ok_echo
+                detail = (
+                    f"rc={rc} verify={ok_verify} sig={ok_sig} kex={ok_kex} "
+                    f"cert={ok_cert} san={ok_san} echo={ok_echo} err={err.strip()[:200]}"
+                )
+                record(ok_all, f"Edge Matrix: {label}", detail)
+
+            # Negative cell: unknown SNI must fail closed
+            rc_bad, _, _ = _run_sclient_edge_cell(
+                openssl_bin, port, root_ca, "unknown.edge.test", None, "BAD_SNI\n"
+            )
+            record(
+                rc_bad != 0,
+                "Edge Matrix: Unregistered SNI unknown.edge.test fails closed",
+                f"rc={rc_bad}",
+            )
+        finally:
+            srv.stop()
+
+    return passed, failed
 
 
 def build_client_hello(
@@ -821,6 +1222,10 @@ def run_e2e_tests(host: str, port: int) -> tuple[int, int]:
             finally:
                 s13.stop()
 
+        edge_passed, edge_failed = run_edge_interop_matrix(ensure_server_binary(force_rebuild=False))
+        passed += edge_passed
+        failed += edge_failed
+
     return passed, failed
 
 
@@ -833,6 +1238,11 @@ def main():
     parser.add_argument("--docker", action="store_true", help="Run TLS suite in Docker")
     parser.add_argument("--compose", action="store_true", help="Launch via docker compose")
     parser.add_argument("--rebuild", action="store_true", help="Rebuild TLS server executable")
+    parser.add_argument(
+        "--edge-matrix-only",
+        action="store_true",
+        help="Run only the OpenSSL s_client Edge Interop Matrix against PureGoose TlsEndpoint",
+    )
     args = parser.parse_args()
 
     if args.compose or args.docker:
@@ -850,6 +1260,13 @@ def main():
         ]
         print(f"[*] Running TLS suite via docker compose ({compose_file.name})...")
         sys.exit(subprocess.run(cmd, check=False, cwd=str(ROOT_DIR)).returncode)
+
+    if args.edge_matrix_only:
+        server_exe = ensure_server_binary(force_rebuild=args.rebuild)
+        passed, failed = run_edge_interop_matrix(server_exe)
+        total = passed + failed
+        print(f"\nCompleted: {passed}/{total} passed, {failed} failed.")
+        sys.exit(0 if failed == 0 and total > 0 else 1)
 
     if args.port > 0:
         passed, failed = run_e2e_tests(args.host, args.port)
