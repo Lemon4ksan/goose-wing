@@ -455,6 +455,10 @@ fn select_server_alpn_with_policy<B>(
     guard ok_list else { return tls::Alert.DecodeError, false; }
     out_alpn.clear();
     guard server_alpn_csv.len > 0 else {
+        // RFC 7301 Section 3.2: Protocol Selection - Empty server ALPN list has zero overlap when match is required.
+        if policy == ServerAlpnPolicy.RequireMatch && list_bytes.len > 0 {
+            return tls::Alert.NoApplicationProtocol, false;
+        }
         committed = true;
         return tls::Alert.CloseNotify, true;
     }

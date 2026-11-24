@@ -22,7 +22,7 @@ const H2_EDGE_WIRE_IN_CAP:     i64 = 16393;    // 9-byte header + 16384-byte def
 const H2_EDGE_WIRE_OUT_CAP:    i64 = 147456;   // 144 KiB outbound framing buffer (HEADERS + CONTINUATION + DATA)
 const H2_EDGE_EV_DATA_CAP:     i64 = 16384;    // Max single DATA frame payload per RFC 9113 Section 4.2 default
 const H2_EDGE_PREFACE_LEN:     i64 = 24;       // RFC 9113 Section 3.4: HTTP/2 Connection Preface
-const H2_EDGE_MAX_HEADER_LIST: u32 = 65536;    // RFC 9113 Section 10.5.1: Limits on Field Block Size
+const H2_EDGE_MAX_HEADER_LIST: u32 = 8192;     // Bounded by http::HeaderMap.raw_buf capacity (RFC 9113 Section 6.5.2)
 const H2_EDGE_MIN_REPLENISH:   i64 = 16384;
 
 // ---- Public Streaming Event & Session Handle Types -----------------------
@@ -71,8 +71,13 @@ struct H2EdgeSlot {
     preface_done:                  bool         = false,
     conn_failed:                   bool         = false,
     hpack_enc_pending_size_update: bool         = false,
+    has_peer_max_header_list_size: bool         = false,
     peer_max_concurrent_streams:   u32          = 128,
-    peer_max_header_list_size:     u32          = 65536,
+    peer_max_header_list_size:     u32          = 0,
+    queued_control_acks:           u32          = 0,
+    refused_cont_stream_id:        u32          = 0,
+    refused_cont_frames_cnt:       u32          = 0,
+    refused_cont_start_ms:         u64          = 0,
     hdr_stream_id:                 u32          = 0,
     hdr_end_stream:                bool         = false,
     hdr_is_trailer:                bool         = false,
@@ -316,6 +321,7 @@ fn fail_edge_connection(slot: H2EdgeSlot&, error_code: u32) -> bool {
     if !slot.conn_failed {
         slot.conn_failed = true;
         slot.conn.continuation_stream_id = 0;
+        slot.refused_cont_stream_id = 0;
         slot.header_accum.clear();
         let _ = emit_edge_goaway(slot, error_code);
         let _ = enqueue_edge_event(
@@ -504,6 +510,7 @@ fn apply_single_edge_setting(slot: H2EdgeSlot&, param_id: u16, val: u32) -> u32 
         return rfc::H2_ERR_NO_ERROR;
     }
     if param_id == rfc::H2_SETTING_MAX_HEADER_LIST_SIZE {
+        slot.has_peer_max_header_list_size = true;
         slot.peer_max_header_list_size = val;
         return rfc::H2_ERR_NO_ERROR;
     }
@@ -531,6 +538,7 @@ fn ingest_edge_settings_frame(slot: H2EdgeSlot&, hdr: const FrameHeader&, payloa
     guard append_edge_frame(slot.wire_out, rfc::H2_FRAME_SETTINGS, rfc::H2_FLAG_ACK, 0, "") else {
         return fail_edge_connection(slot, rfc::H2_ERR_INTERNAL_ERROR);
     }
+    slot.queued_control_acks = core::add_sat_u32(slot.queued_control_acks, 1);
     return true;
 }
 
@@ -546,19 +554,25 @@ fn ingest_edge_window_update(slot: H2EdgeSlot&, hdr: const FrameHeader&, payload
     return reject_edge_stream(slot, hdr.stream_id, wu_err);
 }
 
-fn replenish_edge_recv_windows(slot: H2EdgeSlot&, hdr: const FrameHeader&) {
+fn replenish_edge_conn_recv_window(slot: H2EdgeSlot&, consumed_len: u32) {
+    guard consumed_len > 0 else { return; }
     let thresh = max(1, min(H2_EDGE_MIN_REPLENISH, slot.conn.local_initial_window_size >> 1));
     let max_win: i64 = rfc::H2_MAX_WINDOW_SIZE;
-    slot.conn.unclaimed_recv_window = core::add_sat_i64(slot.conn.unclaimed_recv_window, hdr.length);
-    if slot.conn.unclaimed_recv_window >= thresh {
-        let upd_i64 = min(slot.conn.unclaimed_recv_window, max_win);
-        if upd_i64 > 0 && emit_edge_window_update(slot, 0, upd_i64 as u32) {
-            slot.conn.conn_recv_window = core::add_sat_i64(slot.conn.conn_recv_window, upd_i64);
-            slot.conn.unclaimed_recv_window = core::sub_sat_i64(slot.conn.unclaimed_recv_window, upd_i64);
-        }
+    slot.conn.unclaimed_recv_window = core::add_sat_i64(slot.conn.unclaimed_recv_window, consumed_len);
+    guard slot.conn.unclaimed_recv_window >= thresh else { return; }
+    let upd_i64 = min(slot.conn.unclaimed_recv_window, max_win);
+    if upd_i64 > 0 && emit_edge_window_update(slot, 0, upd_i64 as u32) {
+        slot.conn.conn_recv_window = core::add_sat_i64(slot.conn.conn_recv_window, upd_i64);
+        slot.conn.unclaimed_recv_window = core::sub_sat_i64(slot.conn.unclaimed_recv_window, upd_i64);
     }
+}
+
+fn replenish_edge_recv_windows(slot: H2EdgeSlot&, hdr: const FrameHeader&) {
+    replenish_edge_conn_recv_window(slot, hdr.length);
 
     guard (hdr.flags & rfc::H2_FLAG_END_STREAM) == 0 else { return; }
+    let thresh = max(1, min(H2_EDGE_MIN_REPLENISH, slot.conn.local_initial_window_size >> 1));
+    let max_win: i64 = rfc::H2_MAX_WINDOW_SIZE;
     let s_idx, found = find_stream_idx(slot.conn, hdr.stream_id);
     guard found && s_idx >= 0 && s_idx < 128 else { return; }
     if slot.stream_unclaimed_id[s_idx] != hdr.stream_id {
@@ -582,11 +596,14 @@ fn ingest_edge_data_frame(slot: H2EdgeSlot&, hdr: const FrameHeader&, payload: c
         return fail_edge_connection(slot, pad_err);
     }
 
+    let is_odd = (hdr.stream_id & 1) == 1;
+    let _, was_open = find_stream_idx(slot.conn, hdr.stream_id);
     let d_err = on_data_frame_received(slot.conn, hdr, data_bytes.len as u32);
     if d_err != rfc::H2_ERR_NO_ERROR {
-        if slot.conn.conn_recv_window < 0 || hdr.stream_id > slot.conn.last_peer_stream_id {
+        if slot.conn.conn_recv_window < 0 || !is_odd || (!was_open && d_err != rfc::H2_ERR_STREAM_CLOSED) {
             return fail_edge_connection(slot, d_err);
         }
+        replenish_edge_conn_recv_window(slot, hdr.length);
         return reject_edge_stream(slot, hdr.stream_id, d_err);
     }
 
@@ -618,20 +635,85 @@ fn ingest_edge_goaway_frame(slot: H2EdgeSlot&, payload: const u8[:]) -> bool {
     return enqueue_edge_event(slot, H2EdgeEventKind.GoAway, last_sid & 0x7FFFFFFF, -1, "", false, err_code);
 }
 
-fn keep_hpack_sync_on_refused_headers(slot: H2EdgeSlot&, hdr: const FrameHeader&, payload: const u8[:]) -> bool {
+fn finish_refused_hpack_sync(slot: H2EdgeSlot&, stream_id: u32) -> bool {
+    var tmp_pseudo = PseudoHeaders { .. };
+    var tmp_hdrs = http::HeaderMap { .. };
+    let dec_err = decode_hpack_to_map(
+        slot.conn.hpack_dec,
+        slot.header_accum[..],
+        tmp_pseudo,
+        tmp_hdrs,
+        slot.conn.max_header_list_size,
+        false,
+    );
+    slot.header_accum.clear();
+    slot.refused_cont_stream_id = 0;
+    slot.refused_cont_frames_cnt = 0;
+    if dec_err == rfc::H2_ERR_COMPRESSION_ERROR {
+        return fail_edge_connection(slot, dec_err);
+    }
+    return reject_edge_stream(slot, stream_id, rfc::H2_ERR_REFUSED_STREAM);
+}
+
+fn step_refused_continuation(
+    slot:    H2EdgeSlot&,
+    hdr:     const FrameHeader&,
+    payload: const u8[:],
+    now_ms:  u64,
+) -> bool {
+    if hdr.length > slot.conn.local_max_frame_size {
+        return fail_edge_connection(slot, rfc::H2_ERR_FRAME_SIZE_ERROR);
+    }
+    if hdr.frame_type != rfc::H2_FRAME_CONTINUATION || hdr.stream_id != slot.refused_cont_stream_id {
+        return fail_edge_connection(slot, rfc::H2_ERR_PROTOCOL_ERROR);
+    }
+    if hdr.length == 0 && (hdr.flags & rfc::H2_FLAG_END_HEADERS) == 0 {
+        return fail_edge_connection(slot, rfc::H2_ERR_PROTOCOL_ERROR);
+    }
+    if core::sub_sat_u64(now_ms, slot.refused_cont_start_ms) > slot.conn.max_header_block_duration_ms {
+        return fail_edge_connection(slot, rfc::H2_ERR_ENHANCE_YOUR_CALM);
+    }
+    let next_cnt = core::add_sat_u32(slot.refused_cont_frames_cnt, 1);
+    let max_hdr: i64 = slot.conn.max_header_list_size;
+    let next_sz = core::add_sat_i64(slot.header_accum.len, hdr.length);
+    if next_cnt > MAX_CONT_FRAMES_LIMIT || next_sz > max_hdr {
+        return fail_edge_connection(slot, rfc::H2_ERR_ENHANCE_YOUR_CALM);
+    }
+    guard slot.header_accum.try_append(payload) else {
+        return fail_edge_connection(slot, rfc::H2_ERR_ENHANCE_YOUR_CALM);
+    }
+    slot.refused_cont_frames_cnt = next_cnt;
+    if (hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0 {
+        return finish_refused_hpack_sync(slot, hdr.stream_id);
+    }
+    return true;
+}
+
+fn start_refused_headers_stream(
+    slot:    H2EdgeSlot&,
+    hdr:     const FrameHeader&,
+    payload: const u8[:],
+    now_ms:  u64,
+) -> bool {
+    if !(slot.conn.goaway_received || slot.conn.goaway_sent) &&
+       (hdr.stream_id & 1) == 1 && hdr.stream_id > slot.conn.last_peer_stream_id {
+        slot.conn.last_peer_stream_id = hdr.stream_id;
+    }
     let frag, ext_err = extract_headers_frame_payload(hdr, payload, slot.conn.no_rfc7540_priorities);
     guard ext_err == rfc::H2_ERR_NO_ERROR else {
         return fail_edge_connection(slot, ext_err);
     }
-    var tmp_pseudo = PseudoHeaders { .. };
-    var tmp_hdrs = http::HeaderMap { .. };
-    let dec_err = decode_hpack_to_map(
-        slot.conn.hpack_dec, frag, tmp_pseudo, tmp_hdrs, slot.conn.max_header_list_size, false,
-    );
-    if dec_err == rfc::H2_ERR_COMPRESSION_ERROR {
-        return fail_edge_connection(slot, dec_err);
+    slot.header_accum.clear();
+    guard slot.header_accum.try_append(frag) else {
+        return fail_edge_connection(slot, rfc::H2_ERR_ENHANCE_YOUR_CALM);
     }
-    return reject_edge_stream(slot, hdr.stream_id, rfc::H2_ERR_REFUSED_STREAM);
+    if (hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0 {
+        return finish_refused_hpack_sync(slot, hdr.stream_id);
+    }
+    slot.refused_cont_stream_id = hdr.stream_id;
+    slot.refused_cont_frames_cnt = 0;
+    slot.refused_cont_start_ms = now_ms;
+    return true;
 }
 
 fn handle_edge_ingress_error(
@@ -639,14 +721,15 @@ fn handle_edge_ingress_error(
     hdr:     const FrameHeader&,
     payload: const u8[:],
     ing_err: u32,
+    now_ms:  u64,
 ) -> bool {
     if hdr.frame_type == rfc::H2_FRAME_PRIORITY && hdr.stream_id != 0 &&
        ing_err == rfc::H2_ERR_FRAME_SIZE_ERROR && slot.conn.continuation_stream_id == 0 {
         return reject_edge_stream(slot, hdr.stream_id, ing_err);
     }
     if hdr.frame_type == rfc::H2_FRAME_HEADERS && ing_err == rfc::H2_ERR_REFUSED_STREAM &&
-       (hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0 && slot.conn.continuation_stream_id == 0 {
-        return keep_hpack_sync_on_refused_headers(slot, hdr, payload);
+       slot.conn.continuation_stream_id == 0 {
+        return start_refused_headers_stream(slot, hdr, payload, now_ms);
     }
     return fail_edge_connection(slot, ing_err);
 }
@@ -660,7 +743,10 @@ fn dispatch_edge_control_frame(
     if hdr.frame_type == rfc::H2_FRAME_WINDOW_UPDATE { return ingest_edge_window_update(slot, hdr, payload); }
     if hdr.frame_type == rfc::H2_FRAME_PING {
         if (hdr.flags & rfc::H2_FLAG_ACK) == 0 {
-            return append_edge_frame(slot.wire_out, rfc::H2_FRAME_PING, rfc::H2_FLAG_ACK, 0, payload);
+            guard append_edge_frame(slot.wire_out, rfc::H2_FRAME_PING, rfc::H2_FLAG_ACK, 0, payload) else {
+                return false;
+            }
+            slot.queued_control_acks = core::add_sat_u32(slot.queued_control_acks, 1);
         }
         return true;
     }
@@ -682,6 +768,10 @@ fn dispatch_edge_frame(slot: H2EdgeSlot&, raw_frame: const u8[:], now_ms: u64) -
     }
     let payload = raw_frame[rfc::H2_FRAME_HEADER_LEN..];
 
+    if slot.refused_cont_stream_id != 0 {
+        return step_refused_continuation(slot, hdr, payload, now_ms);
+    }
+
     var is_trailer_hdr = false;
     if hdr.frame_type == rfc::H2_FRAME_HEADERS {
         let ex_idx, ex_found = find_stream_idx(slot.conn, hdr.stream_id);
@@ -690,7 +780,7 @@ fn dispatch_edge_frame(slot: H2EdgeSlot&, raw_frame: const u8[:], now_ms: u64) -
 
     let ing_err = on_ingress_frame_header(slot.conn, hdr, now_ms);
     if ing_err != rfc::H2_ERR_NO_ERROR {
-        return handle_edge_ingress_error(slot, hdr, payload, ing_err);
+        return handle_edge_ingress_error(slot, hdr, payload, ing_err, now_ms);
     }
 
     if hdr.frame_type == rfc::H2_FRAME_DATA { return ingest_edge_data_frame(slot, hdr, payload); }
@@ -1072,6 +1162,49 @@ fn h2_edge_poll_event(sess: H2EdgeSession&, out_ev: H2EdgeEvent&) -> bool {
     return true;
 }
 
+// Computes the RFC 7541 Section 4.1 uncompressed header list size for outbound response headers.
+fn calc_edge_resp_header_list_size(headers: const http::HeaderMap&) -> u64 {
+    // ":status" (7) + 3-digit code (3) + HPACK_ENTRY_OVERHEAD (32)
+    var total: u64 = 42;
+    for &e in headers.entries {
+        let raw_name = http::entry_name(headers, e);
+        let val = http::entry_value(headers, e);
+        if (raw_name.len > 0 && raw_name[0] == ':') ||
+           is_forbidden_h2_field(raw_name) ||
+           http::is_token_in_connection_header_map(headers, raw_name) {
+            continue;
+        }
+        let n_u64 = raw_name.len as u64;
+        let v_u64 = val.len as u64;
+        let item_sz = core::add_sat_u64(core::add_sat_u64(n_u64, v_u64), rfc::HPACK_ENTRY_OVERHEAD);
+        total = core::add_sat_u64(total, item_sz);
+    }
+    return total;
+}
+
+fn validate_edge_send_headers(
+    slot:        const H2EdgeSlot&,
+    stream_id:   u32,
+    status_code: i32,
+    headers:     const http::HeaderMap&,
+    end_stream:  bool,
+) -> bool {
+    guard !slot.conn_failed && stream_id > 0 && (stream_id & 1) == 1 else { return false; }
+    guard status_code >= 100 && status_code <= 599 && status_code != 101 else { return false; }
+    guard !(end_stream && status_code < 200) else { return false; }
+
+    let s_idx, found = find_stream_idx(slot.conn, stream_id);
+    guard found else { return false; }
+    let st = slot.conn.streams[s_idx].state;
+    guard st == StreamState.Open || st == StreamState.HalfClosedRemote else { return false; }
+    if slot.has_peer_max_header_list_size {
+        let list_sz = calc_edge_resp_header_list_size(headers);
+        let max_sz: u64 = slot.peer_max_header_list_size;
+        guard list_sz <= max_sz else { return false; }
+    }
+    return true;
+}
+
 // Encodes and queues HTTP/2 response HEADERS (+ CONTINUATION if exceeding peer max frame size) on `stream_id`.
 fn h2_edge_send_headers(
     sess:        H2EdgeSession&,
@@ -1083,14 +1216,9 @@ fn h2_edge_send_headers(
     let idx = lookup_live_edge_slot_idx(sess);
     guard idx >= 0 else { return false; }
     let slot .= g_h2_edge_slots[idx];
-    guard !slot.conn_failed && stream_id > 0 && (stream_id & 1) == 1 else { return false; }
-    guard status_code >= 100 && status_code <= 599 && status_code != 101 else { return false; }
-    guard !(end_stream && status_code < 200) else { return false; }
-
-    let s_idx, found = find_stream_idx(slot.conn, stream_id);
-    guard found else { return false; }
-    let st = slot.conn.streams[s_idx].state;
-    guard st == StreamState.Open || st == StreamState.HalfClosedRemote else { return false; }
+    guard validate_edge_send_headers(slot, stream_id, status_code, headers, end_stream) else {
+        return false;
+    }
 
     let saved_enc = slot.hpack_enc;
     let saved_pend = slot.hpack_enc_pending_size_update;
@@ -1220,5 +1348,9 @@ fn h2_edge_drain_wire(sess: H2EdgeSession&, out_wire: u8[>..]&) -> i64 {
     guard n > 0 else { return 0; }
     out_wire.append(slot.wire_out[..]);
     slot.wire_out.clear();
+    while slot.queued_control_acks > 0 {
+        ack_control_frame_flushed(slot.conn);
+        slot.queued_control_acks = core::sub_sat_u32(slot.queued_control_acks, 1);
+    }
     return n;
 }

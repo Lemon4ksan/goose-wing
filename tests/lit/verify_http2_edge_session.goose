@@ -210,6 +210,41 @@ fn test_tls_alpn_hardening() {
     assert(dal_st == tls::TlsBackendStatus.Ok && dal_n == 7);
     assert(dal[0] == rfc::TLS_CONTENT_ALERT && dal[5] == 2 && dal[6] == rfc::TLS_ALERT_NO_APPLICATION_PROTOCOL);
 
+    // 6. Empty server ALPN list + require_alpn_match: true -> fails closed with alert 120
+    var empty_srv_cfg = tls::TlsBackendConfig {
+        kind:                  tls::TlsBackendKind.PureGoose,
+        is_server:             true,
+        defer_sni_credentials: false,
+        require_alpn_match:    true,
+        ..
+    };
+    assert(empty_srv_cfg.cert_der.try_set(cert_der[..]));
+    empty_srv_cfg.priv_seed = seed;
+    var esrv, esrv_st = tls::tls_endpoint_open(empty_srv_cfg);
+    assert(esrv_st == tls::TlsBackendStatus.Ok);
+    defer tls::tls_endpoint_close(esrv);
+
+    var ecli_cfg = tls::TlsBackendConfig {
+        kind:                   tls::TlsBackendKind.PureGoose,
+        is_server:              false,
+        trust_store:            trust,
+        use_system_roots:       false,
+        enable_session_tickets: false,
+        ..
+    };
+    assert(ecli_cfg.server_name.try_set("edge.example.test"));
+    assert(ecli_cfg.alpn_wire.try_set("h2"));
+    var ecli, ecli_st = tls::tls_endpoint_open(ecli_cfg);
+    assert(ecli_st == tls::TlsBackendStatus.Ok);
+    defer tls::tls_endpoint_close(ecli);
+
+    assert(tls::tls_endpoint_step_handshake(ecli) == tls::TlsBackendStatus.WantRead);
+    assert(drain_and_feed_tls(ecli, esrv));
+    assert(tls::tls_endpoint_step_handshake(esrv) == tls::TlsBackendStatus.HandshakeError);
+    let eal_n, eal_st = tls::tls_endpoint_drain_wire(esrv, dal[..]);
+    assert(eal_st == tls::TlsBackendStatus.Ok && eal_n == 7);
+    assert(dal[0] == rfc::TLS_CONTENT_ALERT && dal[5] == 2 && dal[6] == rfc::TLS_ALERT_NO_APPLICATION_PROTOCOL);
+
     print("TLS_ALPN_HARDENING: OK");
     // CHECK: TLS_ALPN_HARDENING: OK
 }
@@ -758,6 +793,201 @@ thread_fn edge_worker_thread(arg: i64) {
     assert(http2::h2_edge_drain_wire(sess, out_w) > 0);
 }
 
+fn test_h2_edge_round1_regressions() {
+    // 1. No conn_recv_window leak on post-reset DATA + even idle stream fails closed with GOAWAY
+    var s1 = http2::h2_edge_open(128, 65535);
+    defer http2::h2_edge_close(s1);
+    var out1: u8[>..] = [];
+    let _ = http2::h2_edge_drain_wire(s1, out1);
+    var r_init = wire::new_wire_h2_frame_reader(out1[..]);
+    let init_h, init_p, ok_init = wire::next_frame(r_init);
+    assert(ok_init && init_h.frame_type == rfc::H2_FRAME_SETTINGS && init_p.len == 24);
+    assert(core::read_be_u16(init_p, 18) == rfc::H2_SETTING_MAX_HEADER_LIST_SIZE);
+    assert(core::read_be_u32(init_p, 20) == 8192);
+
+    var w1: u8[>..] = [];
+    w1.append(rfc::H2_CLIENT_PREFACE[..]);
+    var dt1 = http2::new_dynamic_table(4096);
+    var h1 = http::HeaderMap { .. };
+    append_h2_req_headers(w1, dt1, 1, "POST", "/drop", h1, false);
+    let _, ok_w1 = http2::h2_edge_feed(s1, w1[..]);
+    assert(ok_w1);
+    assert(http2::h2_edge_reset_stream(s1, 1, rfc::H2_ERR_CANCEL));
+    out1.clear();
+    let _ = http2::h2_edge_drain_wire(s1, out1);
+
+    var big_chunk:    u8[16384] = [0x41; 16384];
+    var conn_wu_seen: i32       = 0;
+    for k in 5 {
+        var dw: u8[>..] = [];
+        append_h2_frame(dw, rfc::H2_FRAME_DATA, if k == 4 { rfc::H2_FLAG_END_STREAM } else { 0 }, 1, big_chunk[..]);
+        let _, ok_dk = http2::h2_edge_feed(s1, dw[..]);
+        assert(ok_dk);
+        out1.clear();
+        let _ = http2::h2_edge_drain_wire(s1, out1);
+        var rd = wire::new_wire_h2_frame_reader(out1[..]);
+        var saw_rst_sc = false;
+        while wire::has_next(rd) {
+            let dh, dp, ok_dh = wire::next_frame(rd);
+            assert(ok_dh);
+            if dh.frame_type == rfc::H2_FRAME_RST_STREAM && dp.len == 4 {
+                if core::read_be_u32(dp, 0) == rfc::H2_ERR_STREAM_CLOSED {
+                    saw_rst_sc = true;
+                }
+            } else if dh.frame_type == rfc::H2_FRAME_WINDOW_UPDATE && dh.stream_id == 0 {
+                conn_wu_seen += 1;
+            }
+        }
+        assert(saw_rst_sc);
+    }
+    assert(conn_wu_seen >= 5);
+
+    var ev1 = http2::H2EdgeEvent { .. };
+    while http2::h2_edge_poll_event(s1, ev1) {}
+    var w3: u8[>..] = [];
+    append_h2_req_headers(w3, dt1, 3, "POST", "/ok", h1, false);
+    for _ in 4 {
+        append_h2_frame(w3, rfc::H2_FRAME_DATA, 0, 3, big_chunk[..]);
+    }
+    append_h2_frame(w3, rfc::H2_FRAME_DATA, rfc::H2_FLAG_END_STREAM, 3, "");
+    let _, ok_w3 = http2::h2_edge_feed(s1, w3[..]);
+    assert(ok_w3);
+    var rx3: i64 = 0;
+    while http2::h2_edge_poll_event(s1, ev1) {
+        if ev1.kind == http2::H2EdgeEventKind.RequestData && ev1.stream_id == 3 {
+            rx3 += ev1.data.len;
+        }
+    }
+    assert(rx3 == 65536);
+
+    // Even idle stream ID 2 (<= last_peer_stream_id 3) MUST fail connection with GOAWAY(PROTOCOL_ERROR)
+    var w_even: u8[>..] = [];
+    append_h2_frame(w_even, rfc::H2_FRAME_DATA, rfc::H2_FLAG_END_STREAM, 2, "bad");
+    let _, ok_even = http2::h2_edge_feed(s1, w_even[..]);
+    assert(!ok_even);
+    var saw_even_err = false;
+    while http2::h2_edge_poll_event(s1, ev1) {
+        if ev1.kind == http2::H2EdgeEventKind.ProtocolError && ev1.error_code == rfc::H2_ERR_PROTOCOL_ERROR {
+            saw_even_err = true;
+        }
+    }
+    assert(saw_even_err);
+
+    // 2. Drained PING frames exceed 64 cleanly; undrained PING flood triggers ENHANCE_YOUR_CALM
+    var s_ping = http2::h2_edge_open(128, 65535);
+    defer http2::h2_edge_close(s_ping);
+    let _, ok_pp = http2::h2_edge_feed(s_ping, rfc::H2_CLIENT_PREFACE[..]);
+    assert(ok_pp);
+    out1.clear();
+    let _ = http2::h2_edge_drain_wire(s_ping, out1);
+    let p_bytes: u8[8] = [0x11; 8];
+    var pf: u8[>..] = [];
+    append_h2_frame(pf, rfc::H2_FRAME_PING, 0, 0, p_bytes[..]);
+    for _ in 72 {
+        let _, ok_p1 = http2::h2_edge_feed(s_ping, pf[..]);
+        assert(ok_p1);
+        out1.clear();
+        assert(http2::h2_edge_drain_wire(s_ping, out1) > 0);
+    }
+
+    var s_flood = http2::h2_edge_open(128, 65535);
+    defer http2::h2_edge_close(s_flood);
+    let _, ok_pf0 = http2::h2_edge_feed(s_flood, rfc::H2_CLIENT_PREFACE[..]);
+    assert(ok_pf0);
+    var ping_flood_hit = false;
+    for _ in 70 {
+        let _, ok_p2 = http2::h2_edge_feed(s_flood, pf[..]);
+        if !ok_p2 {
+            ping_flood_hit = true;
+            break;
+        }
+    }
+    assert(ping_flood_hit);
+
+    // 3. Split REFUSED_STREAM CONTINUATION updates last_peer_stream_id, syncs HPACK, and handles pipelined DATA/RST
+    var s_ref = http2::h2_edge_open(1, 65535);
+    defer http2::h2_edge_close(s_ref);
+    var ref_dt = http2::new_dynamic_table(4096);
+    var ref_w: u8[>..] = [];
+    ref_w.append(rfc::H2_CLIENT_PREFACE[..]);
+    var h_empty = http::HeaderMap { .. };
+    append_h2_req_headers(ref_w, ref_dt, 1, "POST", "/hold", h_empty, false);
+    let _, ok_r1 = http2::h2_edge_feed(s_ref, ref_w[..]);
+    assert(ok_r1);
+
+    var ref_h = http::HeaderMap { .. };
+    assert(http::append_header(ref_h, "x-refused-dyn", "synced-val-42"));
+    var ref_hpack: u8[..1024] = [];
+    let ref_pseudo = http2::PseudoHeaders {
+        method:        "POST",
+        scheme:        "https",
+        authority:     "edge.example.test",
+        path:          "/refused",
+        has_method:    true,
+        has_scheme:    true,
+        has_authority: true,
+        has_path:      true,
+        ..
+    };
+    assert(wire::encode_hpack_from_map(ref_dt, ref_pseudo, ref_h, ref_hpack, true));
+    let split_at = ref_hpack.len / 2;
+    var ref_split: u8[>..] = [];
+    append_h2_frame(ref_split, rfc::H2_FRAME_HEADERS, 0, 3, ref_hpack[..split_at]);
+    append_h2_frame(ref_split, rfc::H2_FRAME_CONTINUATION, rfc::H2_FLAG_END_HEADERS, 3, ref_hpack[split_at..]);
+    append_h2_frame(ref_split, rfc::H2_FRAME_DATA, rfc::H2_FLAG_END_STREAM, 3, "late-data");
+    var rst3: u8[4] = [0, 0, 0, rfc::H2_ERR_CANCEL as u8];
+    append_h2_frame(ref_split, rfc::H2_FRAME_RST_STREAM, 0, 3, rst3[..]);
+    append_h2_frame(ref_split, rfc::H2_FRAME_DATA, rfc::H2_FLAG_END_STREAM, 1, "");
+    let _, ok_r3 = http2::h2_edge_feed(s_ref, ref_split[..]);
+    assert(ok_r3);
+    assert(http2::h2_edge_send_headers(s_ref, 1, 200, h_empty, true));
+
+    // Stream 5 now uses dynamic table entry installed during refused split stream 3
+    var w5: u8[>..] = [];
+    append_h2_req_headers(w5, ref_dt, 5, "GET", "/after-refused", ref_h, true);
+    let _, ok_r5 = http2::h2_edge_feed(s_ref, w5[..]);
+    assert(ok_r5);
+    var saw_dyn5 = false;
+    while http2::h2_edge_poll_event(s_ref, ev1) {
+        if ev1.kind == http2::H2EdgeEventKind.RequestHead && ev1.stream_id == 5 {
+            assert(http::get_header(ev1.headers, "x-refused-dyn") == "synced-val-42");
+            saw_dyn5 = true;
+        }
+    }
+    assert(saw_dyn5);
+
+    // 4. peer_max_header_list_size enforcement transactionally rejects oversized response headers
+    var s_lim = http2::h2_edge_open(128, 65535);
+    defer http2::h2_edge_close(s_lim);
+    var lim_w: u8[>..] = [];
+    lim_w.append(rfc::H2_CLIENT_PREFACE[..]);
+    let lim_set: wire::WireSetting[1] = [
+        wire::WireSetting { id: rfc::H2_SETTING_MAX_HEADER_LIST_SIZE, val: 120 },
+    ];
+    assert(wire::encode_settings_frame(lim_set[..], lim_w));
+    var lim_dt = http2::new_dynamic_table(4096);
+    append_h2_req_headers(lim_w, lim_dt, 1, "GET", "/lim", h_empty, true);
+    let _, ok_lim = http2::h2_edge_feed(s_lim, lim_w[..]);
+    assert(ok_lim);
+    out1.clear();
+    let _ = http2::h2_edge_drain_wire(s_lim, out1);
+
+    var big_resp = http::HeaderMap { .. };
+    var val_100: u8[100] = ['q'; 100];
+    assert(http::append_header(big_resp, "x-too-big", val_100[..]));
+    assert(!http2::h2_edge_send_headers(s_lim, 1, 200, big_resp, true));
+    out1.clear();
+    assert(http2::h2_edge_drain_wire(s_lim, out1) == 0);
+
+    var ok_resp = http::HeaderMap { .. };
+    assert(http::append_header(ok_resp, "server", "wing"));
+    assert(http2::h2_edge_send_headers(s_lim, 1, 200, ok_resp, true));
+    assert(http2::h2_edge_drain_wire(s_lim, out1) > 0);
+
+    print("H2_EDGE_ROUND1_REGRESSIONS: OK");
+    // CHECK: H2_EDGE_ROUND1_REGRESSIONS: OK
+}
+
 fn test_h2_edge_thread_safety() {
     let tid = thread_spawn(edge_worker_thread, 1);
     assert(thread_wait(tid));
@@ -769,5 +999,6 @@ fn main() {
     test_tls_alpn_hardening();
     test_h2_edge_preface_multiplex_upload_sse();
     test_h2_edge_security_and_aba();
+    test_h2_edge_round1_regressions();
     test_h2_edge_thread_safety();
 }
