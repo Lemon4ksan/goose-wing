@@ -110,10 +110,11 @@ struct PureTlsSlot {
     transcript:                tls::Transcript            = tls::Transcript { .. },
     ks:                        KeySchedule                = KeySchedule { .. },
     srv_fin_hash:              u8[..48]                   = [],
-    peer_cert_body:            u8[..20480]                = [],
+    peer_cert_body:            u8[..65536]                = [],
     peer_leaf_der:             u8[..8192]                 = [],
-    hs_plain:                  u8[..20480]                = [],
+    hs_plain:                  u8[..65536]                = [],
     hs_plain_pos:              i64                        = 0,
+    hs_msg_body:               u8[..65536]                = [],
     wire_in:                   u8[..32768]                = [],
     wire_out:                  u8[..32768]                = [],
     app_in:                    u8[..16640]                = [],
@@ -168,6 +169,7 @@ fn reset_and_wipe_pure_slot(slot: PureTlsSlot&) {
     core::secure_zeroize_slice(slot.wire_out[..]);
     core::secure_zeroize_slice(slot.app_in[..]);
     core::secure_zeroize_slice(slot.hs_plain[..]);
+    core::secure_zeroize_slice(slot.hs_msg_body[..]);
     core::secure_zeroize_slice(slot.peer_cert_body[..]);
     slot = PureTlsSlot { .. };
 }
@@ -343,17 +345,45 @@ fn pure_detach_cipher_slot(ep: tls::TlsEndpoint&) -> u16 {
     return cs;
 }
 
+enum PureHsMsgRead {
+    Ready,
+    NeedMore,
+    Oversized,
+}
+
+inline fn pure_peek_hs_msg_frame(
+    slice:        const u8[:],
+    max_body_cap: i64,
+    hs_plain_cap: i64,
+) -> u8, i64, PureHsMsgRead {
+    guard slice.len >= 4 else { return 0, 0, PureHsMsgRead.NeedMore; }
+    let mt = slice[0];
+    let mlen = core::read_be_u24(slice, 1) as i64;
+    let total = core::add_sat_i64(4, mlen);
+    guard mlen <= max_body_cap &&
+        mlen <= rfc::MAX_HANDSHAKE_MSG_LEN &&
+        total <= hs_plain_cap else {
+        return 0, 0, PureHsMsgRead.Oversized;
+    }
+    guard slice.len >= total else { return 0, 0, PureHsMsgRead.NeedMore; }
+    return mt, total, PureHsMsgRead.Ready;
+}
+
 fn pure_pop_plaintext_hs_msg(slot: PureTlsSlot&, out_msg: u8[..16384]&) -> tls::TlsBackendStatus {
     out_msg.clear();
     while true {
-        if has_complete_plaintext_handshake_msg(slot.hs_plain[..]) {
-            let _, mlen, ok_h = tls::parse_handshake_header(slot.hs_plain[..]);
-            guard ok_h else {
+        let _, total, read_st = pure_peek_hs_msg_frame(
+            slot.hs_plain[..], core::sub_sat_i64(out_msg.cap, 4), slot.hs_plain.cap,
+        );
+        let bad_synth = slot.hs_plain.len >= 4 && slot.hs_plain[0] == rfc::TLS_HS_MESSAGE_HASH;
+        if read_st == PureHsMsgRead.Oversized || bad_synth {
+            return pure_fail_with_alert(slot, tls::Alert.DecodeError, tls::TlsBackendStatus.HandshakeError);
+        }
+        if read_st == PureHsMsgRead.Ready {
+            guard out_msg.try_set(slot.hs_plain[..total]) else {
                 return pure_fail_with_alert(slot, tls::Alert.DecodeError, tls::TlsBackendStatus.HandshakeError);
             }
-            let full_len = core::add_sat_i64(4, mlen);
-            guard out_msg.try_set(slot.hs_plain[..full_len]) else { return tls::TlsBackendStatus.Error; }
-            slot.hs_plain.compact_wire_buffer(full_len);
+            slot.hs_plain.compact_wire_buffer(total);
             return tls::TlsBackendStatus.Ok;
         }
         guard slot.wire_in.len >= 5 else { return tls::TlsBackendStatus.WantRead; }
@@ -373,33 +403,42 @@ fn pure_pop_plaintext_hs_msg(slot: PureTlsSlot&, out_msg: u8[..16384]&) -> tls::
             slot.wire_in.compact_wire_buffer(rec_total);
             continue;
         }
-        guard ct == rfc::TLS_CONTENT_HANDSHAKE && slot.hs_plain.try_append(body) else {
+        guard ct == rfc::TLS_CONTENT_HANDSHAKE else {
             return pure_fail_with_alert(slot, tls::Alert.UnexpectedMessage, tls::TlsBackendStatus.HandshakeError);
+        }
+        guard slot.hs_plain.try_append(body) else {
+            return pure_fail_with_alert(slot, tls::Alert.RecordOverflow, tls::TlsBackendStatus.HandshakeError);
         }
         slot.wire_in.compact_wire_buffer(rec_total);
     }
     return tls::TlsBackendStatus.WantRead;
 }
 
+// Extracts one complete handshake message from `hs_plain[hs_plain_pos..]` into `out_body`.
+// Rejects headers larger than `min(out_body.cap, max_body_len)` or `hs_plain.cap` immediately.
+//
+// Example:
+//   hs_plain = [0x08, 0x00, 0x00, 0x02, 0x00, 0x00], hs_plain_pos = 0
+//   returns: PureHsMsgRead.Ready, out_type = 8, out_body = [0x00, 0x00], hs_plain_pos = 0
 fn pure_try_consume_hs_plain_msg<B>(
-    slot:     PureTlsSlot&,
-    out_type: u8&,
-    out_body: B&,
-) -> bool {
-    let rem = core::sub_sat_i64(slot.hs_plain.len, slot.hs_plain_pos);
-    guard rem >= 4 else { return false; }
-    let slice = slot.hs_plain[slot.hs_plain_pos..];
-    let mt, mlen, ok_h = tls::parse_handshake_header(slice);
-    guard ok_h else { return false; }
-    let total = core::add_sat_i64(4, mlen);
-    guard rem >= total && out_body.try_set(slice[4..total]) else { return false; }
+    hs_plain:     u8[..65536]&,
+    hs_plain_pos: i64&,
+    out_type:     u8&,
+    out_body:     B&,
+    max_body_len: i64 = 65536,
+) -> PureHsMsgRead {
+    let slice = hs_plain[hs_plain_pos..];
+    let cap_limit = min(out_body.cap, max_body_len);
+    let mt, total, read_st = pure_peek_hs_msg_frame(slice, cap_limit, hs_plain.cap);
+    guard read_st == PureHsMsgRead.Ready else { return read_st; }
+    guard out_body.try_set(slice[4..total]) else { return PureHsMsgRead.Oversized; }
     out_type = mt;
-    slot.hs_plain_pos = core::add_sat_i64(slot.hs_plain_pos, total);
-    if slot.hs_plain_pos >= slot.hs_plain.len {
-        slot.hs_plain.clear();
-        slot.hs_plain_pos = 0;
+    hs_plain_pos = core::add_sat_i64(hs_plain_pos, total);
+    if hs_plain_pos >= hs_plain.len {
+        hs_plain.clear();
+        hs_plain_pos = 0;
     }
-    return true;
+    return PureHsMsgRead.Ready;
 }
 
 fn pure_decrypt_one_hs_record(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
@@ -451,18 +490,24 @@ fn pure_decrypt_one_hs_record(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     }
     let _ = tls::increment_record_seq_num(slot.hs_rx_seq);
     slot.wire_in.compact_wire_buffer(rec_total);
-    guard slot.hs_plain.try_append(plain_dec[..dec_len]) else { return tls::TlsBackendStatus.Error; }
+    guard slot.hs_plain.try_append(plain_dec[..dec_len]) else {
+        return pure_fail_with_alert(slot, tls::Alert.RecordOverflow, tls::TlsBackendStatus.HandshakeError);
+    }
     return tls::TlsBackendStatus.Ok;
 }
 
-fn pure_next_encrypted_hs_msg<B>(
-    slot:     PureTlsSlot&,
-    out_type: u8&,
-    out_body: B&,
+fn pure_next_encrypted_hs_msg(
+    slot:         PureTlsSlot&,
+    out_type:     u8&,
+    max_body_len: i64 = 65536,
 ) -> tls::TlsBackendStatus {
     while true {
-        if pure_try_consume_hs_plain_msg(slot, out_type, out_body) {
-            return tls::TlsBackendStatus.Ok;
+        let read_st = pure_try_consume_hs_plain_msg(
+            slot.hs_plain, slot.hs_plain_pos, out_type, slot.hs_msg_body, max_body_len,
+        );
+        if read_st == PureHsMsgRead.Ready { return tls::TlsBackendStatus.Ok; }
+        if read_st == PureHsMsgRead.Oversized {
+            return pure_fail_with_alert(slot, tls::Alert.DecodeError, tls::TlsBackendStatus.HandshakeError);
         }
         let st = pure_decrypt_one_hs_record(slot);
         guard st == tls::TlsBackendStatus.Ok else { return st; }

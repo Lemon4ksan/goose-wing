@@ -277,13 +277,13 @@ fn tls_endpoint_set_server_credentials_pem(
 }
 
 // Returns the negotiated ALPN protocol name (empty if none was negotiated).
-fn tls_endpoint_selected_alpn(ep: const TlsEndpoint&) -> u8[..64] {
-    var out: u8[..64] = [];
+fn tls_endpoint_selected_alpn(ep: const TlsEndpoint&) -> u8[..255] {
+    var out: u8[..255] = [];
     guard !ep.closed else { return out; }
     if ep.active_kind != TlsBackendKind.PureGoose {
-        var raw: u8[64] = [0; 64];
+        var raw: u8[255] = [0; 255];
         let n = tls_internal::native_tls_backend_selected_alpn(ep.native_id, raw[..]);
-        if n > 0 && n <= 64 {
+        if n > 0 && n <= 255 {
             let _ = out.try_set(raw[..n]);
         }
         return out;
@@ -294,9 +294,7 @@ fn tls_endpoint_selected_alpn(ep: const TlsEndpoint&) -> u8[..64] {
         tls_internal::is_live_pure_slot(tls_internal::g_pure_tls_slots[idx], ep.pure_gen) else {
         return out;
     }
-    let sel .= tls_internal::g_pure_tls_slots[idx].selected_alpn;
-    let take = min(sel.len, out.cap);
-    let _ = out.try_set(sel[..take]);
+    let _ = out.try_set(tls_internal::g_pure_tls_slots[idx].selected_alpn[..]);
     return out;
 }
 

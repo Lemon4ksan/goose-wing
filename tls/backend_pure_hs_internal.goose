@@ -310,7 +310,7 @@ fn pure_client_step_sh(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     return tls::TlsBackendStatus.Ok;
 }
 
-fn pure_client_step_ee(slot: PureTlsSlot&, body: const u8[:]) -> tls::TlsBackendStatus {
+fn pure_client_step_ee(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     let active_sni = if slot.ech_state.active && slot.ech_state.fsm.mode != tls::EchHandshakeMode.Accepted {
         slot.ech_state.cfg.public_name[..]
     } else {
@@ -322,13 +322,15 @@ fn pure_client_step_ee(slot: PureTlsSlot&, body: const u8[:]) -> tls::TlsBackend
         tls::SniOfferState.Omitted
     };
     let allow_ech_retry = slot.ech_state.active && slot.ech_state.fsm.mode == tls::EchHandshakeMode.Bypassed;
-    guard parse_encrypted_extensions_alpn(body, slot.selected_alpn, slot.alpn_csv[..], sni_st, allow_ech_retry) else {
-        let alert = classify_ee_failure_alert(body);
+    guard parse_encrypted_extensions_alpn(
+        slot.hs_msg_body[..], slot.selected_alpn, slot.alpn_csv[..], sni_st, allow_ech_retry,
+    ) else {
+        let alert = classify_ee_failure_alert(slot.hs_msg_body[..]);
         return pure_fail_with_alert(slot, alert, tls::TlsBackendStatus.HandshakeError);
     }
     if slot.ech_state.active {
         var entries: tls::ExtensionEntry[..32] = [];
-        guard tls::parse_extensions_block(body, entries) else {
+        guard tls::parse_extensions_block(slot.hs_msg_body[..], entries) else {
             return pure_fail_with_alert(slot, tls::Alert.DecodeError, tls::TlsBackendStatus.HandshakeError);
         }
         let ech_ext_data, has_ech_ext = tls::find_extension(entries, rfc::EXT_ENCRYPTED_CLIENT_HELLO);
@@ -338,20 +340,22 @@ fn pure_client_step_ee(slot: PureTlsSlot&, body: const u8[:]) -> tls::TlsBackend
             return pure_fail_with_alert(slot, tls::Alert.UnsupportedExtension, tls::TlsBackendStatus.HandshakeError);
         }
     }
-    transcript_update_msg(slot.transcript, rfc::TLS_HS_ENCRYPTED_EXTENSIONS, body);
+    transcript_update_msg(slot.transcript, rfc::TLS_HS_ENCRYPTED_EXTENSIONS, slot.hs_msg_body[..]);
     slot.stage = if slot.psk_resumed { PureHsStage.ClientWaitFinished } else { PureHsStage.ClientWaitCertCr };
     return tls::TlsBackendStatus.Ok;
 }
 
-fn pure_client_step_cert(slot: PureTlsSlot&, msg_t: u8, body: const u8[:]) -> tls::TlsBackendStatus {
+fn pure_client_step_cert(slot: PureTlsSlot&, msg_t: u8) -> tls::TlsBackendStatus {
     if msg_t == rfc::TLS_HS_COMPRESSED_CERTIFICATE {
-        transcript_update_msg(slot.transcript, msg_t, body);
+        transcript_update_msg(slot.transcript, msg_t, slot.hs_msg_body[..]);
         let offered_comp: u16[3] = [
             rfc::CERT_COMPRESSION_BROTLI,
             rfc::CERT_COMPRESSION_ZSTD,
             rfc::CERT_COMPRESSION_ZLIB,
         ];
-        guard decompress_incoming_certificate(body, slot.peer_cert_body, offered_comp[..]) else {
+        guard decompress_incoming_certificate(
+            slot.hs_msg_body[..], slot.peer_cert_body, offered_comp[..],
+        ) else {
             return pure_fail_with_alert(slot, tls::Alert.BadCertificate, tls::TlsBackendStatus.VerifyError);
         }
         slot.stage = PureHsStage.ClientWaitCV;
@@ -360,28 +364,28 @@ fn pure_client_step_cert(slot: PureTlsSlot&, msg_t: u8, body: const u8[:]) -> tl
     guard msg_t == rfc::TLS_HS_CERTIFICATE else {
         return pure_fail_with_alert(slot, tls::Alert.UnexpectedMessage, tls::TlsBackendStatus.HandshakeError);
     }
-    guard slot.peer_cert_body.try_set(body) else {
+    guard slot.peer_cert_body.try_set(slot.hs_msg_body[..]) else {
         return pure_fail_with_alert(slot, tls::Alert.DecodeError, tls::TlsBackendStatus.HandshakeError);
     }
-    transcript_update_msg(slot.transcript, msg_t, body);
+    transcript_update_msg(slot.transcript, msg_t, slot.hs_msg_body[..]);
     slot.stage = PureHsStage.ClientWaitCV;
     return tls::TlsBackendStatus.Ok;
 }
 
-fn pure_client_step_cert_cr(slot: PureTlsSlot&, msg_t: u8, body: const u8[:]) -> tls::TlsBackendStatus {
+fn pure_client_step_cert_cr(slot: PureTlsSlot&, msg_t: u8) -> tls::TlsBackendStatus {
     if msg_t == rfc::TLS_HS_CERTIFICATE_REQUEST {
-        guard tls::parse_certificate_request(body, false, slot.cert_req) else {
+        guard tls::parse_certificate_request(slot.hs_msg_body[..], false, slot.cert_req) else {
             return pure_fail_with_alert(slot, tls::Alert.DecodeError, tls::TlsBackendStatus.HandshakeError);
         }
-        transcript_update_msg(slot.transcript, msg_t, body);
+        transcript_update_msg(slot.transcript, msg_t, slot.hs_msg_body[..]);
         slot.cert_req_received = true;
         slot.stage = PureHsStage.ClientWaitCert;
         return tls::TlsBackendStatus.Ok;
     }
-    return pure_client_step_cert(slot, msg_t, body);
+    return pure_client_step_cert(slot, msg_t);
 }
 
-fn pure_client_verify_cv(slot: PureTlsSlot&, cv_body: const u8[:]) -> tls::TlsBackendStatus {
+fn pure_client_verify_cv(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     var h_to_cert: u8[..48] = [];
     transcript_current_hash(slot.transcript, slot.ks.hash_id, h_to_cert);
 
@@ -394,7 +398,7 @@ fn pure_client_verify_cv(slot: PureTlsSlot&, cv_body: const u8[:]) -> tls::TlsBa
     }
 
     let ok_v = verify_server_cert_and_signature(
-        slot.peer_cert_body[..], cv_body, h_to_cert[..], slot.client_cfg, 0xFFFF,
+        slot.peer_cert_body[..], slot.hs_msg_body[..], h_to_cert[..], slot.client_cfg, 0xFFFF,
     );
     let ok_leaf = ok_v && extract_leaf_cert_der(slot.peer_cert_body[..], slot.peer_leaf_der);
     if !ok_v || !ok_leaf {
@@ -404,7 +408,7 @@ fn pure_client_verify_cv(slot: PureTlsSlot&, cv_body: const u8[:]) -> tls::TlsBa
         return pure_fail_with_alert(slot, cert_alert, tls::TlsBackendStatus.VerifyError);
     }
     slot.peer_cert_body.clear();
-    transcript_update_msg(slot.transcript, rfc::TLS_HS_CERTIFICATE_VERIFY, cv_body);
+    transcript_update_msg(slot.transcript, rfc::TLS_HS_CERTIFICATE_VERIFY, slot.hs_msg_body[..]);
     slot.stage = PureHsStage.ClientWaitFinished;
     return tls::TlsBackendStatus.Ok;
 }
@@ -449,9 +453,9 @@ fn pure_client_emit_client_cert_flight(slot: PureTlsSlot&) -> bool {
     return true;
 }
 
-fn pure_client_finish_hs(slot: PureTlsSlot&, fin_body: const u8[:]) -> tls::TlsBackendStatus {
+fn pure_client_finish_hs(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     let hlen = slot.ks.hash_len as i64;
-    guard fin_body.len == hlen else {
+    guard slot.hs_msg_body.len == hlen else {
         return pure_fail_with_alert(slot, tls::Alert.DecryptError, tls::TlsBackendStatus.HandshakeError);
     }
     // RFC 8446 Section 5.1: Record Layer - No handshake bytes may cross the Finished key-change epoch.
@@ -464,10 +468,10 @@ fn pure_client_finish_hs(slot: PureTlsSlot&, fin_body: const u8[:]) -> tls::TlsB
     defer core::secure_zeroize_48(exp_srv_fin);
     guard ks_compute_finished_verify_data(
         slot.ks.hash_id, slot.ks.hash_len, slot.ks.server_hs_traffic[..hlen], h_to_cv[..], exp_srv_fin[..hlen],
-    ) && core::ct_eq_bytes(exp_srv_fin[..hlen], fin_body[..hlen]) else {
+    ) && core::ct_eq_bytes(exp_srv_fin[..hlen], slot.hs_msg_body[..hlen]) else {
         return pure_fail_with_alert(slot, tls::Alert.DecryptError, tls::TlsBackendStatus.HandshakeError);
     }
-    transcript_update_msg(slot.transcript, rfc::TLS_HS_FINISHED, fin_body[..hlen]);
+    transcript_update_msg(slot.transcript, rfc::TLS_HS_FINISHED, slot.hs_msg_body[..hlen]);
 
     // RFC 9849 Section 6.1.6: Abort with ech_required if ECH was offered and rejected by server.
     if slot.ech_state.active && slot.ech_state.fsm.mode != tls::EchHandshakeMode.Accepted {
@@ -510,33 +514,32 @@ fn pure_client_finish_hs(slot: PureTlsSlot&, fin_body: const u8[:]) -> tls::TlsB
 }
 
 fn pure_client_step_encrypted(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
-    var msg_t: u8          = 0;
-    var body:  u8[..20480] = [];
-    let st = pure_next_encrypted_hs_msg(slot, msg_t, body);
+    var msg_t: u8 = 0;
+    let st = pure_next_encrypted_hs_msg(slot, msg_t);
     guard st == tls::TlsBackendStatus.Ok else { return st; }
 
     if slot.stage == PureHsStage.ClientWaitEE {
         guard msg_t == rfc::TLS_HS_ENCRYPTED_EXTENSIONS else {
             return pure_fail_with_alert(slot, tls::Alert.UnexpectedMessage, tls::TlsBackendStatus.HandshakeError);
         }
-        return pure_client_step_ee(slot, body[..]);
+        return pure_client_step_ee(slot);
     }
     if slot.stage == PureHsStage.ClientWaitCertCr {
-        return pure_client_step_cert_cr(slot, msg_t, body[..]);
+        return pure_client_step_cert_cr(slot, msg_t);
     }
     if slot.stage == PureHsStage.ClientWaitCert {
-        return pure_client_step_cert(slot, msg_t, body[..]);
+        return pure_client_step_cert(slot, msg_t);
     }
     if slot.stage == PureHsStage.ClientWaitCV {
         guard msg_t == rfc::TLS_HS_CERTIFICATE_VERIFY else {
             return pure_fail_with_alert(slot, tls::Alert.UnexpectedMessage, tls::TlsBackendStatus.HandshakeError);
         }
-        return pure_client_verify_cv(slot, body[..]);
+        return pure_client_verify_cv(slot);
     }
     guard msg_t == rfc::TLS_HS_FINISHED else {
         return pure_fail_with_alert(slot, tls::Alert.UnexpectedMessage, tls::TlsBackendStatus.HandshakeError);
     }
-    return pure_client_finish_hs(slot, body[..]);
+    return pure_client_finish_hs(slot);
 }
 
 inline fn pure_server_emit_cert_req(slot: PureTlsSlot&) -> bool {
@@ -803,22 +806,20 @@ fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
 }
 
 fn pure_server_step_client_cert(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
-    var msg_t: u8          = 0;
-    var body:  u8[..20480] = [];
-    let st = pure_next_encrypted_hs_msg(slot, msg_t, body);
+    var msg_t: u8 = 0;
+    let st = pure_next_encrypted_hs_msg(slot, msg_t);
     guard st == tls::TlsBackendStatus.Ok else { return st; }
-    guard msg_t == rfc::TLS_HS_CERTIFICATE && slot.peer_cert_body.try_set(body[..]) else {
+    guard msg_t == rfc::TLS_HS_CERTIFICATE && slot.peer_cert_body.try_set(slot.hs_msg_body[..]) else {
         return pure_fail_with_alert(slot, tls::Alert.UnexpectedMessage, tls::TlsBackendStatus.HandshakeError);
     }
-    transcript_update_msg(slot.transcript, msg_t, body[..]);
+    transcript_update_msg(slot.transcript, msg_t, slot.hs_msg_body[..]);
     slot.stage = PureHsStage.ServerWaitClientCV;
     return tls::TlsBackendStatus.Ok;
 }
 
 fn pure_server_step_client_cv(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
-    var msg_t: u8          = 0;
-    var body:  u8[..16384] = [];
-    let st = pure_next_encrypted_hs_msg(slot, msg_t, body);
+    var msg_t: u8 = 0;
+    let st = pure_next_encrypted_hs_msg(slot, msg_t, 16384);
     guard st == tls::TlsBackendStatus.Ok else { return st; }
     guard msg_t == rfc::TLS_HS_CERTIFICATE_VERIFY else {
         slot.peer_cert_body.clear();
@@ -828,7 +829,7 @@ fn pure_server_step_client_cv(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     transcript_current_hash(slot.transcript, slot.ks.hash_id, h_to_cert);
     let now_unix = core::now().wall_sec;
     let ok_cli = verify_client_cert_and_signature(
-        slot.peer_cert_body[..], body[..], h_to_cert[..], slot.client_cfg.trust_store, now_unix,
+        slot.peer_cert_body[..], slot.hs_msg_body[..], h_to_cert[..], slot.client_cfg.trust_store, now_unix,
     );
     let ok_leaf = ok_cli && extract_leaf_cert_der(slot.peer_cert_body[..], slot.peer_leaf_der);
     slot.peer_cert_body.clear();
@@ -836,15 +837,14 @@ fn pure_server_step_client_cv(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
         slot.peer_leaf_der.clear();
         return pure_fail_with_alert(slot, tls::Alert.BadCertificate, tls::TlsBackendStatus.VerifyError);
     }
-    transcript_update_msg(slot.transcript, msg_t, body[..]);
+    transcript_update_msg(slot.transcript, msg_t, slot.hs_msg_body[..]);
     slot.stage = PureHsStage.ServerWaitClientFinished;
     return tls::TlsBackendStatus.Ok;
 }
 
 fn pure_server_step_fin(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
-    var msg_t: u8          = 0;
-    var body:  u8[..16384] = [];
-    let st = pure_next_encrypted_hs_msg(slot, msg_t, body);
+    var msg_t: u8 = 0;
+    let st = pure_next_encrypted_hs_msg(slot, msg_t, 16384);
     guard st == tls::TlsBackendStatus.Ok else { return st; }
 
     let hlen = slot.ks.hash_len as i64;
@@ -852,7 +852,7 @@ fn pure_server_step_fin(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
         return pure_fail_with_alert(slot, tls::Alert.UnexpectedMessage, tls::TlsBackendStatus.HandshakeError);
     }
     // RFC 8446 Section 5.1: Record Layer - No handshake bytes may cross the Finished key-change epoch.
-    guard body.len == hlen && slot.hs_plain_pos == slot.hs_plain.len else {
+    guard slot.hs_msg_body.len == hlen && slot.hs_plain_pos == slot.hs_plain.len else {
         return pure_fail_with_alert(slot, tls::Alert.DecryptError, tls::TlsBackendStatus.HandshakeError);
     }
     var h_before_fin: u8[..48] = [];
@@ -861,10 +861,10 @@ fn pure_server_step_fin(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     defer core::secure_zeroize_48(exp_fin);
     guard ks_compute_finished_verify_data(
         slot.ks.hash_id, slot.ks.hash_len, slot.ks.client_hs_traffic[..hlen], h_before_fin[..], exp_fin[..hlen],
-    ) && core::ct_eq_bytes(exp_fin[..hlen], body[..hlen]) else {
+    ) && core::ct_eq_bytes(exp_fin[..hlen], slot.hs_msg_body[..hlen]) else {
         return pure_fail_with_alert(slot, tls::Alert.DecryptError, tls::TlsBackendStatus.HandshakeError);
     }
-    transcript_update_msg(slot.transcript, msg_t, body[..hlen]);
+    transcript_update_msg(slot.transcript, msg_t, slot.hs_msg_body[..hlen]);
     var h_cli: u8[..48] = [];
     transcript_current_hash(slot.transcript, slot.ks.hash_id, h_cli);
     let _ = ks_advance_to_resumption(slot.ks, h_cli[..]);

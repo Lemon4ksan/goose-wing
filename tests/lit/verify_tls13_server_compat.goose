@@ -1379,8 +1379,417 @@ fn test_pure_endpoint_compat() {
     // CHECK: PURE_ENDPOINT_COMPAT: OK
 }
 
+// ---- Round 1 Regression Tests: Oversized HS Msg, 64KiB Cert/CompCert, Cumulative Timeout, Wide ALPN ----
+
+fn append_sealed_hs_chunks(
+    cipher_suite: u16,
+    hs_key:       const u8[:],
+    hs_iv:        const u8[12]&,
+    hs_seq:       u64&,
+    hs_msg:       const u8[:],
+    chunk_limit:  i64,
+    out_wire:     u8[>..]&,
+) {
+    var ct_rec: u8[16640] = [0; 16640];
+    var off:    i64       = 0;
+    while off < hs_msg.len {
+        let end_off = min(core::add_sat_i64(off, chunk_limit), hs_msg.len);
+        let needed = core::add_sat_i64(end_off - off, 32);
+        let s_len, _, ok_s = tls::record_seal_into(
+            cipher_suite,
+            hs_key,
+            hs_iv,
+            hs_seq,
+            rfc::TLS_CONTENT_HANDSHAKE,
+            hs_msg[off..end_off],
+            ct_rec[..needed],
+        );
+        assert(ok_s && s_len > 0 && tls::increment_record_seq_num(hs_seq));
+        out_wire.append(ct_rec[..s_len]);
+        off = end_off;
+    }
+}
+
+fn test_oversized_hs_msg_fails_immediately() {
+    // 1. Unit-level: pure_try_consume_hs_plain_msg distinguishes NeedMore vs Oversized.
+    var hs_buf: u8[..65536] = [];
+    assert(hs_buf.try_push(rfc::TLS_HS_ENCRYPTED_EXTENSIONS));
+    hs_buf.append_u24_be(500);
+    for _ in 20 { assert(hs_buf.try_push(0xAA)); }
+    var pos:   i64       = 0;
+    var msg_t: u8        = 0;
+    var small: u8[..128] = [];
+    var large: u8[..512] = [];
+    assert(tls_internal::pure_try_consume_hs_plain_msg(hs_buf, pos, msg_t, large) == tls_internal::PureHsMsgRead.NeedMore);
+
+    for _ in 480 { assert(hs_buf.try_push(0xAA)); }
+    assert(tls_buf_ready_oversized_check(hs_buf, pos, msg_t, small, large));
+
+    // 2. Endpoint-level: >16384B encrypted Finished buffered across 2 records must fail immediately
+    // with HandshakeError + Alert.DecodeError (not WantRead).
+    let root_seed: u8[32] = [0x11; 32];
+    var cert_der: u8[..2048] = [];
+    build_ed25519_cert_der(root_seed, root_seed, "localhost", "localhost", false, "localhost", cert_der);
+    var srv_cfg = tls::TlsBackendConfig {
+        kind:      tls::TlsBackendKind.PureGoose,
+        is_server: true,
+        priv_seed: root_seed,
+        ..
+    };
+    assert(srv_cfg.cert_der.try_set(cert_der[..]));
+    var ep, open_st = tls::tls_endpoint_open(srv_cfg);
+    assert(open_st == tls::TlsBackendStatus.Ok && ep.pure_slot >= 0);
+    defer tls::tls_endpoint_close(ep);
+
+    let s_key: u8[16] = [0x21; 16];
+    let s_iv:  u8[12] = [0x31; 12];
+    let c_key: u8[16] = [0x41; 16];
+    let c_iv:  u8[12] = [0x51; 12];
+    let slot .= tls_internal::g_pure_tls_slots[ep.pure_slot as i64];
+    let init_ks, ok_iks = tls_internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+    assert(ok_iks);
+    slot.stage = tls_internal::PureHsStage.ServerWaitClientFinished;
+    slot.cipher_suite = rfc::TLS_CIPHER_AES_128_GCM_SHA256;
+    slot.key_len = 16;
+    slot.ks = init_ks;
+    slot.hs_keys_active = true;
+    core::ct_copy_bytes(slot.hs_tx_key[..16], s_key[..]);
+    slot.hs_tx_iv = s_iv;
+    core::ct_copy_bytes(slot.hs_rx_key[..16], c_key[..]);
+    slot.hs_rx_iv = c_iv;
+
+    var big_fin: u8[>..] = [];
+    big_fin.push(rfc::TLS_HS_FINISHED);
+    big_fin.append_u24_be(17000);
+    for _ in 17000 { big_fin.push(0x42); }
+    var c_seq:    u64     = 0;
+    var wire_big: u8[>..] = [];
+    append_sealed_hs_chunks(rfc::TLS_CIPHER_AES_128_GCM_SHA256, c_key[..], c_iv, c_seq, big_fin[..], 9000, wire_big);
+
+    let fed, st_fed = tls::tls_endpoint_feed_wire(ep, wire_big[..]);
+    assert(st_fed == tls::TlsBackendStatus.Ok && fed == wire_big.len);
+    assert(tls::tls_endpoint_step_handshake(ep) == tls::TlsBackendStatus.HandshakeError);
+    assert(slot.stage == tls_internal::PureHsStage.Failed);
+
+    var alert_wire: u8[256] = [0; 256];
+    let an, a_st = tls::tls_endpoint_drain_wire(ep, alert_wire[..]);
+    assert(a_st == tls::TlsBackendStatus.Ok && an > 5);
+    var alert_pt: u8[64] = [0; 64];
+    let dec_n, inner_t, _, ok_dec = tls::record_decrypt_into(
+        rfc::TLS_CIPHER_AES_128_GCM_SHA256,
+        s_key[..],
+        s_iv,
+        0,
+        alert_wire[..5],
+        alert_wire[5..an],
+        alert_pt[..],
+    );
+    assert(ok_dec && dec_n == 2 && inner_t == rfc::TLS_CONTENT_ALERT);
+    assert(alert_pt[0] == 2 && alert_pt[1] == tls::alert_to_u8(tls::Alert.DecodeError));
+
+    print("REGR_OVERSIZED_HS_MSG_FAIL_FAST: OK");
+    // CHECK: REGR_OVERSIZED_HS_MSG_FAIL_FAST: OK
+}
+
+fn tls_buf_ready_oversized_check(
+    hs_buf: u8[..65536]&,
+    pos:    i64&,
+    msg_t:  u8&,
+    small:  u8[..128]&,
+    large:  u8[..512]&,
+) -> bool {
+    guard tls_internal::pure_try_consume_hs_plain_msg(hs_buf, pos, msg_t, small) ==
+        tls_internal::PureHsMsgRead.Oversized && pos == 0 else {
+        return false;
+    }
+    guard tls_internal::pure_try_consume_hs_plain_msg(hs_buf, pos, msg_t, large, 256) ==
+        tls_internal::PureHsMsgRead.Oversized && pos == 0 else {
+        return false;
+    }
+    return tls_internal::pure_try_consume_hs_plain_msg(hs_buf, pos, msg_t, large) ==
+        tls_internal::PureHsMsgRead.Ready &&
+        msg_t == rfc::TLS_HS_ENCRYPTED_EXTENSIONS &&
+        large.len == 500 &&
+        hs_buf.len == 0;
+}
+
+thread_fn slow_trickle_server_worker(listener_fd: i64) {
+    let conn = net::tcp_accept(listener_fd, 5000);
+    assert(conn > 0);
+    var ch_buf: u8[2048] = [0; 2048];
+    let _ = net::fd_recv(conn, ch_buf[..], 5000);
+
+    var sh_pay: u8[..256] = [];
+    let rand32: u8[32] = [0x44; 32];
+    let pub32:  u8[32] = [0x55; 32];
+    tls_internal::build_server_hello_payload_for_group(
+        rand32, rand32[..], rfc::GROUP_X25519, pub32[..], sh_pay, false, rfc::TLS_CIPHER_AES_128_GCM_SHA256, 0,
+    );
+    var sh_rec: u8[..280] = [];
+    sh_rec.push(rfc::TLS_CONTENT_HANDSHAKE);
+    sh_rec.append_u16_be(rfc::TLS_LEGACY_VERSION_1_2);
+    sh_rec.append_u16_be((4 + sh_pay.len) as u16);
+    sh_rec.push(rfc::TLS_HS_SERVER_HELLO);
+    sh_rec.append_u24_be(sh_pay.len as u32);
+    sh_rec.append(sh_pay[..]);
+
+    // Drip 8 chunks at 80ms intervals (~640ms total, each gap well below 220ms budget).
+    let step_len = (sh_rec.len + 7) / 8;
+    var off: i64 = 0;
+    while off < sh_rec.len {
+        sleep_ms(80);
+        let end_off = min(core::add_sat_i64(off, step_len), sh_rec.len);
+        if net::fd_send(conn, sh_rec[off..end_off]) <= 0 { break; }
+        off = end_off;
+    }
+    net::tcp_close(conn);
+}
+
+fn test_cumulative_handshake_timeout() {
+    let listener = net::tcp_listen("127.0.0.1", 0, 8);
+    assert(listener > 0);
+    let port = net::tcp_getsockname_port(listener);
+    assert(port > 0);
+
+    let tid = thread_spawn(slow_trickle_server_worker, listener);
+    let fd = net::tcp_connect("127.0.0.1", port, 5000);
+    assert(fd > 0);
+
+    let t0 = core::monotonic_now();
+    var cli_cfg = tls::ClientHandshakeConfig {
+        insecure_skip_verify:   true,
+        use_system_roots:       false,
+        enable_session_tickets: false,
+        handshake_timeout_ms:   220,
+        ..
+    };
+    let slot, ok = tls::client_handshake(fd, cli_cfg);
+    let elapsed_ms = core::as_millis(core::duration_since(core::monotonic_now(), t0));
+    net::tcp_close(fd);
+    assert(thread_wait(tid));
+    net::tcp_close(listener);
+
+    assert(!ok && slot == 0xFFFF && elapsed_ms < 520);
+    print("REGR_CUMULATIVE_HANDSHAKE_TIMEOUT: OK");
+    // CHECK: REGR_CUMULATIVE_HANDSHAKE_TIMEOUT: OK
+}
+
+fn drive_pure_client_with_big_cert(
+    root_store:    const tls::TrustAnchorStore&,
+    leaf_seed:     const u8[32]&,
+    leaf_der:      const u8[:],
+    cert_payload:  const u8[:],
+    use_zlib_comp: bool,
+) {
+    var cli_cfg = tls::TlsBackendConfig {
+        kind:                   tls::TlsBackendKind.PureGoose,
+        is_server:              false,
+        trust_store:            root_store,
+        use_system_roots:       false,
+        enable_pq_hybrid:       false,
+        enable_session_tickets: false,
+        ..
+    };
+    assert(cli_cfg.server_name.try_set("localhost"));
+    var cli, cst = tls::tls_endpoint_open(cli_cfg);
+    assert(cst == tls::TlsBackendStatus.Ok);
+    defer tls::tls_endpoint_close(cli);
+    assert(tls::tls_endpoint_step_handshake(cli) == tls::TlsBackendStatus.WantRead);
+
+    var ch_wire: u8[4096] = [0; 4096];
+    let ch_n, st_cw = tls::tls_endpoint_drain_wire(cli, ch_wire[..]);
+    assert(st_cw == tls::TlsBackendStatus.Ok && ch_n > 5);
+    let ch_rec_len = core::read_be_u16(ch_wire[..], 3) as i64;
+    let ch_msg = ch_wire[5..5 + ch_rec_len];
+
+    var ch_choice = tls_internal::ServerClientHelloChoice { .. };
+    defer tls_internal::zeroize_server_ch_choice(ch_choice);
+    assert(tls_internal::parse_server_client_hello(
+        ch_msg, "", rfc::SIG_SCHEME_ED25519, 0, tls_internal::ServerHrrMode.Allow, ch_choice, false,
+        tls_internal::ServerPskPolicy.DisableResumption,
+    ));
+
+    var srv_rand:  u8[32]   = [0; 32];
+    var srv_share: u8[..65] = [];
+    var ecdhe:     u8[32]   = [0; 32];
+    assert(tls_internal::generate_server_handshake_keys_for_group(
+        ch_choice.selected_group, ch_choice.client_share[..], srv_rand, srv_share, ecdhe,
+    ));
+
+    var sh_pay: u8[..2048] = [];
+    tls_internal::build_server_hello_payload_for_group(
+        srv_rand, ch_choice.session_id[..], ch_choice.selected_group, srv_share[..],
+        sh_pay, false, ch_choice.cipher_suite, 0,
+    );
+    var sh_msg: u8[..2048] = [];
+    assert(tls_internal::frame_handshake_msg_4k(rfc::TLS_HS_SERVER_HELLO, sh_pay[..], sh_msg));
+
+    var tr = tls::Transcript { .. };
+    tls_internal::transcript_update(tr, ch_msg);
+    tls_internal::transcript_update(tr, sh_msg[..]);
+    var ks, ok_ks = tls_internal::ks_init(ch_choice.cipher_suite);
+    assert(ok_ks && tls_internal::ks_init_early_secret(ks, "") &&
+        tls_internal::ks_advance_to_handshake(ks, ecdhe[..]));
+    var ch_sh_hash: u8[..48] = [];
+    tls_internal::transcript_current_hash(tr, ks.hash_id, ch_sh_hash);
+    assert(tls_internal::ks_derive_handshake_traffic(ks, ch_sh_hash[..]));
+
+    let klen_u16 = rfc::tls13_cipher_suite_key_len(ch_choice.cipher_suite);
+    let klen = klen_u16 as i64;
+    let hlen = ks.hash_len as i64;
+    var s_hs_key: u8[32] = [0; 32];
+    var s_hs_iv:  u8[12] = [0; 12];
+    assert(tls_internal::ks_derive_key_iv(
+        ks.hash_id, ks.server_hs_traffic[..hlen], klen_u16, s_hs_key[..klen], s_hs_iv,
+    ));
+
+    var wire_in: u8[>..] = [];
+    wire_in.push(rfc::TLS_CONTENT_HANDSHAKE);
+    wire_in.append_u16_be(rfc::TLS_LEGACY_VERSION_1_2);
+    wire_in.append_u16_be(sh_msg.len as u16);
+    wire_in.append(sh_msg[..]);
+
+    var enc_flight: u8[>..] = [];
+    let ee_msg: u8[6] = [rfc::TLS_HS_ENCRYPTED_EXTENSIONS, 0x00, 0x00, 0x02, 0x00, 0x00];
+    enc_flight.append(ee_msg[..]);
+    tls_internal::transcript_update(tr, ee_msg[..]);
+
+    if use_zlib_comp {
+        var comp_raw: u8[..4096] = [];
+        assert(core::zlib_compress(cert_payload, comp_raw));
+        var comp_pay: u8[..4096] = [];
+        assert(tls_internal::build_compressed_cert_payload(
+            rfc::CERT_COMPRESSION_ZLIB, cert_payload.len, comp_raw[..], comp_pay,
+        ));
+        enc_flight.push(rfc::TLS_HS_COMPRESSED_CERTIFICATE);
+        enc_flight.append_u24_be(comp_pay.len as u32);
+        enc_flight.append(comp_pay[..]);
+        tls_internal::transcript_update_msg(tr, rfc::TLS_HS_COMPRESSED_CERTIFICATE, comp_pay[..]);
+    } else {
+        enc_flight.push(rfc::TLS_HS_CERTIFICATE);
+        enc_flight.append_u24_be(cert_payload.len as u32);
+        enc_flight.append(cert_payload);
+        tls_internal::transcript_update_msg(tr, rfc::TLS_HS_CERTIFICATE, cert_payload);
+    }
+
+    var h_to_cert: u8[..48] = [];
+    tls_internal::transcript_current_hash(tr, ks.hash_id, h_to_cert);
+    var cv_input: u8[160] = [0; 160];
+    let cv_len, ok_cvi = tls::build_certificate_verify_message(true, h_to_cert[..], cv_input[..]);
+    var sig_buf: u8[..128] = [];
+    let sig_scheme, ok_sig = tls_internal::sign_certificate_verify(leaf_der, leaf_seed, cv_input[..cv_len], sig_buf);
+    var cv_pay: u8[..256] = [];
+    assert(ok_cvi && ok_sig && tls::encode_client_certificate_verify(cv_pay, sig_scheme, sig_buf[..]));
+    enc_flight.push(rfc::TLS_HS_CERTIFICATE_VERIFY);
+    enc_flight.append_u24_be(cv_pay.len as u32);
+    enc_flight.append(cv_pay[..]);
+    tls_internal::transcript_update_msg(tr, rfc::TLS_HS_CERTIFICATE_VERIFY, cv_pay[..]);
+
+    var h_to_cv: u8[..48] = [];
+    tls_internal::transcript_current_hash(tr, ks.hash_id, h_to_cv);
+    var srv_fin: u8[48] = [0; 48];
+    assert(tls_internal::ks_compute_finished_verify_data(
+        ks.hash_id, ks.hash_len, ks.server_hs_traffic[..hlen], h_to_cv[..], srv_fin[..hlen],
+    ));
+    enc_flight.push(rfc::TLS_HS_FINISHED);
+    enc_flight.append_u24_be(ks.hash_len as u32);
+    enc_flight.append(srv_fin[..hlen]);
+
+    var s_seq: u64 = 0;
+    append_sealed_hs_chunks(ch_choice.cipher_suite, s_hs_key[..klen], s_hs_iv, s_seq, enc_flight[..], 12000, wire_in);
+
+    var woff: i64 = 0;
+    while woff < wire_in.len {
+        let step_sz = min(core::add_sat_i64(woff, 12000), wire_in.len);
+        let fed, st_f = tls::tls_endpoint_feed_wire(cli, wire_in[woff..step_sz]);
+        assert(st_f == tls::TlsBackendStatus.Ok && fed > 0);
+        woff = core::add_sat_i64(woff, fed);
+        let st_h = tls::tls_endpoint_step_handshake(cli);
+        assert(st_h == tls::TlsBackendStatus.Ok || st_h == tls::TlsBackendStatus.WantRead);
+    }
+    assert(tls::tls_endpoint_is_established(cli));
+}
+
+fn test_large_cert_and_wide_alpn_pure_slot() {
+    // 3. >20 KiB Certificate chain (6 padded certs ~23.5 KiB) & RFC 8879 CompressedCertificate decompression.
+    let s0: u8[32] = [0x11; 32];
+    let s1: u8[32] = [0x12; 32];
+    let s2: u8[32] = [0x13; 32];
+    let s3: u8[32] = [0x14; 32];
+    let s4: u8[32] = [0x15; 32];
+    let s5: u8[32] = [0x16; 32];
+    let s6: u8[32] = [0x17; 32];
+
+    var root_der: u8[..4096] = [];
+    var d1:       u8[..4096] = [];
+    var d2:       u8[..4096] = [];
+    var d3:       u8[..4096] = [];
+    var d4:       u8[..4096] = [];
+    var d5:       u8[..4096] = [];
+    var leaf_der: u8[..4096] = [];
+    build_ed25519_cert_der(s0, s0, "Wing Big Root", "Wing Big Root", true, "", root_der);
+    build_ed25519_cert_der(s0, s1, "Wing Big Root", "Wing C1", true, "", d1, 3750);
+    build_ed25519_cert_der(s1, s2, "Wing C1", "Wing C2", true, "", d2, 3750);
+    build_ed25519_cert_der(s2, s3, "Wing C2", "Wing C3", true, "", d3, 3750);
+    build_ed25519_cert_der(s3, s4, "Wing C3", "Wing C4", true, "", d4, 3750);
+    build_ed25519_cert_der(s4, s5, "Wing C4", "Wing C5", true, "", d5, 3750);
+    build_ed25519_cert_der(s5, s6, "Wing C5", "localhost", false, "localhost", leaf_der, 3750);
+
+    var extras: u8[..4096][..5] = [];
+    assert(extras.try_push(d5) && extras.try_push(d4) && extras.try_push(d3) &&
+        extras.try_push(d2) && extras.try_push(d1));
+    var big_cert_payload: u8[>..] = [];
+    assert(tls_internal::encode_client_certificate_chain(big_cert_payload, "", leaf_der[..], extras[..]));
+    assert(big_cert_payload.len > 20480);
+
+    var big_store = tls::TrustAnchorStore { .. };
+    assert(tls::add_trust_anchor_cert_der(big_store, root_der[..]));
+
+    drive_pure_client_with_big_cert(big_store, s6, leaf_der[..], big_cert_payload[..], false);
+    drive_pure_client_with_big_cert(big_store, s6, leaf_der[..], big_cert_payload[..], true);
+
+    // 4. Wide ALPN (> 64 bytes, 96 bytes) preserved intact by tls_endpoint_selected_alpn.
+    let wide_alpn = "x-wing-wide-alpn-protocol-identifier-0123456789abcdef0123456789abcdef-long-tag-exceeding-64b-96b";
+    assert(wide_alpn.len == 96);
+
+    var ed_leaf: u8[..4096] = [];
+    build_ed25519_cert_der(s0, s0, "localhost", "localhost", false, "localhost", ed_leaf);
+
+    var srv_cfg = tls::ServerHandshakeConfig { priv_seed: s0, .. };
+    assert(srv_cfg.cert_der.try_set(ed_leaf[..]) && srv_cfg.alpn.try_set(wide_alpn));
+    var wsrv, ok_ws = tls_internal::pure_open_blocking_server_endpoint(srv_cfg, "", 0xFFFF);
+    assert(ok_ws);
+    defer tls::tls_endpoint_close(wsrv);
+
+    var wstore = tls::TrustAnchorStore { .. };
+    assert(tls::add_trust_anchor_cert_der(wstore, ed_leaf[..]));
+    var cli_cfg = tls::ClientHandshakeConfig {
+        trust_store:            wstore,
+        use_system_roots:       false,
+        enable_session_tickets: false,
+        ..
+    };
+    assert(cli_cfg.server_name.try_set("localhost") && cli_cfg.alpn.try_set(wide_alpn));
+    var wcli, ok_wc = tls_internal::pure_open_blocking_client_endpoint(cli_cfg, 0xFFFF);
+    assert(ok_wc);
+    defer tls::tls_endpoint_close(wcli);
+
+    assert(tls::tls_endpoint_step_handshake(wcli) == tls::TlsBackendStatus.WantRead);
+    assert(pump_pure_endpoints(wcli, wsrv));
+    let cli_sel = tls::tls_endpoint_selected_alpn(wcli);
+    let srv_sel = tls::tls_endpoint_selected_alpn(wsrv);
+    assert(cli_sel.len == 96 && cli_sel[..] == wide_alpn);
+    assert(srv_sel.len == 96 && srv_sel[..] == wide_alpn);
+
+    print("REGR_LARGE_CERT_AND_WIDE_ALPN: OK");
+    // CHECK: REGR_LARGE_CERT_AND_WIDE_ALPN: OK
+}
+
 fn main() {
     test_pem_fullchain_rsa_and_expiry();
     test_live_handshakes();
     test_pure_endpoint_compat();
+    test_oversized_hs_msg_fails_immediately();
+    test_cumulative_handshake_timeout();
+    test_large_cert_and_wide_alpn_pure_slot();
 }

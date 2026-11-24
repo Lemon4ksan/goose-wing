@@ -280,7 +280,7 @@ fn tls_endpoint_drain_wire(ep: TlsEndpoint&, dst: u8[:]) -> i64, TlsBackendStatu
 fn tls_endpoint_step_handshake(ep: TlsEndpoint&) -> TlsBackendStatus
 fn tls_endpoint_write_app(ep: TlsEndpoint&, plaintext: const u8[:]) -> i64, TlsBackendStatus
 fn tls_endpoint_read_app(ep: TlsEndpoint&, dst: u8[:]) -> i64, TlsBackendStatus
-fn tls_endpoint_selected_alpn(ep: const TlsEndpoint&) -> u8[..64]
+fn tls_endpoint_selected_alpn(ep: const TlsEndpoint&) -> u8[..255]
 fn tls_endpoint_is_established(ep: const TlsEndpoint&) -> bool
 fn tls_endpoint_pending_wire(ep: const TlsEndpoint&) -> i64
 fn tls_endpoint_shutdown(ep: TlsEndpoint&) -> TlsBackendStatus

@@ -170,20 +170,26 @@ fn endpoint_run_handshake_fd(
     var committed = false;
     defer if !committed { release_backend_transport_slot(slot_id); };
 
+    let start_inst = core::monotonic_now();
     let slot .= g_backend_transport_slots[slot_id];
     for _ in 64 {
         let st = tls::tls_endpoint_step_handshake(slot.ep);
         let flushed = endpoint_drain_to_fd(slot.ep, fd);
         if st == tls::TlsBackendStatus.Ok {
             guard flushed else { return -1, alpn, tls::TlsBackendStatus.Error; }
-            alpn = tls::tls_endpoint_selected_alpn(slot.ep);
+            let sel_alpn = tls::tls_endpoint_selected_alpn(slot.ep);
+            guard alpn.try_set(sel_alpn[..]) else {
+                return -1, alpn, tls::TlsBackendStatus.HandshakeError;
+            }
             committed = true;
             return slot_id, alpn, tls::TlsBackendStatus.Ok;
         }
         guard flushed else { return -1, alpn, tls::TlsBackendStatus.Error; }
         if st == tls::TlsBackendStatus.WantWrite { continue; }
         guard st == tls::TlsBackendStatus.WantRead else { return -1, alpn, st; }
-        let fed = endpoint_feed_slot_rx(slot, fd, timeout_ms);
+        let rem_ms, ok_t = pure_remaining_timeout_ms(start_inst, timeout_ms);
+        guard ok_t else { return -1, alpn, tls::TlsBackendStatus.HandshakeError; }
+        let fed = endpoint_feed_slot_rx(slot, fd, rem_ms);
         guard fed > 0 else { return -1, alpn, tls::TlsBackendStatus.HandshakeError; }
     }
     return -1, alpn, tls::TlsBackendStatus.HandshakeError;
@@ -287,13 +293,44 @@ recursive fn pure_blocking_drain_to_fd(fd: i64, ep: tls::TlsEndpoint&) -> bool {
     return true;
 }
 
+inline fn pure_remaining_timeout_ms(
+    start_inst: core::MonotonicInstant,
+    timeout_ms: u32,
+) -> u32, bool {
+    guard timeout_ms > 0 else { return 0, false; }
+    let elapsed_ms = core::as_millis(core::duration_since(core::monotonic_now(), start_inst));
+    let budget_ms = timeout_ms as i64;
+    guard elapsed_ms < budget_ms else { return 0, false; }
+    let rem_ms = core::sub_sat_i64(budget_ms, elapsed_ms);
+    return max(1, rem_ms) as u32, true;
+}
+
+recursive fn pure_read_exact_deadline(
+    fd:         i64,
+    dst:        u8[:],
+    start_inst: core::MonotonicInstant,
+    timeout_ms: u32,
+) -> bool {
+    guard fd > 0 && dst.len > 0 else { return false; }
+    var total_read: i64 = 0;
+    while total_read < dst.len {
+        let rem_ms, ok_t = pure_remaining_timeout_ms(start_inst, timeout_ms);
+        guard ok_t else { return false; }
+        let recvd = net::fd_recv(fd, dst[total_read..], rem_ms);
+        guard recvd > 0 else { return false; }
+        total_read = core::add_sat_i64(total_read, recvd);
+    }
+    return true;
+}
+
 recursive fn pure_blocking_feed_one_record(
     fd:         i64,
     ep:         tls::TlsEndpoint&,
+    start_inst: core::MonotonicInstant,
     timeout_ms: u32,
 ) -> bool {
     var rec: u8[16645] = [0; 16645];
-    guard tls_read_exact(fd, rec[..5], timeout_ms) else { return false; }
+    guard pure_read_exact_deadline(fd, rec[..5], start_inst, timeout_ms) else { return false; }
     let _, _, plen_u16, alert, ok_hdr = tls::parse_record_header(rec[..5]);
     guard ok_hdr else {
         if alert != tls::Alert.CloseNotify {
@@ -308,7 +345,7 @@ recursive fn pure_blocking_feed_one_record(
     }
     let total = core::add_sat_i64(5, plen);
     if plen > 0 {
-        guard total <= rec.len && tls_read_exact(fd, rec[5..total], timeout_ms) else {
+        guard total <= rec.len && pure_read_exact_deadline(fd, rec[5..total], start_inst, timeout_ms) else {
             return false;
         }
     }
@@ -322,6 +359,7 @@ recursive fn tls_drive_blocking_endpoint_handshake(
     timeout_ms: u32,
 ) -> bool {
     guard fd > 0 && !ep.closed else { return false; }
+    let start_inst = core::monotonic_now();
     for _ in 64 {
         let st = tls::tls_endpoint_step_handshake(ep);
         let flushed = pure_blocking_drain_to_fd(fd, ep);
@@ -335,7 +373,7 @@ recursive fn tls_drive_blocking_endpoint_handshake(
         if st != tls::TlsBackendStatus.WantRead {
             return false;
         }
-        guard flushed && pure_blocking_feed_one_record(fd, ep, timeout_ms) else {
+        guard flushed && pure_blocking_feed_one_record(fd, ep, start_inst, timeout_ms) else {
             let _ = pure_blocking_drain_to_fd(fd, ep);
             return false;
         }
