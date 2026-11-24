@@ -435,12 +435,15 @@ struct HandshakeRecordReader {
     last_alert:           Alert       = Alert.CloseNotify,
 }
 
+const MAX_EXPIRED_LEAF_GRACE_SEC: i64 = 2592000;
+
 struct ClientHandshakeConfig {
     server_name:            u8[..256]        = [],
     alpn:                   u8[..255]        = [],
     trust_store:            TrustAnchorStore = TrustAnchorStore { .. },
     use_system_roots:       bool             = true,
     insecure_skip_verify:   bool             = false,
+    expired_leaf_grace_sec: i64              = 0,
     virtual_clock_sec:      i64              = 0,
     client_cert_der:        u8[..4096]       = [],
     client_chain_der:       u8[..4096][..3]  = [],
@@ -605,6 +608,7 @@ struct TlsBackendConfig {
     defer_sni_credentials:  bool             = false,
     server_name:            u8[..256]        = [],
     alpn_wire:              u8[..64]         = [],
+    require_alpn_match:     bool             = false,
     insecure_skip_verify:   bool             = false,
     use_system_roots:       bool             = true,
     ca_file:                u8[..256]        = [],

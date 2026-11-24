@@ -691,7 +691,12 @@ fn verify_chain_ocsp_and_crl(
 ) -> bool {
     if config.trust_store.anchors.len > 0 || !config.use_system_roots {
         let alert = tls::verify_certificate_chain(
-            chain_parsed, chain_slices, config.trust_store, eff_clock, tls::CertValidationRole.Server,
+            chain_parsed,
+            chain_slices,
+            config.trust_store,
+            eff_clock,
+            tls::CertValidationRole.Server,
+            config.expired_leaf_grace_sec,
         );
         guard alert == tls::Alert.CloseNotify else { return false; }
         guard verify_stapled_ocsp_for_chain(
@@ -715,7 +720,12 @@ fn verify_chain_ocsp_and_crl(
         let _ = tls::load_system_roots_for_issuer(sys_store, top_subj);
     }
     let alert = tls::verify_certificate_chain(
-        chain_parsed, chain_slices, sys_store, eff_clock, tls::CertValidationRole.Server,
+        chain_parsed,
+        chain_slices,
+        sys_store,
+        eff_clock,
+        tls::CertValidationRole.Server,
+        config.expired_leaf_grace_sec,
     );
     guard alert == tls::Alert.CloseNotify else { return false; }
     guard verify_stapled_ocsp_for_chain(

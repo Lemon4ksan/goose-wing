@@ -123,7 +123,7 @@ inline fn native_i32_to_status(code: i32) -> tls::TlsBackendStatus {
 
 fn native_backend_rejects_cfg(cfg: const tls::TlsBackendConfig&, is_server: bool) -> bool {
     if is_server {
-        if cfg.defer_sni_credentials { return true; }
+        if cfg.defer_sni_credentials || cfg.require_alpn_match { return true; }
         if cfg.cert_der.len > 0 && cfg.cert_pem_file.len == 0 { return true; }
         return cfg.require_client_cert && (cfg.ca_file.len == 0 || cfg.insecure_skip_verify);
     }
@@ -137,7 +137,7 @@ fn should_route_to_pure_backend(cfg: const tls::TlsBackendConfig&, is_server: bo
     if cfg.kind == tls::TlsBackendKind.PureGoose { return true; }
     guard cfg.kind == tls::TlsBackendKind.Auto else { return false; }
     if is_server {
-        if cfg.defer_sni_credentials { return true; }
+        if cfg.defer_sni_credentials || cfg.require_alpn_match { return true; }
         if cfg.cert_der.len > 0 && cfg.cert_pem_file.len == 0 { return true; }
         if cfg.require_client_cert {
             return cfg.ca_file.len == 0 || !tls::tls_backend_available(tls::TlsBackendKind.SystemOpenSsl);

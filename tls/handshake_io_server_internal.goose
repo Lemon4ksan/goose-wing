@@ -91,18 +91,19 @@ enum ServerPskPolicy {
 }
 
 struct ServerClientHelloChoice {
-    session_id:      u8[..32]  = [],
-    client_random:   u8[32]    = [0; 32],
-    client_sni:      u8[..255] = [],
-    negotiated_alpn: u8[..255] = [],
-    cipher_suite:    u16       = 0,
-    selected_group:  u16       = 0,
-    needs_hrr:       bool      = false,
-    client_share:    u8[..65]  = [],
-    psk_resumed:     bool      = false,
-    psk_secret:      u8[..48]  = [],
-    selected_psk_id: u16       = 0,
-    cert_comp_algo:  u16       = 0,
+    session_id:      u8[..32]   = [],
+    client_random:   u8[32]     = [0; 32],
+    client_sni:      u8[..255]  = [],
+    negotiated_alpn: u8[..255]  = [],
+    cipher_suite:    u16        = 0,
+    selected_group:  u16        = 0,
+    needs_hrr:       bool       = false,
+    client_share:    u8[..65]   = [],
+    psk_resumed:     bool       = false,
+    psk_secret:      u8[..48]   = [],
+    selected_psk_id: u16        = 0,
+    cert_comp_algo:  u16        = 0,
+    failure_alert:   tls::Alert = tls::Alert.CloseNotify,
 }
 
 fn zeroize_server_ch_choice(c: ServerClientHelloChoice&) {
@@ -124,12 +125,17 @@ fn parse_server_client_hello(
     config_comp_algo:    u16,
     hrr_mode:            ServerHrrMode,
     out:                 ServerClientHelloChoice&,
-    require_client_cert: bool            = false,
-    psk_policy:          ServerPskPolicy = ServerPskPolicy.AllowResumption,
+    require_client_cert: bool             = false,
+    psk_policy:          ServerPskPolicy  = ServerPskPolicy.AllowResumption,
+    alpn_policy:         ServerAlpnPolicy = ServerAlpnPolicy.Optional,
 ) -> bool {
     zeroize_server_ch_choice(out);
     var committed = false;
-    defer if !committed { zeroize_server_ch_choice(out); };
+    var fail_alert = tls::Alert.CloseNotify;
+    defer if !committed {
+        zeroize_server_ch_choice(out);
+        out.failure_alert = fail_alert;
+    };
 
     var entries: tls::ExtensionEntry[..32] = [];
     let sel_cs, ok_pre = decode_ch_server_preamble(payload, out.session_id, entries);
@@ -146,7 +152,11 @@ fn parse_server_client_hello(
     }
     let alpn_ext, has_alpn = tls::find_extension(entries, rfc::TLS_EXT_ALPN);
     if has_alpn {
-        guard select_server_alpn_from_ext(alpn_ext, server_alpn_csv, out.negotiated_alpn) else {
+        let alpn_alert, ok_alpn = select_server_alpn_with_policy(
+            alpn_ext, server_alpn_csv, alpn_policy, out.negotiated_alpn,
+        );
+        guard ok_alpn else {
+            fail_alert = alpn_alert;
             return false;
         }
     }

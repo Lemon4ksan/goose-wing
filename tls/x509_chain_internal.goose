@@ -17,12 +17,22 @@ import .pki_ocsp_internal;
 import .pki_crl_internal;
 import .x509_san;
 
-fn validate_chain_cert_validity(cert: const tls::ParsedCert&, now_unix: i64) -> tls::Alert {
+fn validate_chain_cert_validity(
+    cert:              const tls::ParsedCert&,
+    now_unix:          i64,
+    expired_grace_sec: i64 = 0,
+) -> tls::Alert {
     // RFC 5280 §4.1.2.5: Inversion check (notBefore <= notAfter)
     if cert.validity_not_before > cert.validity_not_after {
         return tls::Alert.BadCertificate;
     }
-    if now_unix < cert.validity_not_before || now_unix > cert.validity_not_after {
+    let bounded_grace = if expired_grace_sec > 0 {
+        min(expired_grace_sec, tls::MAX_EXPIRED_LEAF_GRACE_SEC)
+    } else {
+        0
+    };
+    let effective_not_after = core::add_sat_i64(cert.validity_not_after, bounded_grace);
+    if now_unix < cert.validity_not_before || now_unix > effective_not_after {
         return tls::Alert.CertificateExpired;
     }
     return tls::Alert.CloseNotify;
@@ -171,6 +181,7 @@ fn x509_validate_single_chain_cert(
     is_direct_trust_anchor: bool,
     now_unix:               i64,
     role:                   tls::CertValidationRole = tls::CertValidationRole.Server,
+    expired_leaf_grace_sec: i64                     = 0,
 ) -> tls::Alert {
     if cert.has_unsupported_critical {
         return tls::Alert.UnsupportedExtension;
@@ -203,7 +214,8 @@ fn x509_validate_single_chain_cert(
         }
     }
 
-    let val_alert = validate_chain_cert_validity(cert, now_unix);
+    let leaf_grace = if i == 0 && !is_direct_trust_anchor { expired_leaf_grace_sec } else { 0 };
+    let val_alert = validate_chain_cert_validity(cert, now_unix, leaf_grace);
     guard val_alert == tls::Alert.CloseNotify else { return val_alert; }
 
     let sig_oid = tls::span_slice(raw_cert, cert.sig_alg_oid);
@@ -468,12 +480,14 @@ fn x509_validate_chain_nodes(
     is_direct_trust_anchor: bool,
     now_unix:               i64,
     role:                   tls::CertValidationRole = tls::CertValidationRole.Server,
+    expired_leaf_grace_sec: i64                     = 0,
 ) -> tls::Alert {
     let n = min(chain_certs.len, raw_certs.len);
     for i in n {
         let non_si_below = x509_count_non_self_issued_below(chain_certs, raw_certs, i);
         let cert_alert = x509_validate_single_chain_cert(
-            chain_certs[i], raw_certs[i], i, non_si_below, is_direct_trust_anchor, now_unix, role,
+            chain_certs[i], raw_certs[i], i, non_si_below,
+            is_direct_trust_anchor, now_unix, role, expired_leaf_grace_sec,
         );
         guard cert_alert == tls::Alert.CloseNotify else { return cert_alert; }
         if i + 1 == n {

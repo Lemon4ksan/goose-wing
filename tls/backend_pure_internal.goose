@@ -55,6 +55,7 @@ struct PureTlsSlot {
     defer_sni_credentials:     bool                       = false,
     client_hello_parsed:       bool                       = false,
     require_client_cert:       bool                       = false,
+    require_alpn_match:        bool                       = false,
     owns_rsa_key_slot:         bool                       = false,
     has_psk_ticket:            bool                       = false,
     psk_resumed:               bool                       = false,

@@ -677,6 +677,13 @@ fn pure_server_pop_or_resume_ch(slot: PureTlsSlot&, out_ch: u8[..16384]&) -> tls
     return tls::TlsBackendStatus.Ok;
 }
 
+fn pure_fail_ch_parse(slot: PureTlsSlot&, fail_alert: tls::Alert) -> tls::TlsBackendStatus {
+    if fail_alert == tls::Alert.NoApplicationProtocol {
+        return pure_fail_with_alert(slot, fail_alert, tls::TlsBackendStatus.HandshakeError);
+    }
+    return tls::TlsBackendStatus.HandshakeError;
+}
+
 fn pure_server_stash_deferred_sni(
     slot:     PureTlsSlot&,
     ch_msg:   const u8[:],
@@ -684,11 +691,16 @@ fn pure_server_stash_deferred_sni(
 ) -> tls::TlsBackendStatus {
     var pre_ch = ServerClientHelloChoice { .. };
     defer zeroize_server_ch_choice(pre_ch);
+    let alpn_policy = if slot.require_alpn_match {
+        ServerAlpnPolicy.RequireMatch
+    } else {
+        ServerAlpnPolicy.Optional
+    };
     guard parse_server_client_hello(
         ch_msg, slot.alpn_csv[..], 0, 0, hrr_mode, pre_ch,
-        slot.require_client_cert, ServerPskPolicy.DisableResumption,
+        slot.require_client_cert, ServerPskPolicy.DisableResumption, alpn_policy,
     ) else {
-        return tls::TlsBackendStatus.HandshakeError;
+        return pure_fail_ch_parse(slot, pre_ch.failure_alert);
     }
     guard slot.server_name.try_set(pre_ch.client_sni[..]) &&
         slot.pending_ch_msg.try_set(ch_msg) else {
@@ -782,10 +794,15 @@ fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     var ch_choice = ServerClientHelloChoice { .. };
     defer zeroize_server_ch_choice(ch_choice);
     let req_sig = detect_cert_sig_scheme(slot.cert_der[..]);
+    let alpn_policy = if slot.require_alpn_match {
+        ServerAlpnPolicy.RequireMatch
+    } else {
+        ServerAlpnPolicy.Optional
+    };
     guard parse_server_client_hello(
         ch_msg[..], slot.alpn_csv[..], req_sig, slot.compressed_cert_algo,
-        hrr_mode, ch_choice, slot.require_client_cert, slot.psk_policy,
-    ) else { return tls::TlsBackendStatus.HandshakeError; }
+        hrr_mode, ch_choice, slot.require_client_cert, slot.psk_policy, alpn_policy,
+    ) else { return pure_fail_ch_parse(slot, ch_choice.failure_alert); }
 
     if !slot.hrr_sent && ch_choice.needs_hrr {
         slot.hrr_sni_recorded = true;
@@ -1002,6 +1019,7 @@ fn open_pure_endpoint(cfg: const tls::TlsBackendConfig&, is_server: bool) -> tls
     slot.is_server = is_server;
     slot.defer_sni_credentials = is_server && cfg.defer_sni_credentials;
     slot.require_client_cert = cfg.require_client_cert;
+    slot.require_alpn_match = cfg.require_alpn_match;
     slot.psk_policy = ServerPskPolicy.DisableResumption;
     slot.stage = if is_server { PureHsStage.ServerWaitClientHello } else { PureHsStage.ClientInit };
     let _ = slot.server_name.try_set(cfg.server_name[..]);

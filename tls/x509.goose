@@ -131,11 +131,12 @@ fn add_trust_anchor_cert_der(store: TrustAnchorStore&, raw_cert_der: const u8[:]
 // RFC 5280 Certificate Chain Validation.
 // Returns TlsAlert.CloseNotify (0) on success, or appropriate fatal alert.
 fn verify_certificate_chain(
-    chain_certs: const ParsedCert[..8]&,
-    raw_certs:   const u8[:][..8]&,
-    trust_store: const TrustAnchorStore&,
-    now_unix:    i64,
-    role:        CertValidationRole = CertValidationRole.Server,
+    chain_certs:            const ParsedCert[..8]&,
+    raw_certs:              const u8[:][..8]&,
+    trust_store:            const TrustAnchorStore&,
+    now_unix:               i64,
+    role:                   CertValidationRole = CertValidationRole.Server,
+    expired_leaf_grace_sec: i64                = 0,
 ) -> Alert {
     guard chain_certs.len > 0 && chain_certs.len <= tls_internal::MAX_CHAIN_DEPTH else { return Alert.BadCertificate; }
     guard raw_certs.len > 0 && raw_certs.len == chain_certs.len else { return Alert.BadCertificate; }
@@ -155,7 +156,8 @@ fn verify_certificate_chain(
     }
 
     let nodes_alert = tls_internal::x509_validate_chain_nodes(
-        chain_certs, raw_certs, trust_store, is_direct_trust_anchor, now_unix, role,
+        chain_certs, raw_certs, trust_store, is_direct_trust_anchor,
+        now_unix, role, expired_leaf_grace_sec,
     );
     guard nodes_alert == Alert.CloseNotify else { return nodes_alert; }
 

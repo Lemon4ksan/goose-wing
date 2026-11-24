@@ -133,6 +133,8 @@ fn encode_ed25519_cert_with_exts<B>(
     subject_cn:  const u8[:],
     exts_body:   const u8[:],
     out_der:     B&,
+    not_before:  const u8[:] = "240101000000Z",
+    not_after:   const u8[:] = "350101000000Z",
 ) {
     let subj_pub = core::ed25519_public_key(subj_seed);
     var tbs_body: u8[..1600] = [];
@@ -151,8 +153,8 @@ fn encode_ed25519_cert_with_exts<B>(
     assert(tbs_body.try_append(iss_dn[..]));
 
     var val_body: u8[..64] = [];
-    der_append_tlv(val_body, rfc::ASN1_TAG_UTC_TIME, "240101000000Z");
-    der_append_tlv(val_body, rfc::ASN1_TAG_UTC_TIME, "350101000000Z");
+    der_append_tlv(val_body, rfc::ASN1_TAG_UTC_TIME, not_before);
+    der_append_tlv(val_body, rfc::ASN1_TAG_UTC_TIME, not_after);
     der_append_tlv(tbs_body, rfc::ASN1_TAG_SEQUENCE, val_body[..]);
 
     var sub_dn: u8[..160] = [];
@@ -733,6 +735,92 @@ fn test_wave3_pki_audit_regressions() {
     print("WAVE3_PKI_AUDIT_REGRESSIONS: OK");
 }
 
+fn test_bounded_expired_leaf_grace() {
+    let root_seed: u8[32] = [0x31; 32];
+    let int_seed:  u8[32] = [0x32; 32];
+    let leaf_seed: u8[32] = [0x33; 32];
+
+    var ca_exts: u8[..64] = [];
+    encode_ca_basic_constraints(ca_exts);
+    var root_der: u8[..2048] = [];
+    encode_ed25519_cert_with_exts(root_seed, root_seed, "Grace Root CA", "Grace Root CA", ca_exts[..], root_der);
+
+    var store = tls::TrustAnchorStore { .. };
+    assert(tls::add_trust_anchor_cert_der(store, root_der[..]));
+
+    // Leaf expires 2026-01-01 00:00:00Z
+    var leaf_der: u8[..2048] = [];
+    encode_ed25519_cert_with_exts(
+        root_seed, leaf_seed, "Grace Root CA", "leaf.example", "", leaf_der, "240101000000Z", "260101000000Z",
+    );
+    var leaf_cert = tls::ParsedCert { .. };
+    assert(tls::parse_x509_certificate(leaf_der[..], leaf_cert));
+
+    var chain: tls::ParsedCert[..8] = [];
+    var raw:   const u8[:][..8]     = [];
+    assert(chain.try_push(leaf_cert) && raw.try_push(leaf_der[..]));
+
+    let now_1d = leaf_cert.validity_not_after + 86400;
+    let now_10d = leaf_cert.validity_not_after + 864000;
+    let now_35d = leaf_cert.validity_not_after + 3024000;
+    let grace_7d: i64 = 604800;
+
+    // Default (grace = 0) stays strictly RFC 5280 compliant.
+    assert(tls::verify_certificate_chain(chain, raw, store, now_1d) == tls::Alert.CertificateExpired);
+    // Bounded grace accepts recently expired leaf, rejects beyond grace and beyond 30-day hard cap.
+    assert(
+        tls::verify_certificate_chain(chain, raw, store, now_1d, tls::CertValidationRole.Server, grace_7d) ==
+            tls::Alert.CloseNotify,
+    );
+    assert(
+        tls::verify_certificate_chain(chain, raw, store, now_10d, tls::CertValidationRole.Server, grace_7d) ==
+            tls::Alert.CertificateExpired,
+    );
+    assert(
+        tls::verify_certificate_chain(chain, raw, store, now_35d, tls::CertValidationRole.Server, 7776000) ==
+            tls::Alert.CertificateExpired,
+    );
+    // Future notBefore is NEVER waived by expired-leaf grace.
+    assert(
+        tls::verify_certificate_chain(
+            chain, raw, store, leaf_cert.validity_not_before - 1, tls::CertValidationRole.Server, grace_7d,
+        ) == tls::Alert.CertificateExpired,
+    );
+
+    // Expired intermediate CA is NEVER waived by expired-leaf grace.
+    var int_der: u8[..2048] = [];
+    encode_ed25519_cert_with_exts(
+        root_seed, int_seed, "Grace Root CA", "Expired Inter CA", ca_exts[..], int_der, "240101000000Z", "260101000000Z",
+    );
+    var leaf2_der: u8[..2048] = [];
+    encode_ed25519_cert_with_exts(
+        int_seed, leaf_seed, "Expired Inter CA", "leaf2.example", "", leaf2_der, "240101000000Z", "350101000000Z",
+    );
+    var int_cert = tls::ParsedCert { .. };
+    var leaf2_cert = tls::ParsedCert { .. };
+    assert(tls::parse_x509_certificate(int_der[..], int_cert));
+    assert(tls::parse_x509_certificate(leaf2_der[..], leaf2_cert));
+
+    var chain2: tls::ParsedCert[..8] = [];
+    var raw2:   const u8[:][..8]     = [];
+    assert(chain2.try_push(leaf2_cert) && chain2.try_push(int_cert));
+    assert(raw2.try_push(leaf2_der[..]) && raw2.try_push(int_der[..]));
+    assert(
+        tls::verify_certificate_chain(chain2, raw2, store, now_1d, tls::CertValidationRole.Server, grace_7d) ==
+            tls::Alert.CertificateExpired,
+    );
+
+    var sess = client::new_session();
+    client::set_tls_expired_leaf_grace_sec(sess, -5);
+    assert(sess.tls_expired_leaf_grace_sec == 0);
+    client::set_tls_expired_leaf_grace_sec(sess, grace_7d);
+    assert(sess.tls_expired_leaf_grace_sec == grace_7d);
+    client::set_tls_expired_leaf_grace_sec(sess, 7776000);
+    assert(sess.tls_expired_leaf_grace_sec == tls::MAX_EXPIRED_LEAF_GRACE_SEC);
+
+    print("BOUNDED_EXPIRED_LEAF_GRACE: OK");
+}
+
 // CHECK: MLKEM768_CT_BARRETT_AND_FIPS203: OK
 // CHECK: RSA_2048_AND_STRICT_PSS: OK
 // CHECK: ROLE_BOUND_EKU_AND_MTLS: OK
@@ -740,6 +828,7 @@ fn test_wave3_pki_audit_regressions() {
 // CHECK: CRL_SHA256_1024_AND_SLOTS_4096: OK
 // CHECK: SCT_HYGIENE_AND_VERIFY: OK
 // CHECK: WAVE3_PKI_AUDIT_REGRESSIONS: OK
+// CHECK: BOUNDED_EXPIRED_LEAF_GRACE: OK
 fn main() {
     test_mlkem_barrett_and_compress_exactness();
     test_rsa_min_2048_and_strict_pss();
@@ -748,4 +837,5 @@ fn main() {
     test_crl_sha256_capacity_and_cipher_slots();
     test_sct_hygiene_and_signature_verify();
     test_wave3_pki_audit_regressions();
+    test_bounded_expired_leaf_grace();
 }

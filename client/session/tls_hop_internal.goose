@@ -89,6 +89,7 @@ fn apply_client_config_knobs(c: client::Client&, cfg: const client::Config&) {
     }
     c.tls_enable_session_tickets = cfg.tls_enable_session_tickets;
     c.tls_require_ocsp_stapling = cfg.tls_require_ocsp_stapling;
+    c.tls_expired_leaf_grace_sec = min(max(cfg.tls_expired_leaf_grace_sec, 0), tls::MAX_EXPIRED_LEAF_GRACE_SEC);
     if cfg.tls_crl_file.len > 0 && !c.tls_crl_file.try_set(cfg.tls_crl_file) {
         c.has_invalid_tls_config = true;
     }
@@ -417,6 +418,7 @@ fn prepare_pure_tls_client_config(
         }
     }
     tls_cfg.insecure_skip_verify = effective_insecure_skip;
+    tls_cfg.expired_leaf_grace_sec = session.tls_expired_leaf_grace_sec;
     tls_cfg.use_system_roots = session.tls_use_system_roots;
     tls_cfg.virtual_clock_sec = if session.virtual_clock_us > 0 { now_sec } else { 0 };
     tls_cfg.enable_pq_hybrid = session.tls_enable_pq_hybrid;

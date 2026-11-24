@@ -88,6 +88,7 @@ struct Config {
     enable_har_telemetry:       bool                 = false,
     allow_loopback_ssrf:        bool                 = false,
     insecure_skip_verify:       bool                 = false,
+    tls_expired_leaf_grace_sec: i64                  = 0,
     tls_backend:                tls::TlsBackendKind  = tls::TlsBackendKind.PureGoose,
     tls_min_version:            tls::TlsMinVersion   = tls::TlsMinVersion.Tls13,
     tls_ca_file:                const u8[:]          = "",
@@ -211,6 +212,7 @@ struct Client {
     sig_public_key:             u8[..64]                 = [],
     trust_store:                tls::TrustAnchorStore    = tls::TrustAnchorStore { .. },
     insecure_skip_verify:       bool                     = false,
+    tls_expired_leaf_grace_sec: i64                      = 0,
     tls_backend:                tls::TlsBackendKind      = tls::TlsBackendKind.PureGoose,
     tls_min_version:            tls::TlsMinVersion       = tls::TlsMinVersion.Tls13,
     tls_ca_file:                u8[..256]                = [],
@@ -761,6 +763,16 @@ fn set_tls_ca_file(session: Session&, path: const u8[:]) -> bool {
     }
     net::drain_stream_pool(session.pool);
     return true;
+}
+
+// Configures a bounded grace window (clamped to 0..MAX_EXPIRED_LEAF_GRACE_SEC) allowing recently
+// expired leaf certificates while keeping full CA chain, SAN, and TLS 1.3 signature checks strict.
+fn set_tls_expired_leaf_grace_sec(session: Session&, grace_sec: i64) {
+    let clamped = min(max(grace_sec, 0), tls::MAX_EXPIRED_LEAF_GRACE_SEC);
+    if session.tls_expired_leaf_grace_sec != clamped {
+        session.tls_expired_leaf_grace_sec = clamped;
+        net::drain_stream_pool(session.pool);
+    }
 }
 
 // Controls whether OS system root certificates are loaded when no custom CA bundle or trust store is set.

@@ -419,31 +419,74 @@ fn find_preferred_server_alpn(list_bytes: const u8[:], server_alpn_csv: const u8
     return "";
 }
 
+enum ServerAlpnPolicy {
+    Optional,
+    RequireMatch,
+}
+
+// Validates and extracts the ALPN protocol_name_list bytes from an extension payload (RFC 7301 Section 3.1).
+//
+// Example:
+//   alpn_ext = [0x00, 0x03, 0x02, 'h', '2']
+//   returns: [0x02, 'h', '2'], ok = true
+fn parse_alpn_ext_list(alpn_ext: const u8[:]) -> const u8[:], bool {
+    guard alpn_ext.len >= 3 else { return "", false; }
+    var c = core::cursor_from(alpn_ext);
+    let list_bytes, ok_l = c.read_u16_prefixed();
+    guard ok_l && c.buf.len == 0 && list_bytes.len >= 2 else { return "", false; }
+    guard validate_alpn_wire_list(list_bytes) else { return "", false; }
+    return list_bytes, true;
+}
+
+// Matches a client ALPN extension against server preferences with strict mismatch policy (RFC 7301 Section 3.2).
+//
+// Example:
+//   alpn_ext = [0x00, 0x06, 0x05, 'f', 'o', 'o', '/', '1'], server_alpn_csv = "h2,http/1.1", RequireMatch
+//   returns: tls::Alert.NoApplicationProtocol, ok = false
+fn select_server_alpn_with_policy<B>(
+    alpn_ext:        const u8[:],
+    server_alpn_csv: const u8[:],
+    policy:          ServerAlpnPolicy,
+    out_alpn:        B&,
+) -> tls::Alert, bool {
+    var committed = false;
+    defer if !committed { out_alpn.clear(); };
+    let list_bytes, ok_list = parse_alpn_ext_list(alpn_ext);
+    guard ok_list else { return tls::Alert.DecodeError, false; }
+    out_alpn.clear();
+    guard server_alpn_csv.len > 0 else {
+        committed = true;
+        return tls::Alert.CloseNotify, true;
+    }
+
+    let matched = find_preferred_server_alpn(list_bytes, server_alpn_csv);
+    if matched.len > 0 {
+        guard out_alpn.try_set(matched) else { return tls::Alert.DecodeError, false; }
+        committed = true;
+        return tls::Alert.CloseNotify, true;
+    }
+    // RFC 7301 Section 3.2: Protocol Selection - Respond with fatal no_application_protocol alert on zero overlap.
+    guard policy != ServerAlpnPolicy.RequireMatch else {
+        return tls::Alert.NoApplicationProtocol, false;
+    }
+    committed = true;
+    return tls::Alert.CloseNotify, true;
+}
+
 // Matches a client ALPN extension against server comma-separated ALPN preferences (RFC 7301 Section 3.2).
+//
+// Example:
+//   alpn_ext = [0x00, 0x03, 0x02, 'h', '2'], server_alpn_csv = "h2,http/1.1"
+//   returns: out_alpn = "h2", ok = true
 fn select_server_alpn_from_ext<B>(
     alpn_ext:        const u8[:],
     server_alpn_csv: const u8[:],
     out_alpn:        B&,
 ) -> bool {
-    var committed = false;
-    defer if !committed { out_alpn.clear(); };
-    guard alpn_ext.len >= 3 else { return false; }
-    var c = core::cursor_from(alpn_ext);
-    let list_bytes, ok_l = c.read_u16_prefixed();
-    guard ok_l && c.buf.len == 0 && list_bytes.len >= 2 else { return false; }
-    guard validate_alpn_wire_list(list_bytes) else { return false; }
-    out_alpn.clear();
-    guard server_alpn_csv.len > 0 else {
-        committed = true;
-        return true;
-    }
-
-    let matched = find_preferred_server_alpn(list_bytes, server_alpn_csv);
-    if matched.len > 0 {
-        guard out_alpn.try_set(matched) else { return false; }
-    }
-    committed = true;
-    return true;
+    let _, ok = select_server_alpn_with_policy(
+        alpn_ext, server_alpn_csv, ServerAlpnPolicy.Optional, out_alpn,
+    );
+    return ok;
 }
 
 // Negotiates a TLS 1.3 cipher suite from the client's offered cipher suite list or ClientHello (RFC 8446 §4.1.2).
