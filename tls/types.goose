@@ -635,3 +635,52 @@ struct TlsEndpoint {
     pure_gen:    u32            = 0,
     native_id:   i64            = -1,
 }
+
+enum QuicTlsLevel {
+    Initial,
+    Handshake,
+    Application,
+}
+
+enum QuicTlsStatus {
+    Ok,
+    WantMore,
+    NeedSniCredentials,
+    Established,
+    AlertError,
+}
+
+enum QuicExtensionMode {
+    Tcp,
+    Quic,
+}
+
+enum QuicClientKeyShareMode {
+    SendInitialShare,
+    OmitInitialShareForHrr,
+}
+
+enum QuicClientVerifyMode {
+    VerifyTrustAndSan,
+    InsecureSkipVerify,
+}
+
+struct QuicTlsSecrets {
+    level:        QuicTlsLevel = QuicTlsLevel.Initial,
+    cipher_suite: u16          = 0,
+    hash_len:     u8           = 32,
+    read_secret:  u8[48]       = [0; 48],
+    write_secret: u8[48]       = [0; 48],
+    has_read:     bool         = false,
+    has_write:    bool         = false,
+}
+
+struct QuicTlsServer {
+    slot_idx:   i32 = -1,
+    generation: u64 = 0,
+}
+
+struct QuicTlsClient {
+    slot_idx:   i32 = -1,
+    generation: u64 = 0,
+}

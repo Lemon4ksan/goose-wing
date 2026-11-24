@@ -757,3 +757,24 @@ fn verify_client_certificate_verify(
     guard ok_m else { return false; }
     return verify_certificate_verify_sig(sig_scheme, signature, client_pubkey, msg_buf[..msg_len]);
 }
+
+// Encodes the TLS quic_transport_parameters extension `0x0039` (RFC 9001 Section 8.2).
+//
+// Example:
+//   tp_bytes = [0x01, 0x01, 0x00], out = []
+//   returns: true, out = [0x00, 0x39, 0x00, 0x03, 0x01, 0x01, 0x00]
+fn encode_quic_tp_extension<B>(out: B&, tp_bytes: const u8[:]) -> bool {
+    guard tp_bytes.len <= 2048 else { return false; }
+    let mark = out.len;
+    var committed = false;
+    defer if !committed { out.resize(mark); };
+    let hdr: u8[4] = [
+        ((rfc::TLS_EXT_QUIC_TRANSPORT_PARAMETERS >> 8) & 0xFF) as u8,
+        (rfc::TLS_EXT_QUIC_TRANSPORT_PARAMETERS & 0xFF) as u8,
+        ((tp_bytes.len >> 8) & 0xFF) as u8,
+        (tp_bytes.len & 0xFF) as u8,
+    ];
+    guard out.try_append(hdr[..]) && out.try_append(tp_bytes) else { return false; }
+    committed = true;
+    return true;
+}

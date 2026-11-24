@@ -103,6 +103,8 @@ struct ServerClientHelloChoice {
     psk_secret:      u8[..48]   = [],
     selected_psk_id: u16        = 0,
     cert_comp_algo:  u16        = 0,
+    has_quic_tp:     bool       = false,
+    quic_tp:         u8[..2048] = [],
     failure_alert:   tls::Alert = tls::Alert.CloseNotify,
 }
 
@@ -110,6 +112,39 @@ fn zeroize_server_ch_choice(c: ServerClientHelloChoice&) {
     core::secure_zeroize_slice(c.psk_secret[..]);
     core::secure_zeroize_32(c.client_random);
     c = ServerClientHelloChoice { .. };
+}
+
+fn eval_ch_quic_and_alpn(
+    entries:         const tls::ExtensionEntry[..32]&,
+    server_alpn_csv: const u8[:],
+    alpn_policy:     ServerAlpnPolicy,
+    quic_mode:       tls::QuicExtensionMode,
+    out:             ServerClientHelloChoice&,
+) -> tls::Alert, bool {
+    let alpn_ext, has_alpn = tls::find_extension(entries, rfc::TLS_EXT_ALPN);
+    if has_alpn {
+        let alpn_alert, ok_alpn = select_server_alpn_with_policy(
+            alpn_ext, server_alpn_csv, alpn_policy, out.negotiated_alpn,
+        );
+        guard ok_alpn else { return alpn_alert, false; }
+    } else if quic_mode == tls::QuicExtensionMode.Quic && server_alpn_csv.len > 0 {
+        // RFC 9001 Section 8.1: Protocol Negotiation - Server rejects ClientHello without ALPN.
+        return tls::Alert.NoApplicationProtocol, false;
+    }
+
+    let tp_ext, has_tp = tls::find_extension(entries, rfc::TLS_EXT_QUIC_TRANSPORT_PARAMETERS);
+    if quic_mode == tls::QuicExtensionMode.Tcp {
+        // RFC 9001 Section 8.2: QUIC Transport Parameters Extension - Reject 0x0039 on non-QUIC transports.
+        guard !has_tp else { return tls::Alert.UnsupportedExtension, false; }
+        return tls::Alert.CloseNotify, true;
+    }
+    // RFC 9001 Section 8.2: QUIC Transport Parameters Extension - ClientHello MUST carry 0x0039.
+    guard has_tp else { return tls::Alert.MissingExtension, false; }
+    // RFC 9001 Section 8.4: Prohibit TLS Middlebox Compatibility Mode - Reject non-empty legacy_session_id.
+    guard out.session_id.len == 0 else { return tls::Alert.IllegalParameter, false; }
+    guard out.quic_tp.try_set(tp_ext) else { return tls::Alert.DecodeError, false; }
+    out.has_quic_tp = true;
+    return tls::Alert.CloseNotify, true;
 }
 
 // Parses a TLS 1.3 ClientHello for server negotiation supporting X25519, secp256r1, and HRR
@@ -125,9 +160,10 @@ fn parse_server_client_hello(
     config_comp_algo:    u16,
     hrr_mode:            ServerHrrMode,
     out:                 ServerClientHelloChoice&,
-    require_client_cert: bool             = false,
-    psk_policy:          ServerPskPolicy  = ServerPskPolicy.AllowResumption,
-    alpn_policy:         ServerAlpnPolicy = ServerAlpnPolicy.Optional,
+    require_client_cert: bool                   = false,
+    psk_policy:          ServerPskPolicy        = ServerPskPolicy.AllowResumption,
+    alpn_policy:         ServerAlpnPolicy       = ServerAlpnPolicy.Optional,
+    quic_mode:           tls::QuicExtensionMode = tls::QuicExtensionMode.Tcp,
 ) -> bool {
     zeroize_server_ch_choice(out);
     var committed = false;
@@ -150,15 +186,12 @@ fn parse_server_client_hello(
     if has_sni {
         guard tls::parse_sni_extension(sni_ext, out.client_sni) else { return false; }
     }
-    let alpn_ext, has_alpn = tls::find_extension(entries, rfc::TLS_EXT_ALPN);
-    if has_alpn {
-        let alpn_alert, ok_alpn = select_server_alpn_with_policy(
-            alpn_ext, server_alpn_csv, alpn_policy, out.negotiated_alpn,
-        );
-        guard ok_alpn else {
-            fail_alert = alpn_alert;
-            return false;
-        }
+    let qa_alert, ok_qa = eval_ch_quic_and_alpn(
+        entries, server_alpn_csv, alpn_policy, quic_mode, out,
+    );
+    guard ok_qa else {
+        fail_alert = qa_alert;
+        return false;
     }
     let psk_ext, has_psk = tls::find_extension(entries, rfc::TLS_EXT_PRE_SHARED_KEY);
     if has_psk && psk_policy == ServerPskPolicy.AllowResumption {

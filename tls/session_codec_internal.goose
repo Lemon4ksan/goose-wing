@@ -137,6 +137,7 @@ fn validate_ee_solicited_extensions(
     offered_alpn_csv: const u8[:],
     sni_state:        tls::SniOfferState,
     allow_ech_retry:  bool,
+    quic_mode:        tls::QuicExtensionMode = tls::QuicExtensionMode.Tcp,
 ) -> bool {
     for &e in entries {
         if e.ext_type == rfc::TLS_EXT_SERVER_NAME {
@@ -152,6 +153,11 @@ fn validate_ee_solicited_extensions(
             guard offered_alpn_csv.len > 0 else { return false; }
         } else if e.ext_type == rfc::EXT_ENCRYPTED_CLIENT_HELLO {
             guard allow_ech_retry && e.data.len >= 2 else { return false; }
+        } else if e.ext_type == rfc::TLS_EXT_QUIC_TRANSPORT_PARAMETERS {
+            // RFC 9001 Section 8.2: QUIC Transport Parameters Extension - Permit 0x0039 only on QUIC handshakes.
+            guard quic_mode == tls::QuicExtensionMode.Quic && e.data.len <= 2048 else {
+                return false;
+            }
         } else {
             return false;
         }
@@ -186,6 +192,14 @@ fn validate_live_client_sh(sh: const tls::ParsedServerHello&, client_random: con
     guard sh.session_id_echo.len == 32 &&
         core::ct_eq_bytes(sh.session_id_echo[..], client_random[..]) &&
         is_client_offered_tls13_suite(sh.cipher_suite) else {
+        return false;
+    }
+    return sh.is_hrr || sh.server_share.len > 0;
+}
+
+// RFC 9001 Section 8.4: Prohibit TLS Middlebox Compatibility Mode - Verify 0-byte legacy_session_id_echo.
+fn validate_quic_client_sh(sh: const tls::ParsedServerHello&) -> bool {
+    guard sh.session_id_echo.len == 0 && is_client_offered_tls13_suite(sh.cipher_suite) else {
         return false;
     }
     return sh.is_hrr || sh.server_share.len > 0;

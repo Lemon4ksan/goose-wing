@@ -232,6 +232,7 @@ import tls.backend_transport_internal;
 import tls.backend;
 import tls.client_handshake;
 import tls.server_handshake;
+import tls.quic_handshake;
 import tls.stream;
 
 import quic.internal;
