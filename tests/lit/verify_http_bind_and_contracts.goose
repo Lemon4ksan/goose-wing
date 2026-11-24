@@ -456,12 +456,139 @@ fn test_recursive_json_opt_and_session_contracts() {
     print("path_unsafe: ", ok_dot, " ", ok_sp, " ", ok_pct);
 }
 
+struct LenientChild {
+    val: u8[..8] = [],
+}
+
+struct LenientItem {
+    type_work: u8[..12]           = [],
+    progress:  i32                = -1,
+    active:    bool               = false,
+    score:     f64                = 0.0,
+    count_u64: u64                = 0,
+    code_u32:  u32                = 0,
+    small_i16: i16                = 0,
+    small_u16: u16                = 0,
+    flag_i8:   i8                 = -1,
+    sem_u8:    u8                 = 0,
+    opt_tag:   core::Opt<u8[..8]> = core::Opt<u8[..8]> { .. },
+    children:  LenientChild[..2]  = [],
+    note:      u8[..16]           = [],
+}
+
+fn http::json_decode_lenient(dst: GrowableReplyDto&, r: json::Reader&) {
+    http::decode_json_struct_lenient(dst, r);
+}
+
+fn http::json_decode_lenient(dst: LenientChild&, r: json::Reader&) {
+    http::decode_json_struct_lenient(dst, r);
+}
+
+fn http::json_decode_lenient(dst: LenientChild[..2]&, r: json::Reader&) {
+    http::decode_bounded_array_lenient<LenientChild[..2], LenientChild>(dst, r);
+}
+
+fn http::json_decode_lenient(dst: LenientItem&, r: json::Reader&) {
+    http::decode_json_struct_lenient(dst, r);
+}
+
+fn test_json_helpers_and_lenient() {
+    // 1. to_json / from_json round-trip and rollback on bad JSON
+    var arr: NestedTag[>..] = [
+        NestedTag { slot: 1, delta: -2, label: "a" },
+        NestedTag { slot: 3, delta: 4, label: "b" },
+    ];
+    var enc: u8[>..] = [];
+    http::to_json(arr, enc);
+    var dec: NestedTag[>..] = [];
+    let ok_rt = http::from_json(enc[..], dec);
+    let ok_bad = http::from_json("{bad", dec);
+    print("to_from_json: ", ok_rt, " len=", dec.len, " bad=", ok_bad, " kept=", dec.len);
+
+    // 2. DOM path & value extractors
+    var doc:     json::Node[>..] = [];
+    var decoded: u8[>..]         = [];
+    let root, err = json::parse(
+        "{\"data\":{\"msg\":\"Привет\",\"num\":42,\"flt\":3.9,\"flag\":1,\"empty\":null}}",
+        doc,
+        decoded,
+    );
+    guard err.len == 0 else { abort("parse failed"); }
+    var b_msg:  u8[..5] = [];
+    var g_msg:  u8[>..] = [];
+    var b_num:  u8[..4] = [];
+    var g_num:  u8[>..] = [];
+    var b_null: u8[..4] = "old";
+    let ok_bm = http::json_str_into(http::json_path(root, "data.msg"), b_msg);
+    let ok_gm = http::json_str_into(http::json_path(root, "data.msg"), g_msg);
+    let ok_bn = http::json_str_into(http::json_path(root, "data.num"), b_num);
+    let ok_gn = http::json_str_into(http::json_path(root, "data.num"), g_num);
+    let ok_nl = http::json_str_into(http::json_path(root, "data.empty"), b_null);
+    print(
+        "dom_path: ",
+        ok_bm && ok_gm && ok_bn && ok_gn && ok_nl,
+        " bm=", b_msg[..],
+        " gm=", g_msg[..],
+        " bn=", b_num[..],
+        " gn=", g_num[..],
+        " nl=", b_null.len,
+        " str_or=", http::json_str_or(http::json_path(root, "data.missing"), "def"),
+        " i64=", http::json_i64_or(http::json_path(root, "data.flt"), 0),
+        " bool=", http::json_bool_or(http::json_path(root, "data.flag"), false),
+    );
+
+    // 3. Lenient reflective decoder
+    var items: LenientItem[>..] = [];
+    let raw_lenient = "[{\"TypeWork\":\"ПриветМир\",\"progress\":87.5,\"active\":1,\"score\":12.5,\"countU64\":99,\"codeU32\":7,\"smallI16\":-12,\"smallU16\":33,\"flagI8\":1,\"semU8\":5,\"optTag\":null,\"children\":[{\"Val\":\"c1\"},{\"Val\":\"c2\"},{\"Val\":\"c3\"}],\"note\":1234}]";
+    let ok_len = http::from_json_lenient(raw_lenient, items);
+    var tags: u8[..8][>..] = [];
+    let ok_tags = http::from_json_lenient("[\"x\",123]", tags);
+    var grow_len = GrowableReplyDto { .. };
+    let ok_grow = http::from_json_lenient("{\"Token\":\"grow-ok\"}", grow_len);
+    print(
+        "lenient: ",
+        ok_len && ok_tags && ok_grow && grow_len.token[..] == "grow-ok",
+        " tw=", items[0].type_work[..],
+        " prog=", items[0].progress,
+        " act=", items[0].active,
+        " u64=", items[0].count_u64,
+        " note=", items[0].note[..],
+        " opt=", items[0].opt_tag.present,
+        " ch=", items[0].children.len,
+        " tags=", tags.len,
+    );
+
+    // 4. Auto-comma JsonWriter
+    var jw_buf: u8[>..] = [];
+    var w = http::json_writer(jw_buf);
+    w.begin_obj();
+    w.field_str("a", "ok");
+    w.field_str_ne("skip", "");
+    w.field_str_ne("keep", "yes");
+    w.field_i64("n", 0);
+    w.field_i64_pos("neg", -1);
+    w.field_i64_pos("pos", 5);
+    w.field_bool("bf", false);
+    w.field_bool_true("bt", true);
+    w.key_obj("sub");
+    w.field_i64("x", 9);
+    w.end_obj();
+    w.key_arr("arr");
+    w.begin_arr();
+    w.raw_value("{\"raw\":1}");
+    w.end_arr();
+    w.end_arr();
+    w.end_obj();
+    print("json_writer: ", jw_buf[..]);
+}
+
 fn main() {
     test_validation_problem();
     test_declarative_binders();
     test_request_and_response_ufcs();
     test_cookie_deltas_and_contracts();
     test_recursive_json_opt_and_session_contracts();
+    test_json_helpers_and_lenient();
 }
 
 // CHECK: vp_init_valid: true
@@ -506,3 +633,7 @@ fn main() {
 // CHECK-NEXT: opt_query_huge: false
 // CHECK-NEXT: u64_bounds: true max=true neg_ok=false
 // CHECK-NEXT: path_unsafe: false false false
+// CHECK-NEXT: to_from_json: true len=2 bad=false kept=2
+// CHECK-NEXT: dom_path: true bm=Пр gm=Привет bn=42 gn=42 nl=0 str_or=def i64=3 bool=true
+// CHECK-NEXT: lenient: true tw=Привет prog=87 act=true u64=99 note=1234 opt=false ch=2 tags=2
+// CHECK-NEXT: json_writer: {"a":"ok","keep":"yes","n":0,"pos":5,"bf":false,"bt":true,"sub":{"x":9},"arr":[[{"raw":1}]]}

@@ -70,6 +70,7 @@ import http.early_hints;
 import http.compression_dict;
 import http.trace;
 import http.json_codec;
+import http.json_helpers;
 import http.request;
 import http.response;
 import http.bind;

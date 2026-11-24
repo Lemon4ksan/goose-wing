@@ -285,6 +285,28 @@ fn json_decode<B>(arr: B&, r: json::Reader&) {
     decode_tagged(arr_tag(arr[..]), arr, r);
 }
 
+// Serializes any JSON-encodable value `val` (struct, array, or scalar) into `out`.
+fn to_json<T>(val: const T&, out: u8[>..]&) {
+    out.clear();
+    val.json_encode(out);
+}
+
+// Decodes a JSON document `raw` into `out`, rolling back `out` on syntax or schema error.
+//
+// Example:
+//   raw = "[{\"slot\":1}]", out: NestedTag[>..]& -> returns true, out.len = 1
+fn from_json<T>(raw: const u8[:], out: T&) -> bool {
+    guard raw.len > 0 else { return false; }
+    let saved = copy(out);
+    var committed = false;
+    defer if !committed { out = copy(saved); };
+    var r = json::reader(raw);
+    out.json_decode(r);
+    guard json::finish(r) else { return false; }
+    committed = true;
+    return true;
+}
+
 // Decodes a JSON object from `r` into struct `out` via `const for` reflection.
 // Unknown JSON keys are skipped cleanly.
 //
