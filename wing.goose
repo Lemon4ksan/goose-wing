@@ -262,6 +262,7 @@ import http3.qpack;
 import http3.stream_internal;
 import http3.connection_internal;
 import http3.connection;
+import http3.server_session;
 
 // ---- wire subsystem (Layer 9) ----------------------------------------------
 

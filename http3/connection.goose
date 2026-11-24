@@ -85,6 +85,32 @@ fn encode_client_preambles<B1, B2, B3>(
     return true;
 }
 
+// Encodes server preambles for control, QPACK encoder, and QPACK decoder streams.
+fn encode_server_preambles(
+    conn:     const Connection&,
+    out_ctrl: u8[..128]&,
+    out_qenc: u8[..16]&,
+    out_qdec: u8[..16]&,
+) -> bool {
+    let saved_ctrl = out_ctrl.len;
+    let saved_enc = out_qenc.len;
+    let saved_dec = out_qdec.len;
+    var committed = false;
+    defer if !committed {
+        out_ctrl.resize(saved_ctrl);
+        out_qenc.resize(saved_enc);
+        out_qdec.resize(saved_dec);
+    };
+
+    guard quic::encode_varint(rfc::H3_STREAM_CONTROL, out_ctrl) else { return false; }
+    guard encode_settings_frame(out_ctrl, conn.local_settings) else { return false; }
+    guard quic::encode_varint(rfc::H3_STREAM_QPACK_ENCODER, out_qenc) else { return false; }
+    guard quic::encode_varint(rfc::H3_STREAM_QPACK_DECODER, out_qdec) else { return false; }
+
+    committed = true;
+    return true;
+}
+
 // ---- Request Stream Lifecycle ----------------------------------------------
 
 // Finds an existing stream or returns false.
