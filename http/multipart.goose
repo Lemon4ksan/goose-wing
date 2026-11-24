@@ -7,10 +7,9 @@ namespace http;
 
 import std;
 import core;
+import rfc.http;
 import .request;
 import http.internal;
-
-const MULTIPART_MAX_BOUNDARY_LEN: i64 = 70; // RFC 2046 Section 5.1.1
 
 var g_multipart_boundary_counter: u64 = 0;
 
@@ -200,7 +199,7 @@ fn new_multipart_writer(boundary: const u8[:] = "") -> MultipartWriter, bool {
         guard ok_gen else { return MultipartWriter { .. }, false; }
         return MultipartWriter { boundary: gen, .. }, true;
     }
-    guard boundary.len <= MULTIPART_MAX_BOUNDARY_LEN &&
+    guard boundary.len <= rfc::MULTIPART_MAX_BOUNDARY_LEN &&
         http_internal::validate_raw_boundary_chars(boundary) else {
         return MultipartWriter { .. }, false;
     }

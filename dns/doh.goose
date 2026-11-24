@@ -7,6 +7,7 @@ namespace dns;
 
 import std;
 import core;
+import rfc.dns;
 import .wire;
 import .internal;
 
@@ -24,7 +25,7 @@ fn build_doh_post_body<B>(domain: const u8[:], qtype: u16, tx_id: u16, out: B&) 
     defer if !committed { out.resize(saved_len); };
     guard build_query(domain, qtype, tx_id, out) else { return false; }
     let msg_len = out.len - saved_len;
-    guard msg_len >= 12 && msg_len <= dns_internal::DOH_MAX_MESSAGE_OCTETS else { return false; }
+    guard msg_len >= rfc::DNS_HEADER_LEN && msg_len <= rfc::DOH_MAX_MESSAGE_OCTETS else { return false; }
     committed = true;
     return true;
 }

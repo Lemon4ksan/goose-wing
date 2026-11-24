@@ -33,7 +33,7 @@ import .prof_hooks;
 import .pipeline;
 
 fn populate_cached_response(cache: const server::HttpRouteCache&, res: http::Response&) -> wire::StageVerdict {
-    res.status_code = 200;
+    res.status_code = rfc::STATUS_OK;
     let _ = res.body.try_set(cache.wire[..]);
     if cache.content_type.len > 0 {
         if !res.headers.append_known_pipeline_header(
@@ -60,7 +60,7 @@ fn populate_cached_response(cache: const server::HttpRouteCache&, res: http::Res
             let _ = http::append_header(res.headers, rfc::HEADER_ETAG, cache.etag[..]);
         }
     }
-    return wire::StageVerdict.ShortCircuit { status_code: 200 };
+    return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_OK as u16 };
 }
 
 fn populate_missing_response_etag(res: http::Response&, memo: server::ServerCompressAndEtagMemo&) {
@@ -372,9 +372,9 @@ fn stage_server_etag(
     if inm.len > 0 && (req.method[..] == "GET" || req.method[..] == "HEAD") {
         let parsed = http::parse_etag(etag_slice);
         if http::match_if_none_match(inm, parsed) {
-            res.status_code = 304;
+            res.status_code = rfc::STATUS_NOT_MODIFIED;
             res.body.clear();
-            return wire::StageVerdict.ShortCircuit { status_code: 304 };
+            return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_NOT_MODIFIED as u16 };
         }
     }
     return wire::StageVerdict.Continue;

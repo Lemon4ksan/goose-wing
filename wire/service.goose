@@ -7,12 +7,7 @@ namespace wire;
 import std;
 import core;
 import .pipeline;
-
-// RFC 9110 Section 15.5.22: 429 (Too Many Requests) - status code returned on rate-limit rejection.
-const SERVICE_STATUS_TOO_MANY_REQUESTS: u16 = 429;
-
-// RFC 9110 Section 15.6.4: 503 (Service Unavailable) - status code returned when circuit breaker is open.
-const SERVICE_STATUS_UNAVAILABLE: u16 = 503;
+import rfc.http;
 
 // Default error code returned when a retry loop terminates without a valid attempt.
 const SERVICE_ERR_EXCHANGE_ABORTED: i32 = -1;
@@ -161,7 +156,7 @@ fn exchange<Inner, Limiter, Req, Res>(
     let eff_now = if svc.now_ns > 0 { svc.now_ns } else { core::sim_now_ns() as u64 };
     if !svc.limiter.allow_service_key(key, eff_now) {
         svc.rejected_count = core::add_sat_u64(svc.rejected_count, 1);
-        return StageVerdict.ShortCircuit { status_code: SERVICE_STATUS_TOO_MANY_REQUESTS };
+        return StageVerdict.ShortCircuit { status_code: rfc::STATUS_TOO_MANY_REQUESTS };
     }
     return svc.inner.exchange(req, res);
 }
@@ -243,7 +238,7 @@ inline fn record_breaker_outcome<Inner>(svc: CircuitBreakerService<Inner>&, verd
 // Short-circuits with 503 when `Open` before `open_until_ms`, probes in `HalfOpen`, and trips on `Abort`.
 fn exchange<Inner, Req, Res>(svc: CircuitBreakerService<Inner>&, req: const Req&, res: Res&) -> StageVerdict {
     if svc.is_breaker_open() {
-        return StageVerdict.ShortCircuit { status_code: SERVICE_STATUS_UNAVAILABLE };
+        return StageVerdict.ShortCircuit { status_code: rfc::STATUS_SERVICE_UNAVAILABLE };
     }
     if svc.state == BreakerState.Open {
         svc.state = BreakerState.HalfOpen;

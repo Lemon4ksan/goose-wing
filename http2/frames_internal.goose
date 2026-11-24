@@ -11,9 +11,6 @@ import .framing;
 
 // ---- Extension Frame Constants & Helpers (RFC 8336 / RFC 7838) -----------
 
-// RFC 8336 Section 2.1: Syntax - Reserved low-nibble flags (0x01..0x08) on ORIGIN frames.
-const H2_ORIGIN_RESERVED_FLAGS: u8 = 0x0F;
-
 checkfree inline fn h2_read_be_u16(s: const u8[:]) -> u16 {
     if s.len < 2 { return 0; }
     return ((s[0] as u16) << 8) | s[1];

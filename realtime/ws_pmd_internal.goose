@@ -7,6 +7,7 @@ namespace realtime_internal;
 import std;
 import core;
 import rfc.http;
+import rfc.h2;
 import rfc.ws;
 import http.headers;
 import http.request;
@@ -664,12 +665,7 @@ fn validate_ws_upgrade_headers(req: const http::Request&, out_resp: http::Respon
 }
 
 inline fn is_forbidden_h2_ws_header(name: const u8[:]) -> bool {
-    return name.eq_ascii_fold("connection") ||
-           name.eq_ascii_fold("upgrade") ||
-           name.eq_ascii_fold("keep-alive") ||
-           name.eq_ascii_fold("transfer-encoding") ||
-           name.eq_ascii_fold("proxy-connection") ||
-           name.eq_ascii_fold("sec-websocket-key");
+    return rfc::is_connection_specific_header(name) || name.eq_ascii_fold("sec-websocket-key");
 }
 
 fn format_h2_websocket_response(res: http::Response&, subprotocol: const u8[:] = "") {

@@ -182,6 +182,13 @@ inline fn is_h2_reserved_setting_in_h3(id: u64) -> bool {
 
 // ---- QUIC Stream Flags, Initial Salts & Loss Recovery (RFC 9000, 9001, 9002)
 
+// RFC 9000 Section 2.1: Stream Types and Identifiers - lowest two stream ID bits.
+const QUIC_STREAM_TYPE_MASK: u64 = 0x03;
+const QUIC_CLIENT_BIDI_TYPE: u64 = 0x00;
+const QUIC_CLIENT_UNI_TYPE:  u64 = 0x02;
+// RFC 9000 Section 20.1: Transport Error Codes - CRYPTO_ERROR range base (0x0100..0x01ff).
+const QUIC_CRYPTO_ERROR_BASE: u64 = 0x0100;
+
 const QUIC_STREAM_FLAG_FIN: u64 = 0x01; // RFC 9000 Section 19.8
 const QUIC_STREAM_FLAG_LEN: u64 = 0x02; // RFC 9000 Section 19.8
 const QUIC_STREAM_FLAG_OFF: u64 = 0x04; // RFC 9000 Section 19.8
@@ -251,33 +258,19 @@ const MASQUE_PROTOCOL_CONNECT_IP:  const u8[:] = "connect-ip";       // RFC 9484
 const MASQUE_CAPSULE_HEADER:       const u8[:] = "capsule-protocol"; // RFC 9297 Section 3.4
 const MASQUE_CAPSULE_VALUE:        const u8[:] = "?1";               // RFC 9297 Section 3.4
 
-const WEBTRANSPORT_PROTOCOL:              const u8[:] = "webtransport";
-const SETTINGS_WEBTRANSPORT_MAX_SESSIONS: u64         = 0x2b603742;
-const STREAM_TYPE_WEBTRANSPORT:           u64         = 0x54;
-const WEBTRANSPORT_BIDI_SIGNAL:           u64         = 0x41;
-const WEBTRANSPORT_ERROR_FIRST:           u64         = 0x52e4a40fa8db;
-const WEBTRANSPORT_ERROR_LAST:            u64         = 0x52e5ac983162;
+const WEBTRANSPORT_PROTOCOL: const u8[:] = "webtransport";
+// draft-ietf-masque-h3-datagram-00: legacy H3_DATAGRAM setting identifier.
+const H3_SETTINGS_H3_DATAGRAM_DRAFT00: u64 = 0x276;
+// draft-ietf-webtrans-http3: ENABLE_WEBTRANSPORT setting identifier.
+const H3_SETTINGS_ENABLE_WEBTRANSPORT: u64 = 0x2b603742;
+// draft-ietf-webtrans-http3 Section 3.1: WEBTRANSPORT_MAX_SESSIONS setting identifier.
+const H3_SETTINGS_WEBTRANSPORT_MAX_SESSIONS: u64 = 0xc671706a;
+const STREAM_TYPE_WEBTRANSPORT:              u64 = 0x54;
+const WEBTRANSPORT_BIDI_SIGNAL:              u64 = 0x41;
+const WEBTRANSPORT_ERROR_FIRST:              u64 = 0x52e4a40fa8db;
+const WEBTRANSPORT_ERROR_LAST:               u64 = 0x52e5ac983162;
 
-// ---- DNS, HTTPS/SVCB RR, Happy Eyeballs & IP ECN (RFC 1035, 9460, 8305, 3168)
-
-const DNS_QTYPE_A:     u16 = 1;  // RFC 1035 Section 3.2.2
-const DNS_QTYPE_AAAA:  u16 = 28; // RFC 8484 Section 4.1
-const DNS_QTYPE_SVCB:  u16 = 64; // RFC 9460 Section 14.1
-const DNS_QTYPE_HTTPS: u16 = 65; // RFC 9460 Section 14.2
-const DNS_QCLASS_IN:   u16 = 1;  // RFC 1035 Section 3.2.4
-
-const DNS_RCODE_NOERROR:  u8 = 0; // RFC 1035 Section 4.1.1
-const DNS_RCODE_FORMERR:  u8 = 1; // RFC 1035 Section 4.1.1
-const DNS_RCODE_SERVFAIL: u8 = 2; // RFC 1035 Section 4.1.1
-const DNS_RCODE_NXDOMAIN: u8 = 3; // RFC 1035 Section 4.1.1
-
-const SVC_PARAM_MANDATORY:       u16 = 0; // RFC 9460 Section 14.3.2
-const SVC_PARAM_ALPN:            u16 = 1; // RFC 9460 Section 14.3.2
-const SVC_PARAM_NO_DEFAULT_ALPN: u16 = 2; // RFC 9460 Section 14.3.2
-const SVC_PARAM_PORT:            u16 = 3; // RFC 9460 Section 14.3.2
-const SVC_PARAM_IPV4HINT:        u16 = 4; // RFC 9460 Section 14.3.2
-const SVC_PARAM_ECH:             u16 = 5; // RFC 9460 Section 14.3.2
-const SVC_PARAM_IPV6HINT:        u16 = 6; // RFC 9460 Section 14.3.2
+// ---- Happy Eyeballs & IP ECN (RFC 8305, RFC 3168) ----------------------
 
 const HE_RESOLUTION_DELAY_MS:            i64 = 50;   // RFC 8305 Section 8
 const HE_FIRST_ADDRESS_FAMILY_COUNT:     i32 = 1;    // RFC 8305 Section 8

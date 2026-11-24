@@ -34,12 +34,7 @@ inline fn cork_flush_error_code(flushed: i32, is_empty: bool) -> i32 {
 // ---- Shared Wire Egress & Flush Primitives ---------------------------------
 
 inline fn stream_is_hop_by_hop_header(name: const u8[:]) -> bool {
-    return name.eq_ascii_fold("connection") ||
-        name.eq_ascii_fold("keep-alive") ||
-        name.eq_ascii_fold("proxy-connection") ||
-        name.eq_ascii_fold("transfer-encoding") ||
-        name.eq_ascii_fold("upgrade") ||
-        name.eq_ascii_fold("te");
+    return rfc::is_connection_specific_header(name) || name.eq_ascii_fold("te");
 }
 
 fn stream_flush_pending_ctrl(stream: server::ResponseStream&) -> server::StreamWriteStatus {

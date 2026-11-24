@@ -7,6 +7,7 @@ namespace security_internal;
 import std;
 import core;
 import rfc.http;
+import rfc.tls;
 
 // ---- HPKE (RFC 9180) internal helpers --------------------------------------
 
@@ -46,7 +47,7 @@ inline fn is_valid_hpke_aead(aead_id: u16) -> bool {
     return aead_id == rfc::HPKE_AEAD_AES_128_GCM ||
         aead_id == rfc::HPKE_AEAD_AES_256_GCM ||
         aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 ||
-        aead_id == security::HPKE_AEAD_EXPORT_ONLY;
+        aead_id == rfc::HPKE_AEAD_EXPORT_ONLY;
 }
 
 fn derive_kem_shared_secret(
@@ -136,7 +137,7 @@ fn hpke_key_schedule_base(
 
     var key_len:   u16 = 0;
     var nonce_len: u16 = 0;
-    if aead_id != security::HPKE_AEAD_EXPORT_ONLY {
+    if aead_id != rfc::HPKE_AEAD_EXPORT_ONLY {
         key_len = if aead_id == rfc::HPKE_AEAD_AES_128_GCM { 16 } else { 32 };
         nonce_len = 12;
         guard security::hpke_labeled_expand(
@@ -185,7 +186,7 @@ fn hpke_dispatch_seal<B>(
     out:     B&,
 ) -> bool {
     // RFC 9180 Section 5.2: Encryption and Decryption - Export-only contexts reject AEAD Seal operations.
-    guard aead_id != security::HPKE_AEAD_EXPORT_ONLY && is_valid_hpke_aead(aead_id) else { return false; }
+    guard aead_id != rfc::HPKE_AEAD_EXPORT_ONLY && is_valid_hpke_aead(aead_id) else { return false; }
     guard core::add_sat_i64(out.len, core::add_sat_i64(pt.len, 16)) <= out.cap else {
         return false;
     }

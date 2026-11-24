@@ -7,6 +7,7 @@ namespace client_internal;
 import std;
 import core;
 import rfc.http;
+import rfc.dns;
 import rfc.tls;
 import dns.cache;
 import http.response;

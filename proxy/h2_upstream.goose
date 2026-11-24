@@ -40,7 +40,6 @@ const H2_UP_PING_WIRE_LEN:          i64 = 17;
 const H2_UP_GOAWAY_WIRE_LEN:        i64 = 17;
 const H2_UP_SETTINGS_PAIR_LEN:      i64 = 6;
 const H2_UP_PRIORITY_LEN:           i64 = 5;
-const H2_UP_MAX_SID:                u32 = 0x7FFFFFFF;
 const H2_UP_DEF_HDR_LIST:           u32 = 65536;
 const H2_UP_HEADER_OVERHEAD_I64:    i64 = 32;
 const H2_UP_PSEUDO_METHOD_BASE:     i64 = 39;
@@ -344,7 +343,7 @@ fn emit_up_goaway_wire(slot: H2UpSlot&, error_code: u32) -> bool {
         return false;
     }
     var p: u8[..8] = [];
-    p.append_u32_be(slot.sent_goaway_last_sid & H2_UP_MAX_SID);
+    p.append_u32_be(slot.sent_goaway_last_sid & rfc::H2_MAX_STREAM_ID);
     p.append_u32_be(error_code);
     return emit_up_frame(slot, rfc::H2_FRAME_GOAWAY, 0, 0, p[..]);
 }
@@ -548,7 +547,7 @@ fn h2_upstream_can_open_stream(sess: const H2UpstreamSession&) -> bool {
     if slot.protocol_failed || slot.local_goaway_sent || slot.conn.goaway_received {
         return false;
     }
-    if slot.next_client_sid > H2_UP_MAX_SID {
+    if slot.next_client_sid > rfc::H2_MAX_STREAM_ID {
         return false;
     }
     let active = slot.conn.active_stream_count;
@@ -725,7 +724,7 @@ fn should_skip_h2_req_header(
     if low_name == "te" {
         return true;
     }
-    if h2_internal::is_forbidden_h2_hop_by_hop(low_name) {
+    if h2_internal::is_forbidden_h2_trailer(low_name) {
         return true;
     }
     return http::is_token_in_connection_header_map(raw_hdrs, low_name);
@@ -977,7 +976,7 @@ fn h2_upstream_open_stream(
         return 0, false;
     }
     let sid = slot.next_client_sid;
-    guard sid <= H2_UP_MAX_SID && (sid & 1) == 1 else {
+    guard sid <= rfc::H2_MAX_STREAM_ID && (sid & 1) == 1 else {
         return 0, false;
     }
     let active = slot.conn.active_stream_count;
@@ -1765,7 +1764,7 @@ fn handle_up_goaway(slot: H2UpSlot&, hdr: const http2::FrameHeader&, payload: co
     guard payload.len >= H2_UP_GOAWAY_LEN else {
         return fail_up_conn(slot, rfc::H2_ERR_FRAME_SIZE_ERROR);
     }
-    let last_sid = core::read_be_u32(payload, 0) & H2_UP_MAX_SID;
+    let last_sid = core::read_be_u32(payload, 0) & rfc::H2_MAX_STREAM_ID;
     let err_code = core::read_be_u32(payload, 4);
     guard rfc::validate_goaway_last_stream_id(last_sid, false) else {
         return fail_up_conn(slot, rfc::H2_ERR_PROTOCOL_ERROR);
@@ -1808,7 +1807,7 @@ fn handle_up_window_update(slot: H2UpSlot&, hdr: const http2::FrameHeader&, payl
         return fail_up_conn(slot, rfc::H2_ERR_FRAME_SIZE_ERROR);
     }
     let sid = hdr.stream_id;
-    let inc = core::read_be_u32(payload, 0) & H2_UP_MAX_SID;
+    let inc = core::read_be_u32(payload, 0) & rfc::H2_MAX_STREAM_ID;
     let bad_target = sid != 0 && ((sid & 1) == 0 || http2::is_conn_error_on_window_update(slot.conn, sid));
     if inc == 0 {
         if sid == 0 || bad_target {

@@ -628,7 +628,7 @@ fn serialize_bad_request_error<B>(
     wire_out:      B&,
     header_policy: ServerHeaderPolicy = ServerHeaderPolicy.Standard,
 ) {
-    var err_resp = http::Response { status_code: 400, .. };
+    var err_resp = http::Response { status_code: rfc::STATUS_BAD_REQUEST, .. };
     serialize_http1_response(err_resp, server_name, wire_out, 0, header_policy);
 }
 

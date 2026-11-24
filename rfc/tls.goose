@@ -165,14 +165,6 @@ inline fn is_permitted_sh_extension(ext_type: u16) -> bool {
     };
 }
 
-// RFC 8446 Section 4.2: Extensions - Forbidden extension in ServerHello.
-inline fn is_forbidden_sh_extension(ext_type: u16) -> bool {
-    if rfc::is_permitted_sh_extension(ext_type) {
-        return false;
-    }
-    return rfc::is_known_tls_extension(ext_type);
-}
-
 // RFC 8446 Section 4.2: Extensions - Table 2 indicates extensions permitted in HelloRetryRequest.
 inline fn is_permitted_hrr_extension(ext_type: u16) -> bool {
     return match ext_type {
@@ -182,14 +174,6 @@ inline fn is_permitted_hrr_extension(ext_type: u16) -> bool {
         rfc::EXT_ENCRYPTED_CLIENT_HELLO => true,
         _ => false,
     };
-}
-
-// RFC 8446 Section 4.2: Extensions - Forbidden extension in HelloRetryRequest.
-inline fn is_forbidden_hrr_extension(ext_type: u16) -> bool {
-    if rfc::is_permitted_hrr_extension(ext_type) {
-        return false;
-    }
-    return rfc::is_known_tls_extension(ext_type);
 }
 
 // RFC 8446 Section 4.2: Extensions - Table 2 indicates extensions permitted in EncryptedExtensions.
@@ -344,6 +328,7 @@ const HPKE_KDF_HKDF_SHA256:              u16 = 0x0001;  // RFC 9180 Section 7.2
 const HPKE_AEAD_AES_128_GCM:             u16 = 0x0001;  // RFC 9180 Section 7.3
 const HPKE_AEAD_AES_256_GCM:             u16 = 0x0002;  // RFC 9180 Section 7.3
 const HPKE_AEAD_CHACHA20_POLY1305:       u16 = 0x0003;  // RFC 9180 Section 7.3
+const HPKE_AEAD_EXPORT_ONLY:             u16 = 0xFFFF;  // RFC 9180 Section 7.3
 
 const GROUP_SECP256R1:               u16 = 0x0017; // RFC 8446 Section 4.2.7
 const GROUP_SECP384R1:               u16 = 0x0018; // RFC 8446 Section 4.2.7
@@ -399,27 +384,38 @@ const ASN1_TAG_UTC_TIME:         u8 = 0x17;
 const ASN1_TAG_GENERALIZED_TIME: u8 = 0x18;
 const ASN1_TAG_SEQUENCE:         u8 = 0x30;
 const ASN1_TAG_SET:              u8 = 0x31;
+// ASN.1 context-specific constructed tag [0] (e.g. CSR attributes, RSASSA-PSS params).
+const ASN1_TAG_CTX0_CONSTRUCTED: u8 = 0xA0;
+// RFC 5280 Section 4.2.1.6: Subject Alternative Name - GeneralName dNSName [2].
+const ASN1_TAG_GENERAL_NAME_DNS: u8 = 0x82;
 
-const OID_COMMON_NAME:            const u8[3]  = [0x55, 0x04, 0x03];
-const OID_BASIC_CONSTRAINTS:      const u8[3]  = [0x55, 0x1D, 0x13];
-const OID_CRL_NUMBER:             const u8[3]  = [0x55, 0x1D, 0x14]; // RFC 5280 Section 5.2.3
-const OID_KEY_USAGE:              const u8[3]  = [0x55, 0x1D, 0x0F];
-const OID_SUBJECT_ALT_NAME:       const u8[3]  = [0x55, 0x1D, 0x11];
-const OID_EC_PUBLIC_KEY:          const u8[7]  = [0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01];
-const OID_SECP256R1:              const u8[8]  = [0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07];
-const OID_SECP384R1:              const u8[5]  = [0x2B, 0x81, 0x04, 0x00, 0x22];
-const OID_RSA_ENCRYPTION:         const u8[9]  = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01];
-const OID_ED25519:                const u8[3]  = [0x2B, 0x65, 0x70];
-const OID_SUBJECT_KEY_IDENTIFIER: const u8[3]  = [0x55, 0x1D, 0x0E];
-const OID_NAME_CONSTRAINTS:       const u8[3]  = [0x55, 0x1D, 0x1E];
-const OID_AUTH_KEY_IDENTIFIER:    const u8[3]  = [0x55, 0x1D, 0x23];
-const OID_POLICY_CONSTRAINTS:     const u8[3]  = [0x55, 0x1D, 0x24];
-const OID_EXT_KEY_USAGE:          const u8[3]  = [0x55, 0x1D, 0x25]; // RFC 5280 Section 4.2.1.12
-const OID_INHIBIT_ANY_POLICY:     const u8[3]  = [0x55, 0x1D, 0x36];
-const OID_AIA:                    const u8[8]  = [0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x01]; // RFC 5280 §4.2.2.1
-const OID_TLS_FEATURE:            const u8[8]  = [0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x18];
-const OID_CT_PRECERT_SCTS:        const u8[10] = [0x2B, 0x06, 0x01, 0x04, 0x01, 0xD6, 0x79, 0x02, 0x04, 0x02];
-const OID_OCSP_BASIC:             const u8[9]  = [0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01, 0x01];
+const OID_COMMON_NAME:             const u8[3]  = [0x55, 0x04, 0x03];
+const OID_BASIC_CONSTRAINTS:       const u8[3]  = [0x55, 0x1D, 0x13];
+const OID_CRL_NUMBER:              const u8[3]  = [0x55, 0x1D, 0x14]; // RFC 5280 Section 5.2.3
+const OID_KEY_USAGE:               const u8[3]  = [0x55, 0x1D, 0x0F];
+const OID_SUBJECT_ALT_NAME:        const u8[3]  = [0x55, 0x1D, 0x11];
+const OID_EC_PUBLIC_KEY:           const u8[7]  = [0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01];
+const OID_SECP256R1:               const u8[8]  = [0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07];
+const OID_SECP384R1:               const u8[5]  = [0x2B, 0x81, 0x04, 0x00, 0x22];
+const OID_RSA_ENCRYPTION:          const u8[9]  = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01];
+const OID_MGF1:                    const u8[9]  = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x08];
+const OID_EMAIL_ADDRESS:           const u8[9]  = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x01];
+const OID_PKCS9_EXTENSION_REQUEST: const u8[9]  = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x0E];
+const OID_ED25519:                 const u8[3]  = [0x2B, 0x65, 0x70];
+const OID_OCSP_SHA1:               const u8[5]  = [0x2B, 0x0E, 0x03, 0x02, 0x1A];
+const OID_OCSP_SHA256:             const u8[9]  = [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
+const OID_HASH_SHA384:             const u8[9]  = [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02];
+const OID_HASH_SHA512:             const u8[9]  = [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03];
+const OID_SUBJECT_KEY_IDENTIFIER:  const u8[3]  = [0x55, 0x1D, 0x0E];
+const OID_NAME_CONSTRAINTS:        const u8[3]  = [0x55, 0x1D, 0x1E];
+const OID_AUTH_KEY_IDENTIFIER:     const u8[3]  = [0x55, 0x1D, 0x23];
+const OID_POLICY_CONSTRAINTS:      const u8[3]  = [0x55, 0x1D, 0x24];
+const OID_EXT_KEY_USAGE:           const u8[3]  = [0x55, 0x1D, 0x25]; // RFC 5280 Section 4.2.1.12
+const OID_INHIBIT_ANY_POLICY:      const u8[3]  = [0x55, 0x1D, 0x36];
+const OID_AIA:                     const u8[8]  = [0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x01]; // RFC 5280 §4.2.2.1
+const OID_TLS_FEATURE:             const u8[8]  = [0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x18];
+const OID_CT_PRECERT_SCTS:         const u8[10] = [0x2B, 0x06, 0x01, 0x04, 0x01, 0xD6, 0x79, 0x02, 0x04, 0x02];
+const OID_OCSP_BASIC:              const u8[9]  = [0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01, 0x01];
 
 const OID_EKU_SERVER_AUTH:  const u8[8] = [0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01]; // RFC 5280 Section 4.2.1.12
 const OID_EKU_CLIENT_AUTH:  const u8[8] = [0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02]; // RFC 5280 Section 4.2.1.12
@@ -490,12 +486,18 @@ const OCSP_STATUS_TRY_LATER:      u8 = 3;
 const OCSP_STATUS_SIG_REQUIRED:   u8 = 5;
 const OCSP_STATUS_UNAUTHORIZED:   u8 = 6;
 
-const SCT_VERSION_V1:        u8  = 0;  // RFC 6962 Section 3.2
-const SCT_V1_HEADER_MIN_LEN: i64 = 43; // RFC 6962 Section 3.2
-const SCT_LOG_ID_LEN:        i64 = 32; // RFC 6962 Section 3.2
-const SCT_HASH_ALG_SHA256:   u8  = 4;  // RFC 6962 Section 3.2
-const SCT_SIG_ALG_RSA:       u8  = 1;  // RFC 6962 Section 3.2
-const SCT_SIG_ALG_ECDSA:     u8  = 3;  // RFC 6962 Section 3.2
+// Certificate Transparency v1 wire constants (RFC 6962 Section 3.2).
+const SCT_VERSION_V1:              u8  = 0;
+const SCT_SIG_TYPE_CERT_TIMESTAMP: u8  = 0;
+const SCT_ENTRY_TYPE_X509:         u16 = 0;
+const SCT_ENTRY_TYPE_PRECERT:      u16 = 1;
+const SCT_V1_HEADER_MIN_LEN:       i64 = 43;
+const SCT_LOG_ID_LEN:              i64 = 32;
+const SCT_HASH_ALG_SHA256:         u8  = 4;
+const SCT_SIG_ALG_RSA:             u8  = 1;
+const SCT_SIG_ALG_ECDSA:           u8  = 3;
+// RFC 6066 Section 8: Certificate Status Request - CertificateStatusType ocsp(1).
+const CERT_STATUS_TYPE_OCSP: u8 = 1;
 
 // ---- TLS GREASE (RFC 8701 Section 2) -------------------------------------
 

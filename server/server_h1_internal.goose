@@ -165,13 +165,13 @@ fn check_and_apply_connection_close(req: const http::Request&, res: http::Respon
 inline fn apply_shutdown_connection_close(server: server::HttpServer&, res: http::Response&) {
     guard server.honor_shutdown_flag && net::shutdown_requested() else { return; }
     server.is_running = false;
-    if res.status_code != 101 {
+    if res.status_code != rfc::STATUS_SWITCHING_PROTOCOLS {
         http::set_header(res, "Connection", "close");
     }
 }
 
 inline fn reset_server_response_fixed(res: http::Response&) {
-    res.status_code = 200;
+    res.status_code = rfc::STATUS_OK;
     res.presence_mask = 0;
     res.headers.clear();
     res.trailers.clear();
@@ -259,7 +259,7 @@ fn authorize_ws_upgrade_stage<Stage, B>(
             false
         },
         _ => {
-            if res.status_code < 400 { res.status_code = 403; }
+            if res.status_code < rfc::STATUS_BAD_REQUEST { res.status_code = rfc::STATUS_FORBIDDEN; }
             false
         },
     };
@@ -507,7 +507,7 @@ fn try_handle_pipelined_websocket<B>(
 }
 
 inline fn reset_server_response_fast(res: http::Response&) {
-    res.status_code = 200;
+    res.status_code = rfc::STATUS_OK;
     res.presence_mask = 0;
     res.headers.clear();
     res.trailers.clear();

@@ -184,9 +184,9 @@ fn evaluate_server_integrity_and_crypto(
         && http::header(req, rfc::HEADER_CONTENT_DIGEST).len > 0
         && !http::verify_request_content_digest(req) {
         if cfg.emit_problem_details {
-            http::respond_problem(res, 400, "Bad Request", "Content-Digest verification failed");
+            http::respond_problem(res, rfc::STATUS_BAD_REQUEST, "Bad Request", "Content-Digest verification failed");
         } else {
-            res.status_code = 400;
+            res.status_code = rfc::STATUS_BAD_REQUEST;
         }
         return false;
     }
@@ -194,9 +194,9 @@ fn evaluate_server_integrity_and_crypto(
         && http::header(req, rfc::HEADER_REPR_DIGEST).len > 0
         && !http::verify_request_repr_digest(req) {
         if cfg.emit_problem_details {
-            http::respond_problem(res, 400, "Bad Request", "Repr-Digest verification failed");
+            http::respond_problem(res, rfc::STATUS_BAD_REQUEST, "Bad Request", "Repr-Digest verification failed");
         } else {
-            res.status_code = 400;
+            res.status_code = rfc::STATUS_BAD_REQUEST;
         }
         return false;
     }
@@ -207,13 +207,13 @@ fn evaluate_server_integrity_and_crypto(
             cfg.dpop_replay_cache, dpop_jwt, cfg.dpop_public_key[..], req.method[..], req.url[..], now_sec,
         );
         if !ok_dpop {
-            res.status_code = 401;
+            res.status_code = rfc::STATUS_UNAUTHORIZED;
             return false;
         }
     }
     if cfg.sig_public_key.len > 0 {
         if !http::verify_request_ed25519(req, cfg.sig_key_id[..], cfg.sig_public_key[..], now_sec) {
-            res.status_code = 401;
+            res.status_code = rfc::STATUS_UNAUTHORIZED;
             return false;
         }
     }
@@ -349,7 +349,7 @@ fn execute_found_route_handler<UserStage>(
     user_stage:   UserStage&,
 ) -> server::PipelineOutcome {
     if req.method[..] == rfc::METHOD_QUERY && http::header(req, rfc::HEADER_CONTENT_TYPE).len == 0 {
-        res.status_code = 400; // Bad Request
+        res.status_code = rfc::STATUS_BAD_REQUEST;
         return server::PipelineOutcome.Handled;
     }
 
@@ -396,7 +396,7 @@ fn execute_found_route_handler<UserStage>(
     }
 
     if res.status_code == 0 {
-        res.status_code = 200;
+        res.status_code = rfc::STATUS_OK;
         apply_route_payload(cfg, f.handler_id, res);
     }
     server_prof::lit_prof_leave(_prof_h);
@@ -418,17 +418,18 @@ fn dispatch_matched_route<UserStage>(
     match match_res {
         NotFound => {
             if cfg.emit_problem_details {
-                http::respond_problem(res, 404, "Not Found", "The requested resource was not found");
+                http::respond_problem(res, rfc::STATUS_NOT_FOUND, "Not Found", "The requested resource was not found");
             } else {
-                res.status_code = 404; // Not Found
+                res.status_code = rfc::STATUS_NOT_FOUND;
             }
             return server::PipelineOutcome.RouteNotFound;
         },
         MethodNotAllowed mna => {
             if cfg.emit_problem_details {
-                http::respond_problem(res, 405, "Method Not Allowed", "The HTTP method is not allowed");
+                let code = rfc::STATUS_METHOD_NOT_ALLOWED;
+                http::respond_problem(res, code, "Method Not Allowed", "The HTTP method is not allowed");
             } else {
-                res.status_code = 405; // Method Not Allowed
+                res.status_code = rfc::STATUS_METHOD_NOT_ALLOWED;
             }
             http::set_header(res, rfc::HEADER_ALLOW, mna.allow_header[..]);
             return server::PipelineOutcome.MethodNotAllowed;
@@ -510,15 +511,15 @@ fn verify_pipeline_body_stream<UserStage>(
     }
     var body_stream, ok_bs = server::begin_server_body_stream(req, sctx.ingress_mask);
     guard ok_bs else {
-        res.status_code = 400;
+        res.status_code = rfc::STATUS_BAD_REQUEST;
         return false;
     }
     let chunk_v = feed_server_body_chunk(cfg, body_stream, req, sctx, req.body[..], true, res);
     match chunk_v {
         Continue => {},
         _ => {
-            if res.status_code < 400 {
-                res.status_code = 400;
+            if res.status_code < rfc::STATUS_BAD_REQUEST {
+                res.status_code = rfc::STATUS_BAD_REQUEST;
             }
             return false;
         },
@@ -527,8 +528,8 @@ fn verify_pipeline_body_stream<UserStage>(
     return match hook_v {
         Continue => true,
         _ => {
-            if res.status_code < 400 {
-                res.status_code = 400;
+            if res.status_code < rfc::STATUS_BAD_REQUEST {
+                res.status_code = rfc::STATUS_BAD_REQUEST;
             }
             false
         },

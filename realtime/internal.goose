@@ -32,28 +32,17 @@ inline fn ws_buf_cap(b: const u8[>..]&) -> i64 {
 
 // ---- WebSocket Framing & Session Internal Helpers ------------------------
 
-// RFC 6455 Section 5.2: Base Framing Protocol - Frame header bitmasks and length sentinels.
-const WS_FIN_BIT:          u8  = 0x80;
-const WS_RSV1_BIT:         u8  = 0x40;
-const WS_RSV2_BIT:         u8  = 0x20;
-const WS_RSV3_BIT:         u8  = 0x10;
-const WS_OPCODE_MASK:      u8  = 0x0F;
-const WS_MASK_BIT:         u8  = 0x80;
-const WS_PAYLOAD_LEN_MASK: u8  = 0x7F;
-const WS_LEN16_SENTINEL:   u64 = 126;
-const WS_MAX_CONTROL_LEN:  u64 = 125;
-
 // Packs the first byte of an RFC 6455 Section 5.2 frame header (`FIN | RSV1..3 | Opcode`).
 //
 // Example:
 //   hdr = WsFrameHeader { fin: true, opcode: 1, .. }, eff_fin = true
 //   returns: 0x81
 inline fn pack_ws_frame_b0(hdr: const realtime::WsFrameHeader&, eff_fin: bool) -> u8 {
-    var b0: u8 = hdr.opcode & WS_OPCODE_MASK;
-    if eff_fin { b0 |= WS_FIN_BIT; }
-    if hdr.rsv1 { b0 |= WS_RSV1_BIT; }
-    if hdr.rsv2 { b0 |= WS_RSV2_BIT; }
-    if hdr.rsv3 { b0 |= WS_RSV3_BIT; }
+    var b0: u8 = hdr.opcode & rfc::WS_OPCODE_MASK;
+    if eff_fin { b0 |= rfc::WS_FIN_BIT; }
+    if hdr.rsv1 { b0 |= rfc::WS_RSV1_BIT; }
+    if hdr.rsv2 { b0 |= rfc::WS_RSV2_BIT; }
+    if hdr.rsv3 { b0 |= rfc::WS_RSV3_BIT; }
     return b0;
 }
 
@@ -63,19 +52,19 @@ fn try_encode_ws_header<B>(hdr: const realtime::WsFrameHeader&, out: B&) -> bool
     let eff_fin = if rfc::is_ws_control_opcode(hdr.opcode) { true } else { hdr.fin };
     hdr_buf.push(pack_ws_frame_b0(hdr, eff_fin));
 
-    let mask_bit: u8 = if hdr.masked { WS_MASK_BIT } else { 0x00 };
+    let mask_bit: u8 = if hdr.masked { rfc::WS_MASK_BIT } else { 0x00 };
 
     // RFC 6455 §5.5 & uWS #1407: Control frames MUST NOT exceed 125 bytes and MUST NEVER use extended length
     let eff_len = if rfc::is_ws_control_opcode(hdr.opcode) {
-        min(hdr.payload_len, WS_MAX_CONTROL_LEN)
+        min(hdr.payload_len, rfc::WS_MAX_CONTROL_LEN)
     } else {
         hdr.payload_len
     };
 
-    if eff_len <= WS_MAX_CONTROL_LEN {
+    if eff_len <= rfc::WS_MAX_CONTROL_LEN {
         hdr_buf.push(mask_bit | (eff_len as u8));
     } else if eff_len <= 65535 {
-        hdr_buf.push(mask_bit | 126);
+        hdr_buf.push(mask_bit | (rfc::WS_LEN16_SENTINEL as u8));
         hdr_buf.append_u16_be(eff_len as u16);
     } else {
         hdr_buf.push(mask_bit | 127);

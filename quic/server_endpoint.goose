@@ -39,7 +39,6 @@ const QUIC_SRV_SLAB_MASK:             u64 = 4095;
 const QUIC_SRV_MAX_DGRAM_OUT:         u64 = 1280;
 const QUIC_SRV_INIT_MAX_STREAMS_BIDI: u64 = 100;
 const QUIC_SRV_INIT_MAX_STREAMS_UNI:  u64 = 100;
-const QUIC_CRYPTO_ERROR_BASE:         u64 = 0x0100; // RFC 9000 Section 20.1
 
 // ---- Public Event & Handle Types -------------------------------------------
 
@@ -1350,7 +1349,7 @@ fn apply_tls_status(
 ) -> bool {
     if st == tls::QuicTlsStatus.AlertError {
         let alert = tls::quic_tls_server_last_alert(cslot.tls_srv);
-        let qerr = core::add_sat_u64(QUIC_CRYPTO_ERROR_BASE, tls::alert_to_u8(alert));
+        let qerr = core::add_sat_u64(rfc::QUIC_CRYPTO_ERROR_BASE, tls::alert_to_u8(alert));
         close_conn_with_error(eslot, cslot, qerr, "tls alert", false, now_ns);
         return false;
     }

@@ -17,29 +17,26 @@ import http3.qpack_codec;
 import http3.stream_internal;
 import http3.types;
 import quic.packet;
+import rfc.http;
 import rfc.h3_quic;
 
-const H3_EDGE_DATA_CHUNK_CAP:            u64 = 16384;
-const H3_EDGE_HDR_SECTION_CAP:           u64 = 65536;
-const H3_EDGE_CTRL_BUF_CAP:              u64 = 1024;
-const H3_EDGE_QENC_BUF_CAP:              u64 = 4096;
-const H3_EDGE_QDEC_BUF_CAP:              u64 = 1024;
-const H3_EDGE_COOKIE_BUF_CAP:            u64 = 65535;
-const H3_EDGE_MAX_HEADER_ENTRIES:        i64 = 512;
-const H3_EDGE_MAX_RETAINED_STREAMS:      i64 = 128;
-const H3_EDGE_MAX_UNI_PENDING:           i64 = 16;
-const H3_EDGE_MAX_IGNORED_UNI:           i64 = 1024;
-const H3_EDGE_QPACK_DEFAULT_CAP:         u64 = 4096;
-const H3_EDGE_QPACK_DEFAULT_BLOCKED:     u32 = 16;
-const H3_EDGE_FIELD_OVERHEAD:            u64 = 32;
-const H3_EDGE_STATUS_FIELD_OVERHEAD:     u64 = 39;
-const H3_EDGE_STATUS_MIN:                i32 = 100;
-const H3_EDGE_STATUS_SWITCHING_PROTOCOL: i32 = 101;
-const H3_EDGE_STATUS_MAX:                i32 = 599;
-const QUIC_STREAM_TYPE_MASK:             u64 = 0x03;
-const QUIC_CLIENT_BIDI_TYPE:             u64 = 0x00;
-const QUIC_CLIENT_UNI_TYPE:              u64 = 0x02;
-const H3_EDGE_VARINT_MAX_HEADER_BYTES:   i64 = 16;
+const H3_EDGE_DATA_CHUNK_CAP:          u64 = 16384;
+const H3_EDGE_HDR_SECTION_CAP:         u64 = 65536;
+const H3_EDGE_CTRL_BUF_CAP:            u64 = 1024;
+const H3_EDGE_QENC_BUF_CAP:            u64 = 4096;
+const H3_EDGE_QDEC_BUF_CAP:            u64 = 1024;
+const H3_EDGE_COOKIE_BUF_CAP:          u64 = 65535;
+const H3_EDGE_MAX_HEADER_ENTRIES:      i64 = 512;
+const H3_EDGE_MAX_RETAINED_STREAMS:    i64 = 128;
+const H3_EDGE_MAX_UNI_PENDING:         i64 = 16;
+const H3_EDGE_MAX_IGNORED_UNI:         i64 = 1024;
+const H3_EDGE_QPACK_DEFAULT_CAP:       u64 = 4096;
+const H3_EDGE_QPACK_DEFAULT_BLOCKED:   u32 = 16;
+const H3_EDGE_FIELD_OVERHEAD:          u64 = 32;
+const H3_EDGE_STATUS_FIELD_OVERHEAD:   u64 = 39;
+const H3_EDGE_STATUS_MIN:              i32 = 100;
+const H3_EDGE_STATUS_MAX:              i32 = 599;
+const H3_EDGE_VARINT_MAX_HEADER_BYTES: i64 = 16;
 
 enum H3EdgeEventKind {
     None,
@@ -2235,7 +2232,7 @@ fn h3_edge_feed_uni_stream(
     if slot.conn_failed {
         return false;
     }
-    if (stream_id & QUIC_STREAM_TYPE_MASK) != QUIC_CLIENT_UNI_TYPE || stream_id > rfc::QUIC_VARINT_MAX {
+    if (stream_id & rfc::QUIC_STREAM_TYPE_MASK) != rfc::QUIC_CLIENT_UNI_TYPE || stream_id > rfc::QUIC_VARINT_MAX {
         return emit_h3_protocol_error(slot_idx, stream_id, rfc::H3_ERR_STREAM_CREATION);
     }
     let end_flag = if fin { H3EdgeEndFlag.Fin } else { H3EdgeEndFlag.Open };
@@ -2278,7 +2275,7 @@ fn h3_edge_feed_bidi_stream(
     if slot.conn_failed {
         return false;
     }
-    if (stream_id & QUIC_STREAM_TYPE_MASK) != QUIC_CLIENT_BIDI_TYPE || stream_id > rfc::QUIC_VARINT_MAX {
+    if (stream_id & rfc::QUIC_STREAM_TYPE_MASK) != rfc::QUIC_CLIENT_BIDI_TYPE || stream_id > rfc::QUIC_VARINT_MAX {
         return emit_h3_protocol_error(slot_idx, stream_id, rfc::H3_ERR_STREAM_CREATION);
     }
     let st_idx, _ = find_or_create_h3_stream(slot_idx, stream_id);
@@ -2315,11 +2312,11 @@ fn h3_edge_reset_stream(sess: H3EdgeSession&, stream_id: u64) {
     let slot_idx, ok = resolve_h3_edge_slot(sess);
     guard ok else { return; }
     let slot .= g_h3_edge_slots[slot_idx];
-    if (stream_id & QUIC_STREAM_TYPE_MASK) == QUIC_CLIENT_UNI_TYPE {
+    if (stream_id & rfc::QUIC_STREAM_TYPE_MASK) == rfc::QUIC_CLIENT_UNI_TYPE {
         reset_h3_uni_stream(slot_idx, stream_id);
         return;
     }
-    guard (stream_id & QUIC_STREAM_TYPE_MASK) == QUIC_CLIENT_BIDI_TYPE else { return; }
+    guard (stream_id & rfc::QUIC_STREAM_TYPE_MASK) == rfc::QUIC_CLIENT_BIDI_TYPE else { return; }
     var prev: i64 = -1;
     var curr = slot.stream_head;
     while curr >= 0 {
@@ -2563,7 +2560,7 @@ fn h3_edge_encode_response_headers_slices(
     let slot .= g_h3_edge_slots[slot_idx];
     // RFC 9114 Section 4.3.2: Response Pseudo-Header Fields - Reject status outside 100..599 and forbid 101.
     if slot.conn_failed || status_code < H3_EDGE_STATUS_MIN || status_code > H3_EDGE_STATUS_MAX
-        || status_code == H3_EDGE_STATUS_SWITCHING_PROTOCOL
+        || status_code == rfc::STATUS_SWITCHING_PROTOCOLS
     {
         return false;
     }
@@ -2660,7 +2657,9 @@ fn h3_edge_encode_data_frame(data: const u8[:], out_wire: u8[>..]&) -> bool {
 // Encodes a server-to-client HTTP/3 GOAWAY frame for `last_stream_id`.
 // RFC 9114 Section 5.2: Connection Shutdown - Server GOAWAY carries a client-initiated bidi stream ID.
 fn h3_edge_encode_goaway(last_stream_id: u64, out_wire: u8[..32]&) -> bool {
-    if (last_stream_id & QUIC_STREAM_TYPE_MASK) != QUIC_CLIENT_BIDI_TYPE || last_stream_id > rfc::QUIC_VARINT_MAX {
+    if (last_stream_id & rfc::QUIC_STREAM_TYPE_MASK) != rfc::QUIC_CLIENT_BIDI_TYPE
+        || last_stream_id > rfc::QUIC_VARINT_MAX
+    {
         return false;
     }
     let saved_len = out_wire.len;

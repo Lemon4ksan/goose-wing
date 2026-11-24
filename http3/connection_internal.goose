@@ -20,7 +20,7 @@ import .stream_internal;
 // ---- Control & Push Unidirectional Stream Processing -----------------------
 
 fn handle_peer_origin_or_glitch(conn: http3::Connection&, frame_type: u64, payload: const u8[:]) -> u64 {
-    if frame_type == http3::H3_FRAME_ORIGIN {
+    if frame_type == rfc::H3_FRAME_ORIGIN {
         guard conn.role != http3::ConnRole.Server else {
             return rfc::H3_ERR_NO_ERROR;
         }

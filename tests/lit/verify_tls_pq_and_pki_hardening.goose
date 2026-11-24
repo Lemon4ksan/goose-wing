@@ -204,7 +204,7 @@ fn encode_pss_alg_id<B>(
     der_wrap(rfc::ASN1_TAG_SEQUENCE, mh_inner[..], mh_seq);
 
     var mgf_inner: u8[..64] = [];
-    der_append_tlv(mgf_inner, rfc::ASN1_TAG_OID, tls_internal::OID_MGF1[..]);
+    der_append_tlv(mgf_inner, rfc::ASN1_TAG_OID, rfc::OID_MGF1[..]);
     assert(mgf_inner.try_append(mh_seq[..]));
     var mgf_seq: u8[..72] = [];
     der_wrap(rfc::ASN1_TAG_SEQUENCE, mgf_inner[..], mgf_seq);
@@ -302,7 +302,7 @@ fn test_rsa_min_2048_and_strict_pss() {
 
     // Validate RSASSA-PSS-params parser: SHA-256 accepted; SHA-1, empty, or mismatched MGF1 rejected.
     var pss_alg_ok: u8[..160] = [];
-    encode_pss_alg_id(tls_internal::OID_OCSP_SHA256[..], tls_internal::OID_OCSP_SHA256[..], 32, pss_alg_ok);
+    encode_pss_alg_id(rfc::OID_OCSP_SHA256[..], rfc::OID_OCSP_SHA256[..], 32, pss_alg_ok);
     var c_ok = core::cursor_from(pss_alg_ok[..]);
     var seq_ok = core::cursor_from(pss_alg_ok[..0]);
     var oid_ok = core::cursor_from(pss_alg_ok[..0]);
@@ -312,7 +312,7 @@ fn test_rsa_min_2048_and_strict_pss() {
     assert(ok_h && parsed_h == tls_internal::PSS_HASH_SHA256);
 
     var pss_alg_sha1: u8[..160] = [];
-    encode_pss_alg_id(tls_internal::OID_OCSP_SHA1[..], tls_internal::OID_OCSP_SHA1[..], 20, pss_alg_sha1);
+    encode_pss_alg_id(rfc::OID_OCSP_SHA1[..], rfc::OID_OCSP_SHA1[..], 20, pss_alg_sha1);
     var c_s1 = core::cursor_from(pss_alg_sha1[..]);
     var seq_s1 = core::cursor_from(pss_alg_sha1[..0]);
     var oid_s1 = core::cursor_from(pss_alg_sha1[..0]);
@@ -322,7 +322,7 @@ fn test_rsa_min_2048_and_strict_pss() {
     assert(!ok_s1);
 
     var pss_alg_mismatch: u8[..160] = [];
-    encode_pss_alg_id(tls_internal::OID_OCSP_SHA256[..], tls_internal::OID_HASH_SHA384[..], 32, pss_alg_mismatch);
+    encode_pss_alg_id(rfc::OID_OCSP_SHA256[..], rfc::OID_HASH_SHA384[..], 32, pss_alg_mismatch);
     var c_mm = core::cursor_from(pss_alg_mismatch[..]);
     var seq_mm = core::cursor_from(pss_alg_mismatch[..0]);
     var oid_mm = core::cursor_from(pss_alg_mismatch[..0]);

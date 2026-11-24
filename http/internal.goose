@@ -6,6 +6,7 @@ namespace http_internal;
 
 import std;
 import core;
+import rfc.http;
 import http.headers;
 import http.mime;
 import http.multipart;
@@ -15,13 +16,13 @@ import http.request;
 
 // Validates an unquoted boundary character sequence according to RFC 2046 Section 5.1.1.
 fn validate_raw_boundary_chars(boundary: const u8[:]) -> bool {
-    guard boundary.len >= 1 && boundary.len <= 70 else { return false; }
+    guard boundary.len >= 1 && boundary.len <= rfc::MULTIPART_MAX_BOUNDARY_LEN else { return false; }
     // RFC 2046 Section 5.1.1: The boundary parameter must not end with a space.
     if boundary[boundary.len - 1] == ' ' {
         return false;
     }
     for b in boundary {
-        if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') {
+        if core::is_ascii_alphanumeric(b) {
             continue;
         }
         if b == '\'' || b == '(' || b == ')' || b == '+' || b == '_' || b == ',' ||
@@ -39,19 +40,16 @@ fn validate_raw_boundary_chars(boundary: const u8[:]) -> bool {
 // Validates delimiter line endings and closing dashes per RFC 2046 Section 5.1.1.
 fn is_valid_delimiter_suffix(body: const u8[:], pos: i64) -> bool {
     guard pos <= body.len else { return false; }
-    let rem = body[pos..];
-    if rem.len >= 2 && rem[0] == '-' && rem[1] == '-' {
-        let after_close = rem[2..].trim_lws_start();
-        return after_close.len == 0 ||
-               (after_close.len >= 2 && after_close[0] == '\r' && after_close[1] == '\n') ||
-               (after_close.len >= 1 && after_close[0] == '\n');
+    if is_closing_boundary_at(body, pos) {
+        return true;
     }
-    let after_pad = rem.trim_lws_start();
+    let after_pad = body[pos..].trim_lws_start();
     return (after_pad.len >= 2 && after_pad[0] == '\r' && after_pad[1] == '\n') ||
            (after_pad.len >= 1 && after_pad[0] == '\n');
 }
 
 fn is_closing_boundary_at(body: const u8[:], cursor: i64) -> bool {
+    guard cursor <= body.len else { return false; }
     let rem = body[cursor..];
     if rem.len >= 2 && rem[0] == '-' && rem[1] == '-' {
         let after_close = rem[2..].trim_lws_start();

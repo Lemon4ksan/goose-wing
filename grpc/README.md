@@ -99,11 +99,6 @@ frames exceeding `max_size`.
 ### 3. Connect protocol codec (`grpc/connect.goose`)
 
 ```goose
-const CONNECT_FLAG_END_STREAM: u8          = 0x02
-const CONNECT_CONTENT_PREFIX:  const u8[:] = "application/connect+"
-const CONNECT_MIME_PROTO:      const u8[:] = "application/proto"
-const CONNECT_MIME_JSON:       const u8[:] = "application/json"
-
 struct ConnectUnaryGetParams {
     encoding:    u8[..16],
     compression: u8[..16],
@@ -117,7 +112,8 @@ fn parse_connect_end_stream<B>(json_bytes: const u8[:], out_status: StatusCode&,
 ```
 
 Decodes Connect Protocol unary HTTP GET query strings (`connect=v1`) and
-encodes/parses streaming `EndStream` (`0x02`) JSON error and trailer envelopes.
+encodes/parses streaming `EndStream` (`rfc::CONNECT_FLAG_END_STREAM`, `0x02`)
+JSON error and trailer envelopes.
 
 ### 4. Status header, timeout & rich error codecs (`grpc/status.goose`, RFC 3986)
 

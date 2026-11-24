@@ -71,7 +71,7 @@ fn evaluate_matched_cache_entry(
 
     if req_cc.is_only_if_cached() {
         dec.kind = http::LookupResultKind.Fail504;
-        dec.status_code = 504;
+        dec.status_code = rfc::STATUS_GATEWAY_TIMEOUT;
         return dec;
     }
 

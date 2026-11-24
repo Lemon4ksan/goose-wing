@@ -406,12 +406,7 @@ fn reject_edge_stream(slot: H2EdgeSlot&, stream_id: u32, error_code: u32) -> boo
 // ---- HTTP/2 Header & Pseudo-Header Materialization (RFC 9113 Section 8) --
 
 inline fn is_forbidden_h2_field(raw_name: const u8[:]) -> bool {
-    return raw_name.eq_ascii_fold("connection")
-        || raw_name.eq_ascii_fold("keep-alive")
-        || raw_name.eq_ascii_fold("proxy-connection")
-        || raw_name.eq_ascii_fold("transfer-encoding")
-        || raw_name.eq_ascii_fold("upgrade")
-        || raw_name.eq_ascii_fold("te");
+    return rfc::is_connection_specific_header(raw_name) || raw_name.eq_ascii_fold("te");
 }
 
 fn append_edge_hdr_buf_entry(

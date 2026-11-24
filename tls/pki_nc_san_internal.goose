@@ -12,9 +12,6 @@ import .record;
 import .types;
 import .pki_ocsp_internal;
 
-// OID 1.2.840.113549.1.9.1 (pkcs-9-at-emailAddress) for Subject DN fallback in NameConstraints (RFC 5280 §4.2.1.10).
-const OID_EMAIL_ADDRESS: const u8[9] = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x01];
-
 enum NcMatchResult {
     Match,
     NoMatch,
@@ -641,7 +638,7 @@ fn check_subject_dn_emails_against_nc(
                 ava.cursor_len() == 0 else {
                 return false;
             }
-            if oid.buf == OID_EMAIL_ADDRESS[..] {
+            if oid.buf == rfc::OID_EMAIL_ADDRESS[..] {
                 let email_san = tls::SanEntry { san_type: tls::SanType.Email, val: val.buf };
                 guard tls::check_name_constraints(nc_entries, email_san) else { return false; }
             }

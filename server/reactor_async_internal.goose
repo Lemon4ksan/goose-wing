@@ -450,8 +450,8 @@ fn send_async_h1_400_bad_request<H>(
     conn_idx: i64,
 ) {
     reactor.tx_scratch.clear();
-    reactor.res_scratch = http::Response { status_code: 400, .. };
-    http::respond_problem(reactor.res_scratch, 400, "Bad Request", "Malformed HTTP request");
+    reactor.res_scratch = http::Response { status_code: rfc::STATUS_BAD_REQUEST, .. };
+    http::respond_problem(reactor.res_scratch, rfc::STATUS_BAD_REQUEST, "Bad Request", "Malformed HTTP request");
     server::serialize_http1_response(reactor.res_scratch, server.server_name[..], reactor.tx_scratch);
     let _ = send_async_http_bytes(host, server, reactor, conn_idx, reactor.tx_scratch[..]);
     guard reactor.conns[conn_idx].in_use else { return; }

@@ -7,6 +7,7 @@ namespace dns;
 
 import std;
 import core;
+import rfc.dns;
 import .svcb;
 import .internal;
 
@@ -63,11 +64,11 @@ checkfree fn decode_name<B>(raw: const u8[:], idx: i64&, out: B&) -> bool {
             return true;
         }
 
-        if (b & 0xC0) == 0xC0 {
+        if (b & rfc::DNS_POINTER_TAG) == rfc::DNS_POINTER_TAG {
             guard current_off < raw.len - 1 else { return false; }
             let ptr_off = (((b & 0x3F) as i64) << 8) | (raw[current_off + 1] as i64);
             // RFC 1035 Section 4.1.4: Message compression - pointers must point backwards past 12-byte header
-            guard ptr_off < current_off && ptr_off >= 12 else { return false; }
+            guard ptr_off < current_off && ptr_off >= rfc::DNS_HEADER_LEN else { return false; }
             if !advanced_original {
                 final_off = current_off + 2;
                 advanced_original = true;
@@ -98,8 +99,8 @@ fn build_query<B>(domain: const u8[:], qtype: u16, tx_id: u16, out: B&) -> bool 
     let saved_len = out.len;
     var committed = false;
     defer if !committed { out.resize(saved_len); };
-    guard dns_internal::serialize_header(tx_id, 1, 0x0100, out) else { return false; }
-    guard dns_internal::serialize_question(clean, qtype, 1, out) else { return false; }
+    guard dns_internal::serialize_header(tx_id, 1, rfc::DNS_FLAG_RD, out) else { return false; }
+    guard dns_internal::serialize_question(clean, qtype, rfc::DNS_QCLASS_IN, out) else { return false; }
     committed = true;
     return true;
 }
@@ -110,7 +111,7 @@ fn build_query<B>(domain: const u8[:], qtype: u16, tx_id: u16, out: B&) -> bool 
 //   raw = "\x00\x01\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00..."
 //   returns: Response { rcode: 0, answer_count: 1, .. }, true
 checkfree fn parse_response(raw: const u8[:]) -> Response, bool {
-    guard raw.len >= 12 else { return Response { .. }, false; }
+    guard raw.len >= rfc::DNS_HEADER_LEN else { return Response { .. }, false; }
     let flags = dns_internal::read_dns_u16(raw, 2);
     let is_resp = ((flags >> 15) & 1) == 1;
     // RFC 1035 Section 4.1.1: Header section format - OPCODE MUST be 0 (standard query) and TC bit 0
@@ -129,7 +130,7 @@ checkfree fn parse_response(raw: const u8[:]) -> Response, bool {
     let ns_count = dns_internal::read_dns_u16(raw, 8);
     let ar_count = dns_internal::read_dns_u16(raw, 10);
 
-    var off: i64 = 12;
+    var off = rfc::DNS_HEADER_LEN;
     if resp.rcode != rfc::DNS_RCODE_NOERROR {
         guard dns_internal::skip_questions(raw, off, resp.question_count) else {
             return Response { .. }, false;

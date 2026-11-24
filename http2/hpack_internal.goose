@@ -296,21 +296,10 @@ fn validate_h2_host_header_slices(
     return rfc::H2_ERR_NO_ERROR;
 }
 
-// RFC 9113 Section 8.2.2: Connection-Specific Header Fields - Rejects forbidden hop-by-hop headers.
-inline fn is_forbidden_h2_hop_by_hop(name: const u8[:]) -> bool {
-    return match name.len {
-        7 => name == "upgrade",
-        10 => name == "connection" || name == "keep-alive",
-        16 => name == "proxy-connection",
-        17 => name == "transfer-encoding",
-        _ => false,
-    };
-}
-
 // RFC 9110 Section 6.5.1: Limitations on Use of Trailers - Rejects framing/routing fields in trailers.
 inline fn is_forbidden_h2_trailer(name: const u8[:]) -> bool {
     return name == "content-length" || name == "host" || name == "trailer" || name == "te"
-        || is_forbidden_h2_hop_by_hop(name) || rfc::is_disallowed_trailer_field(name);
+        || rfc::is_connection_specific_header(name) || rfc::is_disallowed_trailer_field(name);
 }
 
 // RFC 9113 Section 8.2.2: TE header field is forbidden in responses and must equal "trailers" in requests.
@@ -332,7 +321,7 @@ fn validate_regular_header_slices(
     if pseudo.is_trailer {
         guard !is_forbidden_h2_trailer(name) else { return rfc::H2_ERR_PROTOCOL_ERROR; }
     }
-    guard !is_forbidden_h2_hop_by_hop(name) else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+    guard !rfc::is_connection_specific_header(name) else { return rfc::H2_ERR_PROTOCOL_ERROR; }
 
     let err_reg: u32 = match name.len {
         2 => if name == "te" { validate_h2_te_header(pseudo, val) } else { rfc::H2_ERR_NO_ERROR },

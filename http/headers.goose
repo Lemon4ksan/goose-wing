@@ -8,6 +8,7 @@ namespace http;
 
 import std;
 import core;
+import rfc.http;
 import .headers.lexical;
 import .headers.perfect_hash;
 import http.headers.wire_internal;
@@ -537,7 +538,7 @@ checkfree fn reset_for_keep_alive(map: HeaderMap&) {
     map.raw_buf.clear();
     map.entries.clear();
     map.header_contains_comma.clear();
-    map.status_code = 200;
+    map.status_code = rfc::STATUS_OK;
     map.http_major = 1;
     map.http_minor = 1;
     map.valid = true;

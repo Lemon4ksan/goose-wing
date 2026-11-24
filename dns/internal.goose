@@ -6,20 +6,15 @@ namespace dns_internal;
 
 import std;
 import core;
+import rfc.dns;
 import .svcb;
 import .wire;
 import .cache;
 
 // ---- Internal Protocol Ceilings & Types ---------------------------------
 
-// RFC 8484 Section 6: Definition of the "application/dns-message" Media Type - 65535-octet ceiling
-const DOH_MAX_MESSAGE_OCTETS: i64 = 65535;
-
 // RFC 1035 Section 2.3.4: Size limits - maximum backward compression pointer hops over a 255-octet wire name
 const MAX_POINTER_JUMPS: i64 = 127;
-
-// RFC 1035 Section 3.2.2: TYPE values - canonical name for an alias
-const QTYPE_CNAME: u16 = 5;
 
 enum SvcParamStatus {
     Ok,
@@ -676,7 +671,7 @@ checkfree fn parse_answers(
             idx += rdlength;
             continue;
         }
-        if rtype == QTYPE_CNAME && check_owner {
+        if rtype == rfc::DNS_QTYPE_CNAME && check_owner {
             guard decode_cname_rdata_target(raw, idx, rdlength, expected_owner) else { return false; }
         } else {
             guard resp.parse_answer_record(raw, rtype, rdlength, idx) else { return false; }

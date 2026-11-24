@@ -14,12 +14,6 @@ import quic.packet;
 import .internal;
 import .types;
 
-// ---- Public HTTP/3 Framing Constants ---------------------------------------
-
-// RFC 8336 Section 2: The ORIGIN HTTP/2 Frame - Frame type 0x0c.
-const H3_FRAME_ORIGIN:         u64 = rfc::H3_FRAME_ORIGIN;
-const H3_SETTINGS_H3_DATAGRAM: u64 = rfc::H3_SETTING_H3_DATAGRAM; // RFC 9297 §2.1.1
-
 // ---- Frame Header Encoding & Decoding --------------------------------------
 
 // Parses an HTTP/3 frame header (Type: VarInt, Length: VarInt).
@@ -107,21 +101,21 @@ fn encode_settings_frame<B>(out: B&, settings: const fingerprint::H3Settings&) -
     }
 
     if settings.h3_datagram > 0 {
-        guard quic::encode_varint(H3_SETTINGS_H3_DATAGRAM, payload) &&
+        guard quic::encode_varint(rfc::H3_SETTING_H3_DATAGRAM, payload) &&
               quic::encode_varint(settings.h3_datagram, payload) else {
             return false;
         }
     }
 
     if settings.enable_webtransport > 0 {
-        guard quic::encode_varint(h3_internal::H3_SETTINGS_ENABLE_WEBTRANSPORT, payload) &&
+        guard quic::encode_varint(rfc::H3_SETTINGS_ENABLE_WEBTRANSPORT, payload) &&
               quic::encode_varint(settings.enable_webtransport, payload) else {
             return false;
         }
     }
 
     if settings.webtransport_max_sessions > 0 {
-        guard quic::encode_varint(h3_internal::H3_SETTINGS_WEBTRANSPORT_MAX_SESSIONS, payload) &&
+        guard quic::encode_varint(rfc::H3_SETTINGS_WEBTRANSPORT_MAX_SESSIONS, payload) &&
               quic::encode_varint(settings.webtransport_max_sessions, payload) else {
             return false;
         }
@@ -311,7 +305,7 @@ fn encode_origin_frame<B>(out: B&, origins: const (const u8[:])[:]) -> bool {
         payload.append(org);
     }
     var hdr: u8[..16] = [];
-    guard encode_frame_header(hdr, H3_FRAME_ORIGIN, payload.len as u64) else { return false; }
+    guard encode_frame_header(hdr, rfc::H3_FRAME_ORIGIN, payload.len as u64) else { return false; }
     return h3_internal::append_h3_frame_parts(out, hdr[..], payload[..]);
 }
 

@@ -544,24 +544,24 @@ fn feed_server_body_chunk_with_stage<UserStage>(
     user_stage: UserStage&,
 ) -> wire::StageVerdict {
     guard !state.has_error else {
-        res.status_code = 400;
-        return wire::StageVerdict.ShortCircuit { status_code: 400 };
+        res.status_code = rfc::STATUS_BAD_REQUEST;
+        return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_BAD_REQUEST as u16 };
     }
     var decoded: u8[..16384] = [];
     let is_compressed = state.decompress_zstd || state.decompress_gzip;
     if is_compressed {
         guard state.compressed_buf.try_append(chunk) else {
             state.has_error = true;
-            res.status_code = 413;
-            return wire::StageVerdict.ShortCircuit { status_code: 413 };
+            res.status_code = rfc::STATUS_CONTENT_TOO_LARGE;
+            return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_CONTENT_TOO_LARGE as u16 };
         }
         if !is_last {
             return wire::StageVerdict.Continue;
         }
         guard server_internal::decompress_buffered_server_stream(state, decoded) else {
             state.has_error = true;
-            res.status_code = 400;
-            return wire::StageVerdict.ShortCircuit { status_code: 400 };
+            res.status_code = rfc::STATUS_BAD_REQUEST;
+            return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_BAD_REQUEST as u16 };
         }
     }
     let active_chunk = if is_compressed { decoded[..] } else { chunk };
@@ -569,7 +569,7 @@ fn feed_server_body_chunk_with_stage<UserStage>(
     if cfg.max_body_bytes >= 0 && state.bytes_processed > (cfg.max_body_bytes as u64) {
         state.has_error = true;
         res.status_code = rfc::STATUS_CONTENT_TOO_LARGE;
-        return wire::StageVerdict.ShortCircuit { status_code: 413 };
+        return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_CONTENT_TOO_LARGE as u16 };
     }
     if state.verify_digest {
         core::sha256_update(state.sha256_ctx, active_chunk);
@@ -577,8 +577,8 @@ fn feed_server_body_chunk_with_stage<UserStage>(
             let actual = core::sha256_final(state.sha256_ctx);
             guard core::ct_eq_bytes(actual[..], state.expected_sha256[..]) else {
                 state.has_error = true;
-                res.status_code = 400;
-                return wire::StageVerdict.ShortCircuit { status_code: 400 };
+                res.status_code = rfc::STATUS_BAD_REQUEST;
+                return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_BAD_REQUEST as u16 };
             }
         }
     }
@@ -610,7 +610,7 @@ fn resume_server_pipeline_egress<UserStage>(
         Abort _ => {
             outcome = PipelineOutcome.CsrfRejected;
             if res.status_code == 0 {
-                res.status_code = 500;
+                res.status_code = rfc::STATUS_INTERNAL_SERVER_ERROR;
             }
         },
         _ => {},
@@ -621,7 +621,7 @@ fn resume_server_pipeline_egress<UserStage>(
         );
     }
     if res.status_code == 0 {
-        res.status_code = 200;
+        res.status_code = rfc::STATUS_OK;
         if sctx.handler_id >= 0 {
             server_internal::apply_route_payload(cfg, sctx.handler_id, res);
         }
@@ -686,7 +686,7 @@ fn execute_server_pipeline_async<UserStage>(
     let ext_slot_idx = server_internal::acquire_extensions(cfg.ext_pool);
     guard ext_slot_idx >= 0 else {
         server_internal::notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
-        res.status_code = 503; // Service Unavailable / Pool Exhausted
+        res.status_code = rfc::STATUS_SERVICE_UNAVAILABLE;
         return PipelineOutcome.RateLimited;
     }
     defer server_internal::release_extensions(cfg.ext_pool, ext_slot_idx);
@@ -724,7 +724,7 @@ fn execute_server_pipeline_async<UserStage>(
 
     if cfg.security_txt.is_valid && http::is_security_txt_path(req.url[..]) &&
        (req.method[..] == "GET" || req.method[..] == "HEAD") {
-        res.status_code = 200;
+        res.status_code = rfc::STATUS_OK;
         http::set_header(res, "Content-Type", "text/plain; charset=utf-8");
         res.body.clear();
         http::format_security_txt(cfg.security_txt, res.body);

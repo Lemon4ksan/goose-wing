@@ -6,6 +6,7 @@
 namespace rfc;
 
 import std;
+import core;
 
 // ---- HTTP/2 Frame Types (RFC 9113 Section 6 & RFC 9218 Section 7.1) ------
 
@@ -31,6 +32,8 @@ const H2_FLAG_ACK:         u8 = 0x01;
 const H2_FLAG_END_HEADERS: u8 = 0x04;
 const H2_FLAG_PADDED:      u8 = 0x08;
 const H2_FLAG_PRIORITY:    u8 = 0x20;
+// RFC 8336 Section 2.1: Syntax - reserved low-nibble flags (0x01..0x08) on ORIGIN frames.
+const H2_ORIGIN_RESERVED_FLAGS: u8 = 0x0F;
 
 // ---- HTTP/2 Error Codes (RFC 9113 Section 7) -----------------------------
 
@@ -63,6 +66,7 @@ const H2_SETTING_NO_RFC7540_PRIORITIES:  u16 = 0x09; // RFC 9218 Section 5.1
 // ---- HTTP/2 & HPACK Protocol Wire Limits (RFC 9113 & RFC 7541) -----------
 
 const H2_FRAME_HEADER_LEN:          i64 = 9;          // RFC 9113 Section 4.1
+const H2_MAX_STREAM_ID:             u32 = 0x7FFFFFFF; // RFC 9113 Section 4.1
 const H2_DEFAULT_WINDOW_SIZE:       u32 = 65535;      // RFC 9113 Section 6.5.2
 const H2_MAX_WINDOW_SIZE:           u32 = 0x7FFFFFFF; // RFC 9113 Section 6.9.1
 const H2_DEFAULT_MAX_FRAME_SIZE:    u32 = 16384;      // RFC 9113 Section 4.2
@@ -81,7 +85,7 @@ let H2_CLIENT_PREFACE: const u8[24] = [
 
 // RFC 9113 Section 4.1: Frame Format - Masks reserved bit 31 and validates stream 0 frame association.
 inline fn validate_stream_id_association(stream_id: u32, frame_type: u8) -> u32 {
-    if (stream_id & 0x7FFFFFFF) == 0 {
+    if (stream_id & H2_MAX_STREAM_ID) == 0 {
         if frame_type == H2_FRAME_DATA ||
            frame_type == H2_FRAME_HEADERS ||
            frame_type == H2_FRAME_PRIORITY ||
@@ -105,8 +109,8 @@ inline fn validate_stream_id_association(stream_id: u32, frame_type: u8) -> u32 
 // A client can only acknowledge peer streams (server-initiated: even or 0).
 // A server can only acknowledge peer streams (client-initiated: odd or 0, or 2^31 - 1 for graceful shutdown).
 inline fn validate_goaway_last_stream_id(last_stream_id: u32, sender_is_client: bool) -> bool {
-    let sid = last_stream_id & 0x7FFFFFFF;
-    if sid == 0 || sid == 0x7FFFFFFF {
+    let sid = last_stream_id & H2_MAX_STREAM_ID;
+    if sid == 0 || sid == H2_MAX_STREAM_ID {
         return true;
     }
     if sender_is_client {
@@ -114,4 +118,15 @@ inline fn validate_goaway_last_stream_id(last_stream_id: u32, sender_is_client: 
     } else {
         return (sid & 1) != 0;
     }
+}
+
+// RFC 9113 Section 8.2.2: Connection-Specific Header Fields - Checks whether `name` is forbidden in H2/H3.
+inline fn is_connection_specific_header(name: const u8[:]) -> bool {
+    return match name.len {
+        7 => name.eq_ascii_fold("upgrade"),
+        10 => name.eq_ascii_fold("connection") || name.eq_ascii_fold("keep-alive"),
+        16 => name.eq_ascii_fold("proxy-connection"),
+        17 => name.eq_ascii_fold("transfer-encoding"),
+        _ => false,
+    };
 }

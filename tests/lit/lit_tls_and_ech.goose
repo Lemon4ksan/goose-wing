@@ -237,7 +237,7 @@ fn run_01_verify_tls_handshake_wire() {
         "export-info",
         rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
         rfc::HPKE_KDF_HKDF_SHA256,
-        security::HPKE_AEAD_EXPORT_ONLY,
+        rfc::HPKE_AEAD_EXPORT_ONLY,
         exp_sk2,
         exp_enc,
         exp_ctx,

@@ -6,6 +6,7 @@ namespace h3_internal;
 
 import std;
 import core;
+import rfc.h2;
 import rfc.h3_quic;
 import http.headers;
 import http.priority;
@@ -424,11 +425,7 @@ fn has_ctl_chars(val: const u8[:]) -> bool {
 }
 
 fn is_forbidden_connection_header(name: const u8[:], value: const u8[:]) -> bool {
-    if name.eq_ascii_fold("connection") ||
-       name.eq_ascii_fold("keep-alive") ||
-       name.eq_ascii_fold("proxy-connection") ||
-       name.eq_ascii_fold("transfer-encoding") ||
-       name.eq_ascii_fold("upgrade") {
+    if rfc::is_connection_specific_header(name) {
         return true;
     }
     if name.eq_ascii_fold("te") && !value.eq_ascii_fold("trailers") {

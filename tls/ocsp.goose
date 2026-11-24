@@ -107,7 +107,7 @@ fn x509_verify_ocsp_signature(
 fn unwrap_ocsp_response(ext_data: const u8[:]) -> const u8[:], bool {
     var c = core::cursor_from(ext_data);
     var status_type: u8 = 0;
-    guard c.get_u8(status_type) && status_type == tls_internal::CERT_STATUS_TYPE_OCSP else { return "", false; }
+    guard c.get_u8(status_type) && status_type == rfc::CERT_STATUS_TYPE_OCSP else { return "", false; }
     var resp_len: u32 = 0;
     if !c.get_u24(resp_len) { return "", false; }
     guard resp_len > 0 && resp_len == c.cursor_len() else { return "", false; }

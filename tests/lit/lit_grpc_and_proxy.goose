@@ -705,7 +705,7 @@ fn verify_connect_end_stream() {
         tr,
         wire,
     ));
-    assert(wire[0] == grpc::CONNECT_FLAG_END_STREAM);
+    assert(wire[0] == rfc::CONNECT_FLAG_END_STREAM);
     let json_len = core::read_be_u32(wire[..], 1) as i64;
     let json_end = core::add_sat_i64(5, json_len);
     let json_slice = wire[5..json_end];

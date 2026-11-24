@@ -8,6 +8,7 @@ namespace http;
 
 import std;
 import core;
+import rfc.http;
 import http.request;
 import http.response;
 import http.headers;
@@ -309,7 +310,7 @@ fn lookup(
         cache.total_misses = core::add_sat_i64(cache.total_misses, 1);
         if req_cc.is_only_if_cached() {
             dec.kind = LookupResultKind.Fail504;
-            dec.status_code = 504;
+            dec.status_code = rfc::STATUS_GATEWAY_TIMEOUT;
             return dec;
         }
         let _, _ = cache.writers.start_writer_or_join(req.url[..]);
@@ -601,7 +602,7 @@ fn lookup(
     if matched_idx < 0 {
         if req_cc.is_only_if_cached() {
             dec.kind = LookupResultKind.Fail504;
-            dec.status_code = 504;
+            dec.status_code = rfc::STATUS_GATEWAY_TIMEOUT;
         }
         return dec;
     }

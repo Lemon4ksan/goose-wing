@@ -6,6 +6,7 @@ namespace client;
 
 import std;
 import core;
+import rfc.http;
 import http.request;
 import http.response;
 import net.retry;
@@ -36,8 +37,12 @@ fn execute_request(session: Client&, req: const http::Request&) -> http::Respons
     let parsed_url, url_err = core::parse_url(eff_url_buf[..]);
     let target_host = if url_err == core::UrlParseError.None { parsed_url.host() } else { "" };
     if target_host.len > 0 && net::is_host_circuit_broken(session.circuit_breaker, target_host, now_ns) {
-        let err_cb = http::make_error(503, "circuit_breaker", "host circuit broken by Retry-After");
-        return http::Response { status_code: 503, .. }, err_cb;
+        let err_cb = http::make_error(
+            rfc::STATUS_SERVICE_UNAVAILABLE,
+            "circuit_breaker",
+            "host circuit broken by Retry-After",
+        );
+        return http::Response { status_code: rfc::STATUS_SERVICE_UNAVAILABLE, .. }, err_cb;
     }
     net::record_primary_request(session.retry_budget, now_ns);
 

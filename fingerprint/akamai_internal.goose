@@ -6,12 +6,11 @@ namespace fingerprint_internal;
 
 import std;
 import core;
+import rfc.h2;
 import http2.framing;
 import .types;
 
 // ---- Akamai HTTP/2 Internal Helpers ----------------------------------------
-
-const H2_MAX_STREAM_ID: u32 = 0x7FFFFFFF; // RFC 9113 Section 4.1 (31-bit stream identifier)
 
 fn format_akamai_settings<B>(settings: const fingerprint::AkamaiSetting[:], out: B&) {
     for i in settings.len {
@@ -79,7 +78,10 @@ fn parse_priority_token(token: const u8[:]) -> fingerprint::AkamaiPriorityFrame,
     let dep, ok3 = dep_str.parse_u32_dec();
     let w, ok4 = w_str.parse_u32_dec();
     guard ok1 && ok2 && ok3 && ok4 && excl <= 1 && w >= 1 && w <= 256 else { return dummy, false; }
-    guard s_id > 0 && s_id <= H2_MAX_STREAM_ID && dep <= H2_MAX_STREAM_ID && s_id != dep else { return dummy, false; }
+    guard s_id > 0 && s_id <= rfc::H2_MAX_STREAM_ID &&
+        dep <= rfc::H2_MAX_STREAM_ID && s_id != dep else {
+        return dummy, false;
+    }
 
     return fingerprint::AkamaiPriorityFrame {
         stream_id:     s_id,
@@ -240,7 +242,7 @@ fn process_akamai_priority_frame(
     let raw_weight, ok_w = cur.read_u8();
     guard ok_dep && ok_w else { return false; }
     let exclusive = ((raw_dep >> 31) & 1) as u8;
-    let dep_id = raw_dep & H2_MAX_STREAM_ID;
+    let dep_id = raw_dep & rfc::H2_MAX_STREAM_ID;
     let weight = core::add_sat_u64(raw_weight, 1) as u16;
     guard hdr.stream_id != dep_id else {
         return false;
@@ -266,7 +268,7 @@ fn process_akamai_wire_frame(
     if hdr.frame_type == rfc::H2_FRAME_WINDOW_UPDATE && hdr.stream_id == 0 && hdr.length == 4 {
         var wu_cur = core::cursor_from(payload);
         let raw_inc, ok_inc = wu_cur.read_u32();
-        let inc = raw_inc & H2_MAX_STREAM_ID;
+        let inc = raw_inc & rfc::H2_MAX_STREAM_ID;
         guard ok_inc && inc > 0 else { return false; }
         fp.window_update = inc;
         return true;
@@ -351,8 +353,8 @@ fn try_encode_akamai_settings_frame<B>(settings: const fingerprint::AkamaiSettin
 }
 
 fn try_append_priority_frame<B>(p: const fingerprint::AkamaiPriorityFrame&, out: B&) -> bool {
-    let sid = p.stream_id & H2_MAX_STREAM_ID;
-    let dep_id = p.dep_stream_id & H2_MAX_STREAM_ID;
+    let sid = p.stream_id & rfc::H2_MAX_STREAM_ID;
+    let dep_id = p.dep_stream_id & rfc::H2_MAX_STREAM_ID;
     if sid == 0 || sid == dep_id {
         return true;
     }

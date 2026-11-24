@@ -8,6 +8,7 @@ import std;
 import os;
 import core;
 import rfc.http;
+import rfc.dns;
 import dns.cache;
 import http.response;
 import http.altsvc;

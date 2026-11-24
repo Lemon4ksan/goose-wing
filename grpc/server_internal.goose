@@ -7,6 +7,7 @@ namespace grpc_internal;
 import std;
 import core;
 import rfc.http;
+import rfc.h2;
 import rfc.grpc;
 import http.headers;
 import http.request;
@@ -188,11 +189,7 @@ inline fn is_reserved_header(n: const u8[:]) -> bool {
     if n.starts_with_fold(":") { return true; }
     return n.eq_ascii_fold("te")
         || n.eq_ascii_fold("host")
-        || n.eq_ascii_fold("connection")
-        || n.eq_ascii_fold("keep-alive")
-        || n.eq_ascii_fold("proxy-connection")
-        || n.eq_ascii_fold("transfer-encoding")
-        || n.eq_ascii_fold("upgrade")
+        || rfc::is_connection_specific_header(n)
         || n.eq_ascii_fold("content-length")
         || n.eq_ascii_fold("user-agent");
 }

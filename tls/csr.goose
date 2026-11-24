@@ -9,15 +9,6 @@ import core;
 import rfc.tls;
 import .x509_san;
 
-// RFC 2986 Section 4.1 / PKCS #9: pkcs-9-at-extensionRequest (1.2.840.113549.1.9.14).
-const OID_PKCS9_EXTENSION_REQUEST: const u8[9] = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x0E];
-
-// ASN.1 context-specific constructed tag [0] for CertificationRequestInfo attributes.
-const ASN1_TAG_CTX0_CONSTRUCTED: u8 = 0xA0;
-
-// ASN.1 context-specific primitive tag [2] for GeneralName dNSName (RFC 5280 Section 4.2.1.6).
-const ASN1_TAG_GENERAL_NAME_DNS: u8 = 0x82;
-
 // Appends canonical ASN.1 DER length octets for `length` (X.690 Section 10.1).
 inline fn csr_append_der_len(out: u8[>..]&, length: i64) -> bool {
     guard length >= 0 && length <= 16777215 else { return false; }
@@ -71,7 +62,7 @@ fn csr_encode_p256_spki(pub_key: const u8[65]&, out: u8[>..]&) -> bool {
 fn csr_encode_san_attributes(domains: const u8[..255][:], out: u8[>..]&) -> bool {
     var general_names: u8[>..] = [];
     for &dom in domains {
-        guard csr_append_tlv(general_names, ASN1_TAG_GENERAL_NAME_DNS, dom[..]) else { return false; }
+        guard csr_append_tlv(general_names, rfc::ASN1_TAG_GENERAL_NAME_DNS, dom[..]) else { return false; }
     }
 
     var san_seq: u8[>..] = [];
@@ -91,12 +82,12 @@ fn csr_encode_san_attributes(domains: const u8[..255][:], out: u8[>..]&) -> bool
     guard csr_append_tlv(attr_set, rfc::ASN1_TAG_SET, exts_seq[..]) else { return false; }
 
     var attr_body: u8[>..] = [];
-    guard csr_append_tlv(attr_body, rfc::ASN1_TAG_OID, OID_PKCS9_EXTENSION_REQUEST[..]) else { return false; }
+    guard csr_append_tlv(attr_body, rfc::ASN1_TAG_OID, rfc::OID_PKCS9_EXTENSION_REQUEST[..]) else { return false; }
     attr_body.append(attr_set[..]);
 
     var attr_seq: u8[>..] = [];
     guard csr_append_tlv(attr_seq, rfc::ASN1_TAG_SEQUENCE, attr_body[..]) else { return false; }
-    return csr_append_tlv(out, ASN1_TAG_CTX0_CONSTRUCTED, attr_seq[..]);
+    return csr_append_tlv(out, rfc::ASN1_TAG_CTX0_CONSTRUCTED, attr_seq[..]);
 }
 
 // Validates CSR domain list and derives the P-256 public key.

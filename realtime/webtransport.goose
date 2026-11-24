@@ -10,6 +10,7 @@ namespace realtime;
 
 import std;
 import core;
+import rfc.http;
 import rfc.h3_quic;
 import http.request;
 import http.response;
@@ -87,14 +88,16 @@ fn is_webtransport_connect_request(req: const http::Request&) -> bool {
 
 // Formats an HTTP/3 response accepting a WebTransport session.
 fn format_webtransport_connect_response(res: http::Response&) {
-    res.status_code = 200;
+    res.status_code = rfc::STATUS_OK;
     http::set_header(res, "sec-webtransport-http3-draft", "draft16");
 }
 
 // Validates whether server response accepts the WebTransport session.
 fn handle_webtransport_response(session: WebTransportSession&, res: const http::Response&) -> bool {
-    let status_ok = res.status_code >= 200 && res.status_code < 300 &&
-        res.status_code != 204 && res.status_code != 205 && res.status_code != 206;
+    let status_ok = res.status_code >= rfc::STATUS_OK && res.status_code < 300 &&
+        res.status_code != rfc::STATUS_NO_CONTENT &&
+        res.status_code != rfc::STATUS_RESET_CONTENT &&
+        res.status_code != rfc::STATUS_PARTIAL_CONTENT;
     let hdrs_ok = !res.has_header("content-length") &&
         !res.has_header("content-type") &&
         !res.has_header("transfer-encoding");

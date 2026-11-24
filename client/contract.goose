@@ -6,6 +6,7 @@ namespace client;
 
 import std;
 import core;
+import rfc.http;
 import http.request;
 import http.response;
 import .client;
@@ -100,7 +101,12 @@ fn call_endpoint<Params, Query, ReqBody, ResBody>(
 ) -> ResBody, http::Response, http::Error {
     var req = http::Request { .. };
     guard build_contract_request(spec, base_url, params, query_dto, body_dto, req) else {
-        let err = http::make_error(400, "invalid_url", "contract request build failed", http::ErrorKind.InvalidUrl);
+        let err = http::make_error(
+            rfc::STATUS_BAD_REQUEST,
+            "invalid_url",
+            "contract request build failed",
+            http::ErrorKind.InvalidUrl,
+        );
         return ResBody { .. }, http::Response { .. }, err;
     }
     let res, err = do(c, req);
@@ -122,7 +128,12 @@ fn call_endpoint<Params, Query, ReqBody, ResBody, F: fn(http::Request&)>(
 ) -> ResBody, http::Response, http::Error {
     var req = http::Request { .. };
     guard build_contract_request(spec, base_url, params, query_dto, body_dto, req) else {
-        let err = http::make_error(400, "invalid_url", "contract request build failed", http::ErrorKind.InvalidUrl);
+        let err = http::make_error(
+            rfc::STATUS_BAD_REQUEST,
+            "invalid_url",
+            "contract request build failed",
+            http::ErrorKind.InvalidUrl,
+        );
         return ResBody { .. }, http::Response { .. }, err;
     }
     F(&req);

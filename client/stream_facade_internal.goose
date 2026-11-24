@@ -7,6 +7,7 @@ namespace client_internal;
 import std;
 import core;
 import rfc.http;
+import rfc.dns;
 import dns.wire;
 import dns.cache;
 import dns.doh;
@@ -458,8 +459,8 @@ fn doh_query(
 
     if session.doh.use_post {
         req.url.append(session.doh.endpoint[..]);
-        http::set_header(req, "content-type", "application/dns-message");
-        http::set_header(req, "accept", "application/dns-message");
+        http::set_header(req, "content-type", rfc::DOH_CONTENT_TYPE);
+        http::set_header(req, "accept", rfc::DOH_CONTENT_TYPE);
         var wire_query: u8[..512] = [];
         guard dns::build_query(domain, qtype, tx_id, wire_query) else { return dns::Response { .. }, false; }
         req.body.append(wire_query[..]);
@@ -467,7 +468,7 @@ fn doh_query(
         guard dns::build_doh_get_url(session.doh.endpoint[..], domain, qtype, req.url) else {
             return dns::Response { .. }, false;
         }
-        http::set_header(req, "accept", "application/dns-message");
+        http::set_header(req, "accept", rfc::DOH_CONTENT_TYPE);
     }
 
     var doh_client = clone_isolated_transport_client(session);

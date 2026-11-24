@@ -6,6 +6,7 @@ namespace http_internal;
 
 import std;
 import core;
+import rfc.http;
 import http.cache.cache_control;
 import http.cache.cache_groups;
 import http.cache.engine;
@@ -426,7 +427,7 @@ fn populate_cached_206_response(entry: const http::CachedEntry&, first_pos: i64,
     let slice_end = core::add_sat_i64(last_pos, 1);
     guard first_pos >= 0 && slice_end >= first_pos && slice_end <= total_len else { return; }
     let slice_len = core::sub_sat_i64(slice_end, first_pos);
-    resp.status_code = 206;
+    resp.status_code = rfc::STATUS_PARTIAL_CONTENT;
     resp.body.clear();
     resp.body.append(entry.body[first_pos..slice_end]);
     var cr_206: u8[..64] = "bytes ";
@@ -442,7 +443,7 @@ fn populate_cached_206_response(entry: const http::CachedEntry&, first_pos: i64,
 }
 
 fn apply_cached_range_if_requested(entry: const http::CachedEntry&, req: const http::Request&, resp: http::Response&) {
-    guard entry.status_code == 200 && req.method[..].eq_ascii_fold("GET") else { return; }
+    guard entry.status_code == rfc::STATUS_OK && req.method[..].eq_ascii_fold("GET") else { return; }
     let range_hdr = req.headers.get_header("range");
     guard range_hdr.len > 0 else { return; }
 
@@ -453,8 +454,8 @@ fn apply_cached_range_if_requested(entry: const http::CachedEntry&, req: const h
 
     let total_len = entry.body.len;
     let status, first_pos, last_pos = evaluate_single_byte_range(range_hdr, total_len);
-    if status == 416 {
-        resp.status_code = 416;
+    if status == rfc::STATUS_RANGE_NOT_SATISFIABLE {
+        resp.status_code = rfc::STATUS_RANGE_NOT_SATISFIABLE;
         resp.body.clear();
         var cr_416: u8[..64] = "bytes */";
         total_len.format_i64_dec(cr_416);

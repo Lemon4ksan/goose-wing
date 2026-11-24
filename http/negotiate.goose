@@ -6,9 +6,7 @@ namespace http;
 
 import std;
 import core;
-
-// RFC 9110 Section 12.4.2: Quality Values - Maximum quality weight in integer milliths (1.000 == 1000).
-const QVALUE_MAX_MILLITHS: i32 = 1000;
+import rfc.http;
 
 // Parses a single RFC 9110 Section 12.4.2 qvalue token ("0".."1.000") into milliths (0..1000).
 //
@@ -18,7 +16,7 @@ const QVALUE_MAX_MILLITHS: i32 = 1000;
 fn parse_qvalue_token(qstr: const u8[:]) -> i32, bool {
     guard qstr.len >= 1 && qstr.len <= 5 else { return 0, false; }
     if qstr == "1" || qstr == "1." || qstr == "1.0" || qstr == "1.00" || qstr == "1.000" {
-        return QVALUE_MAX_MILLITHS, true;
+        return rfc::QVALUE_MAX_MILLITHS, true;
     }
     if qstr == "0" || qstr == "0." {
         return 0, true;
@@ -44,7 +42,7 @@ fn parse_qvalue_token(qstr: const u8[:]) -> i32, bool {
 //   params = "level=1; q=0.85"
 //   returns: 850, true
 fn parse_qvalue_milliths(params: const u8[:]) -> i32, bool {
-    guard params.len > 0 else { return QVALUE_MAX_MILLITHS, true; }
+    guard params.len > 0 else { return rfc::QVALUE_MAX_MILLITHS, true; }
     var rem = params;
     while rem.len > 0 {
         let head, tail, has_semi = rem.split_once_unquoted_byte(';');
@@ -56,7 +54,7 @@ fn parse_qvalue_milliths(params: const u8[:]) -> i32, bool {
             return parse_qvalue_token(v.trim_lws());
         }
     }
-    return QVALUE_MAX_MILLITHS, true;
+    return rfc::QVALUE_MAX_MILLITHS, true;
 }
 
 // Computes RFC 9110 Section 12.5.1 media-range match specificity against `candidate` ("type/subtype"):

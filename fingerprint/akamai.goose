@@ -9,6 +9,7 @@ namespace fingerprint;
 
 import std;
 import core;
+import rfc.h2;
 import http.headers;
 import http2.framing;
 import .types;
@@ -85,7 +86,7 @@ fn custom_akamai_fingerprint(
     pseudo_headers: const u8[:] = "m,a,s,p",
 ) -> AkamaiFingerprint {
     var fp = AkamaiFingerprint {
-        window_update: window_update & fingerprint_internal::H2_MAX_STREAM_ID,
+        window_update: window_update & rfc::H2_MAX_STREAM_ID,
         ..
     };
     let _ = fingerprint_internal::parse_akamai_pseudo_headers(pseudo_headers, fp.pseudo_headers);
@@ -111,8 +112,8 @@ fn push_priority(
     dep_stream_id: u32,
     weight:        u16,
 ) -> bool {
-    guard stream_id > 0 && stream_id <= fingerprint_internal::H2_MAX_STREAM_ID else { return false; }
-    guard dep_stream_id <= fingerprint_internal::H2_MAX_STREAM_ID && dep_stream_id != stream_id else {
+    guard stream_id > 0 && stream_id <= rfc::H2_MAX_STREAM_ID else { return false; }
+    guard dep_stream_id <= rfc::H2_MAX_STREAM_ID && dep_stream_id != stream_id else {
         return false;
     }
     guard exclusive <= 1 && weight >= 1 && weight <= 256 else { return false; }
@@ -260,7 +261,7 @@ fn encode_akamai_handshake_frames<B>(fp: const AkamaiFingerprint&, out: B&) -> b
         return false;
     }
 
-    let wu_inc = fp.window_update & fingerprint_internal::H2_MAX_STREAM_ID;
+    let wu_inc = fp.window_update & rfc::H2_MAX_STREAM_ID;
     if wu_inc > 0 {
         let wu_hdr = http2::FrameHeader {
             length:     4,

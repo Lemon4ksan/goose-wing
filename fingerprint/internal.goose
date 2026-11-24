@@ -6,13 +6,12 @@ namespace fingerprint_internal;
 
 import std;
 import core;
+import rfc.tls;
 import .types;
 
 // ---- JA4 & JA4H Internal Helpers -------------------------------------------
 
 const JA4_STACK_LIST_CAP: i64 = 128; // Stack fast-path ceiling for TLS cipher/ext and cookie lists
-const JA4_SNI_EXT_ID:     u16 = 0x0000; // RFC 6066 Section 3 (excluded from JA4 extension hash)
-const JA4_ALPN_EXT_ID:    u16 = 0x0010; // RFC 7301 Section 3.1 (excluded from JA4 extension hash)
 
 // Counts non-GREASE 16-bit TLS identifiers (RFC 8701).
 fn count_non_grease_u16(vals: const u16[:]) -> i64 {
@@ -39,7 +38,7 @@ fn filter_grease_u16_bounded<B>(vals: const u16[:], out: B&) -> bool {
 // Filters TLS extensions eligible for the JA4 extension hash (non-GREASE, excluding SNI and ALPN).
 fn filter_ja4_hash_exts_bounded<B>(vals: const u16[:], out: B&) -> bool {
     for e in vals {
-        if !rfc::is_grease_u16(e) && e != JA4_SNI_EXT_ID && e != JA4_ALPN_EXT_ID {
+        if !rfc::is_grease_u16(e) && e != rfc::TLS_EXT_SERVER_NAME && e != rfc::TLS_EXT_ALPN {
             guard out.try_push(e) else { return false; }
         }
     }
@@ -230,7 +229,7 @@ fn append_ja4_extensions_hash<B>(
     }
     var dyn_exts: u16[>..] = [];
     for e in extensions {
-        if !rfc::is_grease_u16(e) && e != JA4_SNI_EXT_ID && e != JA4_ALPN_EXT_ID {
+        if !rfc::is_grease_u16(e) && e != rfc::TLS_EXT_SERVER_NAME && e != rfc::TLS_EXT_ALPN {
             dyn_exts.push(e);
         }
     }

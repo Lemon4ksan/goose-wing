@@ -7,6 +7,7 @@ namespace grpc_internal;
 import std;
 import json;
 import core;
+import rfc.http;
 import rfc.grpc;
 import http.headers;
 import http.request;
@@ -558,18 +559,18 @@ fn is_connect_get_request(req: const http::Request&) -> bool {
 
 inline fn connect_error_http_status(code: grpc::StatusCode) -> i32 {
     return match code {
-        InvalidArgument => 400,
-        Unauthenticated => 401,
-        PermissionDenied => 403,
-        NotFound => 404,
-        Unimplemented => 404,
-        AlreadyExists => 409,
-        Aborted => 409,
-        ResourceExhausted => 429,
+        InvalidArgument => rfc::STATUS_BAD_REQUEST,
+        Unauthenticated => rfc::STATUS_UNAUTHORIZED,
+        PermissionDenied => rfc::STATUS_FORBIDDEN,
+        NotFound => rfc::STATUS_NOT_FOUND,
+        Unimplemented => rfc::STATUS_NOT_FOUND,
+        AlreadyExists => rfc::STATUS_CONFLICT,
+        Aborted => rfc::STATUS_CONFLICT,
+        ResourceExhausted => rfc::STATUS_TOO_MANY_REQUESTS,
         Cancelled => 499,
-        DeadlineExceeded => 504,
-        Unavailable => 503,
-        _ => 500,
+        DeadlineExceeded => rfc::STATUS_GATEWAY_TIMEOUT,
+        Unavailable => rfc::STATUS_SERVICE_UNAVAILABLE,
+        _ => rfc::STATUS_INTERNAL_SERVER_ERROR,
     };
 }
 

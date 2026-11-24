@@ -7,6 +7,7 @@ namespace grpc;
 
 import std;
 import core;
+import rfc.http;
 import rfc.h2;
 import rfc.grpc;
 import .internal;
@@ -110,15 +111,15 @@ fn status_from_code(code: u32) -> StatusCode {
 // HTTP 200 without grpc-status maps to Unknown (success requires explicit grpc-status: 0).
 fn status_from_http(http_status: i32) -> StatusCode {
     return match http_status {
-        200 => StatusCode.Unknown,
-        400 => StatusCode.Internal,
-        401 => StatusCode.Unauthenticated,
-        403 => StatusCode.PermissionDenied,
-        404 => StatusCode.Unimplemented,
-        429 => StatusCode.ResourceExhausted,
-        502 => StatusCode.Unavailable,
-        503 => StatusCode.Unavailable,
-        504 => StatusCode.DeadlineExceeded,
+        rfc::STATUS_OK => StatusCode.Unknown,
+        rfc::STATUS_BAD_REQUEST => StatusCode.Internal,
+        rfc::STATUS_UNAUTHORIZED => StatusCode.Unauthenticated,
+        rfc::STATUS_FORBIDDEN => StatusCode.PermissionDenied,
+        rfc::STATUS_NOT_FOUND => StatusCode.Unimplemented,
+        rfc::STATUS_TOO_MANY_REQUESTS => StatusCode.ResourceExhausted,
+        rfc::STATUS_BAD_GATEWAY => StatusCode.Unavailable,
+        rfc::STATUS_SERVICE_UNAVAILABLE => StatusCode.Unavailable,
+        rfc::STATUS_GATEWAY_TIMEOUT => StatusCode.DeadlineExceeded,
         _ => StatusCode.Unknown,
     };
 }

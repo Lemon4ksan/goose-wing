@@ -539,7 +539,7 @@ fn test_quich3_origin_frame_and_coalescing() {
 
     let hdr, ok_hdr = http3::parse_frame_header(wire[..], 0);
     assert(ok_hdr);
-    assert(hdr.frame_type == http3::H3_FRAME_ORIGIN);
+    assert(hdr.frame_type == rfc::H3_FRAME_ORIGIN);
 
     var parsed: u8[..128][..16] = [];
     assert(http3::parse_origin_frame(wire[hdr.header_len..], parsed));
@@ -619,7 +619,7 @@ fn test_quich3_webtransport_settings_and_glitch() {
 
     // Reject boolean setting > 1 and oversized SETTINGS > 256B
     var bad_bool: u8[..16] = [];
-    quic::encode_varint(http3::H3_SETTINGS_H3_DATAGRAM, bad_bool);
+    quic::encode_varint(rfc::H3_SETTING_H3_DATAGRAM, bad_bool);
     quic::encode_varint(2, bad_bool);
     let _, err_bool = http3::parse_settings_frame(bad_bool[..]);
     assert(err_bool == rfc::H3_ERR_SETTINGS_ERROR);

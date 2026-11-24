@@ -8,6 +8,7 @@
 namespace http2;
 
 import core;
+import rfc.h2;
 import .framing;
 import .frames_internal;
 
@@ -33,7 +34,7 @@ fn parse_origin_frame(
     let saved_len = out_entries.len;
     var committed = false;
     defer if !committed { out_entries.resize(saved_len); };
-    if (stream_id & 0x7FFFFFFF) != 0 || (flags & h2_internal::H2_ORIGIN_RESERVED_FLAGS) != 0 {
+    if (stream_id & rfc::H2_MAX_STREAM_ID) != 0 || (flags & rfc::H2_ORIGIN_RESERVED_FLAGS) != 0 {
         committed = true;
         return saved_len as u32, rfc::H2_ERR_NO_ERROR;
     }

@@ -203,7 +203,7 @@ fn ws(session: Session&, url: const u8[:]) -> realtime::WebSocketSession, http::
     guard ok_req else {
         return realtime::new_websocket_session(true),
             http::Response { .. },
-            http::make_error(500, "websocket_handshake", "CSPRNG failure generating WebSocket key");
+            http::make_error(rfc::STATUS_INTERNAL_SERVER_ERROR, "websocket_handshake", "CSPRNG failure generating WebSocket key");
     }
     return client_internal::ws_perform_handshake(session, req, client_key[..]);
 }
@@ -218,7 +218,7 @@ fn ws<F: fn(http::Request&)>(
     guard ok_req else {
         return realtime::new_websocket_session(true),
             http::Response { .. },
-            http::make_error(500, "websocket_handshake", "CSPRNG failure generating WebSocket key");
+            http::make_error(rfc::STATUS_INTERNAL_SERVER_ERROR, "websocket_handshake", "CSPRNG failure generating WebSocket key");
     }
     F(&req);
     let eff_key = http::header(req, "Sec-WebSocket-Key");

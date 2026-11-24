@@ -17,7 +17,7 @@ fn apply_resolve_overrides(sess: client::Client&, cfg: const CliConfig&) {
         let ip4, ok_ip = parse_ipv4_be_u32(r.ip[..]);
         if ok_ip {
             var entry = dns::CacheEntry {
-                qtype:           1, // DNS_QTYPE_A
+                qtype:           rfc::DNS_QTYPE_A,
                 inserted_at_sec: now_sec,
                 ttl_sec:         3600,
                 valid:           true,

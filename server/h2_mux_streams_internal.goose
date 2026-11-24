@@ -411,7 +411,7 @@ fn execute_h2_stream_async<Stage, B>(
         return server::PipelineOutcome.Pending;
     }
     if res.status_code <= 0 {
-        res.status_code = 500;
+        res.status_code = rfc::STATUS_INTERNAL_SERVER_ERROR;
     }
     emit_h2_stream_response(sess, pipeline, stream_idx, target_stream_id, res, out_wire);
     return outcome;
@@ -435,7 +435,7 @@ fn complete_pending_h2_stream_response<Stage, B>(
     let now_ns = core::mul_sat_u64(now_ms, 1000000);
     let _ = server::resume_server_pipeline_egress(pipeline, req, now_ns, sctx, res, stage);
     if res.status_code <= 0 {
-        res.status_code = 500;
+        res.status_code = rfc::STATUS_INTERNAL_SERVER_ERROR;
     }
     emit_h2_stream_response(sess, pipeline, stream_idx, target_stream_id, res, out_wire);
     return true;

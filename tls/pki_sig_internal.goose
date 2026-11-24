@@ -31,9 +31,9 @@ fn parse_pss_hash_alg_id(cur: core::ByteCursor&) -> u8, bool {
             return PSS_HASH_NONE, false;
         }
     }
-    if oid.buf == OID_OCSP_SHA256[..] { return PSS_HASH_SHA256, true; }
-    if oid.buf == OID_HASH_SHA384[..] { return PSS_HASH_SHA384, true; }
-    if oid.buf == OID_HASH_SHA512[..] { return PSS_HASH_SHA512, true; }
+    if oid.buf == rfc::OID_OCSP_SHA256[..] { return PSS_HASH_SHA256, true; }
+    if oid.buf == rfc::OID_HASH_SHA384[..] { return PSS_HASH_SHA384, true; }
+    if oid.buf == rfc::OID_HASH_SHA512[..] { return PSS_HASH_SHA512, true; }
     return PSS_HASH_NONE, false;
 }
 
@@ -51,7 +51,7 @@ fn parse_rsassa_pss_params(sig_alg_rem: core::ByteCursor&) -> u8, bool {
     }
 
     var hash_ctx = core::cursor_from(pss_seq.buf[..0]);
-    guard tls::get_asn1_element(pss_seq, 0xA0, hash_ctx) else { return PSS_HASH_NONE, false; }
+    guard tls::get_asn1_element(pss_seq, rfc::ASN1_TAG_CTX0_CONSTRUCTED, hash_ctx) else { return PSS_HASH_NONE, false; }
     let hash_id, ok_h = parse_pss_hash_alg_id(hash_ctx);
     guard ok_h && hash_ctx.cursor_len() == 0 else { return PSS_HASH_NONE, false; }
 
@@ -62,7 +62,7 @@ fn parse_rsassa_pss_params(sig_alg_rem: core::ByteCursor&) -> u8, bool {
         tls::get_asn1_element(mgf_ctx, rfc::ASN1_TAG_SEQUENCE, mgf_seq) &&
         mgf_ctx.cursor_len() == 0 &&
         tls::get_asn1_element(mgf_seq, rfc::ASN1_TAG_OID, mgf_oid) &&
-        mgf_oid.buf == OID_MGF1[..] else {
+        mgf_oid.buf == rfc::OID_MGF1[..] else {
         return PSS_HASH_NONE, false;
     }
     let mgf_hash_id, ok_mh = parse_pss_hash_alg_id(mgf_seq);

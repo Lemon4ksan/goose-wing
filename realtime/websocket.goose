@@ -104,40 +104,40 @@ fn parse_ws_frame_header(src: const u8[:]) -> WsFrameHeader, bool {
     let b0 = src[0];
     let b1 = src[1];
 
-    let fin = (b0 & realtime_internal::WS_FIN_BIT) != 0;
-    let rsv1 = (b0 & realtime_internal::WS_RSV1_BIT) != 0;
-    let rsv2 = (b0 & realtime_internal::WS_RSV2_BIT) != 0;
-    let rsv3 = (b0 & realtime_internal::WS_RSV3_BIT) != 0;
-    let opcode = b0 & realtime_internal::WS_OPCODE_MASK;
+    let fin = (b0 & rfc::WS_FIN_BIT) != 0;
+    let rsv1 = (b0 & rfc::WS_RSV1_BIT) != 0;
+    let rsv2 = (b0 & rfc::WS_RSV2_BIT) != 0;
+    let rsv3 = (b0 & rfc::WS_RSV3_BIT) != 0;
+    let opcode = b0 & rfc::WS_OPCODE_MASK;
 
     guard rfc::is_valid_ws_opcode(opcode) else { return hdr, false; }
 
-    let masked = (b1 & realtime_internal::WS_MASK_BIT) != 0;
-    let raw_len = (b1 & realtime_internal::WS_PAYLOAD_LEN_MASK) as u64;
+    let masked = (b1 & rfc::WS_MASK_BIT) != 0;
+    let raw_len = (b1 & rfc::WS_PAYLOAD_LEN_MASK) as u64;
 
     // Control frame invariants (RFC 6455 Section 5.5):
     // 1. MUST NOT be fragmented (FIN MUST be 1)
     // 2. Payload length MUST be <= 125 (extended length encodings 126/127 are forbidden)
     if rfc::is_ws_control_opcode(opcode) {
-        guard fin && raw_len <= realtime_internal::WS_MAX_CONTROL_LEN else { return hdr, false; }
+        guard fin && raw_len <= rfc::WS_MAX_CONTROL_LEN else { return hdr, false; }
     }
 
     var offset:      i64 = 2;
     var payload_len: u64 = 0;
 
-    if raw_len <= realtime_internal::WS_MAX_CONTROL_LEN {
+    if raw_len <= rfc::WS_MAX_CONTROL_LEN {
         payload_len = raw_len;
-    } else if raw_len == realtime_internal::WS_LEN16_SENTINEL {
+    } else if raw_len == rfc::WS_LEN16_SENTINEL {
         guard src.len >= core::add_sat_i64(offset, 2) else { return hdr, false; }
         payload_len = core::read_be_u16(src, offset);
         // RFC 6455 Section 5.2: minimal encoding check (must be >= 126)
-        guard payload_len >= realtime_internal::WS_LEN16_SENTINEL else { return hdr, false; }
+        guard payload_len >= rfc::WS_LEN16_SENTINEL else { return hdr, false; }
         offset = core::add_sat_i64(offset, 2);
     } else {
         // raw_len == 127
         guard src.len >= core::add_sat_i64(offset, 8) else { return hdr, false; }
         // High bit must be 0 per RFC 6455 Section 5.2
-        guard (src[offset] & realtime_internal::WS_FIN_BIT) == 0 else { return hdr, false; }
+        guard (src[offset] & rfc::WS_FIN_BIT) == 0 else { return hdr, false; }
         payload_len = core::read_be_u64(src, offset);
         // Minimal encoding check (must be > 65535)
         guard payload_len > 65535 else { return hdr, false; }
@@ -145,7 +145,7 @@ fn parse_ws_frame_header(src: const u8[:]) -> WsFrameHeader, bool {
     }
 
     if rfc::is_ws_control_opcode(opcode) {
-        guard payload_len <= realtime_internal::WS_MAX_CONTROL_LEN else { return hdr, false; }
+        guard payload_len <= rfc::WS_MAX_CONTROL_LEN else { return hdr, false; }
     }
 
     var mask_key: u8[4] = [0; 4];

@@ -15,6 +15,19 @@ const WS_OPCODE_CLOSE:        u8 = 0x8;
 const WS_OPCODE_PING:         u8 = 0x9;
 const WS_OPCODE_PONG:         u8 = 0xA;
 
+// ---- WebSocket Frame Header Bitmasks & Sentinels (RFC 6455 Section 5.2) --
+
+// RFC 6455 Section 5.2: Base Framing Protocol - Frame header bitmasks and length sentinels.
+const WS_FIN_BIT:          u8  = 0x80;
+const WS_RSV1_BIT:         u8  = 0x40;
+const WS_RSV2_BIT:         u8  = 0x20;
+const WS_RSV3_BIT:         u8  = 0x10;
+const WS_OPCODE_MASK:      u8  = 0x0F;
+const WS_MASK_BIT:         u8  = 0x80;
+const WS_PAYLOAD_LEN_MASK: u8  = 0x7F;
+const WS_LEN16_SENTINEL:   u64 = 126;
+const WS_MAX_CONTROL_LEN:  u64 = 125;
+
 // ---- WebSocket Close Status Codes (RFC 6455 Section 7.4.1) ---------------
 
 const WS_STATUS_NORMAL:           u16 = 1000;

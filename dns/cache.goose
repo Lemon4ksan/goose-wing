@@ -7,6 +7,7 @@ namespace dns;
 
 import std;
 import core;
+import rfc.dns;
 import .svcb;
 import .internal;
 

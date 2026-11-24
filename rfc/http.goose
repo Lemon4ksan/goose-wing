@@ -21,6 +21,7 @@ const STATUS_OK:              i32 = 200;
 const STATUS_CREATED:         i32 = 201;
 const STATUS_ACCEPTED:        i32 = 202;
 const STATUS_NO_CONTENT:      i32 = 204;
+const STATUS_RESET_CONTENT:   i32 = 205;
 const STATUS_PARTIAL_CONTENT: i32 = 206;
 
 // RFC 9110 Section 15.4: Redirection 3xx
@@ -108,6 +109,7 @@ inline fn status_phrase_1xx_2xx(code: i32) -> const u8[:] {
         201 => "Created",
         202 => "Accepted",
         204 => "No Content",
+        205 => "Reset Content",
         206 => "Partial Content",
         _ => "Unknown",
     };
@@ -298,6 +300,12 @@ const METHOD_PUT_U32:     u32 = 0x20545550;         // "PUT "
 const METHOD_POST_U32:    u32 = 0x54534F50;         // "POST"
 const METHOD_HEAD_U32:    u32 = 0x44414548;         // "HEAD"
 const METHOD_DELE_U32:    u32 = 0x454C4544;         // "DELE"
+const METHOD_TRAC_U32:    u32 = 0x43415254;         // "TRAC"
+const METHOD_PATC_U32:    u32 = 0x43544150;         // "PATC"
+const METHOD_CONN_U32:    u32 = 0x4E4E4F43;         // "CONN"
+const METHOD_ECT_SP_U32:  u32 = 0x20544345;         // "ECT "
+const METHOD_OPTI_U32:    u32 = 0x4954504F;         // "OPTI"
+const METHOD_ONS_SP_U32:  u32 = 0x20534E4F;         // "ONS "
 const METHOD_POST_U64:    u64 = 0x2054534F50;       // "POST "
 const METHOD_HEAD_U64:    u64 = 0x2044414548;       // "HEAD "
 const METHOD_DELETE_U64:  u64 = 0x00204554454C4544; // "DELETE "
@@ -308,6 +316,11 @@ const METHOD_TRACE_U64:   u64 = 0x204543415254;     // "TRACE "
 
 const HTTP_VERSION_1_1_U64: u64 = 0x312E312F50545448; // RFC 9112 Section 2.3 ("HTTP/1.1")
 const HTTP_VERSION_1_0_U64: u64 = 0x302E312F50545448; // RFC 9112 Section 2.3 ("HTTP/1.0")
+
+// RFC 2046 Section 5.1.1: Common Syntax - multipart boundary length ceiling.
+const MULTIPART_MAX_BOUNDARY_LEN: i64 = 70;
+// RFC 9110 Section 12.4.2: Quality Values - maximum qvalue weight in milliths (1.000).
+const QVALUE_MAX_MILLITHS: i32 = 1000;
 
 // RFC 9110 Section 9.2.1: Safe Methods - Checks whether an HTTP method is safe (GET, HEAD, OPTIONS, TRACE).
 inline fn is_safe_http_method(method: const u8[:]) -> bool {

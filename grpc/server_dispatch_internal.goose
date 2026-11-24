@@ -42,14 +42,14 @@ fn build_connect_unary_get_response(
     append_metadata_headers(res.headers, ctx.response_metadata[..]);
     if st.code == grpc::StatusCode.Ok {
         res.status_code = rfc::STATUS_OK;
-        let ct = if encoding == "json" { grpc::CONNECT_MIME_JSON } else { grpc::CONNECT_MIME_PROTO };
+        let ct = if encoding == "json" { rfc::CONNECT_MIME_JSON } else { rfc::CONNECT_MIME_PROTO };
         let _ = res.headers.append_header("content-type", ct);
         res.body.append(res_payload);
         return;
     }
 
     res.status_code = connect_error_http_status(st.code);
-    let _ = res.headers.append_header("content-type", grpc::CONNECT_MIME_JSON);
+    let _ = res.headers.append_header("content-type", rfc::CONNECT_MIME_JSON);
     encode_connect_unary_error_json(st, res.body);
 }
 

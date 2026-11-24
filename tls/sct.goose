@@ -97,12 +97,12 @@ inline fn append_sct_signed_entry<B>(
     out:             B&,
 ) {
     if !is_precert {
-        out.append_u16_be(tls_internal::SCT_ENTRY_TYPE_X509);
+        out.append_u16_be(rfc::SCT_ENTRY_TYPE_X509);
         out.append_u24_be(cert_der.len as u32);
         out.append(cert_der);
         return;
     }
-    out.append_u16_be(tls_internal::SCT_ENTRY_TYPE_PRECERT);
+    out.append_u16_be(rfc::SCT_ENTRY_TYPE_PRECERT);
     out.append(issuer_key_hash);
     out.append_u24_be(cert_der.len as u32);
     out.append(cert_der);
@@ -136,7 +136,7 @@ fn build_sct_signed_data<B>(
     guard core::add_sat_i64(out.len, total_len) <= out.cap else { return false; }
 
     out.push(sct.version);
-    out.push(tls_internal::SCT_SIG_TYPE_CERT_TIMESTAMP);
+    out.push(rfc::SCT_SIG_TYPE_CERT_TIMESTAMP);
     out.append_u64_be(sct.timestamp_ms);
     append_sct_signed_entry(cert_der, is_precert, issuer_key_hash, out);
     out.append_u16_be(ext_bytes.len as u16);

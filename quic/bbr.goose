@@ -9,6 +9,7 @@ namespace quic;
 
 import std;
 import core;
+import rfc.h3_quic;
 import .internal;
 
 // ---- user-space leaky bucket pacer (picoquic model) ----------------------
@@ -68,12 +69,12 @@ enum BbrMode {
     ProbeRtt,
 }
 
-const BBR_MIN_CWND_BYTES: u64 = 4 * 1200; // 4 * MSS
+const BBR_MIN_CWND_BYTES: u64 = 4 * (rfc::PMTU_BASE as u64); // 4 * MSS
 
 struct BbrState {
     mode:                    BbrMode = BbrMode.Startup,
     pacer:                   Pacer   = Pacer {},
-    cwnd_bytes:              u64     = 10 * 1200, // Initial cwnd (RFC 9002 Sec 7.2)
+    cwnd_bytes:              u64     = 10 * (rfc::PMTU_BASE as u64), // Initial cwnd (RFC 9002 Sec 7.2)
     bw_hi_bps:               u64     = 0,
     bw_lo_bps:               u64     = 0,
     inflight_hi_bytes:       u64     = 0xFFFFFFFFFFFFFFFF,

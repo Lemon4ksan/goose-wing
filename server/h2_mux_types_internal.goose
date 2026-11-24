@@ -375,12 +375,7 @@ fn initiate_graceful_shutdown<B>(sess: H2ServerSession&, out: B&) {
 }
 
 inline fn is_h2_forbidden_hop_header(name_slice: const u8[:]) -> bool {
-    return name_slice.eq_ascii_fold("connection") ||
-           name_slice.eq_ascii_fold("keep-alive") ||
-           name_slice.eq_ascii_fold("proxy-connection") ||
-           name_slice.eq_ascii_fold("transfer-encoding") ||
-           name_slice.eq_ascii_fold("upgrade") ||
-           name_slice.eq_ascii_fold("te");
+    return rfc::is_connection_specific_header(name_slice) || name_slice.eq_ascii_fold("te");
 }
 
 inline fn emit_pending_dyn_size_updates<B>(sess: H2ServerSession&, hpack_block: B&) {
@@ -548,12 +543,7 @@ fn emit_response_trailers<B>(
         // RFC 9113 §8.1 / §8.2.2 & RFC 9110 §6.5.1: Trailers MUST NOT include pseudo-headers,
         // hop-by-hop connection headers, or disallowed framing/routing trailer fields.
         if name_slice.len > 0 && name_slice[0] != ':' &&
-           !name_slice.eq_ascii_fold("connection") &&
-           !name_slice.eq_ascii_fold("keep-alive") &&
-           !name_slice.eq_ascii_fold("proxy-connection") &&
-           !name_slice.eq_ascii_fold("transfer-encoding") &&
-           !name_slice.eq_ascii_fold("upgrade") &&
-           !name_slice.eq_ascii_fold("te") &&
+           !is_h2_forbidden_hop_header(name_slice) &&
            !rfc::is_disallowed_trailer_field(name_slice) {
             var lower_name: u8[..256] = [];
             guard name_slice.len <= lower_name.cap else { continue; }

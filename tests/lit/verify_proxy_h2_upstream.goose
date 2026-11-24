@@ -399,7 +399,7 @@ fn test_h2_up_grpc_and_connect_loopback() {
     let lpm_sl, _, cons_lpm, ok_lpm_sl = grpc::decode_lpm_slice(c_rx[..], 0);
     assert(ok_lpm_sl && lpm_sl == "connect-reply");
     p_lpm_len = cons_lpm;
-    assert(c_rx[p_lpm_len] == grpc::CONNECT_FLAG_END_STREAM);
+    assert(c_rx[p_lpm_len] == rfc::CONNECT_FLAG_END_STREAM);
     assert(grpc::parse_connect_end_stream(c_rx[p_lpm_len + 5..], c_out_st, c_out_msg, c_out_tr));
     assert(c_out_st == grpc::StatusCode.Ok);
     assert(http::get_header(c_out_tr, "x-connect-trace") == "tr-9");

@@ -6,6 +6,7 @@ namespace wire;
 
 import std;
 import core;
+import rfc.h2;
 import http.headers;
 import http2.hpack;
 
@@ -171,12 +172,7 @@ fn hpack_decode_string<B>(src: const u8[:], offset: u64&, out: B&) -> bool {
 }
 
 inline fn is_h2_skipped_header_name(name: const u8[:]) -> bool {
-    return name.eq_ascii_fold("host")
-        || name.eq_ascii_fold("connection")
-        || name.eq_ascii_fold("keep-alive")
-        || name.eq_ascii_fold("proxy-connection")
-        || name.eq_ascii_fold("transfer-encoding")
-        || name.eq_ascii_fold("upgrade");
+    return name.eq_ascii_fold("host") || rfc::is_connection_specific_header(name);
 }
 
 enum WireHeaderSectionKind {

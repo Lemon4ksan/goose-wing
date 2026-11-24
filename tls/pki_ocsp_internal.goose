@@ -450,10 +450,10 @@ inline fn x509_validate_ocsp_cert_id_alg(resp: const tls::ParsedOcspResponse&, r
     let alg_oid = tls::span_slice(raw_ocsp, resp.hash_alg_oid);
     let ocsp_nh = tls::span_slice(raw_ocsp, resp.issuer_name_hash);
     let ocsp_kh = tls::span_slice(raw_ocsp, resp.issuer_key_hash);
-    if alg_oid == OID_OCSP_SHA256[..] {
+    if alg_oid == rfc::OID_OCSP_SHA256[..] {
         return ocsp_nh.len == 32 && ocsp_kh.len == 32;
     }
-    if alg_oid == OID_OCSP_SHA1[..] {
+    if alg_oid == rfc::OID_OCSP_SHA1[..] {
         return ocsp_nh.len == 20 && ocsp_kh.len == 20;
     }
     return false;
@@ -486,11 +486,11 @@ inline fn x509_verify_ocsp_issuer_name_hash(
 ) -> bool {
     var dn_tlv: u8[..1024] = [];
     guard encode_der_name_tlv(issuer_dn, dn_tlv) else { return false; }
-    if alg_oid == OID_OCSP_SHA256[..] && ocsp_nh.len == 32 {
+    if alg_oid == rfc::OID_OCSP_SHA256[..] && ocsp_nh.len == 32 {
         let h = core::sha256(dn_tlv[..]);
         return core::ct_eq_bytes(ocsp_nh, h[..]);
     }
-    if alg_oid == OID_OCSP_SHA1[..] && ocsp_nh.len == 20 {
+    if alg_oid == rfc::OID_OCSP_SHA1[..] && ocsp_nh.len == 20 {
         let h = core::sha1(dn_tlv[..]);
         return core::ct_eq_bytes(ocsp_nh, h[..]);
     }
@@ -510,13 +510,13 @@ fn x509_verify_ocsp_cert_id_material(
     let alg_oid = tls::span_slice(raw_ocsp, resp.hash_alg_oid);
     let ocsp_nh = tls::span_slice(raw_ocsp, resp.issuer_name_hash);
     let ocsp_kh = tls::span_slice(raw_ocsp, resp.issuer_key_hash);
-    if alg_oid == OID_OCSP_SHA256[..] {
+    if alg_oid == rfc::OID_OCSP_SHA256[..] {
         guard ocsp_nh.len == 32 && ocsp_kh.len == 32 else { return false; }
         let nh = core::sha256(dn_tlv[..]);
         let kh = core::sha256(issuer_pubkey_val);
         return core::ct_eq_bytes(ocsp_nh, nh[..]) && core::ct_eq_bytes(ocsp_kh, kh[..]);
     }
-    if alg_oid == OID_OCSP_SHA1[..] {
+    if alg_oid == rfc::OID_OCSP_SHA1[..] {
         guard ocsp_nh.len == 20 && ocsp_kh.len == 20 else { return false; }
         let nh = core::sha1(dn_tlv[..]);
         let kh = core::sha1(issuer_pubkey_val);

@@ -13,6 +13,7 @@ import json;
 
 import core;
 import rfc.http;
+import rfc.dns;
 import rfc.h2;
 import rfc.h3_quic;
 import rfc.tls;

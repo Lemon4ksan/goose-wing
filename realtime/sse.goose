@@ -11,6 +11,7 @@ namespace realtime;
 
 import std;
 import core;
+import rfc.http;
 import http.request;
 import http.response;
 import .internal;
@@ -183,7 +184,7 @@ fn prepare_request(sub: const SseSubscription&, req: http::Request&) {
 
 // Configures a server HTTP response for SSE streaming (text/event-stream).
 fn init_response(res: http::Response&) {
-    res.status_code = 200;
+    res.status_code = rfc::STATUS_OK;
     http::set_header(res, "Content-Type", "text/event-stream");
     http::set_header(res, "Cache-Control", "no-cache");
     http::set_header(res, "Connection", "keep-alive");

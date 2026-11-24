@@ -46,7 +46,7 @@ origins of up to 128 bytes each (`u8[..128][..16]`) per RFC 9412.
 
 | Category | Constants |
 | :--- | :--- |
-| Frame Types | `rfc::H3_FRAME_DATA` (`0x00`), `rfc::H3_FRAME_HEADERS` (`0x01`), `rfc::H3_FRAME_CANCEL_PUSH` (`0x03`), `rfc::H3_FRAME_SETTINGS` (`0x04`), `rfc::H3_FRAME_PUSH_PROMISE` (`0x05`), `rfc::H3_FRAME_GOAWAY` (`0x07`), `H3_FRAME_ORIGIN` (`0x0C`), `rfc::H3_FRAME_MAX_PUSH_ID` (`0x0D`), `rfc::H3_FRAME_PRIORITY_UPDATE_REQUEST` (`0xF0700`), `rfc::H3_FRAME_PRIORITY_UPDATE_PUSH` (`0xF0701`) |
+| Frame Types | `rfc::H3_FRAME_DATA` (`0x00`), `rfc::H3_FRAME_HEADERS` (`0x01`), `rfc::H3_FRAME_CANCEL_PUSH` (`0x03`), `rfc::H3_FRAME_SETTINGS` (`0x04`), `rfc::H3_FRAME_PUSH_PROMISE` (`0x05`), `rfc::H3_FRAME_GOAWAY` (`0x07`), `rfc::H3_FRAME_ORIGIN` (`0x0C`), `rfc::H3_FRAME_MAX_PUSH_ID` (`0x0D`), `rfc::H3_FRAME_PRIORITY_UPDATE_REQUEST` (`0xF0700`), `rfc::H3_FRAME_PRIORITY_UPDATE_PUSH` (`0xF0701`) |
 | Unidirectional Stream Types | `rfc::H3_STREAM_CONTROL` (`0x00`), `rfc::H3_STREAM_PUSH` (`0x01`), `rfc::H3_STREAM_QPACK_ENCODER` (`0x02`), `rfc::H3_STREAM_QPACK_DECODER` (`0x03`) |
 
 ```goose

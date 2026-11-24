@@ -7,6 +7,7 @@ namespace h3_internal;
 
 import std;
 import core;
+import rfc.h2;
 import rfc.h3_quic;
 import http.headers;
 import quic.packet;
@@ -118,11 +119,7 @@ fn validate_h3_trailers<F>(conn: http3::Connection&, fields: const F&) -> u64 {
            fname.eq_ascii_fold("host") ||
            fname.eq_ascii_fold("trailer") ||
            fname.eq_ascii_fold("te") ||
-           fname.eq_ascii_fold("transfer-encoding") ||
-           fname.eq_ascii_fold("connection") ||
-           fname.eq_ascii_fold("upgrade") ||
-           fname.eq_ascii_fold("keep-alive") ||
-           fname.eq_ascii_fold("proxy-connection") ||
+           rfc::is_connection_specific_header(fname) ||
            rfc::is_disallowed_trailer_field(fname) {
             conn.state = http3::ConnState.Closed;
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;

@@ -7,12 +7,10 @@ namespace security;
 
 import std;
 import core;
+import rfc.tls;
 import .hpke_internal;
 
 // ---- RFC 9180 Identifiers and Code Points --------------------------------
-
-// RFC 9180 Section 7.3: Authenticated Encryption with Associated Data (AEAD) Functions - Export-only AEAD identifier.
-const HPKE_AEAD_EXPORT_ONLY: u16 = 0xFFFF;
 
 // RFC 9180 Section 5.2: Role discriminator prevents reusing a context across Seal and Open.
 enum HpkeRole {

@@ -8,14 +8,10 @@ namespace grpc;
 import std;
 import json;
 import core;
+import rfc.grpc;
 import http.headers;
 import .constants;
 import .connect_internal;
-
-const CONNECT_FLAG_END_STREAM: u8          = 0x02; // Connect Protocol streaming EndStream envelope flag
-const CONNECT_CONTENT_PREFIX:  const u8[:] = "application/connect+";
-const CONNECT_MIME_PROTO:      const u8[:] = "application/proto";
-const CONNECT_MIME_JSON:       const u8[:] = "application/json";
 
 // ---- Connect Protocol Unary GET Query & EndStream Envelope Codec --------
 
@@ -77,7 +73,7 @@ fn encode_connect_end_stream<B>(
     }
     guard json_buf.try_push('}') else { return false; }
     var hdr: u8[..8] = [];
-    hdr.push(CONNECT_FLAG_END_STREAM);
+    hdr.push(rfc::CONNECT_FLAG_END_STREAM);
     hdr.append_u32_be(json_buf.len as u32);
     guard out.try_append(hdr[..]) && out.try_append(json_buf[..]) else { return false; }
     committed = true;

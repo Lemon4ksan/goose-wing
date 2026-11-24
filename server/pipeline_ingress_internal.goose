@@ -183,7 +183,7 @@ fn stage_server_ratelimit_subject<Limiter>(
     let rl_decision = limiter.check_rate_limit(composite_key[..], 1, now_ns);
     security::apply_rate_limit_headers(res, limiter.quota, rl_decision);
     guard rl_decision.is_allowed() else {
-        return wire::StageVerdict.ShortCircuit { status_code: 429 };
+        return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_TOO_MANY_REQUESTS as u16 };
     }
     return wire::StageVerdict.Continue;
 }
@@ -247,8 +247,8 @@ fn stage_server_slowloris(
     let _prof = server_prof::lit_prof_enter("stage.slowloris");
     defer server_prof::lit_prof_leave(_prof);
     guard check_connection_tick(timer, now_ns) else {
-        res.status_code = 408; // Request Timeout
-        return wire::StageVerdict.Abort { err_code: 408 };
+        res.status_code = rfc::STATUS_REQUEST_TIMEOUT;
+        return wire::StageVerdict.Abort { err_code: rfc::STATUS_REQUEST_TIMEOUT };
     }
     notify_request_start(timer);
     return wire::StageVerdict.Continue;
@@ -259,8 +259,8 @@ fn stage_server_expect_100(req: const http::Request&, res: http::Response&) -> w
     let _prof = server_prof::lit_prof_enter("stage.expect_100");
     defer server_prof::lit_prof_leave(_prof);
     guard server::validate_pipeline_expect_header(req) else {
-        res.status_code = 417; // Expectation Failed
-        return wire::StageVerdict.ShortCircuit { status_code: 417 };
+        res.status_code = rfc::STATUS_EXPECTATION_FAILED;
+        return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_EXPECTATION_FAILED as u16 };
     }
     return wire::StageVerdict.Continue;
 }
@@ -278,16 +278,16 @@ fn stage_server_edge_filter(
     return match verdict {
         Pass => wire::StageVerdict.Continue,
         BlockForbidden => {
-            res.status_code = 403;
-            wire::StageVerdict.ShortCircuit { status_code: 403 }
+            res.status_code = rfc::STATUS_FORBIDDEN;
+            wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_FORBIDDEN as u16 }
         },
         ThrottleRate => {
-            res.status_code = 429;
-            wire::StageVerdict.ShortCircuit { status_code: 429 }
+            res.status_code = rfc::STATUS_TOO_MANY_REQUESTS;
+            wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_TOO_MANY_REQUESTS as u16 }
         },
         DropConnection => {
-            res.status_code = 400;
-            wire::StageVerdict.Abort { err_code: 400 }
+            res.status_code = rfc::STATUS_BAD_REQUEST;
+            wire::StageVerdict.Abort { err_code: rfc::STATUS_BAD_REQUEST }
         },
     };
 }
@@ -306,7 +306,7 @@ fn stage_server_ratelimit_ip<Limiter>(
     let rl_decision = limiter.check_rate_limit(peer_ip, 1, now_ns);
     security::apply_rate_limit_headers(res, limiter.quota, rl_decision);
     guard rl_decision.is_allowed() else {
-        return wire::StageVerdict.ShortCircuit { status_code: 429 };
+        return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_TOO_MANY_REQUESTS as u16 };
     }
     return wire::StageVerdict.Continue;
 }
@@ -324,13 +324,13 @@ fn stage_server_route_match<Router>(
     out_match = router.match_route(req.method[..], req.url[..], ext.params, ext.canon_url);
     return match out_match {
         NotFound => {
-            res.status_code = 404;
-            wire::StageVerdict.ShortCircuit { status_code: 404 }
+            res.status_code = rfc::STATUS_NOT_FOUND;
+            wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_NOT_FOUND as u16 }
         },
         MethodNotAllowed mna => {
-            res.status_code = 405;
+            res.status_code = rfc::STATUS_METHOD_NOT_ALLOWED;
             http::set_header(res, rfc::HEADER_ALLOW, mna.allow_header[..]);
-            wire::StageVerdict.ShortCircuit { status_code: 405 }
+            wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_METHOD_NOT_ALLOWED as u16 }
         },
         Found _ => {
             let _ = ext.matched_route.try_set(ext.canon_url[..min(ext.canon_url.len, 64)]);
@@ -358,7 +358,7 @@ fn stage_server_ratelimit_route<Limiter>(
     let rl_decision = limiter.check_rate_limit(composite_key[..], 1, now_ns);
     security::apply_rate_limit_headers(res, limiter.quota, rl_decision);
     guard rl_decision.is_allowed() else {
-        return wire::StageVerdict.ShortCircuit { status_code: 429 };
+        return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_TOO_MANY_REQUESTS as u16 };
     }
     return wire::StageVerdict.Continue;
 }
@@ -378,15 +378,15 @@ fn stage_server_cors(
         return wire::StageVerdict.ShortCircuit { status_code: res.status_code as u16 };
     }
     if cors_res == security::CorsResult.InvalidConfig {
-        res.status_code = 500;
-        return wire::StageVerdict.ShortCircuit { status_code: 500 };
+        res.status_code = rfc::STATUS_INTERNAL_SERVER_ERROR;
+        return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_INTERNAL_SERVER_ERROR as u16 };
     }
     if cors_res == security::CorsResult.RejectedOrigin {
         let has_acrm = http::header(req, rfc::HEADER_ACCESS_CONTROL_REQUEST_METHOD).len > 0;
         let is_preflight = req.method[..] == rfc::METHOD_OPTIONS && has_acrm;
         if is_preflight || cors_policy.reject_non_matching_origin {
-            res.status_code = 403;
-            return wire::StageVerdict.ShortCircuit { status_code: 403 };
+            res.status_code = rfc::STATUS_FORBIDDEN;
+            return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_FORBIDDEN as u16 };
         }
     }
     return wire::StageVerdict.Continue;
@@ -408,8 +408,8 @@ fn stage_server_csrf(
     security::apply_isolation_headers(res);
     return match csrf_res {
         RejectForbidden _ => {
-            res.status_code = 403;
-            wire::StageVerdict.ShortCircuit { status_code: 403 }
+            res.status_code = rfc::STATUS_FORBIDDEN;
+            wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_FORBIDDEN as u16 }
         },
         _ => wire::StageVerdict.Continue,
     };
@@ -457,26 +457,26 @@ fn stage_server_auth_jwt(
     res:         http::Response&,
 ) -> wire::StageVerdict {
     guard jwks.keys.len > 0 else {
-        res.status_code = 503;
-        return wire::StageVerdict.ShortCircuit { status_code: 503 };
+        res.status_code = rfc::STATUS_SERVICE_UNAVAILABLE;
+        return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_SERVICE_UNAVAILABLE as u16 };
     }
     let _prof = server_prof::lit_prof_enter("stage.auth_jwt");
     defer server_prof::lit_prof_leave(_prof);
     let auth_val = http::header(req, rfc::HEADER_AUTHORIZATION);
     let token = extract_bearer_token(auth_val);
     guard token.len > 0 else {
-        res.status_code = 401;
+        res.status_code = rfc::STATUS_UNAUTHORIZED;
         http::set_header(res, rfc::HEADER_WWW_AUTHENTICATE, "Bearer");
-        return wire::StageVerdict.ShortCircuit { status_code: 401 };
+        return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_UNAUTHORIZED as u16 };
     }
     var out_hdr = auth::JwtHeader { .. };
     var out_claims = auth::JwtClaims { .. };
     let now_sec = if now_ns > 0 { div_euclid(now_ns, 1000000000) as i64 } else { core::now().wall_sec };
     let err = auth::verify_jwt(jwks, token, jwt_options, now_sec, out_hdr, out_claims);
     guard err == auth::JwtError.None else {
-        res.status_code = 401;
+        res.status_code = rfc::STATUS_UNAUTHORIZED;
         http::set_header(res, rfc::HEADER_WWW_AUTHENTICATE, "Bearer error=\"invalid_token\"");
-        return wire::StageVerdict.ShortCircuit { status_code: 401 };
+        return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_UNAUTHORIZED as u16 };
     }
     let _ = ext.auth_subject.try_set(out_claims.sub[..min(out_claims.sub.len, 64)]);
     ext.jwt_claims = out_claims;
