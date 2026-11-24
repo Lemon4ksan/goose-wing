@@ -921,7 +921,7 @@ fn encode_quic_ch_extensions(
     if tls_internal::validate_sni_host_bytes(sni) {
         ext.append_u16_be(rfc::TLS_EXT_SERVER_NAME);
         let list_len = core::add_sat_i64(sni.len, 3) as u16;
-        ext.append_u16_be(core::add_sat_u64(list_len as u64, 2) as u16);
+        ext.append_u16_be(core::add_sat_u64(list_len, 2) as u16);
         ext.append_u16_be(list_len);
         guard ext.try_push(0) else { return false; }
         ext.append_u16_be(sni.len as u16);

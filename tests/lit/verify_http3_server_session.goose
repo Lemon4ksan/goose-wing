@@ -1316,6 +1316,59 @@ fn test_h3_edge_review_regressions() {
     // CHECK: H3_EDGE_REGRESSIONS: OK
 }
 
+fn test_h3_edge_ignored_uni_capacity() {
+    var s_uni = http3::h3_edge_open();
+    defer http3::h3_edge_close(s_uni);
+
+    var grease_open: u8[..16] = [];
+    assert(quic::encode_varint(0x4021, grease_open));
+    grease_open.append("hdr");
+
+    for gi in 1024 {
+        let sid = ((gi * 4) + 2) as u64;
+        assert(http3::h3_edge_feed_uni_stream(s_uni, sid, grease_open[..], false));
+    }
+
+    let bait_ctrl: u8[3] = [0x00, 0x04, 0x00];
+    let bait_push: u8[3] = [0x01, 0x00, 0x01];
+    let bait_qenc: u8[3] = [0x02, 0x00, 0x02];
+    for gi in 1024 {
+        let sid = ((gi * 4) + 2) as u64;
+        let sel = gi % 3;
+        if sel == 0 {
+            assert(http3::h3_edge_feed_uni_stream(s_uni, sid, bait_ctrl[..], false));
+        } else if sel == 1 {
+            assert(http3::h3_edge_feed_uni_stream(s_uni, sid, bait_push[..], false));
+        } else {
+            assert(http3::h3_edge_feed_uni_stream(s_uni, sid, bait_qenc[..], false));
+        }
+    }
+    // Verify neither oldest (2) nor newest (4094) stream was evicted.
+    assert(http3::h3_edge_feed_uni_stream(s_uni, 2, bait_push[..], false));
+    assert(http3::h3_edge_feed_uni_stream(s_uni, 4094, bait_push[..], false));
+
+    var pev = http3::H3EdgeEvent { .. };
+    assert(!http3::h3_edge_poll_event(s_uni, pev));
+
+    // Closing one tracked stream via FIN frees a slot for another open unknown uni stream.
+    assert(http3::h3_edge_feed_uni_stream(s_uni, 2, "", true));
+    let recycled_sid: u64 = (1024 * 4) + 2;
+    assert(http3::h3_edge_feed_uni_stream(s_uni, recycled_sid, grease_open[..], false));
+    assert(http3::h3_edge_feed_uni_stream(s_uni, recycled_sid, bait_push[..], false));
+    assert(!http3::h3_edge_poll_event(s_uni, pev));
+
+    // A 1025-th simultaneous open unknown uni stream emits ProtocolError(H3_ERR_EXCESSIVE_LOAD).
+    let ovf_sid: u64 = (1025 * 4) + 2;
+    assert(!http3::h3_edge_feed_uni_stream(s_uni, ovf_sid, grease_open[..], false));
+    assert(http3::h3_edge_poll_event(s_uni, pev));
+    assert(pev.kind == http3::H3EdgeEventKind.ProtocolError);
+    assert(pev.stream_id == ovf_sid);
+    assert(pev.error_code == rfc::H3_ERR_EXCESSIVE_LOAD);
+
+    print("H3_EDGE_IGNORED_UNI_CAP: OK\n");
+    // CHECK: H3_EDGE_IGNORED_UNI_CAP: OK
+}
+
 thread_fn h3_edge_worker(arg: i64) {
     let _ = arg;
     var sess = http3::h3_edge_open();
@@ -1338,6 +1391,7 @@ fn main() {
     test_live_h3_loopback_e2e();
     test_h3_edge_conformance_and_security();
     test_h3_edge_review_regressions();
+    test_h3_edge_ignored_uni_capacity();
     let t1 = thread_spawn(h3_edge_worker, 1);
     let t2 = thread_spawn(h3_edge_worker, 2);
     assert(thread_wait(t1) && thread_wait(t2));

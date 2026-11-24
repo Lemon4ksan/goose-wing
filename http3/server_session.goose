@@ -623,13 +623,9 @@ fn is_ignored_uni_stream(slot: const H3EdgeSlot&, stream_id: u64) -> bool {
     return false;
 }
 
-fn add_ignored_uni_stream(slot: H3EdgeSlot&, stream_id: u64) {
-    if slot.ignored_uni_count >= H3_EDGE_MAX_IGNORED_UNI && slot.ignored_uni_head >= 0 {
-        let drop_idx = slot.ignored_uni_head;
-        slot.ignored_uni_head = g_h3_edge_ignored_uni[drop_idx].next_idx;
-        g_h3_edge_ignored_uni[drop_idx] = H3EdgeIgnoredUni { .. };
-        g_h3_edge_free_ignored_uni.push(drop_idx);
-        slot.ignored_uni_count = core::sub_sat_i64(slot.ignored_uni_count, 1);
+fn add_ignored_uni_stream(slot: H3EdgeSlot&, stream_id: u64) -> bool {
+    if slot.ignored_uni_count >= H3_EDGE_MAX_IGNORED_UNI {
+        return false;
     }
     let free_idx, has_free = pop_free_index(g_h3_edge_free_ignored_uni);
     var node_idx: i64 = -1;
@@ -652,6 +648,7 @@ fn add_ignored_uni_stream(slot: H3EdgeSlot&, stream_id: u64) {
     }
     slot.ignored_uni_head = node_idx;
     slot.ignored_uni_count = core::add_sat_i64(slot.ignored_uni_count, 1);
+    return true;
 }
 
 fn remove_ignored_uni_stream(slot: H3EdgeSlot&, stream_id: u64) {
@@ -2054,7 +2051,9 @@ fn assign_uni_stream_type(
     }
     // RFC 9114 Section 6.2: Unidirectional Streams - Unknown/GREASE uni stream types are ignored.
     if end_flag == H3EdgeEndFlag.Open {
-        add_ignored_uni_stream(slot, stream_id);
+        if !add_ignored_uni_stream(slot, stream_id) {
+            return false, emit_h3_protocol_error(slot_idx, stream_id, rfc::H3_ERR_EXCESSIVE_LOAD);
+        }
     }
     return true, true;
 }
