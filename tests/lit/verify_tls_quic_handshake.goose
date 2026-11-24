@@ -391,13 +391,14 @@ fn build_rsa_leaf_cert_der(common_name: const u8[:], dns_san: const u8[:], out_d
 }
 
 fn build_custom_quic_ch_msg(
-    rand_bytes: const u8[32]&,
-    sni_host:   const u8[:],
-    alpn_proto: const u8[:],
-    tp_bytes:   const u8[:],
-    include_tp: bool,
-    session_id: const u8[:],
-    out_msg:    u8[..4096]&,
+    rand_bytes:   const u8[32]&,
+    sni_host:     const u8[:],
+    alpn_proto:   const u8[:],
+    tp_bytes:     const u8[:],
+    include_tp:   bool,
+    session_id:   const u8[:],
+    out_msg:      u8[..4096]&,
+    raw_alpn_ext: const u8[:] = "",
 ) {
     out_msg.clear();
     var pay: u8[..4096] = [];
@@ -419,7 +420,11 @@ fn build_custom_quic_ch_msg(
         ext.append_u16_be(sni_host.len as u16);
         ext.append(sni_host);
     }
-    if alpn_proto.len > 0 {
+    if raw_alpn_ext.len > 0 {
+        ext.append_u16_be(rfc::TLS_EXT_ALPN);
+        ext.append_u16_be(raw_alpn_ext.len as u16);
+        ext.append(raw_alpn_ext);
+    } else if alpn_proto.len > 0 {
         ext.append_u16_be(rfc::TLS_EXT_ALPN);
         ext.append_u16_be((alpn_proto.len + 3) as u16);
         ext.append_u16_be((alpn_proto.len + 1) as u16);
@@ -1127,6 +1132,50 @@ fn test_fix_round_1_regressions() {
     print("CHECK_QUIC_ROUND1_OK\n");
 }
 
+fn test_malformed_alpn_decode_error_alert() {
+    var seed:     u8[32]     = [0x91; 32];
+    var cert_der: u8[..2048] = [];
+    assert(tls::build_test_ed25519_cert_der(
+        seed, "alpn.example.test", "alpn.example.test", "127.0.0.1", cert_der,
+    ));
+
+    var rand_b: u8[32]     = [0x43; 32];
+    var bad_ch: u8[..4096] = [];
+    // Malformed ALPN list length (5) exceeds the 4-byte extension payload.
+    build_custom_quic_ch_msg(
+        rand_b, "alpn.example.test", "", "", false, rand_b[..], bad_ch, "\x00\x05\x02h",
+    );
+
+    var rec: u8[..4200] = [];
+    rec.push(rfc::TLS_CONTENT_HANDSHAKE);
+    rec.append_u16_be(rfc::TLS_LEGACY_VERSION_1_0);
+    rec.append_u16_be(bad_ch.len as u16);
+    assert(rec.try_append(bad_ch[..]));
+
+    var cfg = tls::TlsBackendConfig {
+        kind:      tls::TlsBackendKind.PureGoose,
+        is_server: true,
+        priv_seed: seed,
+        ..
+    };
+    assert(cfg.cert_der.try_set(cert_der[..]));
+    assert(cfg.alpn_wire.try_set("\x02h2"));
+    var ep, open_st = tls::tls_endpoint_open(cfg);
+    assert(open_st == tls::TlsBackendStatus.Ok);
+    defer tls::tls_endpoint_close(ep);
+
+    let fed_n, feed_st = tls::tls_endpoint_feed_wire(ep, rec[..]);
+    assert(fed_n == rec.len && feed_st == tls::TlsBackendStatus.Ok);
+    assert(tls::tls_endpoint_step_handshake(ep) == tls::TlsBackendStatus.HandshakeError);
+
+    var alert_wire: u8[256] = [0; 256];
+    let n_alert, _ = tls::tls_endpoint_drain_wire(ep, alert_wire[..]);
+    assert(n_alert >= 7);
+    assert(alert_wire[0] == rfc::TLS_CONTENT_ALERT && alert_wire[5] == 2);
+    assert(alert_wire[6] == tls::alert_to_u8(tls::Alert.DecodeError));
+    print("CHECK_MALFORMED_ALPN_DECODE_ERROR_OK\n");
+}
+
 fn main() {
     test_deferred_sni_fullchain_and_fragmented();
     run_rsa_key_format_case(false);
@@ -1136,6 +1185,7 @@ fn main() {
     test_negative_rfc9001_guards();
     test_concurrent_thread_local_arenas();
     test_fix_round_1_regressions();
+    test_malformed_alpn_decode_error_alert();
 }
 
 // CHECK: CHECK_QUIC_SNI_FULLCHAIN_OK
@@ -1144,3 +1194,4 @@ fn main() {
 // CHECK: CHECK_QUIC_NEGATIVE_OK
 // CHECK: CHECK_QUIC_THREAD_OK
 // CHECK: CHECK_QUIC_ROUND1_OK
+// CHECK: CHECK_MALFORMED_ALPN_DECODE_ERROR_OK

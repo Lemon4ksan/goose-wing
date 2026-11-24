@@ -633,14 +633,23 @@ def _run_sclient_edge_cell(
     ]
     if groups:
         cmd.extend(["-groups", groups])
-    res = subprocess.run(
-        cmd,
-        input=payload,
-        capture_output=True,
-        text=True,
-        timeout=10.0,
-        check=False,
-    )
+    try:
+        res = subprocess.run(
+            cmd,
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        out = exc.stdout or ""
+        err = exc.stderr or ""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", errors="replace")
+        if isinstance(err, bytes):
+            err = err.decode("utf-8", errors="replace")
+        return -1, out, f"openssl s_client timed out after 10s: {err}".strip()
     return res.returncode, res.stdout or "", res.stderr or ""
 
 

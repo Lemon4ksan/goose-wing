@@ -3480,8 +3480,12 @@ int64_t wing_udp_open_dual(wing_bytes_ro bind_ip, uint16_t bind_port, int32_t fl
     wing_prepare_nonblocking_cloexec(s);
     int opt = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
+#if defined(SO_REUSEPORT)
+    setsockopt(s, SOL_SOCKET, SO_REUSEPORT, (const char *)&opt, sizeof(opt));
+#endif
     if (family == AF_INET6) {
-        int is_wildcard_v6 = (strcmp(bind_str, "::") == 0) || (bind_str[0] == '\0' && (flags & 2) != 0);
+        const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)&ss;
+        int is_wildcard_v6 = IN6_IS_ADDR_UNSPECIFIED(&s6->sin6_addr) != 0;
         int v6only = is_wildcard_v6 ? 0 : 1;
         if (setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&v6only, sizeof(v6only)) == SOCKET_ERROR) {
             closesocket(s);

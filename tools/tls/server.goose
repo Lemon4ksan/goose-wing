@@ -12,6 +12,7 @@ const TLS_ALERT_UNEXPECTED_MESSAGE: u8  = 10;
 const TLS_ALERT_ILLEGAL_PARAMETER:  u8  = 47;
 const TLS_ALERT_DECODE_ERROR:       u8  = 50;
 const TLS_ALERT_PROTOCOL_VERSION:   u8  = 70;
+const TLS_ALERT_UNRECOGNIZED_NAME:  u8  = 112; // RFC 6066 Section 3
 const TLS_ALERT_NO_APP_PROTOCOL:    u8  = 120;
 const TLS_EXT_SUPPORTED_VERSIONS:   u16 = 43;
 const TLS_VERSION_1_3_WIRE:         u16 = 0x0304;
@@ -329,12 +330,12 @@ fn resolve_and_install_sni(
 ) -> bool {
     let sni = tls::tls_endpoint_client_sni(ep);
     guard sni.len > 0 else {
-        send_fatal_tls_alert(conn, TLS_ALERT_ILLEGAL_PARAMETER);
+        send_fatal_tls_alert(conn, TLS_ALERT_UNRECOGNIZED_NAME);
         return false;
     }
     let creds, ok_sni = server::resolve_sni_credentials(server, sni[..]);
     guard ok_sni else {
-        send_fatal_tls_alert(conn, TLS_ALERT_ILLEGAL_PARAMETER);
+        send_fatal_tls_alert(conn, TLS_ALERT_UNRECOGNIZED_NAME);
         return false;
     }
     let st = tls::tls_endpoint_set_server_credentials_pem(ep, creds.cert_pem, creds.key_pem);
@@ -380,7 +381,7 @@ fn drive_sni_endpoint_handshake(
 
     for _ in 128 {
         let st = tls::tls_endpoint_step_handshake(ep);
-        let _ = drain_ep_wire(conn, ep);
+        guard drain_ep_wire(conn, ep) else { return false, true; }
         if st == tls::TlsBackendStatus.Ok || tls::tls_endpoint_is_established(ep) {
             return true, true;
         }

@@ -217,9 +217,17 @@ fn pure_open_blocking_client_endpoint(
     slot.cipher_slot = pre_cipher_slot;
     slot.stage = PureHsStage.ClientInit;
     slot.client_cfg = cfg;
-    let _ = slot.server_name.try_set(cfg.server_name[..]);
-    let _ = slot.alpn_csv.try_set(cfg.alpn[..]);
-    let _ = slot.keylog_file.try_set(cfg.keylog_file[..]);
+    var committed = false;
+    defer if !committed {
+        slot.cipher_slot = 0xFFFF;
+        reset_and_wipe_pure_slot(slot);
+    };
+    guard slot.server_name.try_set(cfg.server_name[..]) &&
+        slot.alpn_csv.try_set(cfg.alpn[..]) &&
+        slot.keylog_file.try_set(cfg.keylog_file[..]) else {
+        return tls::TlsEndpoint { .. }, false;
+    }
+    committed = true;
     return tls::TlsEndpoint {
         kind:        tls::TlsBackendKind.PureGoose,
         active_kind: tls::TlsBackendKind.PureGoose,

@@ -1073,7 +1073,8 @@ fn net_get_local_ips(out_buf: u8[:]) -> i32 {
     return net_internal::native_net_get_local_ips(out_buf);
 }
 
-// Opens a non-blocking UDP socket (`"::"` uses `IPV6_V6ONLY=0` dual-stack; explicit IPv6 uses `IPV6_V6ONLY=1`).
+// Opens a non-blocking UDP socket (`"::"` and unspecified IPv6 addresses use
+// `IPV6_V6ONLY=0` dual-stack; explicit IPv6 uses `IPV6_V6ONLY=1`).
 // `flags`: bit 1 (2) = force IPv6 on empty `bind_ip`, bit 2 (4) = `IP_FREEBIND` on Linux.
 fn udp_open_dual(bind_ip: const u8[:] = "", bind_port: u16 = 0, flags: i32 = 0) -> i64 {
     let _ = tcp_init();
