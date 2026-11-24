@@ -281,7 +281,7 @@ checkfree fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> b
         if c == ' ' || c == '\t' {
             return true; // BWS after ';'
         }
-        if !http::is_tchar(c) {
+        if !core::is_tchar(c) {
             dec.state = CHUNK_STATE_IS_ERROR;
             return false;
         }
@@ -296,7 +296,7 @@ checkfree fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> b
             dec.state |= CHUNK_STATE_EXTENSION_EXPECTS_NAME;
         } else if c == ' ' || c == '\t' {
             dec.state |= CHUNK_STATE_SEEN_BWS;
-        } else if (dec.state & CHUNK_STATE_SEEN_BWS) != 0 || !http::is_tchar(c) {
+        } else if (dec.state & CHUNK_STATE_SEEN_BWS) != 0 || !core::is_tchar(c) {
             dec.state = CHUNK_STATE_IS_ERROR;
             return false;
         }
@@ -307,7 +307,7 @@ checkfree fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> b
         if c == '"' {
             dec.state &= ~CHUNK_STATE_EXTENSION_EXPECTS_VAL;
             dec.state |= CHUNK_STATE_EXTENSION_QUOTED;
-        } else if http::is_tchar(c) {
+        } else if core::is_tchar(c) {
             dec.state &= ~CHUNK_STATE_EXTENSION_EXPECTS_VAL;
         } else {
             dec.state = CHUNK_STATE_IS_ERROR;
@@ -339,7 +339,7 @@ checkfree fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> b
                 dec.state |= CHUNK_STATE_EXTENSION_EXPECTS_NAME;
             } else if c == ' ' || c == '\t' {
                 dec.state |= CHUNK_STATE_SEEN_BWS;
-            } else if !http::is_tchar(c) {
+            } else if !core::is_tchar(c) {
                 dec.state = CHUNK_STATE_IS_ERROR;
                 return false;
             }

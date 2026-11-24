@@ -1860,8 +1860,10 @@ fn test_goose2rfc_client_audit_regressions(t: lit::T&) {
         );
 
         var sess = client::new_client();
-        let pk: u8[32] = [0x11; 32];
-        sess.sig_public_key.append(pk[..]);
+        let pk:     u8[32] = [0x11; 32];
+        let bad_pk: u8[16] = [0x11; 16];
+        sub.assert_false(sess.set_http_signature_keys("", "", bad_pk[..]), "rejects invalid signature key length");
+        sub.assert_true(sess.set_http_signature_keys("", "", pk[..]), "sets valid Ed25519 signature public key");
         let unsigned_resp = http::Response { status_code: 200, .. };
         sub.assert_false(
             client_internal::verify_response_signature(

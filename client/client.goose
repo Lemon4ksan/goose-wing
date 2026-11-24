@@ -7,6 +7,7 @@ namespace client;
 import std;
 import core;
 import rfc.http;
+import rfc.dns;
 import cookie.constants;
 import cookie.canonical;
 import cookie.policy;
@@ -298,21 +299,6 @@ fn new_client(cfg: Config) -> Client {
     let prof_spec = client_internal::resolve_profile_spec(cfg.profile);
     let def_hdrs = client_internal::build_profile_headers(prof_spec);
 
-    var sig_kid:  u8[..64] = [];
-    var sig_priv: u8[..64] = [];
-    var sig_pub:  u8[..64] = [];
-    let has_sig = cfg.sig_private_key.len > 0 || cfg.sig_public_key.len > 0;
-    let valid_sig = has_sig &&
-        cfg.sig_key_id.len <= sig_kid.cap &&
-        (cfg.sig_private_key.len == 0 || cfg.sig_private_key.len == 32) &&
-        (cfg.sig_public_key.len == 0 || cfg.sig_public_key.len == 32);
-    if valid_sig {
-        let _ = sig_kid.try_set(cfg.sig_key_id);
-        let _ = sig_priv.try_set(cfg.sig_private_key);
-        let _ = sig_pub.try_set(cfg.sig_public_key);
-    }
-    let bad_sig_cfg = has_sig && !valid_sig;
-
     var c = Client {
         base_url:                base_buf,
         profile:                 prof_spec.kind,
@@ -335,9 +321,6 @@ fn new_client(cfg: Config) -> Client {
         pool:                    net::new_stream_pool(),
         enable_cookie_jar:       cfg.cookie_jar,
         strict_content_decoding: cfg.strict_content_decoding,
-        sig_key_id:              sig_kid,
-        sig_private_key:         sig_priv,
-        sig_public_key:          sig_pub,
         insecure_skip_verify:    cfg.insecure_skip_verify,
         tls_backend:             cfg.tls_backend,
         tls_min_version:         cfg.tls_min_version,
@@ -345,10 +328,13 @@ fn new_client(cfg: Config) -> Client {
         tls_use_system_roots:    cfg.tls_use_system_roots,
         allow_legacy_md5_digest: cfg.allow_legacy_md5_digest,
         has_invalid_tls_config:  bad_ca_cfg,
-        has_invalid_sig_config:  bad_sig_cfg,
         jar:                     cookie::CanonicalCookieJar { .. },
         ..
     };
+    let has_sig = cfg.sig_private_key.len > 0 || cfg.sig_public_key.len > 0;
+    if has_sig && !c.set_http_signature_keys(cfg.sig_key_id, cfg.sig_private_key, cfg.sig_public_key) {
+        c.has_invalid_sig_config = true;
+    }
     client_internal::apply_client_config_knobs(c, cfg);
     return c;
 }

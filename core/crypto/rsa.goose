@@ -710,13 +710,6 @@ fn rsa_pkcs1_sha256_verify_der(spki_pubkey_der: const u8[:], message: const u8[:
     return rsa_pkcs1_sha256_verify(n_be, e_be, message, sig);
 }
 
-// Verifies an RSASSA-PKCS1-v1_5 SHA-384 signature against an ASN.1 DER `RSAPublicKey`.
-fn rsa_pkcs1_sha384_verify_der(spki_pubkey_der: const u8[:], message: const u8[:], sig: const u8[:]) -> bool {
-    let n_be, e_be, ok = parse_rsa_public_key_der(spki_pubkey_der);
-    guard ok else { return false; }
-    return rsa_pkcs1_sha384_verify(n_be, e_be, message, sig);
-}
-
 // Generates an RSASSA-PKCS1-v1_5 SHA-256 signature using big-endian modulus `n_be` and private exponent `d_be`.
 // crap:ignore
 fn rsa_pkcs1_sha256_sign(

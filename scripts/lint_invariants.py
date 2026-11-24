@@ -113,7 +113,7 @@ def main() -> int:
             pass
     else:
         for p in root.rglob("*.goose"):
-            s_path = str(p)
+            s_path = os.sep + str(p.relative_to(root))
             if any(
                 bad in s_path
                 for bad in [

@@ -630,13 +630,6 @@ inline fn hex_val(c: u8) -> i32 {
     return -1;
 }
 
-// Formats a u8 into 2 lowercase hex characters
-fn format_hex_u8<B>(val: u8, out: B&) {
-    let hex_chars: const u8[16] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'];
-    out.push(hex_chars[(val >> 4) & 0x0F]);
-    out.push(hex_chars[val & 0x0F]);
-}
-
 // Key validation conforming to W3C Section 3.3:
 // simple key: [a-z][a-z0-9_*/-]{0,255}
 // multi-tenant key: [a-z0-9_*/-]{1,241}@[a-z][a-z0-9_*/-]{0,13}

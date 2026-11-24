@@ -1223,7 +1223,7 @@ fn test_error_sanitization_cve_2026_42507(t: lit::T&) {
 fn main() {
     let _ = net::tcp_init();
     var dummy: u8[4] = [0, 0, 0, 0];
-    http::swar_to_lower(dummy[..]);
+    core::make_ascii_lowercase(dummy[..]);
 
     var runner = lit::new_runner("CVE Regression Suite", lit::Verbosity.Verbose);
 

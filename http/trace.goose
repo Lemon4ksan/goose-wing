@@ -103,17 +103,17 @@ fn parse_traceparent(raw: const u8[:]) -> Traceparent, bool {
 
 // Formats a Traceparent struct into the standard 55-byte wire string
 fn format_traceparent<B>(tp: const Traceparent&, out: B&) {
-    http_internal::format_hex_u8(tp.version, out);
+    core::format_u8_hex(tp.version, out);
     out.push('-');
     for b in tp.trace_id {
-        http_internal::format_hex_u8(b, out);
+        core::format_u8_hex(b, out);
     }
     out.push('-');
     for b in tp.parent_id {
-        http_internal::format_hex_u8(b, out);
+        core::format_u8_hex(b, out);
     }
     out.push('-');
-    http_internal::format_hex_u8(tp.trace_flags, out);
+    core::format_u8_hex(tp.trace_flags, out);
 }
 
 // Constructs a new valid Traceparent

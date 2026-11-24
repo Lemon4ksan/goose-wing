@@ -70,7 +70,7 @@ checkfree fn parse_chunk_ext_name(s: const u8[:], cursor: i64&) -> bool {
     var pos = cursor;
     guard pos >= 0 else { return false; }
     let name_start = pos;
-    while pos >= 0 && pos < s.len && http::is_tchar(s[pos]) {
+    while pos >= 0 && pos < s.len && core::is_tchar(s[pos]) {
         pos = core::add_sat_i64(pos, 1);
     }
     cursor = pos;
@@ -92,7 +92,7 @@ checkfree fn parse_chunk_ext_param_val(s: const u8[:], cursor: i64&) -> http::Ch
         return http::ChunkedDecodeError.None;
     }
     let val_start = pos;
-    while pos >= 0 && pos < s.len && http::is_tchar(s[pos]) {
+    while pos >= 0 && pos < s.len && core::is_tchar(s[pos]) {
         pos = core::add_sat_i64(pos, 1);
     }
     cursor = pos;

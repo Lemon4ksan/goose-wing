@@ -1555,7 +1555,7 @@ fn test_query_param_truncation_smuggling(t: lit::T&) {
     t.run("Parameters exceeding 32 must not be silently dropped without indication") { sub =>
         // Ensure wing native symbols are linked
         var dummy: u8[..4] = "test";
-        http::swar_to_lower(dummy[..]);
+        core::make_ascii_lowercase(dummy[..]);
 
         // Construct a query string with 35 parameters where the 33rd parameter is a security-sensitive flag.
         // In fixed-capacity parsers (capacity = 32), parameters beyond 32 are silently ignored.

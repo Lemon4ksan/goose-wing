@@ -70,23 +70,6 @@ fn format_ipv4<B>(ip: const u8[4]&, out: B&) {
     format(out, ip[3] as i64);
 }
 
-fn push_hex_u16<B>(val: u16, out: B&) {
-    if val == 0 {
-        out.push('0');
-        return;
-    }
-    const hex: const u8[16] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'];
-    var started = false;
-    for step in 4 {
-        let shift = core::sub_sat_u64(12, core::shl_sat_u64(step as u64, 2)) as u32;
-        let nibble = ((val >> shift) & 0x0F) as i64;
-        if nibble != 0 || started || shift == 0 {
-            out.push(hex[nibble]);
-            started = true;
-        }
-    }
-}
-
 fn format_ipv6<B>(ip: const u8[16]&, out: B&) {
     for i in 8 {
         if i > 0 { out.push(':'); }
@@ -94,7 +77,7 @@ fn format_ipv6<B>(ip: const u8[16]&, out: B&) {
         let hi = ip[off];
         let lo = ip[core::add_sat_i64(off, 1)];
         let val = ((hi as u16) << 8) | lo;
-        push_hex_u16(val, out);
+        (val as u32).format_u32_hex(out);
     }
 }
 

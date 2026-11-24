@@ -6,6 +6,7 @@ namespace http;
 
 import std;
 import core;
+import rfc.http;
 import http.headers.wire_internal;
 
 let CRLF_BYTES: const u8[2] = ['\r', '\n'];
@@ -19,8 +20,6 @@ let NULL_SET:   ByteSet     = byte_set(NULL_BYTES[..]);
 
 // ---- lexical validation & fast word operations -----------------------------
 
-extern fn native_swar_to_lower(slice: u8[:]) = "wing_swar_to_lower";
-
 // 64-bit SWAR parallel ASCII lowercase (Alex Hultman / uWebSockets HttpParser.h)
 // Evaluates 8 ASCII bytes in parallel, translating 'A'..'Z' to 'a'..'z' in 4 CPU cycles without branches.
 checkfree fn swar_to_lower_64(v: u64) -> u64 {
@@ -28,12 +27,6 @@ checkfree fn swar_to_lower_64(v: u64) -> u64 {
     let not_high = ~v & 0x8080808080808080;
     let is_upper = (ascii + 0x3F3F3F3F3F3F3F3F) & ~(ascii + 0x2525252525252525) & not_high;
     return v | (is_upper >> 2);
-}
-
-// In-place SWAR/vectorized lowercase for header names and values
-fn swar_to_lower(slice: u8[:]) {
-    guard slice.len > 0 else { return; }
-    native_swar_to_lower(slice);
 }
 
 // Fast-path header field byte lowercasing matching uWebSockets isFieldNameByteFastLowercased
@@ -45,7 +38,7 @@ checkfree inline fn is_field_name_byte_fast_lowercased(b: u8&) -> bool {
         b |= 32;
         return true;
     }
-    return is_tchar(b);
+    return core::is_tchar(b);
 }
 
 const HDR_PRESENCE_HOST:              u32 = 0x0002;
@@ -149,29 +142,6 @@ inline fn track_header_presence(
     return track_known_header_presence(tracker, id, val, hdr_idx);
 }
 
-const TCHAR_LUT: const bool[256] = [
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, true, false, true, true, true, true, true, false, false, true, true, false, true, true, false,
-    true, true, true, true, true, true, true, true, true, true, false, false, false, false, false, false,
-    false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-    true, true, true, true, true, true, true, true, true, true, true, false, false, false, true, true,
-    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-    true, true, true, true, true, true, true, true, true, true, true, false, true, false, true, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
-];
-
-checkfree inline fn is_tchar(b: u8) -> bool {
-    return TCHAR_LUT[b];
-}
-
 const HEADER_VAL_LUT: const bool[256] = [
     false, false, false, false, false, false, false, false, false, true, false, false, false, false, false, false,
     false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
@@ -195,13 +165,6 @@ checkfree inline fn is_valid_header_value_byte(b: u8) -> bool {
     return HEADER_VAL_LUT[b];
 }
 
-const HTTP_METHOD_CONN_LE:   u32 = 0x4E4E4F43; // "CONN"
-const HTTP_METHOD_ECT_SP_LE: u32 = 0x20544345; // "ECT "
-const HTTP_METHOD_OPTI_LE:   u32 = 0x4954504F; // "OPTI"
-const HTTP_METHOD_ONS_SP_LE: u32 = 0x20534E4F; // "ONS "
-const HTTP_METHOD_TRAC_LE:   u32 = 0x43415254; // "TRAC"
-const HTTP_METHOD_PATC_LE:   u32 = 0x43544150; // "PATC"
-
 // RFC 9112 Section 3: Request Line - Matches common HTTP methods via 32-bit little-endian integer bitcasting.
 // Returns (method_slice, consumed_len_including_space, ok).
 //
@@ -218,11 +181,11 @@ checkfree fn match_http_method_u32(raw: const u8[:]) -> const u8[:], i64, bool {
         guard raw.len >= 5 && raw[4] == ' ' else { return "", 0, false; }
         return raw[0..4], 5, true;
     }
-    if w == HTTP_METHOD_TRAC_LE {
+    if w == rfc::METHOD_TRAC_U32 {
         guard raw.len >= 6 && raw[4] == 'E' && raw[5] == ' ' else { return "", 0, false; }
         return raw[0..5], 6, true;
     }
-    if w == HTTP_METHOD_PATC_LE {
+    if w == rfc::METHOD_PATC_U32 {
         guard raw.len >= 6 && raw[4] == 'H' && raw[5] == ' ' else { return "", 0, false; }
         return raw[0..5], 6, true;
     }
@@ -230,14 +193,14 @@ checkfree fn match_http_method_u32(raw: const u8[:]) -> const u8[:], i64, bool {
         guard raw.len >= 7 && raw[4] == 'T' && raw[5] == 'E' && raw[6] == ' ' else { return "", 0, false; }
         return raw[0..6], 7, true;
     }
-    if w == HTTP_METHOD_CONN_LE {
-        guard raw.len >= 8 && http_internal::h1_read_le_u32(raw[4..]) == HTTP_METHOD_ECT_SP_LE else {
+    if w == rfc::METHOD_CONN_U32 {
+        guard raw.len >= 8 && http_internal::h1_read_le_u32(raw[4..]) == rfc::METHOD_ECT_SP_U32 else {
             return "", 0, false;
         }
         return raw[0..7], 8, true;
     }
-    if w == HTTP_METHOD_OPTI_LE {
-        guard raw.len >= 8 && http_internal::h1_read_le_u32(raw[4..]) == HTTP_METHOD_ONS_SP_LE else {
+    if w == rfc::METHOD_OPTI_U32 {
+        guard raw.len >= 8 && http_internal::h1_read_le_u32(raw[4..]) == rfc::METHOD_ONS_SP_U32 else {
             return "", 0, false;
         }
         return raw[0..7], 8, true;
@@ -251,21 +214,19 @@ checkfree inline fn is_valid_token_word_swar(src: const u8[:], i: i64) -> bool {
     let chunk = src[i..];
     guard chunk.len >= 8 else { return false; }
     let w = http_internal::h1_read_le_u64(chunk);
-    let sub = w - 0x2020202020202020;
-    let has_ctl = (sub & (~w) & 0x8080808080808080) != 0;
-    let xdel = w ^ 0x7F7F7F7F7F7F7F7F;
-    let has_del = ((xdel - 0x0101010101010101) & (~xdel) & 0x8080808080808080) != 0;
-    guard !has_ctl && !has_del else { return false; }
-    guard is_tchar(chunk[0]) && is_tchar(chunk[1]) && is_tchar(chunk[2]) && is_tchar(chunk[3]) else {
+    guard !core::swar_has_ctl_or_del(w) else { return false; }
+    guard core::is_tchar(chunk[0]) && core::is_tchar(chunk[1]) &&
+        core::is_tchar(chunk[2]) && core::is_tchar(chunk[3]) else {
         return false;
     }
-    guard is_tchar(chunk[4]) && is_tchar(chunk[5]) && is_tchar(chunk[6]) && is_tchar(chunk[7]) else {
+    guard core::is_tchar(chunk[4]) && core::is_tchar(chunk[5]) &&
+        core::is_tchar(chunk[6]) && core::is_tchar(chunk[7]) else {
         return false;
     }
     return true;
 }
 
-// RFC 9110 Section 5.6.2: Tokens - Validates an HTTP token using 8-byte SWAR chunks and TCHAR_LUT.
+// RFC 9110 Section 5.6.2: Tokens - Validates an HTTP token using 8-byte SWAR chunks and core::TCHAR_LUT.
 checkfree fn is_valid_token_swar(src: const u8[:]) -> bool {
     guard src.len > 0 else { return false; }
     var i: i64 = 0;
@@ -275,7 +236,7 @@ checkfree fn is_valid_token_swar(src: const u8[:]) -> bool {
     }
     guard i >= 0 && i <= src.len else { return false; }
     for b in src[i..] {
-        guard is_tchar(b) else { return false; }
+        guard core::is_tchar(b) else { return false; }
     }
     return true;
 }
@@ -294,7 +255,7 @@ checkfree fn scan_token_swar(src: const u8[:]) -> i64, bool {
         }
         i += 8;
     }
-    while i >= 0 && i < src.len && is_tchar(src[i]) {
+    while i >= 0 && i < src.len && core::is_tchar(src[i]) {
         i += 1;
     }
     guard i > 0 else { return 0, false; }
@@ -313,7 +274,7 @@ checkfree fn is_valid_header_name_h2(name: const u8[:]) -> bool {
     guard body.len > 0 else { return false; }
     for b in body {
         if b >= 'A' && b <= 'Z' { return false; }
-        guard is_tchar(b) else { return false; }
+        guard core::is_tchar(b) else { return false; }
     }
     return true;
 }
@@ -518,7 +479,7 @@ fn scan_header_field_name_swar(src: const u8[:]) -> i64, bool {
             guard i > 0 else { return 0, false; }
             return i, true;
         }
-        guard is_tchar(b) else { return 0, false; }
+        guard core::is_tchar(b) else { return 0, false; }
         i = core::add_sat_i64(i, 1);
     }
     return 0, false;
@@ -534,11 +495,7 @@ checkfree fn scan_header_field_value_swar(src: const u8[:]) -> i64, i64, bool {
     var i: i64 = 0;
     while i >= 0 && i <= src.len && i + 8 <= src.len {
         let w = http_internal::h1_read_le_u64(src[i..]);
-        let sub = w - 0x2020202020202020;
-        let has_ctl = (sub & (~w) & 0x8080808080808080) != 0;
-        let xdel = w ^ 0x7F7F7F7F7F7F7F7F;
-        let has_del = ((xdel - 0x0101010101010101) & (~xdel) & 0x8080808080808080) != 0;
-        if has_ctl || has_del {
+        if core::swar_has_ctl_or_del(w) {
             break;
         }
         i += 8;

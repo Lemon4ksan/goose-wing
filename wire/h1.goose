@@ -394,7 +394,7 @@ fn scan_h1_wire_field_name(src: const u8[:]) -> i64, bool {
             guard i > 0 else { return 0, false; }
             return i, true;
         }
-        guard http::is_tchar(b) else { return 0, false; }
+        guard core::is_tchar(b) else { return 0, false; }
         i = core::add_sat_i64(i, 1);
     }
     return 0, false;

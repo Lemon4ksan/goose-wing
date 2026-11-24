@@ -75,18 +75,8 @@ struct FreshnessMetrics {
 //   returns: 120
 fn parse_age_header(raw_age: const u8[:]) -> i64 {
     var s = raw_age.trim_lws();
-    guard s.len > 0 else { return 0; }
-
-    var comma_idx: i64 = -1;
-    for i in s.len {
-        if s[i] == ',' {
-            comma_idx = i;
-            break;
-        }
-    }
-    if comma_idx >= 0 {
-        s = s[..comma_idx].trim_lws();
-    }
+    let first, _, _ = s.partition_byte(',');
+    s = first.trim_lws();
     guard s.len > 0 else { return 0; }
 
     var val: i64 = 0;

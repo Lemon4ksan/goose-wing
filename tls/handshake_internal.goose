@@ -397,18 +397,10 @@ fn parse_key_share_server_extension(
 // RFC 8446 Section 4.1.3: Server Hello - Reject any extension not permitted in TLS 1.3 ServerHello or HRR.
 fn validate_sh_or_hrr_extensions(entries: const tls::ExtensionEntry[:], is_hrr: bool) -> bool {
     for &e in entries {
-        let t = e.ext_type;
         if is_hrr {
-            let allowed_hrr = t == rfc::TLS_EXT_SUPPORTED_VERSIONS ||
-                t == rfc::TLS_EXT_KEY_SHARE ||
-                t == rfc::TLS_EXT_COOKIE ||
-                t == rfc::EXT_ENCRYPTED_CLIENT_HELLO;
-            guard allowed_hrr else { return false; }
+            guard rfc::is_permitted_hrr_extension(e.ext_type) else { return false; }
         } else {
-            let allowed_sh = t == rfc::TLS_EXT_SUPPORTED_VERSIONS ||
-                t == rfc::TLS_EXT_KEY_SHARE ||
-                t == rfc::TLS_EXT_PRE_SHARED_KEY;
-            guard allowed_sh else { return false; }
+            guard rfc::is_permitted_sh_extension(e.ext_type) else { return false; }
         }
     }
     return true;
