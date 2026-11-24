@@ -19,6 +19,7 @@ import .conn_internal;
 import .conn_crypto_internal;
 import .internal;
 import tls.record;
+import tls.types;
 
 enum QuicConnState {
     Initial,
@@ -68,6 +69,7 @@ struct QuicConnection {
     retry_token:           u8[..512]             = [],
     aead_failed_decrypts:  u64                   = 0,
     peer_reset_tokens:     u8[16][..8]           = [],
+    alt_scids:             u8[..20][..4]         = [],
     migration:             QuicMigrationManager  = QuicMigrationManager { .. },
     dplpmtud:              Dplpmtud              = Dplpmtud { .. },
 }
@@ -301,6 +303,85 @@ fn install_initial_keys(
     return true;
 }
 
+// Derives and installs Handshake or Application traffic keys for `conn` from a TLS 1.3-over-QUIC
+// secret (RFC 9001 Section 5.1).
+fn install_tls_secret(
+    conn:         QuicConnection&,
+    level:        tls::QuicTlsLevel,
+    is_read:      bool,
+    secret:       const u8[:],
+    cipher_suite: u16,
+) -> bool {
+    if level == tls::QuicTlsLevel.Handshake {
+        if is_read {
+            return quic_internal::quic_derive_and_install_keys(
+                conn.handshake_space, secret, cipher_suite, conn.version, false,
+            );
+        }
+        return quic_internal::quic_derive_and_install_keys(
+            conn.tx_handshake_space, secret, cipher_suite, conn.version, false,
+        );
+    }
+    if level == tls::QuicTlsLevel.Application {
+        if is_read {
+            return quic_internal::quic_derive_and_install_keys(
+                conn.app_space, secret, cipher_suite, conn.version, true,
+            );
+        }
+        return quic_internal::quic_derive_and_install_keys(
+            conn.tx_app_space, secret, cipher_suite, conn.version, true,
+        );
+    }
+    return false;
+}
+
+// Zeroizes all AEAD, header protection, and traffic secrets in `space` and clears sent tracking
+// (RFC 9001 Section 4.9).
+fn clear_space_keys(space: PnSpaceState&) {
+    core::secure_zeroize_slice(space.hp_key[..]);
+    core::secure_zeroize_slice(space.aead_key[..]);
+    core::secure_zeroize_slice(space.aead_iv[..]);
+    core::secure_zeroize_slice(space.traffic_secret[..]);
+    core::secure_zeroize_slice(space.prev_aead_key[..]);
+    core::secure_zeroize_slice(space.prev_aead_iv[..]);
+    space.hp_key.clear();
+    space.aead_key.clear();
+    space.aead_iv.clear();
+    space.traffic_secret.clear();
+    space.prev_aead_key.clear();
+    space.prev_aead_iv.clear();
+    space.keys_installed = false;
+    space.has_app_secret = false;
+    space.has_prev_keys = false;
+    space.loss_time_us = 0;
+    space.sent_packets.clear();
+}
+
+// Zeroizes all encryption keys, secrets, reset tokens, and CRYPTO buffers owned by `conn`.
+fn zeroize_connection_secrets(conn: QuicConnection&) {
+    clear_space_keys(conn.initial_space);
+    clear_space_keys(conn.tx_initial_space);
+    clear_space_keys(conn.handshake_space);
+    clear_space_keys(conn.tx_handshake_space);
+    clear_space_keys(conn.app_space);
+    clear_space_keys(conn.tx_app_space);
+
+    core::secure_zeroize_slice(conn.zero_rtt_keys.hp_key[..]);
+    core::secure_zeroize_slice(conn.zero_rtt_keys.aead_key[..]);
+    core::secure_zeroize_slice(conn.zero_rtt_keys.aead_iv[..]);
+    conn.zero_rtt_keys = QuicZeroRttKeys { .. };
+
+    core::secure_zeroize_slice(conn.initial_crypto.buf[..]);
+    core::secure_zeroize_slice(conn.initial_crypto.ooo_ring[..]);
+    core::secure_zeroize_slice(conn.handshake_crypto.buf[..]);
+    core::secure_zeroize_slice(conn.handshake_crypto.ooo_ring[..]);
+    core::secure_zeroize_slice(conn.app_crypto.buf[..]);
+    core::secure_zeroize_slice(conn.app_crypto.ooo_ring[..]);
+    conn.initial_crypto = tls::QuicCryptoStream { .. };
+    conn.handshake_crypto = tls::QuicCryptoStream { .. };
+    conn.app_crypto = tls::QuicCryptoStream { .. };
+}
+
 // Installs separate 0-RTT receive keys on a server connection (RFC 9001 Section 5.3).
 fn install_zero_rtt_keys(
     conn:         QuicConnection&,
@@ -437,6 +518,22 @@ fn seal_packet_tracked<B>(
     guard seal_packet(space, hdr, pn_len, plaintext, out) else { return false; }
     space.aead_encrypted_packets = core::add_sat_u64(space.aead_encrypted_packets, 1);
     return true;
+}
+
+// Processes a single QUIC packet slice inside a coalesced datagram, returning consumed bytes,
+// process status, decrypted frame payload, and decoded header type.
+fn process_coalesced_packet(
+    conn:      QuicConnection&,
+    pkt_slice: const u8[:],
+    dgram_len: i64,
+    now_us:    u64,
+    out_ack:   AckFrame&,
+    out_plain: u8[..16384]&,
+    out_htype: QuicHeaderType&,
+) -> i64, ProcessResult {
+    return quic_internal::process_single_coalesced_packet_with_plain(
+        conn, pkt_slice, dgram_len, now_us, out_ack, out_plain, out_htype, false,
+    );
 }
 
 // RFC 9000 Section 12.2: Coalescing Packets - Processes an inbound UDP datagram containing one or more coalesced QUIC packets.

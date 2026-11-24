@@ -20,8 +20,54 @@ import .conn_internal;
 import tls.record;
 import tls.key_schedule;
 
+// Derives AEAD key, IV, and Header Protection key from `secret` and installs them into `space`
+// (RFC 9001 Section 5.1, RFC 9369 Section 3.3.2).
+fn quic_derive_and_install_keys(
+    space:           quic::PnSpaceState&,
+    secret:          const u8[:],
+    cipher_suite:    u16,
+    version:         u32,
+    keep_app_secret: bool,
+) -> bool {
+    let prefix = rfc::quic_hkdf_label_prefix(version);
+    guard prefix.len > 0 else { return false; }
+
+    let is_sha384 = cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384;
+    let hash_id = if is_sha384 { tls_internal::HASH_SHA384 } else { tls_internal::HASH_SHA256 };
+    let hash_len: i64 = if is_sha384 { 48 } else { 32 };
+    let key_len:  u16 = if cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256 { 16 } else { 32 };
+    guard secret.len >= hash_len else { return false; }
+
+    let sec = secret[..hash_len];
+    var lbl_key: u8[..16] = [];
+    lbl_key.append(prefix);
+    lbl_key.append("key");
+    var lbl_iv: u8[..16] = [];
+    lbl_iv.append(prefix);
+    lbl_iv.append("iv");
+
+    var aead_key: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(aead_key);
+    var aead_iv: u8[12] = [0; 12];
+    var hp_key:  u8[32] = [0; 32];
+    defer core::secure_zeroize_32(hp_key);
+
+    let klen_i = key_len as i64;
+    guard tls_internal::hkdf_expand_label(hash_id, sec, lbl_key[..], [], key_len, aead_key[..klen_i])
+        && tls_internal::hkdf_expand_label(hash_id, sec, lbl_iv[..], [], 12, aead_iv[..])
+        && tls_internal::ks_derive_quic_hp_key(hash_id, sec, key_len, hp_key[..klen_i], version) else {
+        return false;
+    }
+    if keep_app_secret {
+        return quic::install_keys_with_secret(
+            space, hp_key[..klen_i], aead_key[..klen_i], aead_iv[..], sec, cipher_suite,
+        );
+    }
+    return quic::install_keys(space, hp_key[..klen_i], aead_key[..klen_i], aead_iv[..], cipher_suite);
+}
+
 // Derives QUIC Initial encryption keys and header protection keys for client and server
-// from the initial Destination Connection ID (RFC 9001 §5.2, RFC 9369 §3.3).
+// from the initial Destination Connection ID (RFC 9001 Section 5.2, RFC 9369 Section 3.3).
 fn quic_derive_initial_space_keys(
     dcid:     const u8[:],
     version:  u32,
@@ -31,8 +77,6 @@ fn quic_derive_initial_space_keys(
 ) -> bool {
     let salt = rfc::quic_initial_salt(version);
     guard salt.len == 20 else { return false; }
-    let prefix = rfc::quic_hkdf_label_prefix(version);
-    guard prefix.len > 0 else { return false; }
 
     var initial_secret = core::hkdf_extract(salt, dcid);
     defer core::secure_zeroize_32(initial_secret);
@@ -41,49 +85,17 @@ fn quic_derive_initial_space_keys(
     var server_secret: u8[32] = [0; 32];
     defer core::secure_zeroize_32(server_secret);
     let sha256 = tls_internal::HASH_SHA256;
-    let ok_c = tls_internal::hkdf_expand_label(
-        sha256, initial_secret[..], "client in", [], 32, client_secret[..],
-    );
-    let ok_s = tls_internal::hkdf_expand_label(
-        sha256, initial_secret[..], "server in", [], 32, server_secret[..],
-    );
-    guard ok_c && ok_s else { return false; }
-
-    var lbl_key: u8[..16] = [];
-    lbl_key.append(prefix);
-    lbl_key.append("key");
-    var lbl_iv: u8[..16] = [];
-    lbl_iv.append(prefix);
-    lbl_iv.append("iv");
-
-    var c_key: u8[16] = [0; 16];
-    defer core::secure_zeroize_16(c_key);
-    var c_iv: u8[12] = [0; 12];
-    var c_hp: u8[16] = [0; 16];
-    defer core::secure_zeroize_16(c_hp);
-    guard tls_internal::hkdf_expand_label(sha256, client_secret[..], lbl_key[..], [], 16, c_key[..])
-        && tls_internal::hkdf_expand_label(sha256, client_secret[..], lbl_iv[..], [], 12, c_iv[..])
-        && tls_internal::ks_derive_quic_hp_key(sha256, client_secret[..], 16, c_hp[..], version) else {
-        return false;
-    }
-
-    var s_key: u8[16] = [0; 16];
-    defer core::secure_zeroize_16(s_key);
-    var s_iv: u8[12] = [0; 12];
-    var s_hp: u8[16] = [0; 16];
-    defer core::secure_zeroize_16(s_hp);
-    guard tls_internal::hkdf_expand_label(sha256, server_secret[..], lbl_key[..], [], 16, s_key[..])
-        && tls_internal::hkdf_expand_label(sha256, server_secret[..], lbl_iv[..], [], 12, s_iv[..])
-        && tls_internal::ks_derive_quic_hp_key(sha256, server_secret[..], 16, s_hp[..], version) else {
+    guard tls_internal::hkdf_expand_label(sha256, initial_secret[..], "client in", [], 32, client_secret[..])
+        && tls_internal::hkdf_expand_label(sha256, initial_secret[..], "server in", [], 32, server_secret[..]) else {
         return false;
     }
 
     if role == quic::QuicRole.Client {
-        return quic::install_keys(tx_space, c_hp[..], c_key[..], c_iv[..], 0x1301)
-            && quic::install_keys(rx_space, s_hp[..], s_key[..], s_iv[..], 0x1301);
+        return quic_derive_and_install_keys(tx_space, client_secret[..], 0x1301, version, false)
+            && quic_derive_and_install_keys(rx_space, server_secret[..], 0x1301, version, false);
     }
-    return quic::install_keys(rx_space, c_hp[..], c_key[..], c_iv[..], 0x1301)
-        && quic::install_keys(tx_space, s_hp[..], s_key[..], s_iv[..], 0x1301);
+    return quic_derive_and_install_keys(rx_space, client_secret[..], 0x1301, version, false)
+        && quic_derive_and_install_keys(tx_space, server_secret[..], 0x1301, version, false);
 }
 
 // RFC 9001 Section 6.6: Limits on AEAD Usage - Per-key confidentiality packet limit.
@@ -350,7 +362,15 @@ inline fn is_valid_inbound_dcid(conn: const quic::QuicConnection&, hdr: const qu
     if conn.scid.len == 0 {
         return hdr.dcid.len == 0;
     }
-    return core::ct_eq_bytes(hdr.dcid, conn.scid[..]);
+    if core::ct_eq_bytes(hdr.dcid, conn.scid[..]) {
+        return true;
+    }
+    for i in conn.alt_scids.len {
+        if conn.alt_scids[i].len > 0 && core::ct_eq_bytes(hdr.dcid, conn.alt_scids[i][..]) {
+            return true;
+        }
+    }
+    return false;
 }
 
 inline fn get_rx_space_keys_installed(conn: const quic::QuicConnection&, space_id: quic::PnSpaceId) -> bool {
@@ -788,15 +808,19 @@ inline fn handle_packet_decrypt_failure(
     }
 }
 
-// Processes a single QUIC packet slice extracted from an inbound UDP datagram.
-fn process_single_coalesced_packet(
+// Processes a single QUIC packet slice extracted from an inbound UDP datagram and returns its
+// decrypted frame payload and header type when handled.
+fn process_single_coalesced_packet_with_plain(
     conn:                   quic::QuicConnection&,
     pkt_slice:              const u8[:],
     dgram_len:              i64,
     now_us:                 u64,
     out_ack:                quic::AckFrame&,
+    out_plain:              u8[..16384]&,
+    out_htype:              quic::QuicHeaderType&,
     allow_unencrypted_test: bool = false,
 ) -> i64, quic::ProcessResult {
+    out_plain.clear();
     guard !quic_conn_is_closing_or_closed(conn.state) else {
         return 0, quic::ProcessResult { handled: false, needs_ack: false };
     }
@@ -812,6 +836,7 @@ fn process_single_coalesced_packet(
 
     let pkt_wire_len, len_ok = calc_coalesced_packet_wire_len(pkt_slice, hdr);
     guard len_ok else { return 0, quic::ProcessResult { handled: false, needs_ack: false }; }
+    out_htype = hdr.header_type;
 
     if hdr.header_type == quic::QuicHeaderType.Retry {
         guard quic_process_retry_packet(conn, hdr, pkt_slice[..pkt_wire_len]) else {
@@ -828,17 +853,20 @@ fn process_single_coalesced_packet(
     }
 
     let space_id = header_type_to_space_id(hdr.header_type);
-    var plaintext_payload: u8[..16384] = [];
     let fatal_err, ok_dec = verify_and_decrypt_packet(
-        conn, space_id, pkt_slice, pkt_wire_len, dgram_len, hdr, plaintext_payload, allow_unencrypted_test,
+        conn, space_id, pkt_slice, pkt_wire_len, dgram_len, hdr, out_plain, allow_unencrypted_test,
     );
     guard ok_dec else {
+        out_plain.clear();
         handle_packet_decrypt_failure(conn, hdr, pkt_slice, fatal_err);
         return 0, quic::ProcessResult { handled: false, needs_ack: false };
     }
 
-    let res_frames = quic::process_payload(conn, plaintext_payload[..], hdr.header_type, now_us);
-    guard res_frames.handled else { return 0, quic::ProcessResult { handled: false, needs_ack: false }; }
+    let res_frames = quic::process_payload(conn, out_plain[..], hdr.header_type, now_us);
+    guard res_frames.handled else {
+        out_plain.clear();
+        return 0, quic::ProcessResult { handled: false, needs_ack: false };
+    }
 
     conn.packets_rx = core::add_sat_u64(conn.packets_rx, 1);
     bind_initial_server_cids(conn, hdr);
@@ -846,8 +874,27 @@ fn process_single_coalesced_packet(
         return pkt_wire_len, quic::ProcessResult { handled: true, needs_ack: false };
     }
     let res_pkt = dispatch_packet_type(conn, hdr, out_ack);
-    guard res_pkt.handled else { return 0, quic::ProcessResult { handled: false, needs_ack: false }; }
+    guard res_pkt.handled else {
+        out_plain.clear();
+        return 0, quic::ProcessResult { handled: false, needs_ack: false };
+    }
     return pkt_wire_len, quic::ProcessResult { handled: true, needs_ack: res_frames.needs_ack };
+}
+
+// Processes a single QUIC packet slice extracted from an inbound UDP datagram.
+fn process_single_coalesced_packet(
+    conn:                   quic::QuicConnection&,
+    pkt_slice:              const u8[:],
+    dgram_len:              i64,
+    now_us:                 u64,
+    out_ack:                quic::AckFrame&,
+    allow_unencrypted_test: bool = false,
+) -> i64, quic::ProcessResult {
+    var plaintext_payload: u8[..16384] = [];
+    var htype = quic::QuicHeaderType.Initial;
+    return process_single_coalesced_packet_with_plain(
+        conn, pkt_slice, dgram_len, now_us, out_ack, plaintext_payload, htype, allow_unencrypted_test,
+    );
 }
 
 // Internal unit-test harness that permits unencrypted packet payloads when space keys are absent.

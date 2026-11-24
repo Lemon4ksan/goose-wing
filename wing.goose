@@ -251,6 +251,7 @@ import quic.bbr;
 import quic.conn_internal;
 import quic.conn_crypto_internal;
 import quic.connection;
+import quic.server_endpoint;
 
 import http3.internal;
 import http3.types;
