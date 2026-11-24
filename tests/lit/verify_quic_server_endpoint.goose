@@ -2062,6 +2062,85 @@ fn test_quic_ack_padding_max_plain_and_aa_pto() {
     print("CHECK_QUIC_ACK_PAD_AA_PTO_OK\n");
 }
 
+fn test_stateless_version_negotiation() {
+    let alpn_h3: u8[3] = [2, 'h', '3'];
+    var ep = quic::quic_server_open(alpn_h3[..], 8, 30000);
+    let now_ns: u64 = 1000000000;
+    let peer_ip = "198.51.100.77";
+    let peer_port: u16 = 54321;
+
+    // RFC 9000 §6.1: Undersized unknown-version datagram (< 1200B) MUST NOT trigger Version Negotiation.
+    var small_probe: u8[64] = [0; 64];
+    small_probe[0] = 0xC0;
+    small_probe[1] = 0xBA;
+    small_probe[2] = 0xBA;
+    small_probe[3] = 0xBA;
+    small_probe[4] = 0xBA;
+    small_probe[5] = 4;
+    small_probe[10] = 4;
+    assert(!quic::quic_server_feed_datagram(ep, small_probe[..], peer_ip, peer_port, now_ns));
+
+    var out_pkt: u8[..1500] = [];
+    var out_ip:  u8[..64]   = [];
+    var out_pt:  u16        = 0;
+    assert(!quic::quic_server_poll_transmit(ep, now_ns, out_pkt, out_ip, out_pt));
+
+    // Padded GREASE version probe (1200B, 0xBABABABA) produces Version Negotiation echoing swapped CIDs.
+    var grease_probe: u8[1200] = [0; 1200];
+    grease_probe[0] = 0xC0;
+    grease_probe[1] = 0xBA;
+    grease_probe[2] = 0xBA;
+    grease_probe[3] = 0xBA;
+    grease_probe[4] = 0xBA;
+    grease_probe[5] = 4;
+    grease_probe[6] = 0xD1;
+    grease_probe[7] = 0xD2;
+    grease_probe[8] = 0xD3;
+    grease_probe[9] = 0xD4;
+    grease_probe[10] = 4;
+    grease_probe[11] = 0xA1;
+    grease_probe[12] = 0xA2;
+    grease_probe[13] = 0xA3;
+    grease_probe[14] = 0xA4;
+    assert(quic::quic_server_feed_datagram(ep, grease_probe[..], peer_ip, peer_port, now_ns));
+    assert(quic::quic_server_poll_transmit(ep, now_ns, out_pkt, out_ip, out_pt));
+    assert(out_ip[..] == peer_ip && out_pt == peer_port);
+    let empty_hdr = quic::QuicHeader {};
+    let vn_hdr, ok_vn = quic_internal::parse_quic_version_negotiation(out_pkt[..], empty_hdr);
+    assert(ok_vn && vn_hdr.version == 0);
+    assert(vn_hdr.dcid[..] == grease_probe[11..15]);
+    assert(vn_hdr.scid[..] == grease_probe[6..10]);
+    assert(out_pkt.len == 15 + 8);
+    assert(!quic::quic_server_poll_transmit(ep, now_ns, out_pkt, out_ip, out_pt));
+
+    // RFC 9000 Section 17.2.1: Long CIDs (> 20 bytes, e.g., 32B DCID and 32B SCID) MUST still produce VN.
+    var long_probe: u8[1200] = [0; 1200];
+    long_probe[0] = 0xC0;
+    long_probe[1] = 0xFA;
+    long_probe[2] = 0xCE;
+    long_probe[3] = 0xB0;
+    long_probe[4] = 0x0C;
+    long_probe[5] = 32;
+    for i in 32 { long_probe[6 + i] = (0x20 + i) as u8; }
+    long_probe[38] = 32;
+    for i in 32 { long_probe[39 + i] = (0x80 + i) as u8; }
+    out_pkt.clear();
+    out_ip.clear();
+    out_pt = 0;
+    assert(quic::quic_server_feed_datagram(ep, long_probe[..], peer_ip, peer_port, now_ns));
+    assert(quic::quic_server_poll_transmit(ep, now_ns, out_pkt, out_ip, out_pt));
+    assert(out_ip[..] == peer_ip && out_pt == peer_port);
+    assert(out_pkt.len == 1 + 4 + 1 + 32 + 1 + 32 + 8);
+    assert((out_pkt[0] & 0x80) != 0 && quic_internal::quic_read_be_u32(out_pkt[1..]) == 0);
+    assert(out_pkt[5] == 32 && out_pkt[6..38] == long_probe[39..71]);
+    assert(out_pkt[38] == 32 && out_pkt[39..71] == long_probe[6..38]);
+    assert(quic_internal::quic_read_be_u32(out_pkt[71..]) == rfc::QUIC_VERSION_1);
+    assert(quic_internal::quic_read_be_u32(out_pkt[75..]) == rfc::QUIC_VERSION_2);
+
+    quic::quic_server_close(ep);
+    print("CHECK_QUIC_VN_OK\n");
+}
+
 fn main() {
     assert(net::tcp_init());
     test_anti_amplification_and_undersized_initial();
@@ -2076,6 +2155,7 @@ fn main() {
     test_persistent_max_streams_beyond_128();
     test_stop_sending_halts_tx_and_emits_reset_stream();
     test_quic_ack_padding_max_plain_and_aa_pto();
+    test_stateless_version_negotiation();
 }
 
 // CHECK: CHECK_QUIC_AA_OK
@@ -2090,3 +2170,4 @@ fn main() {
 // CHECK: CHECK_QUIC_MAX_STREAMS_135_OK
 // CHECK: CHECK_QUIC_STOP_SENDING_OK
 // CHECK: CHECK_QUIC_ACK_PAD_AA_PTO_OK
+// CHECK: CHECK_QUIC_VN_OK

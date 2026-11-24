@@ -104,16 +104,23 @@ struct QuicSrvEventNode {
     next_idx:   i64                 = -1,
 }
 
+struct QuicSrvStatelessTx {
+    pkt:       u8[..540] = [],
+    peer_ip:   u8[..64]  = [],
+    peer_port: u16       = 0,
+}
+
 struct QuicSrvEndpointSlot {
-    active:          bool      = false,
-    generation:      u64       = 0,
-    max_conns:       i32       = 256,
-    active_conns:    u32       = 0,
-    idle_timeout_ms: u64       = 30000,
-    alpn_wire:       u8[..255] = [],
-    ev_head:         i64       = -1,
-    ev_tail:         i64       = -1,
-    tx_rr_cursor:    i64       = 0,
+    active:          bool                    = false,
+    generation:      u64                     = 0,
+    max_conns:       i32                     = 256,
+    active_conns:    u32                     = 0,
+    idle_timeout_ms: u64                     = 30000,
+    alpn_wire:       u8[..255]               = [],
+    ev_head:         i64                     = -1,
+    ev_tail:         i64                     = -1,
+    tx_rr_cursor:    i64                     = 0,
+    stateless_tx:    QuicSrvStatelessTx[..4] = [],
 }
 
 struct QuicSrvSlab {
@@ -2679,6 +2686,114 @@ fn quic_server_close(ep: QuicServerEndpoint&) {
     eslot = QuicSrvEndpointSlot { .. };
 }
 
+fn push_vn_u32_be(out: u8[..540]&, val: u32) -> bool {
+    let bytes: u8[4] = [
+        ((val >> 24) & 0xFF) as u8,
+        ((val >> 16) & 0xFF) as u8,
+        ((val >> 8) & 0xFF) as u8,
+        (val & 0xFF) as u8,
+    ];
+    return out.try_append(bytes[..]);
+}
+
+// Queues a stateless Version Negotiation packet for unsupported long-header versions (RFC 9000 Section 6.1).
+fn handle_unsupported_version_datagram(
+    eslot:     QuicSrvEndpointSlot&,
+    pkt:       const u8[:],
+    raw_ver:   u32,
+    peer_ip:   const u8[:],
+    peer_port: u16,
+) -> bool {
+    // RFC 9000 Section 6.1: Sending Version Negotiation Packets - Ignore Version == 0 and datagrams < 1200 bytes.
+    guard raw_ver != rfc::QUIC_VERSION_NEGOTIATION
+        && pkt.len >= (rfc::QUIC_MIN_INITIAL_DATAGRAM_LEN as i64) else {
+        return false;
+    }
+    let dcid_len = pkt[5] as i64;
+    let dcid_end = core::add_sat_i64(6, dcid_len);
+    guard dcid_end < pkt.len else { return false; }
+    let dcid = pkt[6..dcid_end];
+    let scid_len = pkt[dcid_end] as i64;
+    let scid_start = core::add_sat_i64(dcid_end, 1);
+    let scid_end = core::add_sat_i64(scid_start, scid_len);
+    guard scid_end <= pkt.len else { return false; }
+    let scid = pkt[scid_start..scid_end];
+    guard eslot.stateless_tx.len < eslot.stateless_tx.cap else { return false; }
+
+    var item = QuicSrvStatelessTx { peer_port: peer_port, .. };
+    // RFC 9000 Section 17.2.1: Version Negotiation Packet - Long Header bit 0x80 set, Version 0, echoed CIDs.
+    let first_byte: u8 = 0xC0;
+    guard item.peer_ip.try_set(peer_ip)
+        && item.pkt.try_push(first_byte)
+        && push_vn_u32_be(item.pkt, rfc::QUIC_VERSION_NEGOTIATION)
+        && item.pkt.try_push(scid.len as u8)
+        && item.pkt.try_append(scid)
+        && item.pkt.try_push(dcid.len as u8)
+        && item.pkt.try_append(dcid)
+        && push_vn_u32_be(item.pkt, rfc::QUIC_VERSION_1)
+        && push_vn_u32_be(item.pkt, rfc::QUIC_VERSION_2) else {
+        return false;
+    }
+    guard eslot.stateless_tx.try_push(item) else { return false; }
+    return true;
+}
+
+fn poll_stateless_tx(
+    eslot:         QuicSrvEndpointSlot&,
+    out_pkt:       u8[..1500]&,
+    out_peer_ip:   u8[..64]&,
+    out_peer_port: u16&,
+) -> bool {
+    guard eslot.stateless_tx.len > 0 else { return false; }
+    let front = eslot.stateless_tx[0];
+    var i: i64 = 1;
+    while i < eslot.stateless_tx.len {
+        eslot.stateless_tx[core::sub_sat_i64(i, 1)] = eslot.stateless_tx[i];
+        i = core::add_sat_i64(i, 1);
+    }
+    eslot.stateless_tx.resize(core::sub_sat_i64(eslot.stateless_tx.len, 1));
+    guard out_pkt.try_set(front.pkt[..]) && out_peer_ip.try_set(front.peer_ip[..]) else {
+        return false;
+    }
+    out_peer_port = front.peer_port;
+    return true;
+}
+
+fn feed_long_datagram(
+    eslot:     QuicSrvEndpointSlot&,
+    ep_idx:    i64,
+    pkt:       const u8[:],
+    peer_ip:   const u8[:],
+    peer_port: u16,
+    now_ns:    u64,
+) -> bool {
+    if pkt.len >= 7 {
+        let raw_ver = quic_internal::quic_read_be_u32(pkt[1..]);
+        if raw_ver != rfc::QUIC_VERSION_1 && raw_ver != rfc::QUIC_VERSION_2 {
+            return handle_unsupported_version_datagram(eslot, pkt, raw_ver, peer_ip, peer_port);
+        }
+    }
+    let hdr, ok_h = quic_internal::parse_quic_long_header(
+        pkt, pkt[0], quic_internal::QuicHeaderOptions { is_masked: true, .. },
+    );
+    guard ok_h && (hdr.version == rfc::QUIC_VERSION_1 || hdr.version == rfc::QUIC_VERSION_2) else {
+        return false;
+    }
+    let is_init = hdr.header_type == QuicHeaderType.Initial;
+    if is_init && pkt.len < (rfc::QUIC_MIN_INITIAL_DATAGRAM_LEN as i64) {
+        return false;
+    }
+    var c_idx = find_conn_by_dcid(ep_idx, eslot.generation, hdr.dcid[..], is_init);
+    var is_new = false;
+    if c_idx < 0 {
+        guard is_init else { return false; }
+        c_idx = accept_new_initial_conn(ep_idx, pkt, hdr, peer_ip, peer_port, now_ns);
+        guard c_idx >= 0 else { return false; }
+        is_new = true;
+    }
+    return process_conn_datagram_packets(eslot, c_idx, pkt, peer_ip, peer_port, now_ns, is_new);
+}
+
 // Feeds an inbound UDP datagram from `(peer_ip, peer_port)` into `ep`, demultiplexing by DCID.
 fn quic_server_feed_datagram(
     ep:        QuicServerEndpoint&,
@@ -2700,26 +2815,7 @@ fn quic_server_feed_datagram(
         guard c_idx >= 0 else { return false; }
         return process_conn_datagram_packets(eslot, c_idx, pkt, peer_ip, peer_port, now_ns, false);
     }
-
-    let hdr, ok_h = quic_internal::parse_quic_long_header(
-        pkt, pkt[0], quic_internal::QuicHeaderOptions { is_masked: true, .. },
-    );
-    guard ok_h && (hdr.version == rfc::QUIC_VERSION_1 || hdr.version == rfc::QUIC_VERSION_2) else {
-        return false;
-    }
-    let is_init = hdr.header_type == QuicHeaderType.Initial;
-    if is_init && pkt.len < (rfc::QUIC_MIN_INITIAL_DATAGRAM_LEN as i64) {
-        return false;
-    }
-    var c_idx = find_conn_by_dcid(ep_idx, eslot.generation, hdr.dcid[..], is_init);
-    var is_new = false;
-    if c_idx < 0 {
-        guard is_init else { return false; }
-        c_idx = accept_new_initial_conn(ep_idx, pkt, hdr, peer_ip, peer_port, now_ns);
-        guard c_idx >= 0 else { return false; }
-        is_new = true;
-    }
-    return process_conn_datagram_packets(eslot, c_idx, pkt, peer_ip, peer_port, now_ns, is_new);
+    return feed_long_datagram(eslot, ep_idx, pkt, peer_ip, peer_port, now_ns);
 }
 
 fn complete_stream_reset_on_poll(
@@ -2820,8 +2916,13 @@ fn quic_server_poll_transmit(
     };
 
     let ep_idx = lookup_live_ep_idx(ep);
-    guard ep_idx >= 0 && g_quic_srv_conns.len > 0 else { return false; }
+    guard ep_idx >= 0 else { return false; }
     let eslot .= g_quic_srv_endpoints[ep_idx];
+    if poll_stateless_tx(eslot, out_pkt, out_peer_ip, out_peer_port) {
+        committed = true;
+        return true;
+    }
+    guard g_quic_srv_conns.len > 0 else { return false; }
     let total = g_quic_srv_conns.len;
     var c_idx = if eslot.tx_rr_cursor >= 0 && eslot.tx_rr_cursor < total { eslot.tx_rr_cursor } else { 0 };
 
