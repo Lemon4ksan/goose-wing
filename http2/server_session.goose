@@ -21,7 +21,6 @@ const H2_EDGE_MAX_STREAMS:        u32 = 128;
 const H2_EDGE_WIRE_IN_CAP:        i64 = 16393;  // 9-byte header + 16384-byte default MAX_FRAME_SIZE
 const H2_EDGE_WIRE_OUT_CAP:       i64 = 147456; // 144 KiB outbound framing buffer (HEADERS + CONTINUATION + DATA)
 const H2_EDGE_EV_DATA_CAP:        i64 = 16384;  // Max single DATA frame payload per RFC 9113 Section 4.2 default
-const H2_EDGE_PREFACE_LEN:        i64 = 24;       // RFC 9113 Section 3.4: HTTP/2 Connection Preface
 const H2_EDGE_MAX_HEADER_LIST:    u32 = 65535;    // Bounded by http::OverflowArena u16 offsets (RFC 9113 Section 6.5.2)
 const H2_EDGE_MAX_HEADER_ENTRIES: i64 = 512;      // Max decoded header entries queued per request/trailer event
 const H2_EDGE_MIN_REPLENISH:      i64 = 16384;
@@ -981,7 +980,7 @@ fn dispatch_edge_frame(slot: H2EdgeSlot&, raw_frame: const u8[:], now_ms: u64) -
 //   returns: true, pos = 24, slot.preface_done = true
 fn consume_edge_preface(slot: H2EdgeSlot&, chunk: const u8[:], pos: i64&) -> bool {
     let prefix_idx = slot.wire_in.len;
-    let rem_pref = core::sub_sat_i64(H2_EDGE_PREFACE_LEN, prefix_idx);
+    let rem_pref = core::sub_sat_i64(rfc::H2_CLIENT_PREFACE.len, prefix_idx);
     let rem_chunk = core::sub_sat_i64(chunk.len, pos);
     let need = min(rem_pref, rem_chunk);
     let end_pos = core::add_sat_i64(pos, need);
@@ -993,7 +992,7 @@ fn consume_edge_preface(slot: H2EdgeSlot&, chunk: const u8[:], pos: i64&) -> boo
         return fail_edge_connection(slot, rfc::H2_ERR_INTERNAL_ERROR);
     }
     pos = end_pos;
-    if slot.wire_in.len == H2_EDGE_PREFACE_LEN {
+    if slot.wire_in.len == rfc::H2_CLIENT_PREFACE.len {
         slot.preface_done = true;
         slot.wire_in.clear();
     }

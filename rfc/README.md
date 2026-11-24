@@ -154,8 +154,8 @@ stream-level frames) or `H2_ERR_PROTOCOL_ERROR` otherwise.
 const QUIC_VERSION_1: u32 = 0x00000001
 const QUIC_VERSION_2: u32 = 0x6b3343cf
 const QUIC_VERSION_NEGOTIATION: u32 = 0x00000000
-const QUIC_MIN_INITIAL_DATAGRAM_LEN: i64 = 1200
-const QUIC_MAX_CID_LEN: i64 = 20
+const QUIC_MIN_INITIAL_DATAGRAM_LEN: u64 = 1200
+const QUIC_MAX_CID_LEN: u8 = 20
 const QUIC_VARINT_MAX: u64 = 4611686018427387903
 const QUIC_STREAM_TYPE_MASK: u64 = 0x03
 const QUIC_CLIENT_BIDI_TYPE: u64 = 0x00
@@ -167,13 +167,13 @@ const QUIC_FRAME_PADDING: u64 = 0x00
 const QUIC_FRAME_ACK_FREQUENCY: u64 = 0xaf
 const QUIC_TP_ORIGINAL_DESTINATION_CONNECTION_ID: u64 = 0x00
 const QUIC_TP_MIN_ACK_DELAY: u64
-const QUIC_V1_INITIAL_SALT: const u8[20]
-const QUIC_V2_INITIAL_SALT: const u8[20]
+const QUIC_V1_INITIAL_SALT: const u8[..20]
+const QUIC_V2_INITIAL_SALT: const u8[..20]
 const PMTU_BASE: u32 = 1200
 const PMTU_ETHERNET: u32 = 1500
 
-const QPACK_STATIC_TABLE_SIZE: i64 = 99
-const QPACK_ENTRY_OVERHEAD: i64 = 32
+const QPACK_STATIC_TABLE_SIZE: u64 = 99
+const QPACK_ENTRY_OVERHEAD: u64 = 32
 const H3_ERR_NO_ERROR: u64 = 0x0100
 const H3_ERR_QPACK_DECODER_STREAM_ERROR: u64 = 0x0202
 const H3_FRAME_DATA: u64 = 0x00
@@ -248,15 +248,15 @@ const ASN1_TAG_BOOLEAN:              u8 = 0x01
 const ASN1_TAG_SET:                  u8 = 0x31
 const ASN1_TAG_CTX0_CONSTRUCTED:     u8 = 0xA0
 const ASN1_TAG_GENERAL_NAME_DNS:     u8 = 0x82
-const OID_COMMON_NAME:               const u8[:]
-const OID_PKCS9_EXTENSION_REQUEST:   const u8[:]
-const OID_EMAIL_ADDRESS:             const u8[:]
-const OID_OCSP_SHA1:                 const u8[:]
-const OID_OCSP_SHA256:               const u8[:]
-const OID_HASH_SHA384:               const u8[:]
-const OID_HASH_SHA512:               const u8[:]
-const OID_MGF1:                      const u8[:]
-const OID_SIG_SHA1_DSA:              const u8[:]
+const OID_COMMON_NAME:               const u8[3]
+const OID_PKCS9_EXTENSION_REQUEST:   const u8[9]
+const OID_EMAIL_ADDRESS:             const u8[9]
+const OID_OCSP_SHA1:                 const u8[5]
+const OID_OCSP_SHA256:               const u8[9]
+const OID_HASH_SHA384:               const u8[9]
+const OID_HASH_SHA512:               const u8[9]
+const OID_MGF1:                      const u8[9]
+const OID_SIG_SHA1_DSA:              const u8[7]
 const SIG_SCHEME_RSA_PKCS1_SHA256:   u16 = 0x0401
 const SIG_SCHEME_ED25519:            u16 = 0x0807
 

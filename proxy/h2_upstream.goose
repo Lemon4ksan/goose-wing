@@ -724,7 +724,7 @@ fn should_skip_h2_req_header(
     if low_name == "te" {
         return true;
     }
-    if h2_internal::is_forbidden_h2_trailer(low_name) {
+    if rfc::is_connection_specific_header(low_name) {
         return true;
     }
     return http::is_token_in_connection_header_map(raw_hdrs, low_name);

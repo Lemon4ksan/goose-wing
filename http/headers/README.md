@@ -56,9 +56,9 @@ fn scan_header_field_value_swar(src: const u8[:]) -> i64, i64, bool
 `HeaderPresenceTracker` maintains well-known header presence bitmasks and
 first-seen indices to reject duplicate singleton headers and `Content-Length` /
 `Transfer-Encoding` smuggling conflicts (`HDR_PRESENCE_SMUGGLING_MASK`). The
-lexical scanners validate RFC 9110 §5.6.2 tokens (`TCHAR_LUT`) and §5.5 field
-values (`HEADER_VAL_LUT`) using 8-byte SWAR word scans (`is_valid_token_swar`,
-`scan_token_swar`, `scan_header_field_name_swar`,
+lexical scanners validate RFC 9110 §5.6.2 tokens (`core::TCHAR_LUT`) and §5.5
+field values (`HEADER_VAL_LUT`) using 8-byte SWAR word scans
+(`is_valid_token_swar`, `scan_token_swar`, `scan_header_field_name_swar`,
 `scan_header_field_value_swar`). `validate_content_length_value` rejects
 negative or conflicting multi-value `Content-Length` strings, while
 `is_valid_transfer_coding` and `validate_transfer_encoding_value` verify

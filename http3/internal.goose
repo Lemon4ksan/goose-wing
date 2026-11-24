@@ -16,10 +16,7 @@ import http2.hpack;
 
 // ---- Framing Internal Constants & Helpers ----------------------------------
 
-const H3_SETTINGS_H3_DATAGRAM_DRAFT00:       u64 = 0x276;      // draft-ietf-masque-h3-datagram-00
-const H3_SETTINGS_ENABLE_WEBTRANSPORT:       u64 = 0x2b603742; // draft-ietf-webtrans-http3
-const H3_SETTINGS_WEBTRANSPORT_MAX_SESSIONS: u64 = 0xc671706a; // draft-ietf-webtrans-http3 §3.1
-const H3_MAX_SETTINGS_PAYLOAD_SIZE:          i64 = 256;        // RFC 9114 §7.2.4
+const H3_MAX_SETTINGS_PAYLOAD_SIZE: i64 = 256; // RFC 9114 §7.2.4
 
 inline fn append_h3_frame_parts(out: u8[>..]&, hdr: const u8[:], payload: const u8[:]) -> bool {
     out.append(hdr);
@@ -63,17 +60,17 @@ inline fn apply_parsed_h3_setting(id: u64, val: u64, settings: fingerprint::H3Se
         settings.enable_connect_protocol = val;
         return true;
     }
-    if id == rfc::H3_SETTING_H3_DATAGRAM || id == H3_SETTINGS_H3_DATAGRAM_DRAFT00 {
+    if id == rfc::H3_SETTING_H3_DATAGRAM || id == rfc::H3_SETTINGS_H3_DATAGRAM_DRAFT00 {
         guard val <= 1 else { return false; }
         settings.h3_datagram = val;
         return true;
     }
-    if id == H3_SETTINGS_ENABLE_WEBTRANSPORT {
+    if id == rfc::H3_SETTINGS_ENABLE_WEBTRANSPORT {
         guard val <= 1 else { return false; }
         settings.enable_webtransport = val;
         return true;
     }
-    if id == H3_SETTINGS_WEBTRANSPORT_MAX_SESSIONS {
+    if id == rfc::H3_SETTINGS_WEBTRANSPORT_MAX_SESSIONS {
         settings.webtransport_max_sessions = val;
         return true;
     }
