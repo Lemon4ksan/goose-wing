@@ -1,0 +1,156 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
+name: Nightly Interop, Constant-Time, and Fuzzing
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  h2spec-edge-session:
+    name: HTTP/2 H2EdgeSession (h2spec 100%)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install toolchain, Goose compiler, and h2spec
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake gcc g++ git curl ca-certificates
+          git clone --depth 1 https://github.com/aardappel/goose.git /tmp/goose
+          cmake -S /tmp/goose -B /tmp/goose/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/goose/build -j 2
+          sudo ln -sf /tmp/goose/build/goose /usr/local/bin/goose
+          mkdir -p tools/bin
+          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused \
+            https://github.com/summerwind/h2spec/releases/download/v2.6.0/h2spec_linux_amd64.tar.gz \
+            | tar -xz -C tools/bin
+          chmod +x tools/bin/h2spec
+
+      - name: Run h2spec against H2EdgeSession
+        run: |
+          python tools/h2spec.py --edge-session -S all --rebuild
+
+  quic-h3-interop:
+    name: QUIC & HTTP/3 Live Interop (curl --http3 & QNS peers)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install toolchain and Goose compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake gcc g++ git curl ca-certificates
+          git clone --depth 1 https://github.com/aardappel/goose.git /tmp/goose
+          cmake -S /tmp/goose -B /tmp/goose/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/goose/build -j 2
+          sudo ln -sf /tmp/goose/build/goose /usr/local/bin/goose
+
+      - name: Run local QUIC/H3 loopback suite
+        run: |
+          python tools/quic_interop.py --local --rebuild
+
+      - name: Run live H3EdgeSession interop (curl --http3 and external peers)
+        run: |
+          python tools/quic_interop.py --edge-h3 --peers --rebuild
+
+  constant-time:
+    name: Constant-Time Verification (dudect & Valgrind ctgrind)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install toolchain and Goose compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential binutils cmake gcc g++ git curl ca-certificates
+          git clone --depth 1 https://github.com/aardappel/goose.git /tmp/goose
+          cmake -S /tmp/goose -B /tmp/goose/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/goose/build -j 2
+          sudo ln -sf /tmp/goose/build/goose /usr/local/bin/goose
+
+      - name: Clone and build goose-lit
+        run: |
+          git clone https://github.com/Lemon4ksan/goose-lit.git ../goose-lit
+          mkdir -p ../goose-lit/bin
+          goose build --cc gcc -O2 -o ../goose-lit/bin/goose-lit ../goose-lit/bin.goose
+          sudo ln -sf $(pwd)/../goose-lit/bin/goose-lit /usr/local/bin/goose-lit
+
+      - name: Verify constant-time assembly
+        run: |
+          python scripts/verify_ct_asm.py
+
+      - name: Run dudect Welch t-test timing suite
+        run: |
+          python tools/dudect.py --local --retries 3 --rebuild
+
+      - name: Run local ctgrind static and disassembly audits
+        run: |
+          python tools/ctgrind.py --local --rebuild
+
+      - name: Run Docker Valgrind TIMECOP taint analysis
+        run: |
+          python tools/ctgrind.py --docker
+
+  fuzz-smoke:
+    name: Protocol Parsers Fuzzing Smoke & Complexity Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install toolchain and Goose compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake gcc g++ git curl ca-certificates
+          git clone --depth 1 https://github.com/aardappel/goose.git /tmp/goose
+          cmake -S /tmp/goose -B /tmp/goose/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/goose/build -j 2
+          sudo ln -sf /tmp/goose/build/goose /usr/local/bin/goose
+
+      - name: Clone and build goose-lit
+        run: |
+          git clone https://github.com/Lemon4ksan/goose-lit.git ../goose-lit
+          mkdir -p ../goose-lit/bin
+          goose build --cc gcc -O2 -o ../goose-lit/bin/goose-lit ../goose-lit/bin.goose
+          sudo ln -sf $(pwd)/../goose-lit/bin/goose-lit /usr/local/bin/goose-lit
+
+      - name: Run SanitizerCoverage parser fuzzing smoke pass
+        run: |
+          python scripts/sancov_runner.py --cc gcc --execs 2000 --check-complexity --max-rss-drift-kb 1024 --max-input-ms 50
+
+      - name: Run native fuzz unit verification suite
+        run: |
+          python tools/test_runner.py -f -p "fuzz_test"
