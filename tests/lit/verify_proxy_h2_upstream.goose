@@ -939,6 +939,643 @@ fn test_h2_up_security_and_aba() {
     // CHECK: H2_UP_SECURITY_ABA_THREADS: OK
 }
 
+// ---- Test 7: Max Frame Clamp, Connection-Filter Bypass, HPACK Updates & Cookie Sensitivity
+
+fn feed_and_assert_proto_err(sess: proxy::H2UpstreamSession&, wire: const u8[:], expected_err: u32) {
+    assert(!proxy::h2_upstream_feed(sess, wire));
+    var ev = proxy::H2UpstreamEvent { .. };
+    var saw_err = false;
+    while proxy::h2_upstream_poll_event(sess, ev) {
+        if ev.kind == proxy::H2UpstreamEventKind.ProtocolError {
+            assert(ev.error_code == expected_err);
+            saw_err = true;
+        }
+    }
+    assert(saw_err);
+}
+
+fn push_hpack_literal_no_idx(out: u8[>..]&, name: const u8[:], val: const u8[:], never_idx: bool) {
+    out.push(if never_idx { 0x10 } else { 0x00 });
+    out.push(name.len as u8);
+    out.append(name);
+    out.push(val.len as u8);
+    out.append(val);
+}
+
+fn test_h2_up_config_clamp_and_conn_strip() {
+    let cfg = proxy::H2UpstreamConfig {
+        transport:            proxy::H2UpstreamTransport.H2c,
+        max_frame_size:       100000,
+        max_header_list_size: 8192,
+        ..
+    };
+    var up = proxy::h2_upstream_open(cfg);
+    defer proxy::h2_upstream_close(up);
+
+    var init_w: u8[>..] = [];
+    assert(proxy::h2_upstream_drain_wire(up, init_w) > 24);
+    var r_init = wire::new_wire_h2_frame_reader(init_w[24..]);
+    let sf_h, sf_p, ok_sf = wire::next_frame(r_init);
+    assert(ok_sf && sf_h.frame_type == rfc::H2_FRAME_SETTINGS);
+    var saw_frame_cap = false;
+    var saw_hdr_cap = false;
+    var off: i64 = 0;
+    while off + 6 <= sf_p.len {
+        let pid = core::read_be_u16(sf_p, off);
+        let pval = core::read_be_u32(sf_p, off + 2);
+        if pid == rfc::H2_SETTING_MAX_FRAME_SIZE {
+            assert(pval == 16384);
+            saw_frame_cap = true;
+        }
+        if pid == rfc::H2_SETTING_MAX_HEADER_LIST_SIZE {
+            assert(pval == 8192);
+            saw_hdr_cap = true;
+        }
+        off += 6;
+    }
+    assert(saw_frame_cap && saw_hdr_cap);
+
+    // Downstream Connection header must NOT strip proxy-synthesized forwarding headers
+    var in_hdrs = http::HeaderMap { .. };
+    assert(http::append_header(
+        in_hdrs,
+        "Connection",
+        "x-forwarded-for, via, forwarded, x-forwarded-proto, client-cert, x-drop-me",
+    ));
+    assert(http::append_header(in_hdrs, "X-Drop-Me", "hop-secret"));
+    assert(http::append_header(in_hdrs, "X-Custom", "kept"));
+
+    let sid, ok_open = proxy::h2_upstream_open_stream(
+        up, "POST", "https", "api.internal", "/submit", in_hdrs, "198.51.100.7",
+    );
+    assert(ok_open && sid == 1);
+
+    var req_w: u8[>..] = [];
+    assert(proxy::h2_upstream_drain_wire(up, req_w) > 0);
+    var rr = wire::new_wire_h2_frame_reader(req_w[..]);
+    let hh, hp, ok_hh = wire::next_frame(rr);
+    assert(ok_hh && hh.frame_type == rfc::H2_FRAME_HEADERS && hh.stream_id == sid);
+    var srv_dec = http2::new_dynamic_table(4096);
+    var dec_pseudo = http2::PseudoHeaders { .. };
+    var dec_map = http::HeaderMap { .. };
+    assert(http2::decode_hpack_to_map(srv_dec, hp, dec_pseudo, dec_map, 8192, true) == rfc::H2_ERR_NO_ERROR);
+    assert(http::get_header(dec_map, "x-forwarded-for") == "198.51.100.7");
+    assert(http::get_header(dec_map, "x-forwarded-proto") == "https");
+    assert(http::has_header(dec_map, "via"));
+    assert(http::get_header(dec_map, "x-custom") == "kept");
+    assert(!http::has_header(dec_map, "x-drop-me"));
+    assert(!http::has_header(dec_map, "connection"));
+
+    // Exact 16384-byte DATA frame must decode without wire_in deadlock
+    var srv_w: u8[>..] = [];
+    var srv_enc = http2::new_dynamic_table(4096);
+    var rh = http::HeaderMap { .. };
+    append_h2_resp_headers(srv_w, srv_enc, sid, 200, rh, false);
+    var big16k: u8[16384] = [0x6B; 16384];
+    append_h2_frame(srv_w, rfc::H2_FRAME_DATA, rfc::H2_FLAG_END_STREAM, sid, big16k[..]);
+    assert(proxy::h2_upstream_feed(up, srv_w[..]));
+    var ev = proxy::H2UpstreamEvent { .. };
+    assert(proxy::h2_upstream_poll_event(up, ev) && ev.kind == proxy::H2UpstreamEventKind.ResponseHead);
+    assert(proxy::h2_upstream_poll_event(up, ev) && ev.kind == proxy::H2UpstreamEventKind.ResponseData);
+    assert(ev.data.len == 16384 && ev.data[0] == 0x6B && ev.data[16383] == 0x6B);
+    assert(proxy::h2_upstream_poll_event(up, ev) && ev.kind == proxy::H2UpstreamEventKind.ResponseEnd);
+
+    print("H2_UP_CLAMP_AND_FILTER: OK\n");
+    // CHECK: H2_UP_CLAMP_AND_FILTER: OK
+}
+
+fn test_h2_up_dynamic_table_updates_and_cookie_mark() {
+    var up = proxy::h2_upstream_open(proxy::H2UpstreamConfig { .. });
+    defer proxy::h2_upstream_close(up);
+    var dump: u8[>..] = [];
+    let _ = proxy::h2_upstream_drain_wire(up, dump);
+
+    var srv_dec = http2::new_dynamic_table(4096);
+    var h1 = http::HeaderMap { .. };
+    assert(http::append_header(h1, "x-cache-seed", "populate-dyn-table-entry"));
+    let s1, ok1 = proxy::h2_upstream_open_stream(
+        up, "GET", "https", "ex.com", "/s1", h1, "",
+        proxy::H2UpstreamStreamEnd.EndStream, proxy::H2UpstreamHeaderFilter.DirectHeaders,
+    );
+    assert(ok1 && s1 == 1);
+    var w1: u8[>..] = [];
+    assert(proxy::h2_upstream_drain_wire(up, w1) > 0);
+    var r1 = wire::new_wire_h2_frame_reader(w1[..]);
+    let fh1, fp1, ok_f1 = wire::next_frame(r1);
+    assert(ok_f1 && fh1.frame_type == rfc::H2_FRAME_HEADERS);
+    var p1 = http2::PseudoHeaders { .. };
+    var m1 = http::HeaderMap { .. };
+    assert(http2::decode_hpack_to_map(srv_dec, fp1, p1, m1, 8192, true) == rfc::H2_ERR_NO_ERROR);
+    assert(srv_dec.count > 0);
+
+    // Non-OPTIONS "*" request rejected; OPTIONS "*" permitted
+    let bad_star, ok_star = proxy::h2_upstream_open_stream(
+        up, "GET", "https", "ex.com", "*", h1, "",
+        proxy::H2UpstreamStreamEnd.EndStream, proxy::H2UpstreamHeaderFilter.DirectHeaders,
+    );
+    assert(!ok_star && bad_star == 0);
+    let opt_sid, ok_opt = proxy::h2_upstream_open_stream(
+        up, "OPTIONS", "https", "ex.com", "*", h1, "",
+        proxy::H2UpstreamStreamEnd.EndStream, proxy::H2UpstreamHeaderFilter.DirectHeaders,
+    );
+    assert(ok_opt && opt_sid == 3);
+    dump.clear();
+    let _ = proxy::h2_upstream_drain_wire(up, dump);
+
+    // Peer shrinks HEADER_TABLE_SIZE to 0 -> client must emit 001xxxxx (0x20) update before next HEADERS
+    var set0: u8[>..] = [];
+    let s_zero: wire::WireSetting[1] = [
+        wire::WireSetting { id: rfc::H2_SETTING_HEADER_TABLE_SIZE, val: 0 },
+    ];
+    assert(wire::encode_settings_frame(s_zero[..], set0));
+    assert(proxy::h2_upstream_feed(up, set0[..]));
+    dump.clear();
+    assert(proxy::h2_upstream_drain_wire(up, dump) > 0);
+
+    let s5, ok5 = proxy::h2_upstream_open_stream(
+        up, "GET", "https", "ex.com", "/s5", h1, "",
+        proxy::H2UpstreamStreamEnd.EndStream, proxy::H2UpstreamHeaderFilter.DirectHeaders,
+    );
+    assert(ok5 && s5 == 5);
+    var w5: u8[>..] = [];
+    assert(proxy::h2_upstream_drain_wire(up, w5) > 0);
+    var r5 = wire::new_wire_h2_frame_reader(w5[..]);
+    let fh5, fp5, ok_f5 = wire::next_frame(r5);
+    assert(ok_f5 && fh5.frame_type == rfc::H2_FRAME_HEADERS);
+    assert(fp5.len > 0 && fp5[0] == 0x20);
+    var p5 = http2::PseudoHeaders { .. };
+    var m5 = http::HeaderMap { .. };
+    assert(http2::decode_hpack_to_map(srv_dec, fp5, p5, m5, 8192, true) == rfc::H2_ERR_NO_ERROR);
+    assert(srv_dec.current_max_size == 0);
+
+    // Shrink 0 then grow 4096 between requests -> must emit [0, 4096] updates cleanly
+    var set_grow: u8[>..] = [];
+    let s_4k: wire::WireSetting[1] = [
+        wire::WireSetting { id: rfc::H2_SETTING_HEADER_TABLE_SIZE, val: 4096 },
+    ];
+    assert(wire::encode_settings_frame(s_zero[..], set_grow));
+    assert(wire::encode_settings_frame(s_4k[..], set_grow));
+    assert(proxy::h2_upstream_feed(up, set_grow[..]));
+    dump.clear();
+    assert(proxy::h2_upstream_drain_wire(up, dump) > 0);
+
+    let s7, ok7 = proxy::h2_upstream_open_stream(
+        up, "GET", "https", "ex.com", "/s7", h1, "",
+        proxy::H2UpstreamStreamEnd.EndStream, proxy::H2UpstreamHeaderFilter.DirectHeaders,
+    );
+    assert(ok7 && s7 == 7);
+    var w7: u8[>..] = [];
+    assert(proxy::h2_upstream_drain_wire(up, w7) > 0);
+    var r7 = wire::new_wire_h2_frame_reader(w7[..]);
+    let fh7, fp7, ok_f7 = wire::next_frame(r7);
+    assert(ok_f7 && fh7.frame_type == rfc::H2_FRAME_HEADERS && fp7.len >= 4);
+    assert(fp7[0] == 0x20 && fp7[1] == 0x3F && fp7[2] == 0xE1 && fp7[3] == 0x1F);
+    var p7 = http2::PseudoHeaders { .. };
+    var m7 = http::HeaderMap { .. };
+    assert(http2::decode_hpack_to_map(srv_dec, fp7, p7, m7, 8192, true) == rfc::H2_ERR_NO_ERROR);
+    assert(srv_dec.current_max_size == 4096);
+
+    // Merged cookie marked NeverIndexed on 2nd fragment marks "cookie", NOT neighboring header
+    var raw_hp: u8[>..] = [];
+    raw_hp.push(0x88); // :status 200
+    push_hpack_literal_no_idx(raw_hp, "cookie", "a=1", false);
+    push_hpack_literal_no_idx(raw_hp, "x-pub", "ok", false);
+    push_hpack_literal_no_idx(raw_hp, "cookie", "sec=2", true);
+    var rw: u8[>..] = [];
+    append_h2_frame(rw, rfc::H2_FRAME_HEADERS, rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM, s7, raw_hp[..]);
+    assert(proxy::h2_upstream_feed(up, rw[..]));
+    var ev = proxy::H2UpstreamEvent { .. };
+    assert(proxy::h2_upstream_poll_event(up, ev) && ev.kind == proxy::H2UpstreamEventKind.ResponseHead);
+    var cookie_sens = false;
+    var pub_sens = false;
+    for &e in ev.headers.entries {
+        if http::entry_name(ev.headers, e) == "cookie" {
+            assert(http::entry_value(ev.headers, e) == "a=1; sec=2");
+            cookie_sens = http::is_sensitive(e);
+        }
+        if http::entry_name(ev.headers, e) == "x-pub" {
+            assert(http::entry_value(ev.headers, e) == "ok");
+            pub_sens = http::is_sensitive(e);
+        }
+    }
+    assert(cookie_sens && !pub_sens);
+
+    print("H2_UP_DYN_UPDATES_COOKIE: OK\n");
+    // CHECK: H2_UP_DYN_UPDATES_COOKIE: OK
+}
+
+// ---- Test 8: Sans-IO TLS 1.3 ALPN "h2" Loopback & ALPN Validator -----------
+
+fn tls_pump_hs_wire(src: tls::TlsEndpoint&, dst: tls::TlsEndpoint&) {
+    var buf: u8[16384] = [0; 16384];
+    let n, st = tls::tls_endpoint_drain_wire(src, buf[..]);
+    assert(st == tls::TlsBackendStatus.Ok || st == tls::TlsBackendStatus.WantRead || st == tls::TlsBackendStatus.WantWrite);
+    if n > 0 {
+        let fed, fst = tls::tls_endpoint_feed_wire(dst, buf[..n]);
+        assert(fed == n);
+        assert(fst == tls::TlsBackendStatus.Ok || fst == tls::TlsBackendStatus.WantRead || fst == tls::TlsBackendStatus.WantWrite);
+    }
+}
+
+fn tls_exchange_up_to_edge(
+    up:     proxy::H2UpstreamSession&,
+    cli_ep: tls::TlsEndpoint&,
+    srv_ep: tls::TlsEndpoint&,
+    edge:   http2::H2EdgeSession&,
+) {
+    var plain: u8[>..] = [];
+    let pn = proxy::h2_upstream_drain_wire(up, plain);
+    if pn > 0 {
+        let wn, wst = tls::tls_endpoint_write_app(cli_ep, plain[..]);
+        assert(wn == pn && wst == tls::TlsBackendStatus.Ok);
+    }
+    tls_pump_hs_wire(cli_ep, srv_ep);
+    var app_buf: u8[16384] = [0; 16384];
+    let rn, rst = tls::tls_endpoint_read_app(srv_ep, app_buf[..]);
+    assert(rst == tls::TlsBackendStatus.Ok || rst == tls::TlsBackendStatus.WantRead);
+    if rn > 0 {
+        let fed, ok = http2::h2_edge_feed(edge, app_buf[..rn]);
+        assert(ok && fed == rn);
+    }
+}
+
+fn tls_exchange_edge_to_up(
+    edge:   http2::H2EdgeSession&,
+    srv_ep: tls::TlsEndpoint&,
+    cli_ep: tls::TlsEndpoint&,
+    up:     proxy::H2UpstreamSession&,
+) {
+    var plain: u8[>..] = [];
+    let pn = http2::h2_edge_drain_wire(edge, plain);
+    if pn > 0 {
+        let wn, wst = tls::tls_endpoint_write_app(srv_ep, plain[..]);
+        assert(wn == pn && wst == tls::TlsBackendStatus.Ok);
+    }
+    tls_pump_hs_wire(srv_ep, cli_ep);
+    var app_buf: u8[16384] = [0; 16384];
+    let rn, rst = tls::tls_endpoint_read_app(cli_ep, app_buf[..]);
+    assert(rst == tls::TlsBackendStatus.Ok || rst == tls::TlsBackendStatus.WantRead);
+    if rn > 0 {
+        assert(proxy::h2_upstream_feed(up, app_buf[..rn]));
+    }
+}
+
+fn test_h2_up_tls13_alpn_loopback() {
+    var seed:     u8[32]     = [0x42; 32];
+    var cert_der: u8[..2048] = [];
+    assert(tls::build_test_ed25519_cert_der(seed, "h2.internal.test", "h2.internal.test", "127.0.0.1", cert_der));
+    var trust = tls::TrustAnchorStore { .. };
+    assert(tls::add_trust_anchor_cert_der(trust, cert_der[..]));
+
+    var srv_cfg = tls::TlsBackendConfig {
+        kind:               tls::TlsBackendKind.PureGoose,
+        min_version:        tls::TlsMinVersion.Tls13,
+        is_server:          true,
+        priv_seed:          seed,
+        require_alpn_match: true,
+        ..
+    };
+    assert(srv_cfg.cert_der.try_set(cert_der[..]));
+    assert(srv_cfg.alpn_wire.try_set("\x02h2"));
+
+    var cli_cfg = tls::TlsBackendConfig {
+        kind:               tls::TlsBackendKind.PureGoose,
+        min_version:        tls::TlsMinVersion.Tls13,
+        is_server:          false,
+        use_system_roots:   false,
+        trust_store:        trust,
+        require_alpn_match: true,
+        ..
+    };
+    assert(cli_cfg.server_name.try_set("h2.internal.test"));
+    assert(cli_cfg.alpn_wire.try_set("\x02h2"));
+
+    var srv_ep, srv_st = tls::tls_endpoint_open(srv_cfg);
+    var cli_ep, cli_st = tls::tls_endpoint_open(cli_cfg);
+    assert(srv_st == tls::TlsBackendStatus.Ok && cli_st == tls::TlsBackendStatus.Ok);
+    defer tls::tls_endpoint_close(srv_ep);
+    defer tls::tls_endpoint_close(cli_ep);
+
+    var round: i64 = 0;
+    while (!tls::tls_endpoint_is_established(cli_ep) || !tls::tls_endpoint_is_established(srv_ep)) && round < 16 {
+        let _ = tls::tls_endpoint_step_handshake(cli_ep);
+        tls_pump_hs_wire(cli_ep, srv_ep);
+        let _ = tls::tls_endpoint_step_handshake(srv_ep);
+        tls_pump_hs_wire(srv_ep, cli_ep);
+        round += 1;
+    }
+    assert(tls::tls_endpoint_is_established(cli_ep) && tls::tls_endpoint_is_established(srv_ep));
+    let cli_alpn = tls::tls_endpoint_selected_alpn(cli_ep);
+    assert(cli_alpn[..] == "h2");
+
+    var up_tls = proxy::H2UpstreamSession { .. };
+    up_tls = proxy::h2_upstream_open(proxy::H2UpstreamConfig { transport: proxy::H2UpstreamTransport.H2Tls, .. });
+    defer proxy::h2_upstream_close(up_tls);
+    assert(proxy::h2_upstream_validate_alpn(up_tls, cli_alpn[..]));
+    assert(!proxy::h2_upstream_validate_alpn(up_tls, "http/1.1"));
+    assert(!proxy::h2_upstream_validate_alpn(up_tls, ""));
+
+    var up_h2c = proxy::h2_upstream_open(proxy::H2UpstreamConfig { transport: proxy::H2UpstreamTransport.H2c, .. });
+    defer proxy::h2_upstream_close(up_h2c);
+    assert(proxy::h2_upstream_validate_alpn(up_h2c, ""));
+    assert(proxy::h2_upstream_validate_alpn(up_h2c, "h2c"));
+    assert(!proxy::h2_upstream_validate_alpn(up_h2c, "h2"));
+
+    var edge = http2::h2_edge_open(64, 65535);
+    defer http2::h2_edge_close(edge);
+    tls_exchange_up_to_edge(up_tls, cli_ep, srv_ep, edge);
+    tls_exchange_edge_to_up(edge, srv_ep, cli_ep, up_tls);
+    tls_exchange_up_to_edge(up_tls, cli_ep, srv_ep, edge);
+
+    var hdrs = http::HeaderMap { .. };
+    let sid, ok_req = proxy::h2_upstream_open_stream(
+        up_tls, "GET", "https", "h2.internal.test", "/tls-h2", hdrs, "127.0.0.1",
+        proxy::H2UpstreamStreamEnd.EndStream, proxy::H2UpstreamHeaderFilter.DirectHeaders,
+    );
+    assert(ok_req && sid == 1);
+    tls_exchange_up_to_edge(up_tls, cli_ep, srv_ep, edge);
+
+    var eev = http2::H2EdgeEvent { .. };
+    assert(http2::h2_edge_poll_event(edge, eev) && eev.kind == http2::H2EdgeEventKind.RequestHead);
+    assert(eev.headers.entries.len >= 0);
+    assert(http2::h2_edge_send_headers(edge, 1, 200, hdrs, false));
+    let ds, ok_ds = http2::h2_edge_send_data(edge, 1, "tls13-h2-ok", true);
+    assert(ok_ds && ds == 11);
+    tls_exchange_edge_to_up(edge, srv_ep, cli_ep, up_tls);
+
+    var uev = proxy::H2UpstreamEvent { .. };
+    assert(proxy::h2_upstream_poll_event(up_tls, uev) && uev.kind == proxy::H2UpstreamEventKind.ResponseHead);
+    assert(uev.status_code == 200);
+    assert(proxy::h2_upstream_poll_event(up_tls, uev) && uev.kind == proxy::H2UpstreamEventKind.ResponseData);
+    assert(uev.data == "tls13-h2-ok");
+    assert(proxy::h2_upstream_poll_event(up_tls, uev) && uev.kind == proxy::H2UpstreamEventKind.ResponseEnd);
+
+    print("H2_UP_TLS13_ALPN_LOOPBACK: OK\n");
+    // CHECK: H2_UP_TLS13_ALPN_LOOPBACK: OK
+}
+
+// ---- Test 9: Coalesced WINDOW_UPDATE, Zero Pool Leaks & RFC Edge Errors ---
+
+fn probe_failed_hdr_or_trailer_decode(case_idx: i64) {
+    var up = proxy::h2_upstream_open(proxy::H2UpstreamConfig { .. });
+    defer proxy::h2_upstream_close(up);
+    var dump: u8[>..] = [];
+    let _ = proxy::h2_upstream_drain_wire(up, dump);
+
+    var req_h = http::HeaderMap { .. };
+    let sid, ok = proxy::h2_upstream_open_stream(
+        up, "POST", "https", "ex.com", "/probe", req_h, "",
+        proxy::H2UpstreamStreamEnd.EndStream, proxy::H2UpstreamHeaderFilter.DirectHeaders,
+    );
+    assert(ok && sid == 1);
+    var srv_enc = http2::new_dynamic_table(4096);
+    var sw: u8[>..] = [];
+    if (case_idx % 4) == 0 {
+        var rh = http::HeaderMap { .. };
+        assert(http::append_header(rh, "content-length", "5"));
+        append_h2_resp_headers(sw, srv_enc, sid, 200, rh, true);
+    } else if (case_idx % 4) == 1 {
+        var bad_hp: u8[>..] = [];
+        push_hpack_literal_no_idx(bad_hp, ":status", "99", false);
+        append_h2_frame(sw, rfc::H2_FRAME_HEADERS, rfc::H2_FLAG_END_HEADERS, sid, bad_hp[..]);
+    } else if (case_idx % 4) == 2 {
+        var rh = http::HeaderMap { .. };
+        append_h2_resp_headers(sw, srv_enc, sid, 200, rh, false);
+        var bad_tr: u8[>..] = [];
+        push_hpack_literal_no_idx(bad_tr, "host", "bad-trailer.com", false);
+        append_h2_frame(
+            sw,
+            rfc::H2_FRAME_HEADERS,
+            rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
+            sid,
+            bad_tr[..],
+        );
+    } else {
+        var rh = http::HeaderMap { .. };
+        assert(http::append_header(rh, "content-length", "10"));
+        append_h2_resp_headers(sw, srv_enc, sid, 200, rh, false);
+        append_h2_frame(sw, rfc::H2_FRAME_DATA, 0, sid, "12345");
+        var tr = http::HeaderMap { .. };
+        assert(http::append_header(tr, "grpc-status", "0"));
+        append_h2_resp_trailers(sw, srv_enc, sid, tr);
+    }
+    feed_and_assert_proto_err(up, sw[..], rfc::H2_ERR_PROTOCOL_ERROR);
+}
+
+fn test_h2_up_window_coalesce_and_leaks() {
+    // 1. 6000 x 1-byte DATA frames without wire drain emits 0 WINDOW_UPDATE; crossing 16384 emits coalesced updates
+    var up = proxy::h2_upstream_open(proxy::H2UpstreamConfig { .. });
+    defer proxy::h2_upstream_close(up);
+    var dump: u8[>..] = [];
+    let _ = proxy::h2_upstream_drain_wire(up, dump);
+
+    var h = http::HeaderMap { .. };
+    let sid, ok = proxy::h2_upstream_open_stream(
+        up, "GET", "https", "wan.ex", "/tiny-chunks", h, "",
+        proxy::H2UpstreamStreamEnd.EndStream, proxy::H2UpstreamHeaderFilter.DirectHeaders,
+    );
+    assert(ok && sid == 1);
+    dump.clear();
+    let _ = proxy::h2_upstream_drain_wire(up, dump);
+
+    var srv_enc = http2::new_dynamic_table(4096);
+    var hdr_w: u8[>..] = [];
+    append_h2_resp_headers(hdr_w, srv_enc, sid, 200, h, false);
+    assert(proxy::h2_upstream_feed(up, hdr_w[..]));
+    var ev = proxy::H2UpstreamEvent { .. };
+    assert(proxy::h2_upstream_poll_event(up, ev) && ev.kind == proxy::H2UpstreamEventKind.ResponseHead);
+
+    var rx_total: i64 = 0;
+    for b in 12 {
+        let _ = b;
+        var batch: u8[>..] = [];
+        for i in 500 {
+            let _ = i;
+            append_h2_frame(batch, rfc::H2_FRAME_DATA, 0, sid, "a");
+        }
+        assert(proxy::h2_upstream_feed(up, batch[..]));
+        while proxy::h2_upstream_poll_event(up, ev) {
+            if ev.kind == proxy::H2UpstreamEventKind.ResponseData {
+                rx_total += ev.data.len;
+            }
+        }
+    }
+    assert(rx_total == 6000);
+    dump.clear();
+    assert(proxy::h2_upstream_drain_wire(up, dump) == 0);
+
+    var rest_w: u8[>..]  = [];
+    var c8k:    u8[8192] = ['b'; 8192];
+    var c2192:  u8[2192] = ['c'; 2192];
+    append_h2_frame(rest_w, rfc::H2_FRAME_DATA, 0, sid, c8k[..]);
+    append_h2_frame(rest_w, rfc::H2_FRAME_DATA, 0, sid, c2192[..]);
+    assert(proxy::h2_upstream_feed(up, rest_w[..]));
+    while proxy::h2_upstream_poll_event(up, ev) {
+        if ev.kind == proxy::H2UpstreamEventKind.ResponseData {
+            rx_total += ev.data.len;
+        }
+    }
+    assert(rx_total == 16384);
+    var wu_w: u8[>..] = [];
+    assert(proxy::h2_upstream_drain_wire(up, wu_w) == 26);
+    var wr = wire::new_wire_h2_frame_reader(wu_w[..]);
+    let w1h, w1p, ok1 = wire::next_frame(wr);
+    let w2h, w2p, ok2 = wire::next_frame(wr);
+    assert(ok1 && w1h.frame_type == rfc::H2_FRAME_WINDOW_UPDATE && w1h.stream_id == 0);
+    assert(core::read_be_u32(w1p, 0) == 16384);
+    assert(ok2 && w2h.frame_type == rfc::H2_FRAME_WINDOW_UPDATE && w2h.stream_id == sid);
+    assert(core::read_be_u32(w2p, 0) == 16384);
+
+    // 2. Zero H2UpHeaderNode pool leak across failed header/trailer decodes
+    probe_failed_hdr_or_trailer_decode(0);
+    let base_hdr_pool = proxy::g_h2_up_headers.len;
+    for k in 20 {
+        probe_failed_hdr_or_trailer_decode(k);
+    }
+    assert(proxy::g_h2_up_headers.len <= base_hdr_pool + 1);
+
+    print("H2_UP_COALESCE_AND_NO_LEAK: OK\n");
+    // CHECK: H2_UP_COALESCE_AND_NO_LEAK: OK
+}
+
+fn complete_one_up_stream(up: proxy::H2UpstreamSession&, enc: http2::DynamicTable&) -> u32 {
+    var h = http::HeaderMap { .. };
+    let sid, ok = proxy::h2_upstream_open_stream(
+        up, "GET", "https", "ex.com", "/reuse", h, "",
+        proxy::H2UpstreamStreamEnd.EndStream, proxy::H2UpstreamHeaderFilter.DirectHeaders,
+    );
+    assert(ok);
+    var dump: u8[>..] = [];
+    let _ = proxy::h2_upstream_drain_wire(up, dump);
+    var sw: u8[>..] = [];
+    append_h2_resp_headers(sw, enc, sid, 200, h, true);
+    assert(proxy::h2_upstream_feed(up, sw[..]));
+    var ev = proxy::H2UpstreamEvent { .. };
+    assert(proxy::h2_upstream_poll_event(up, ev) && ev.kind == proxy::H2UpstreamEventKind.ResponseHead);
+    assert(!proxy::h2_upstream_poll_event(up, ev));
+    return sid;
+}
+
+fn test_h2_up_status_and_window_errors() {
+    var req_h = http::HeaderMap { .. };
+    var srv_enc = http2::new_dynamic_table(4096);
+
+    // 1. 304 Not Modified with non-zero Content-Length + END_STREAM allowed; 204/304 DATA rejected
+    var u304 = proxy::h2_upstream_open(proxy::H2UpstreamConfig { .. });
+    defer proxy::h2_upstream_close(u304);
+    let s304, ok304 = proxy::h2_upstream_open_stream(
+        u304, "GET", "https", "ex.com", "/cached", req_h, "",
+        proxy::H2UpstreamStreamEnd.EndStream, proxy::H2UpstreamHeaderFilter.DirectHeaders,
+    );
+    assert(ok304 && s304 == 1);
+    var w304: u8[>..] = [];
+    var rh304 = http::HeaderMap { .. };
+    assert(http::append_header(rh304, "content-length", "1234"));
+    append_h2_resp_headers(w304, srv_enc, s304, 304, rh304, true);
+    assert(proxy::h2_upstream_feed(u304, w304[..]));
+    var ev = proxy::H2UpstreamEvent { .. };
+    assert(proxy::h2_upstream_poll_event(u304, ev) && ev.kind == proxy::H2UpstreamEventKind.ResponseHead);
+    assert(ev.status_code == 304 && ev.end_stream && http::get_header(ev.headers, "content-length") == "1234");
+
+    let no_body_codes: i32[2] = [204, 304];
+    for st_code in no_body_codes {
+        var u_bad = proxy::h2_upstream_open(proxy::H2UpstreamConfig { .. });
+        let sb, okb = proxy::h2_upstream_open_stream(
+            u_bad, "GET", "https", "ex.com", "/nobody", req_h, "",
+            proxy::H2UpstreamStreamEnd.EndStream, proxy::H2UpstreamHeaderFilter.DirectHeaders,
+        );
+        assert(okb && sb == 1);
+        var enc_b = http2::new_dynamic_table(4096);
+        var wb: u8[>..] = [];
+        append_h2_resp_headers(wb, enc_b, sb, st_code, req_h, false);
+        append_h2_frame(wb, rfc::H2_FRAME_DATA, rfc::H2_FLAG_END_STREAM, sb, "x");
+        feed_and_assert_proto_err(u_bad, wb[..], rfc::H2_ERR_PROTOCOL_ERROR);
+        proxy::h2_upstream_close(u_bad);
+    }
+
+    // 2. WINDOW_UPDATE inc == 0 and send-window overflow on open stream -> RST_STREAM + StreamReset
+    var uw = proxy::h2_upstream_open(proxy::H2UpstreamConfig { .. });
+    defer proxy::h2_upstream_close(uw);
+    var dump: u8[>..] = [];
+    let _ = proxy::h2_upstream_drain_wire(uw, dump);
+    let sw1, ok_sw1 = proxy::h2_upstream_open_stream(
+        uw, "POST", "https", "ex.com", "/w1", req_h, "",
+        proxy::H2UpstreamStreamEnd.OpenBody, proxy::H2UpstreamHeaderFilter.DirectHeaders,
+    );
+    let sw3, ok_sw3 = proxy::h2_upstream_open_stream(
+        uw, "POST", "https", "ex.com", "/w3", req_h, "",
+        proxy::H2UpstreamStreamEnd.OpenBody, proxy::H2UpstreamHeaderFilter.DirectHeaders,
+    );
+    assert(ok_sw1 && sw1 == 1 && ok_sw3 && sw3 == 3);
+    dump.clear();
+    let _ = proxy::h2_upstream_drain_wire(uw, dump);
+
+    var wu_bad: u8[>..] = [];
+    var wu0_p:  u8[..4] = [];
+    wu0_p.append_u32_be(0);
+    append_h2_frame(wu_bad, rfc::H2_FRAME_WINDOW_UPDATE, 0, sw1, wu0_p[..]);
+    var wumax_p: u8[..4] = [];
+    wumax_p.append_u32_be(0x7FFFFFFF);
+    append_h2_frame(wu_bad, rfc::H2_FRAME_WINDOW_UPDATE, 0, sw3, wumax_p[..]);
+    assert(proxy::h2_upstream_feed(uw, wu_bad[..]));
+
+    assert(proxy::h2_upstream_poll_event(uw, ev) && ev.kind == proxy::H2UpstreamEventKind.StreamReset);
+    assert(ev.stream_id == sw1 && ev.error_code == rfc::H2_ERR_PROTOCOL_ERROR);
+    assert(proxy::h2_upstream_poll_event(uw, ev) && ev.kind == proxy::H2UpstreamEventKind.StreamReset);
+    assert(ev.stream_id == sw3 && ev.error_code == rfc::H2_ERR_FLOW_CONTROL_ERROR);
+    var rst_out: u8[>..] = [];
+    assert(proxy::h2_upstream_drain_wire(uw, rst_out) == 26);
+    var rr = wire::new_wire_h2_frame_reader(rst_out[..]);
+    let rf1, rp1, ok_r1 = wire::next_frame(rr);
+    let rf2, rp2, ok_r2 = wire::next_frame(rr);
+    assert(ok_r1 && rf1.frame_type == rfc::H2_FRAME_RST_STREAM && rf1.stream_id == sw1);
+    assert(core::read_be_u32(rp1, 0) == rfc::H2_ERR_PROTOCOL_ERROR);
+    assert(ok_r2 && rf2.frame_type == rfc::H2_FRAME_RST_STREAM && rf2.stream_id == sw3);
+    assert(core::read_be_u32(rp2, 0) == rfc::H2_ERR_FLOW_CONTROL_ERROR);
+
+    // 3. Idle/even WINDOW_UPDATE and idle/even DATA -> PROTOCOL_ERROR; reused-slot closed sid -> STREAM_CLOSED / ignored WU
+    var wu_idle_p: u8[..4] = [];
+    wu_idle_p.append_u32_be(100);
+    for bad_case in 5 {
+        var ub = proxy::h2_upstream_open(proxy::H2UpstreamConfig { .. });
+        var fw: u8[>..] = [];
+        if bad_case == 0 {
+            append_h2_frame(fw, rfc::H2_FRAME_WINDOW_UPDATE, 0, 99, wu0_p[..]);
+        } else if bad_case == 1 {
+            append_h2_frame(fw, rfc::H2_FRAME_WINDOW_UPDATE, 0, 99, wu_idle_p[..]);
+        } else if bad_case == 2 {
+            append_h2_frame(fw, rfc::H2_FRAME_WINDOW_UPDATE, 0, 2, wu_idle_p[..]);
+        } else if bad_case == 3 {
+            append_h2_frame(fw, rfc::H2_FRAME_DATA, 0, 99, "bad");
+        } else {
+            append_h2_frame(fw, rfc::H2_FRAME_DATA, 0, 2, "bad");
+        }
+        feed_and_assert_proto_err(ub, fw[..], rfc::H2_ERR_PROTOCOL_ERROR);
+        proxy::h2_upstream_close(ub);
+    }
+
+    var ur = proxy::h2_upstream_open(proxy::H2UpstreamConfig { .. });
+    defer proxy::h2_upstream_close(ur);
+    var enc_r = http2::new_dynamic_table(4096);
+    var first_sid: u32 = 0;
+    for i in 135 {
+        let cur = complete_one_up_stream(ur, enc_r);
+        if i == 0 {
+            first_sid = cur;
+        }
+    }
+    assert(first_sid == 1);
+    var closed_wu: u8[>..] = [];
+    append_h2_frame(closed_wu, rfc::H2_FRAME_WINDOW_UPDATE, 0, first_sid, wu_idle_p[..]);
+    assert(proxy::h2_upstream_feed(ur, closed_wu[..]));
+    var late_closed_data: u8[>..] = [];
+    append_h2_frame(late_closed_data, rfc::H2_FRAME_DATA, rfc::H2_FLAG_END_STREAM, first_sid, "late");
+    feed_and_assert_proto_err(ur, late_closed_data[..], rfc::H2_ERR_STREAM_CLOSED);
+
+    print("H2_UP_STATUS_AND_WINDOW_ERR: OK\n");
+    // CHECK: H2_UP_STATUS_AND_WINDOW_ERR: OK
+}
+
 fn main() {
     test_h2_up_preface_headers_and_sensitive();
     test_h2_up_grpc_and_connect_loopback();
@@ -946,4 +1583,9 @@ fn main() {
     test_h2_up_wan_fanout_flow_control_and_goaway();
     test_h2_up_backpressure_continuation_and_chunks();
     test_h2_up_security_and_aba();
+    test_h2_up_config_clamp_and_conn_strip();
+    test_h2_up_dynamic_table_updates_and_cookie_mark();
+    test_h2_up_tls13_alpn_loopback();
+    test_h2_up_window_coalesce_and_leaks();
+    test_h2_up_status_and_window_errors();
 }

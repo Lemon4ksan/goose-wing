@@ -181,10 +181,13 @@ fn h2_upstream_feed(sess: H2UpstreamSession&, wire_in: const u8[:]) -> bool
 fn h2_upstream_can_open_stream(sess: const H2UpstreamSession&) -> bool
 fn h2_upstream_active_streams(sess: const H2UpstreamSession&) -> u32
 fn h2_upstream_is_draining(sess: const H2UpstreamSession&) -> bool
+fn h2_upstream_validate_alpn(sess: const H2UpstreamSession&, alpn: const u8[:]) -> bool
 ```
 
 `H2UpstreamSession` multiplexes client-initiated odd HTTP/2 streams (`1, 3, 5,
 ...`) over thread-local shared-nothing pools using generation-guarded handles.
-It preserves `te: trailers` and `HEADER_FLAG_SENSITIVE` (`NeverIndexed`) across
-gRPC, Connect-RPC, full-duplex bidirectional streaming, flow-controlled WAN
-fan-out, and graceful `GOAWAY` draining.
+`H2UpstreamConfig.max_frame_size` is bounded to `16384` bytes to match fixed 16
+KB chunk buffers, and `h2_upstream_validate_alpn` verifies negotiated ALPN
+tokens against `transport`. It preserves `te: trailers` and
+`HEADER_FLAG_SENSITIVE` (`NeverIndexed`) across gRPC, Connect-RPC, full-duplex
+streaming, coalesced `WINDOW_UPDATE` WAN fan-out, and graceful `GOAWAY` drain.

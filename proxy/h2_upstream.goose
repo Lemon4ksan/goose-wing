@@ -27,6 +27,7 @@ const H2_UP_WIRE_IN_CAP:            i64 = 16393;
 const H2_UP_WIRE_OUT_CAP:           i64 = 147456;
 const H2_UP_HEADER_BLOCK_CAP:       i64 = 65536;
 const H2_UP_MAX_CHUNK_DATA:         i64 = 16384;
+const H2_UP_MIN_REPLENISH:          i64 = 16384;
 const H2_UP_MAX_STREAMS_CAP:        u32 = 128;
 const H2_UP_RST_RING_CAP:           i64 = 128;
 const H2_UP_HPACK_NEVER_INDEX_MASK: u8  = 0xF0;
@@ -78,12 +79,14 @@ enum H2UpstreamEventKind {
 }
 
 struct H2UpstreamConfig {
+    // Expected transport (validated via h2_upstream_validate_alpn).
     transport:              H2UpstreamTransport = H2UpstreamTransport.H2Tls,
     initial_window_size:    u32                 = rfc::H2_DEFAULT_WINDOW_SIZE,
     max_concurrent_streams: u32                 = 128,
-    max_frame_size:         u32                 = rfc::H2_DEFAULT_MAX_FRAME_SIZE,
-    max_header_list_size:   u32                 = H2_UP_DEF_HDR_LIST,
-    send_proxy_config:      Config              = Config { .. },
+    // Local SETTINGS_MAX_FRAME_SIZE (bounded to 16384 to fit chunk buffers).
+    max_frame_size:       u32    = rfc::H2_DEFAULT_MAX_FRAME_SIZE,
+    max_header_list_size: u32    = H2_UP_DEF_HDR_LIST,
+    send_proxy_config:    Config = Config { .. },
 }
 
 struct H2UpstreamEvent {
@@ -147,9 +150,12 @@ struct H2UpSlot {
     empty_data_streak:           u32                 = 0,
     hpack_enc:                   http2::DynamicTable = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE),
     hpack_dec:                   http2::DynamicTable = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE),
+    hpack_enc_pending_sz_update: bool                = false,
+    hpack_enc_min_sz:            u64                 = rfc::HPACK_DEFAULT_MAX_DYN_SIZE,
     stream_ids:                  u32[128]            = [0; 128],
-    stream_is_grpc:              u8[128]             = [0; 128],
     stream_is_head:              u8[128]             = [0; 128],
+    stream_unclaimed_id:         u32[128]            = [0; 128],
+    stream_unclaimed_rx:         i64[128]            = [0; 128],
     local_rst_ring:              u32[128]            = [0; 128],
     local_rst_head:              i64                 = 0,
     wire_in:                     u8[..16393]         = [],
@@ -313,7 +319,7 @@ fn emit_up_frame(
     return true;
 }
 
-fn append_setting_pair(buf: u8[..24]&, id: u16, val: u32) {
+fn append_setting_pair(buf: u8[..32]&, id: u16, val: u32) {
     buf.append_u16_be(id);
     buf.append_u32_be(val);
 }
@@ -323,12 +329,13 @@ fn emit_up_initial_preface(slot: H2UpSlot&) -> bool {
     guard slot.wire_out.try_append(rfc::H2_CLIENT_PREFACE[..]) else {
         return false;
     }
-    var params: u8[..24] = [];
-    // RFC 9113 Section 6.5.2: Defined Parameters - disable server push with ENABLE_PUSH = 0.
+    var params: u8[..32] = [];
+    // RFC 9113 Section 6.5.2: Defined Settings - disable server push with ENABLE_PUSH = 0.
     append_setting_pair(params, rfc::H2_SETTING_ENABLE_PUSH, 0);
     append_setting_pair(params, rfc::H2_SETTING_MAX_CONCURRENT_STREAMS, slot.cfg.max_concurrent_streams);
     append_setting_pair(params, rfc::H2_SETTING_INITIAL_WINDOW_SIZE, slot.cfg.initial_window_size);
     append_setting_pair(params, rfc::H2_SETTING_MAX_FRAME_SIZE, slot.cfg.max_frame_size);
+    append_setting_pair(params, rfc::H2_SETTING_MAX_HEADER_LIST_SIZE, slot.cfg.max_header_list_size);
     return emit_up_frame(slot, rfc::H2_FRAME_SETTINGS, 0, 0, params[..]);
 }
 
@@ -362,11 +369,7 @@ fn clamp_up_config(raw: const H2UpstreamConfig&) -> H2UpstreamConfig {
         out.initial_window_size = rfc::H2_MAX_WINDOW_SIZE;
     }
     out.max_concurrent_streams = clamp(out.max_concurrent_streams, 1, H2_UP_MAX_STREAMS_CAP);
-    out.max_frame_size = clamp(
-        out.max_frame_size,
-        rfc::H2_DEFAULT_MAX_FRAME_SIZE,
-        rfc::H2_MAX_FRAME_SIZE_LIMIT,
-    );
+    out.max_frame_size = rfc::H2_DEFAULT_MAX_FRAME_SIZE;
     if out.max_header_list_size == 0 {
         out.max_header_list_size = H2_UP_DEF_HDR_LIST;
     }
@@ -376,6 +379,8 @@ fn clamp_up_config(raw: const H2UpstreamConfig&) -> H2UpstreamConfig {
 fn wipe_up_slot_buffers(slot: H2UpSlot&) {
     let _ = http2::update_dynamic_table_max_size(slot.hpack_enc, 0);
     let _ = http2::update_dynamic_table_max_size(slot.hpack_dec, 0);
+    core::secure_zeroize_slice(slot.hpack_enc.arena[..]);
+    core::secure_zeroize_slice(slot.hpack_dec.arena[..]);
     core::secure_zeroize_slice(slot.wire_in[..]);
     core::secure_zeroize_slice(slot.wire_out[..]);
     core::secure_zeroize_slice(slot.header_accum[..]);
@@ -405,8 +410,8 @@ fn reset_up_slot(slot: H2UpSlot&, raw_cfg: const H2UpstreamConfig&, gen: u64) {
     slot.local_goaway_sent = false;
     slot.protocol_failed = false;
     slot.empty_data_streak = 0;
-    slot.hpack_enc = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
-    slot.hpack_dec = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
+    slot.hpack_enc_pending_sz_update = false;
+    slot.hpack_enc_min_sz = rfc::HPACK_DEFAULT_MAX_DYN_SIZE;
     slot.local_rst_head = 0;
     slot.in_cont = false;
     slot.cont_stream_id = 0;
@@ -416,8 +421,9 @@ fn reset_up_slot(slot: H2UpSlot&, raw_cfg: const H2UpstreamConfig&, gen: u64) {
     slot.ev_tail = H2_UP_INVALID_IDX;
     for i in 128 {
         slot.stream_ids[i] = 0;
-        slot.stream_is_grpc[i] = 0;
         slot.stream_is_head[i] = 0;
+        slot.stream_unclaimed_id[i] = 0;
+        slot.stream_unclaimed_rx[i] = 0;
         slot.local_rst_ring[i] = 0;
     }
     wipe_up_slot_buffers(slot);
@@ -569,6 +575,19 @@ fn h2_upstream_is_draining(sess: const H2UpstreamSession&) -> bool {
     return slot.conn.goaway_received || slot.local_goaway_sent || slot.protocol_failed;
 }
 
+// Validates the negotiated ALPN token against the session's configured H2UpstreamTransport.
+fn h2_upstream_validate_alpn(sess: const H2UpstreamSession&, alpn: const u8[:]) -> bool {
+    let slot_idx = resolve_up_slot_idx(sess);
+    guard slot_idx >= 0 else {
+        return false;
+    }
+    let transport = g_h2_up_slots[slot_idx].cfg.transport;
+    if transport == H2UpstreamTransport.H2Tls {
+        return alpn == "h2";
+    }
+    return alpn.len == 0 || alpn == "h2c";
+}
+
 // ---- Stream Allocation & Reset Ring Helpers --------------------------------
 
 fn record_local_rst_sid(slot: H2UpSlot&, sid: u32) {
@@ -589,8 +608,9 @@ fn is_in_local_rst_ring(slot: const H2UpSlot&, sid: u32) -> bool {
 fn clear_up_stream_meta(slot: H2UpSlot&, s_idx: i64) {
     if s_idx >= 0 && s_idx < 128 {
         slot.stream_ids[s_idx] = 0;
-        slot.stream_is_grpc[s_idx] = 0;
         slot.stream_is_head[s_idx] = 0;
+        slot.stream_unclaimed_id[s_idx] = 0;
+        slot.stream_unclaimed_rx[s_idx] = 0;
     }
 }
 
@@ -607,9 +627,16 @@ fn open_up_client_stream(slot: H2UpSlot&, sid: u32, end_stream: bool) -> i32, bo
     let st .= slot.conn.streams[s_idx];
     st.state = if end_stream { http2::StreamState.HalfClosedLocal } else { http2::StreamState.Open };
     st.headers_received = false;
-    st.recv_window = slot.cfg.initial_window_size as i32;
+    st.trailers_received = false;
+    st.status_code = 0;
+    st.declared_content_length = -1;
+    st.received_data_bytes = 0;
+    st.recv_window = slot.cfg.initial_window_size;
     slot.last_local_sid = sid;
+    slot.conn.last_local_stream_id = sid;
     slot.stream_ids[s_idx] = sid;
+    slot.stream_unclaimed_id[s_idx] = sid;
+    slot.stream_unclaimed_rx[s_idx] = 0;
     return s_idx, true;
 }
 
@@ -640,6 +667,9 @@ fn validate_up_request_target(
     }
     if method == "CONNECT" {
         return h2_internal::is_valid_connect_authority(authority);
+    }
+    if path == "*" && method != "OPTIONS" {
+        return false;
     }
     guard http2::is_valid_scheme(scheme) && http2::is_valid_path(path) else {
         return false;
@@ -721,7 +751,7 @@ fn calc_up_request_list_size(
         let raw_name = http::entry_name(src_hdrs, e);
         var low_buf: u8[..256] = [];
         raw_name.to_lower_ascii(low_buf);
-        if !should_skip_h2_req_header(raw_hdrs, low_buf[..], authority) {
+        if !should_skip_h2_req_header(src_hdrs, low_buf[..], authority) {
             let v = http::entry_value(src_hdrs, e);
             let field_sz = core::add_sat_i64(low_buf.len, v.len);
             total = core::add_sat_i64(total, core::add_sat_i64(H2_UP_HEADER_OVERHEAD_I64, field_sz));
@@ -750,7 +780,7 @@ fn encode_up_request_entries(
         }
         raw_name.to_lower_ascii(low_buf);
         let low_name = low_buf[..];
-        if should_skip_h2_req_header(raw_hdrs, low_name, authority) {
+        if should_skip_h2_req_header(src_hdrs, low_name, authority) {
             continue;
         }
         let sens = http::is_sensitive(e)
@@ -773,6 +803,25 @@ fn encode_up_request_entries(
             return false;
         }
     }
+    return true;
+}
+
+// RFC 7541 Section 6.3: Dynamic Table Size Update - emit pending encoder size transitions before fields.
+fn emit_up_hpack_table_updates(slot: H2UpSlot&, out: u8[..65536]&) -> bool {
+    if !slot.hpack_enc_pending_sz_update {
+        return true;
+    }
+    let target_sz = slot.hpack_enc.current_max_size;
+    if slot.hpack_enc_min_sz < target_sz {
+        guard http2::hpack_encode_int(out, slot.hpack_enc_min_sz, 5, 0x20) else {
+            return false;
+        }
+    }
+    guard http2::hpack_encode_int(out, target_sz, 5, 0x20) else {
+        return false;
+    }
+    slot.hpack_enc_pending_sz_update = false;
+    slot.hpack_enc_min_sz = target_sz;
     return true;
 }
 
@@ -814,7 +863,7 @@ fn encode_up_request_block(
     return encode_up_request_entries(enc, src_hdrs, raw_hdrs, authority, out);
 }
 
-// RFC 9113 Section 6.2 & 6.10: HEADERS / CONTINUATION - fragment large header blocks across frames.
+// RFC 9113 Section 6.2: HEADERS - fragment encoded header blocks into HEADERS and CONTINUATION frames.
 fn emit_up_header_fragments(
     slot:        H2UpSlot&,
     sid:         u32,
@@ -863,18 +912,25 @@ fn open_up_stream_with_hdrs(
     raw_hdrs:   const http::HeaderMap&,
     end_stream: bool,
 ) -> u32, bool {
-    let max_list = min(slot.peer_max_header_list_size as i64, slot.cfg.max_header_list_size as i64);
+    let max_list: i64 = min(slot.peer_max_header_list_size, slot.cfg.max_header_list_size);
     guard calc_up_request_list_size(method, scheme, authority, path, src_hdrs, raw_hdrs) <= max_list else {
         return 0, false;
     }
     let saved_enc = slot.hpack_enc;
+    let saved_pending = slot.hpack_enc_pending_sz_update;
+    let saved_min_sz = slot.hpack_enc_min_sz;
     let saved_wire = slot.wire_out.len;
     var hpack_buf: u8[..65536] = [];
     var committed = false;
     defer if !committed {
         slot.hpack_enc = saved_enc;
+        slot.hpack_enc_pending_sz_update = saved_pending;
+        slot.hpack_enc_min_sz = saved_min_sz;
         slot.wire_out.resize(saved_wire);
     };
+    guard emit_up_hpack_table_updates(slot, hpack_buf) else {
+        return 0, false;
+    }
     guard encode_up_request_block(
         slot.hpack_enc,
         method,
@@ -895,8 +951,6 @@ fn open_up_stream_with_hdrs(
         return 0, false;
     }
     slot.next_client_sid = core::add_sat_u32(slot.next_client_sid, 2);
-    let ct = http::get_header(raw_hdrs, "content-type");
-    slot.stream_is_grpc[s_idx] = if grpc::is_content_type(ct) { 1 } else { 0 };
     slot.stream_is_head[s_idx] = if method == "HEAD" { 1 } else { 0 };
     committed = true;
     return sid, true;
@@ -1022,8 +1076,8 @@ fn flush_up_data_chunks(
         sent = next_sent;
     }
     if sent > 0 {
-        slot.conn.conn_send_window = core::sub_sat_i64(slot.conn.conn_send_window, sent) as i32;
-        slot.conn.streams[s_idx].send_window = core::sub_sat_i64(slot.conn.streams[s_idx].send_window, sent) as i32;
+        slot.conn.conn_send_window = core::sub_sat_i64(slot.conn.conn_send_window, sent);
+        slot.conn.streams[s_idx].send_window = core::sub_sat_i64(slot.conn.streams[s_idx].send_window, sent);
         if end_stream && sent == data.len {
             finish_up_local_end(slot, s_idx, stream_id);
         }
@@ -1031,7 +1085,7 @@ fn flush_up_data_chunks(
     return sent;
 }
 
-// RFC 9113 Section 5.2 & 6.1: Flow Control / DATA - stream outbound chunks bounded by send windows.
+// RFC 9113 Section 6.1: DATA - stream outbound chunks bounded by connection and stream send windows.
 fn h2_upstream_send_data(
     sess:       H2UpstreamSession&,
     stream_id:  u32,
@@ -1119,15 +1173,22 @@ fn h2_upstream_send_trailers(
     guard ok_st else {
         return false;
     }
-    let max_list = min(slot.peer_max_header_list_size as i64, slot.cfg.max_header_list_size as i64);
+    let max_list: i64 = min(slot.peer_max_header_list_size, slot.cfg.max_header_list_size);
     let saved_enc = slot.hpack_enc;
+    let saved_pending = slot.hpack_enc_pending_sz_update;
+    let saved_min_sz = slot.hpack_enc_min_sz;
     let saved_wire = slot.wire_out.len;
     var hpack_buf: u8[..65536] = [];
     var committed = false;
     defer if !committed {
         slot.hpack_enc = saved_enc;
+        slot.hpack_enc_pending_sz_update = saved_pending;
+        slot.hpack_enc_min_sz = saved_min_sz;
         slot.wire_out.resize(saved_wire);
     };
+    guard emit_up_hpack_table_updates(slot, hpack_buf) else {
+        return false;
+    }
     guard encode_up_trailers_block(slot.hpack_enc, trailers, max_list, hpack_buf) else {
         return false;
     }
@@ -1210,19 +1271,20 @@ fn h2_upstream_send_goaway(
 
 // ---- Inbound Frame & HPACK Decoders ----------------------------------------
 
-fn mark_new_header_sensitive(out: http::HeaderMap&, prev_len: i64) {
+fn mark_new_header_sensitive(out: http::HeaderMap&, prev_len: i64, prev_cookie_len: i64) {
     if out.entries.len == 0 {
         return;
     }
-    let last_idx = core::sub_sat_i64(out.entries.len, 1);
     if out.entries.len > prev_len {
+        let last_idx = core::sub_sat_i64(out.entries.len, 1);
         out.entries[last_idx].flags |= http::HEADER_FLAG_SENSITIVE;
         return;
     }
-    let low_name = http::entry_name(out, out.entries[last_idx]);
-    for &e in out.entries {
-        if http::entry_name(out, e) == low_name {
-            e.flags |= http::HEADER_FLAG_SENSITIVE;
+    if http::get_header(out, "cookie").len > prev_cookie_len {
+        for &e in out.entries {
+            if http::entry_name(out, e) == "cookie" {
+                e.flags |= http::HEADER_FLAG_SENSITIVE;
+            }
         }
     }
 }
@@ -1233,19 +1295,22 @@ fn mark_new_header_sensitive(out: http::HeaderMap&, prev_len: i64) {
 //   src = [0x88, 0x10, 0x06, 'x','-','s','e','c','r',0x01,'v']
 //   returns: H2_ERR_NO_ERROR with pseudo.status == 200 and HEADER_FLAG_SENSITIVE set
 fn decode_hpack_to_map_sensitive(
-    dt:       http2::DynamicTable&,
-    src:      const u8[:],
-    pseudo:   http2::PseudoHeaders&,
-    out:      http::HeaderMap&,
-    max_list: u32,
+    dt:         http2::DynamicTable&,
+    src:        const u8[:],
+    pseudo:     http2::PseudoHeaders&,
+    out:        http::HeaderMap&,
+    max_list:   u32,
+    is_trailer: bool,
 ) -> u32 {
     http2::clear_pseudo_headers(pseudo);
+    pseudo.is_trailer = is_trailer;
     var rem = src;
     var updates_allowed = true;
     var update_count: u32 = 0;
     while rem.len > 0 {
         let is_never_idx = (rem[0] & H2_UP_HPACK_NEVER_INDEX_MASK) == H2_UP_HPACK_NEVER_INDEX_TAG;
         let prev_entries = out.entries.len;
+        let prev_cookie_len = http::get_header(out, "cookie").len;
         let consumed, err = http2::decode_hpack_field_step_to_map(
             dt,
             rem,
@@ -1265,8 +1330,11 @@ fn decode_hpack_to_map_sensitive(
         }
         rem = rem[consumed..];
         if is_never_idx {
-            mark_new_header_sensitive(out, prev_entries);
+            mark_new_header_sensitive(out, prev_entries, prev_cookie_len);
         }
+    }
+    guard !dt.pending_size_update_req && dt.current_max_size <= dt.max_allowed_size else {
+        return rfc::H2_ERR_COMPRESSION_ERROR;
     }
     return rfc::H2_ERR_NO_ERROR;
 }
@@ -1287,10 +1355,11 @@ fn validate_up_resp_trailers(pseudo: const http2::PseudoHeaders&, hdrs: const ht
 fn apply_up_resp_content_length(
     slot:       H2UpSlot&,
     s_idx:      i32,
+    status:     i32,
     hdr_idx:    i32,
     end_stream: bool,
 ) -> bool {
-    if slot.stream_is_head[s_idx] != 0 {
+    if slot.stream_is_head[s_idx] != 0 || status == 304 {
         return true;
     }
     let cl_hdr = http::get_header(g_h2_up_headers[hdr_idx].hdr, "content-length");
@@ -1313,12 +1382,21 @@ fn emit_up_resp_trailers_event(
     hdr_idx:    i32,
     end_stream: bool,
 ) -> bool {
+    var transferred = false;
+    defer if !transferred {
+        recycle_up_hdr(hdr_idx);
+    };
     guard end_stream && validate_up_resp_trailers(pseudo, g_h2_up_headers[hdr_idx].hdr) else {
+        return fail_up_conn(slot, rfc::H2_ERR_PROTOCOL_ERROR);
+    }
+    let st .= slot.conn.streams[s_idx];
+    guard st.declared_content_length < 0 || st.declared_content_length == st.received_data_bytes else {
         return fail_up_conn(slot, rfc::H2_ERR_PROTOCOL_ERROR);
     }
     let ev_idx = alloc_up_event(H2UpstreamEventKind.ResponseTrailers, sid);
     g_h2_up_events[ev_idx].hdr_idx = hdr_idx;
     g_h2_up_events[ev_idx].end_stream = true;
+    transferred = true;
     push_up_event(slot, ev_idx);
     h2_internal::apply_stream_end_remote(slot.conn, s_idx);
     let _, still_open = http2::find_stream_idx(slot.conn, sid);
@@ -1336,8 +1414,13 @@ fn emit_up_resp_headers_event(
     hdr_idx:    i32,
     end_stream: bool,
 ) -> bool {
+    var transferred = false;
+    defer if !transferred {
+        recycle_up_hdr(hdr_idx);
+    };
     let st .= slot.conn.streams[s_idx];
     if st.headers_received {
+        transferred = true;
         return emit_up_resp_trailers_event(slot, s_idx, sid, pseudo, hdr_idx, end_stream);
     }
     guard pseudo.has_status && pseudo.status >= 100 && pseudo.status <= 599 else {
@@ -1349,7 +1432,8 @@ fn emit_up_resp_headers_event(
     }
     if !is_interim {
         st.headers_received = true;
-        guard apply_up_resp_content_length(slot, s_idx, hdr_idx, end_stream) else {
+        st.status_code = pseudo.status;
+        guard apply_up_resp_content_length(slot, s_idx, pseudo.status, hdr_idx, end_stream) else {
             return false;
         }
     }
@@ -1357,6 +1441,7 @@ fn emit_up_resp_headers_event(
     g_h2_up_events[ev_idx].status_code = pseudo.status;
     g_h2_up_events[ev_idx].hdr_idx = hdr_idx;
     g_h2_up_events[ev_idx].end_stream = end_stream;
+    transferred = true;
     push_up_event(slot, ev_idx);
     if !is_interim && end_stream {
         h2_internal::apply_stream_end_remote(slot.conn, s_idx);
@@ -1375,6 +1460,12 @@ fn emit_up_resp_headers_event(
 //   returns: true with queued ResponseHead(status=200, end_stream=true)
 fn decode_up_hpack_block(slot: H2UpSlot&, sid: u32, end_stream: bool) -> bool {
     let hdr_idx = alloc_up_hdr();
+    var hdr_owned = true;
+    defer if hdr_owned {
+        recycle_up_hdr(hdr_idx);
+    };
+    let s_idx_pre, found_pre = http2::find_stream_idx(slot.conn, sid);
+    let is_trailer = found_pre && s_idx_pre >= 0 && slot.conn.streams[s_idx_pre].headers_received;
     var pseudo = http2::PseudoHeaders { .. };
     let dec_err = decode_hpack_to_map_sensitive(
         slot.hpack_dec,
@@ -1382,24 +1473,19 @@ fn decode_up_hpack_block(slot: H2UpSlot&, sid: u32, end_stream: bool) -> bool {
         pseudo,
         g_h2_up_headers[hdr_idx].hdr,
         slot.cfg.max_header_list_size,
+        is_trailer,
     );
     slot.header_accum.clear();
     if dec_err != rfc::H2_ERR_NO_ERROR {
-        recycle_up_hdr(hdr_idx);
         return fail_up_conn(slot, dec_err);
     }
     let s_idx, found = http2::find_stream_idx(slot.conn, sid);
     if !found || s_idx < 0 {
-        recycle_up_hdr(hdr_idx);
         if is_in_local_rst_ring(slot, sid) {
             return true;
         }
         return fail_up_conn(slot, rfc::H2_ERR_STREAM_CLOSED);
     }
-    var hdr_owned = true;
-    defer if hdr_owned {
-        recycle_up_hdr(hdr_idx);
-    };
     let st .= slot.conn.streams[s_idx];
     guard st.state == http2::StreamState.Open || st.state == http2::StreamState.HalfClosedLocal else {
         return fail_up_conn(slot, rfc::H2_ERR_STREAM_CLOSED);
@@ -1453,6 +1539,13 @@ fn handle_up_headers_or_cont(
     return decode_up_hpack_block(slot, sid, end_stream);
 }
 
+fn emit_up_win_update(slot: H2UpSlot&, sid: u32, inc: u32) -> bool {
+    var p: u8[..4] = [];
+    p.append_u32_be(inc);
+    return emit_up_frame(slot, rfc::H2_FRAME_WINDOW_UPDATE, 0, sid, p[..]);
+}
+
+// RFC 9113 Section 6.9: WINDOW_UPDATE - coalesce receive window updates above threshold.
 fn replenish_up_recv_windows(
     slot:       H2UpSlot&,
     s_idx:      i32,
@@ -1463,30 +1556,42 @@ fn replenish_up_recv_windows(
     if flow_len == 0 {
         return true;
     }
-    var p: u8[..4] = [];
-    p.append_u32_be(flow_len);
-    guard emit_up_frame(slot, rfc::H2_FRAME_WINDOW_UPDATE, 0, 0, p[..]) else {
-        return fail_up_conn(slot, rfc::H2_ERR_INTERNAL_ERROR);
-    }
-    slot.conn.conn_recv_window = core::add_sat_i64(slot.conn.conn_recv_window, flow_len) as i32;
-    if s_idx >= 0 && !end_stream {
-        guard emit_up_frame(slot, rfc::H2_FRAME_WINDOW_UPDATE, 0, sid, p[..]) else {
+    slot.conn.unclaimed_recv_window = core::add_sat_i64(slot.conn.unclaimed_recv_window, flow_len);
+    if slot.conn.unclaimed_recv_window >= H2_UP_MIN_REPLENISH {
+        let conn_inc = min(slot.conn.unclaimed_recv_window, rfc::H2_MAX_WINDOW_SIZE);
+        guard emit_up_win_update(slot, 0, conn_inc as u32) else {
             return fail_up_conn(slot, rfc::H2_ERR_INTERNAL_ERROR);
         }
-        let cur_w = slot.conn.streams[s_idx].recv_window;
-        slot.conn.streams[s_idx].recv_window = core::add_sat_i64(cur_w, flow_len) as i32;
+        slot.conn.conn_recv_window = core::add_sat_i64(slot.conn.conn_recv_window, conn_inc);
+        slot.conn.unclaimed_recv_window = core::sub_sat_i64(slot.conn.unclaimed_recv_window, conn_inc);
+    }
+    if s_idx >= 0 && !end_stream && slot.stream_unclaimed_id[s_idx] == sid {
+        let thresh = max(1, min(H2_UP_MIN_REPLENISH, (slot.cfg.initial_window_size as i64) >> 1));
+        slot.stream_unclaimed_rx[s_idx] = core::add_sat_i64(slot.stream_unclaimed_rx[s_idx], flow_len);
+        if slot.stream_unclaimed_rx[s_idx] >= thresh {
+            let st_inc = min(slot.stream_unclaimed_rx[s_idx], rfc::H2_MAX_WINDOW_SIZE);
+            guard emit_up_win_update(slot, sid, st_inc as u32) else {
+                return fail_up_conn(slot, rfc::H2_ERR_INTERNAL_ERROR);
+            }
+            let cur_w = slot.conn.streams[s_idx].recv_window;
+            slot.conn.streams[s_idx].recv_window = core::add_sat_i64(cur_w, st_inc);
+            slot.stream_unclaimed_rx[s_idx] = core::sub_sat_i64(slot.stream_unclaimed_rx[s_idx], st_inc);
+        }
     }
     return true;
 }
 
 fn handle_up_closed_rst_data(slot: H2UpSlot&, sid: u32, flow_len: u32) -> bool {
+    if (sid & 1) == 0 || !h2_internal::is_closed_stream_id(slot.conn, sid) {
+        return fail_up_conn(slot, rfc::H2_ERR_PROTOCOL_ERROR);
+    }
     if !is_in_local_rst_ring(slot, sid) {
         return fail_up_conn(slot, rfc::H2_ERR_STREAM_CLOSED);
     }
-    guard (flow_len as i32) <= slot.conn.conn_recv_window else {
+    guard flow_len <= slot.conn.conn_recv_window else {
         return fail_up_conn(slot, rfc::H2_ERR_FLOW_CONTROL_ERROR);
     }
-    slot.conn.conn_recv_window = core::sub_sat_i64(slot.conn.conn_recv_window, flow_len) as i32;
+    slot.conn.conn_recv_window = core::sub_sat_i64(slot.conn.conn_recv_window, flow_len);
     return replenish_up_recv_windows(slot, -1, sid, flow_len, true);
 }
 
@@ -1577,7 +1682,12 @@ fn apply_up_setting_pair(slot: H2UpSlot&, id: u16, val: u32) -> u32 {
     }
     if id == rfc::H2_SETTING_HEADER_TABLE_SIZE {
         let capped = min(val as u64, rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
+        slot.hpack_enc.max_allowed_size = capped;
         let _ = http2::update_dynamic_table_max_size(slot.hpack_enc, capped);
+        if !slot.hpack_enc_pending_sz_update || capped < slot.hpack_enc_min_sz {
+            slot.hpack_enc_min_sz = capped;
+        }
+        slot.hpack_enc_pending_sz_update = true;
         slot.peer_header_table_size = capped as u32;
         return rfc::H2_ERR_NO_ERROR;
     }
@@ -1675,28 +1785,56 @@ fn handle_up_goaway(slot: H2UpSlot&, hdr: const http2::FrameHeader&, payload: co
     return true;
 }
 
+// RFC 9113 Section 6.4: RST_STREAM - reset an active stream and notify the caller via StreamReset.
+fn rst_up_stream_with_event(slot: H2UpSlot&, s_idx: i32, sid: u32, err_code: u32) -> bool {
+    var p: u8[..4] = [];
+    p.append_u32_be(err_code);
+    guard emit_up_frame(slot, rfc::H2_FRAME_RST_STREAM, 0, sid, p[..]) else {
+        return fail_up_conn(slot, rfc::H2_ERR_INTERNAL_ERROR);
+    }
+    record_local_rst_sid(slot, sid);
+    clear_up_stream_meta(slot, s_idx);
+    http2::close_local_stream(slot.conn, sid);
+    http2::reset_stream(slot.conn, sid);
+    let ev_idx = alloc_up_event(H2UpstreamEventKind.StreamReset, sid);
+    g_h2_up_events[ev_idx].error_code = err_code;
+    push_up_event(slot, ev_idx);
+    return true;
+}
+
+// RFC 9113 Section 6.9: WINDOW_UPDATE - enforce flow-control increments and stream state rules.
 fn handle_up_window_update(slot: H2UpSlot&, hdr: const http2::FrameHeader&, payload: const u8[:]) -> bool {
     guard payload.len == H2_UP_ERR_LEN else {
         return fail_up_conn(slot, rfc::H2_ERR_FRAME_SIZE_ERROR);
     }
+    let sid = hdr.stream_id;
     let inc = core::read_be_u32(payload, 0) & H2_UP_MAX_SID;
+    let bad_target = sid != 0 && ((sid & 1) == 0 || http2::is_conn_error_on_window_update(slot.conn, sid));
     if inc == 0 {
-        if hdr.stream_id == 0 {
+        if sid == 0 || bad_target {
             return fail_up_conn(slot, rfc::H2_ERR_PROTOCOL_ERROR);
         }
-        let s_idx, found = http2::find_stream_idx(slot.conn, hdr.stream_id);
+        let s_idx, found = http2::find_stream_idx(slot.conn, sid);
         if found && s_idx >= 0 {
-            clear_up_stream_meta(slot, s_idx);
-            http2::close_local_stream(slot.conn, hdr.stream_id);
-            http2::reset_stream(slot.conn, hdr.stream_id);
+            return rst_up_stream_with_event(slot, s_idx, sid, rfc::H2_ERR_PROTOCOL_ERROR);
         }
         return true;
     }
-    let wu_err = http2::apply_window_update(slot.conn, hdr.stream_id, inc);
-    if wu_err != rfc::H2_ERR_NO_ERROR && hdr.stream_id == 0 {
+    if bad_target {
+        return fail_up_conn(slot, rfc::H2_ERR_PROTOCOL_ERROR);
+    }
+    let wu_err = http2::apply_window_update(slot.conn, sid, inc);
+    if wu_err == rfc::H2_ERR_NO_ERROR {
+        return true;
+    }
+    if sid == 0 {
         return fail_up_conn(slot, wu_err);
     }
-    return true;
+    let s_idx, found = http2::find_stream_idx(slot.conn, sid);
+    if found && s_idx >= 0 {
+        return rst_up_stream_with_event(slot, s_idx, sid, wu_err);
+    }
+    return fail_up_conn(slot, rfc::H2_ERR_PROTOCOL_ERROR);
 }
 
 fn handle_up_rst_stream(slot: H2UpSlot&, hdr: const http2::FrameHeader&, payload: const u8[:]) -> bool {
@@ -1764,7 +1902,7 @@ fn dispatch_up_frame(slot: H2UpSlot&, hdr: const http2::FrameHeader&, payload: c
     if hdr.frame_type == rfc::H2_FRAME_HEADERS || hdr.frame_type == rfc::H2_FRAME_CONTINUATION {
         return handle_up_headers_or_cont(slot, hdr, payload);
     }
-    // RFC 9113 Section 6.6 & 8.4: PUSH_PROMISE / Server Push - reject unsolicited server PUSH_PROMISE.
+    // RFC 9113 Section 6.6: PUSH_PROMISE - reject unsolicited server PUSH_PROMISE when ENABLE_PUSH = 0.
     if hdr.frame_type == rfc::H2_FRAME_PUSH_PROMISE {
         return fail_up_conn(slot, rfc::H2_ERR_PROTOCOL_ERROR);
     }
