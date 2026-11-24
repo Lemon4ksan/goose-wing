@@ -89,6 +89,33 @@ fn test_dualstack_udp_v4_and_v6() {
     let v6_ignored = net::udp_recvfrom_dual(v6_only, buf[..], peer_ip[..], ip_len, peer_port);
     assert(v6_ignored == -2);
 
+    // Explicit "::1" (IPV6_V6ONLY=1) sends to "::1" cleanly and rejects IPv4 destinations.
+    assert(net::udp_sendto_dual(v6_only, "v6ok", "::1", srv_port) == 4);
+    let rv6 = wait_udp_recv(rx_poller, srv, buf[..], peer_ip[..], ip_len, peer_port);
+    assert(rv6 == 4 && buf[..4] == "v6ok");
+    assert(ip_len == 3 && peer_ip[..3] == "::1");
+    assert(net::udp_sendto_dual(v6_only, "bad4", "127.0.0.1", srv_port) == -1);
+
+    // 3. Unbound dual-stack AF_INET6 socket (flags=2) and unbound AF_INET socket (flags=0)
+    // must detect local address family even before bind() and deliver to "::" server.
+    let u6_unbound = net::udp_open_dual("", 0, 2);
+    let u4_unbound = net::udp_open_dual("", 0, 0);
+    assert(u6_unbound > 0 && u4_unbound > 0);
+    assert(net::udp_sendto_dual(u6_unbound, "unb6to4", "127.0.0.1", srv_port) == 7);
+    let ru6 = wait_udp_recv(rx_poller, srv, buf[..], peer_ip[..], ip_len, peer_port);
+    assert(ru6 == 7 && buf[..7] == "unb6to4");
+    assert(ip_len == 9 && peer_ip[..9] == "127.0.0.1");
+    assert(peer_port > 0);
+
+    assert(net::udp_sendto_dual(u4_unbound, "unb4ok", "127.0.0.1", srv_port) == 6);
+    let ru4 = wait_udp_recv(rx_poller, srv, buf[..], peer_ip[..], ip_len, peer_port);
+    assert(ru4 == 6 && buf[..6] == "unb4ok");
+    assert(ip_len == 9 && peer_ip[..9] == "127.0.0.1");
+    assert(peer_port > 0);
+
+    net::tcp_close(u4_unbound);
+    net::tcp_close(u6_unbound);
+
     assert(net::poller_deregister_fd(rx_poller, srv));
     assert(net::poller_deregister_fd(rx_poller, c4));
     assert(net::poller_deregister_fd(rx_poller, c6));
