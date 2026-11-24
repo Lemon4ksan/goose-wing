@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 namespace http3;
 
 import core.bytes;
@@ -391,13 +394,9 @@ fn emit_h3_protocol_error(slot_idx: i64, stream_id: u64, error_code: u64) -> boo
     return false;
 }
 
-fn emit_h3_stream_reset(slot_idx: i64, st_idx: i64, error_code: u64) {
+fn cleanup_h3_stream_resources(slot_idx: i64, st_idx: i64) {
+    let slot .= g_h3_edge_slots[slot_idx];
     let st .= g_h3_edge_streams[st_idx];
-    if st.errored {
-        return;
-    }
-    st.errored = true;
-    st.finished = true;
     if st.hdr_accum_idx >= 0 {
         free_h3_hdr_accum(st.hdr_accum_idx);
         st.hdr_accum_idx = -1;
@@ -405,10 +404,24 @@ fn emit_h3_stream_reset(slot_idx: i64, st_idx: i64, error_code: u64) {
     free_h3_chunk_chain(st.blocked_head);
     st.blocked_head = -1;
     st.blocked_tail = -1;
+    st.blocked_has_fin = false;
+    st.blocked_on_qpack = false;
     if st.deferred_trailers_idx >= 0 {
         free_h3_header_map(st.deferred_trailers_idx);
         st.deferred_trailers_idx = -1;
     }
+    st.hdr_buf.clear();
+    let _ = qpack_unblock_stream(slot.qpack_dec_table, st.stream_id);
+}
+
+fn emit_h3_stream_reset(slot_idx: i64, st_idx: i64, error_code: u64) {
+    let st .= g_h3_edge_streams[st_idx];
+    if st.errored {
+        return;
+    }
+    st.errored = true;
+    st.finished = true;
+    cleanup_h3_stream_resources(slot_idx, st_idx);
     enqueue_h3_event(
         slot_idx,
         H3EdgeEventKind.StreamReset,
@@ -486,6 +499,17 @@ fn free_h3_stream_slot(st_idx: i64) {
     g_h3_edge_free_streams.push(st_idx);
 }
 
+fn unlink_h3_stream_node(slot: H3EdgeSlot&, prev_idx: i64, target_idx: i64) {
+    let next_id = g_h3_edge_streams[target_idx].next_stream;
+    if prev_idx < 0 {
+        slot.stream_head = next_id;
+    } else {
+        g_h3_edge_streams[prev_idx].next_stream = next_id;
+    }
+    slot.stream_count = core::sub_sat_i64(slot.stream_count, 1);
+    free_h3_stream_slot(target_idx);
+}
+
 fn reap_oldest_finished_stream(slot_idx: i64) {
     let slot .= g_h3_edge_slots[slot_idx];
     var prev: i64 = -1;
@@ -493,7 +517,7 @@ fn reap_oldest_finished_stream(slot_idx: i64) {
     var target_prev: i64 = -1;
     var target:      i64 = -1;
     while curr >= 0 {
-        if g_h3_edge_streams[curr].finished {
+        if g_h3_edge_streams[curr].finished || g_h3_edge_streams[curr].errored {
             target_prev = prev;
             target = curr;
         }
@@ -503,14 +527,7 @@ fn reap_oldest_finished_stream(slot_idx: i64) {
     if target < 0 {
         return;
     }
-    let next_id = g_h3_edge_streams[target].next_stream;
-    if target_prev < 0 {
-        slot.stream_head = next_id;
-    } else {
-        g_h3_edge_streams[target_prev].next_stream = next_id;
-    }
-    slot.stream_count = core::sub_sat_i64(slot.stream_count, 1);
-    free_h3_stream_slot(target);
+    unlink_h3_stream_node(slot, target_prev, target);
 }
 
 fn find_h3_stream(slot_idx: i64, stream_id: u64) -> i64 {
@@ -1089,6 +1106,10 @@ fn validate_h3_request_pseudo(slot: const H3EdgeSlot&, pseudo: const PseudoHeade
     }
     if method == "CONNECT" {
         return validate_h3_connect_pseudo(slot, pseudo);
+    }
+    // RFC 9220 Section 3: WebSockets Upgrade over HTTP/3 - Reject :protocol on non-CONNECT requests.
+    if pseudo.has_protocol {
+        return false;
     }
     let scheme = pseudo.scheme[..];
     let path = pseudo.path[..];
@@ -2144,8 +2165,52 @@ fn h3_edge_feed_bidi_stream(
     return feed_bidi_stream_bytes(slot_idx, st_idx, data, end_flag);
 }
 
+fn reset_h3_uni_stream(slot_idx: i64, stream_id: u64) {
+    let slot .= g_h3_edge_slots[slot_idx];
+    let is_crit = (slot.has_peer_ctrl && slot.peer_ctrl_stream_id == stream_id)
+        || (slot.has_peer_qenc && slot.peer_qenc_stream_id == stream_id)
+        || (slot.has_peer_qdec && slot.peer_qdec_stream_id == stream_id);
+    if is_crit {
+        // RFC 9114 Section 6.2.1 & RFC 9204 Section 4.2: Critical uni streams MUST NOT close.
+        let _ = emit_h3_protocol_error(slot_idx, stream_id, rfc::H3_ERR_CLOSED_CRITICAL_STREAM);
+        return;
+    }
+    remove_ignored_uni_stream(slot, stream_id);
+    let p_idx = find_pending_uni_idx(slot, stream_id);
+    if p_idx >= 0 {
+        slot.uni_pending[p_idx] = H3EdgeUniPending { .. };
+    }
+}
+
+// Notifies the HTTP/3 edge session that QUIC stream `stream_id` was reset or stopped.
+fn h3_edge_reset_stream(sess: H3EdgeSession&, stream_id: u64) {
+    let slot_idx, ok = resolve_h3_edge_slot(sess);
+    guard ok else { return; }
+    let slot .= g_h3_edge_slots[slot_idx];
+    if (stream_id & QUIC_STREAM_TYPE_MASK) == QUIC_CLIENT_UNI_TYPE {
+        reset_h3_uni_stream(slot_idx, stream_id);
+        return;
+    }
+    guard (stream_id & QUIC_STREAM_TYPE_MASK) == QUIC_CLIENT_BIDI_TYPE else { return; }
+    var prev: i64 = -1;
+    var curr = slot.stream_head;
+    while curr >= 0 {
+        if g_h3_edge_streams[curr].stream_id == stream_id {
+            let st .= g_h3_edge_streams[curr];
+            st.errored = true;
+            st.finished = true;
+            cleanup_h3_stream_resources(slot_idx, curr);
+            unlink_h3_stream_node(slot, prev, curr);
+            return;
+        }
+        prev = curr;
+        curr = g_h3_edge_streams[curr].next_stream;
+    }
+}
+
 // Polls the next queued HTTP/3 server event, returning false when empty.
 fn h3_edge_poll_event(sess: H3EdgeSession&, out_ev: H3EdgeEvent&) -> bool {
+    out_ev = H3EdgeEvent { .. };
     let slot_idx, ok = resolve_h3_edge_slot(sess);
     if !ok {
         return false;

@@ -490,6 +490,8 @@ fn pump_udp_to_srv_and_h3(
             } else if (qev.stream_id & 0x03) == 0 {
                 assert(http3::h3_edge_feed_bidi_stream(h3_sess, qev.stream_id, stream_rx[..], fin));
             }
+        } else if qev.kind == quic::QuicServerEventKind.StreamReset {
+            http3::h3_edge_reset_stream(h3_sess, qev.stream_id);
         }
     }
 }
@@ -1387,11 +1389,94 @@ thread_fn h3_edge_worker(arg: i64) {
     assert(resp.len > 0);
 }
 
+fn test_h3_edge_final_fix_regressions() {
+    var sess = http3::h3_edge_open();
+    defer http3::h3_edge_close(sess);
+
+    // 1. h3_edge_poll_event clears stale out_ev fields when returning false.
+    var pev = http3::H3EdgeEvent {
+        kind:       http3::H3EdgeEventKind.ProtocolError,
+        stream_id:  999,
+        end_stream: true,
+        error_code: 0xDEAD,
+        ..
+    };
+    assert(!http3::h3_edge_poll_event(sess, pev));
+    assert(pev.kind == http3::H3EdgeEventKind.None && pev.stream_id == 0 && !pev.end_stream && pev.error_code == 0);
+
+    // 2. Non-CONNECT request carrying :protocol is rejected (RFC 9220 Section 3).
+    var bad_sec: u8[..128] = [0x00, 0x00];
+    assert(http3::encode_qpack_field(bad_sec, ":method", "GET"));
+    assert(http3::encode_qpack_field(bad_sec, ":scheme", "https"));
+    assert(http3::encode_qpack_field(bad_sec, ":authority", "h3.example.test"));
+    assert(http3::encode_qpack_field(bad_sec, ":path", "/ws"));
+    assert(http3::encode_qpack_field(bad_sec, ":protocol", "websocket"));
+    var bad_frame: u8[..256] = [];
+    assert(http3::encode_headers_frame(bad_frame, bad_sec[..]));
+    assert(http3::h3_edge_feed_bidi_stream(sess, 0, bad_frame[..], true));
+    assert(http3::h3_edge_poll_event(sess, pev));
+    assert(pev.kind == http3::H3EdgeEventKind.StreamReset && pev.stream_id == 0);
+    assert(pev.error_code == rfc::H3_ERR_MESSAGE_ERROR);
+
+    // 3. h3_edge_reset_stream reclaims aborted hdr_accum & QPACK-blocked slots and keeps stream arena bounded > 128.
+    var ctrl_set: u8[..128] = [0x00];
+    let def_set = fingerprint::H3Settings { .. };
+    assert(http3::encode_settings_frame(ctrl_set, def_set));
+    assert(http3::h3_edge_feed_uni_stream(sess, 2, ctrl_set[..], false));
+
+    var part_hdr: u8[..32]  = [0x01, 0x40, 0x64]; // HEADERS frame promising 100 bytes, incomplete!
+    var blk_qsec: u8[..128] = [0x02, 0x00];       // Requires Insert Count = 1 (QPACK blocked!)
+    assert(http3::encode_qpack_field(blk_qsec, ":method", "GET"));
+    var blk_frm: u8[..256] = [];
+    assert(http3::encode_headers_frame(blk_frm, blk_qsec[..]));
+
+    for i in 40 {
+        let sid = ((i + 1) * 4) as u64;
+        if (i % 2) == 0 {
+            assert(http3::h3_edge_feed_bidi_stream(sess, sid, part_hdr[..], false));
+        } else {
+            assert(http3::h3_edge_feed_bidi_stream(sess, sid, blk_frm[..], false));
+        }
+        http3::h3_edge_reset_stream(sess, sid);
+        http3::h3_edge_reset_stream(sess, sid); // Idempotent second reset
+    }
+    let slot .= http3::g_h3_edge_slots[sess.slot_idx];
+    assert(slot.stream_count == 1); // Stream 0 from subtest 2 remains retained until reaped; all 40 aborted streams freed.
+    assert(slot.qpack_dec_table.blocked_streams.len == 0);
+    http3::h3_edge_reset_stream(sess, 0);
+    assert(slot.stream_count == 0);
+
+    var req_ok: u8[>..] = [];
+    encode_cli_qpack_req("GET", "/seq", "h3.example.test", "", "", "", req_ok);
+    for r in 150 {
+        let sid = ((r + 50) * 4) as u64;
+        assert(http3::h3_edge_feed_bidi_stream(sess, sid, req_ok[..], true));
+        assert(http3::h3_edge_poll_event(sess, pev));
+        assert(pev.kind == http3::H3EdgeEventKind.RequestHead && pev.stream_id == sid && pev.end_stream);
+    }
+    assert(http3::g_h3_edge_slots[sess.slot_idx].stream_count <= 128);
+    assert(http3::g_h3_edge_streams.len <= 130);
+
+    // 4. Resetting unknown uni stream succeeds cleanly; resetting critical uni stream emits H3_ERR_CLOSED_CRITICAL_STREAM.
+    let unk_uni_hdr: u8[4] = [0x40, 0x21, 0x01, 0x02];
+    assert(http3::h3_edge_feed_uni_stream(sess, 6, unk_uni_hdr[..], false));
+    http3::h3_edge_reset_stream(sess, 6);
+    assert(!http3::h3_edge_poll_event(sess, pev));
+
+    http3::h3_edge_reset_stream(sess, 2);
+    assert(http3::h3_edge_poll_event(sess, pev));
+    assert(pev.kind == http3::H3EdgeEventKind.ProtocolError && pev.error_code == rfc::H3_ERR_CLOSED_CRITICAL_STREAM);
+
+    print("H3_EDGE_FINAL_FIXES: OK\n");
+    // CHECK: H3_EDGE_FINAL_FIXES: OK
+}
+
 fn main() {
     test_live_h3_loopback_e2e();
     test_h3_edge_conformance_and_security();
     test_h3_edge_review_regressions();
     test_h3_edge_ignored_uni_capacity();
+    test_h3_edge_final_fix_regressions();
     let t1 = thread_spawn(h3_edge_worker, 1);
     let t2 = thread_spawn(h3_edge_worker, 2);
     assert(thread_wait(t1) && thread_wait(t2));

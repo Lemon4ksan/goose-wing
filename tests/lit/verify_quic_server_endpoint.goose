@@ -403,37 +403,42 @@ fn count_active_rsa_slots() -> i64 {
 // ---- Test QUIC Client Harness ----------------------------------------------
 
 struct TestQuicClient {
-    fd:                   i64                       = -1,
-    dst_ip:               u8[..64]                  = [],
-    dst_port:             u16                       = 0,
-    conn:                 quic::QuicConnection      = quic::QuicConnection { .. },
-    tls_cli:              tls::QuicTlsClient        = tls::QuicTlsClient { .. },
-    next_init_pn:         u64                       = 0,
-    next_hs_pn:           u64                       = 0,
-    next_app_pn:          u64                       = 0,
-    init_crypto_sent:     u64                       = 0,
-    hs_crypto_sent:       u64                       = 0,
-    init_ack_needed:      bool                      = false,
-    hs_ack_needed:        bool                      = false,
-    app_ack_needed:       bool                      = false,
-    handshake_done_seen:  bool                      = false,
-    new_cid_seen:         bool                      = false,
-    alt_srv_cid:          u8[..20]                  = [],
-    peer_tp_parsed:       bool                      = false,
-    peer_tp:              quic::QuicTransportParams = quic::QuicTransportParams { .. },
-    saw_max_data:         bool                      = false,
-    saw_max_stream_data:  bool                      = false,
-    last_max_data:        u64                       = 0,
-    last_max_stream_data: u64                       = 0,
-    saw_conn_close_tpt:   bool                      = false,
-    stream_rx_fin:        bool                      = false,
-    stream_rx_base:       u64                       = 0,
-    stream_rx_contig:     u64                       = 0,
-    stream_rx_final:      u64                       = 0,
-    has_uni3_rx:          bool                      = false,
-    uni3_buf:             u8[..2048]                = [],
-    stream_rx_intervals:  quic::Interval[..64]      = [],
-    stream_rx_buf:        u8[>..]                   = [],
+    fd:                    i64                       = -1,
+    dst_ip:                u8[..64]                  = [],
+    dst_port:              u16                       = 0,
+    conn:                  quic::QuicConnection      = quic::QuicConnection { .. },
+    tls_cli:               tls::QuicTlsClient        = tls::QuicTlsClient { .. },
+    next_init_pn:          u64                       = 0,
+    next_hs_pn:            u64                       = 0,
+    next_app_pn:           u64                       = 0,
+    init_crypto_sent:      u64                       = 0,
+    hs_crypto_sent:        u64                       = 0,
+    init_ack_needed:       bool                      = false,
+    hs_ack_needed:         bool                      = false,
+    app_ack_needed:        bool                      = false,
+    handshake_done_seen:   bool                      = false,
+    new_cid_seen:          bool                      = false,
+    alt_srv_cid:           u8[..20]                  = [],
+    peer_tp_parsed:        bool                      = false,
+    peer_tp:               quic::QuicTransportParams = quic::QuicTransportParams { .. },
+    saw_max_data:          bool                      = false,
+    saw_max_stream_data:   bool                      = false,
+    last_max_data:         u64                       = 0,
+    last_max_stream_data:  u64                       = 0,
+    saw_conn_close_tpt:    bool                      = false,
+    saw_reset_stream:      bool                      = false,
+    reset_stream_count:    i64                       = 0,
+    last_reset_sid:        u64                       = 0,
+    last_reset_err:        u64                       = 0,
+    last_reset_final_size: u64                       = 0,
+    stream_rx_fin:         bool                      = false,
+    stream_rx_base:        u64                       = 0,
+    stream_rx_contig:      u64                       = 0,
+    stream_rx_final:       u64                       = 0,
+    has_uni3_rx:           bool                      = false,
+    uni3_buf:              u8[..2048]                = [],
+    stream_rx_intervals:   quic::Interval[..64]      = [],
+    stream_rx_buf:         u8[>..]                   = [],
 }
 
 fn init_test_client(
@@ -583,6 +588,12 @@ fn client_inspect_plain_frames(c: TestQuicClient&, plain: const u8[:]) {
         } else if f.frame_type == quic::QuicFrameType.Stream && f.stream_id == 3 {
             let _ = c.uni3_buf.try_append(f.payload);
             if f.fin { c.has_uni3_rx = true; }
+        } else if f.frame_type == quic::QuicFrameType.ResetStream {
+            c.saw_reset_stream = true;
+            c.reset_stream_count += 1;
+            c.last_reset_sid = f.stream_id;
+            c.last_reset_err = f.error_code;
+            c.last_reset_final_size = f.final_size;
         } else if f.frame_type == quic::QuicFrameType.ConnectionClose {
             c.saw_conn_close_tpt = true;
             c.conn.state = quic::QuicConnState.Draining;
@@ -932,6 +943,8 @@ fn test_concurrent_multi_client_64k_pto_and_close() {
         }
     }
     assert(conn_a != 0 && conn_b != 0 && conn_a != conn_b);
+    // Server RSA slot MUST already be reclaimed immediately after CertificateVerify signature generation.
+    assert(count_active_rsa_slots() == base_rsa);
 
     // Server sends ServerHello + Handshake flights; clients send Handshake Finished; server emits HANDSHAKE_DONE + NEW_CONNECTION_ID.
     var no_drop = false;
@@ -955,7 +968,7 @@ fn test_concurrent_multi_client_64k_pto_and_close() {
     let _ = drain_server_to_clients(ep, srv_fd, ca, cb, no_drop, now_ns);
     assert(ca.handshake_done_seen && cb.handshake_done_seen);
     assert(ca.new_cid_seen && cb.new_cid_seen && cb.alt_srv_cid.len > 0);
-    assert(count_active_rsa_slots() == base_rsa + 1);
+    assert(count_active_rsa_slots() == base_rsa);
 
     // Build 64 KiB deterministic payload and stream bidirectionally on both clients.
     var payload_64k: u8[>..] = [];
@@ -1742,6 +1755,179 @@ fn test_sent_chunks_capacity_and_no_drop() {
     print("CHECK_QUIC_FIX6_SENT_CHUNKS_OK\n");
 }
 
+fn count_active_quic_srv_slabs() -> i64 {
+    var cnt: i64 = 0;
+    for i in quic::g_quic_srv_slabs.len {
+        if quic::g_quic_srv_slabs[i].active { cnt += 1; }
+    }
+    return cnt;
+}
+
+fn find_srv_conn_slot_idx(conn_id: u64) -> i64 {
+    for i in quic::g_quic_srv_conns.len {
+        let cs .= quic::g_quic_srv_conns[i];
+        if cs.active && cs.conn_id == conn_id { return i; }
+    }
+    return -1;
+}
+
+fn test_persistent_max_streams_beyond_128() {
+    let base_slabs = count_active_quic_srv_slabs();
+    let srv_fd = net::udp_open_dual("::", 0, 0);
+    assert(srv_fd > 0);
+    let srv_port = net::tcp_getsockname_port(srv_fd);
+
+    var cert_pem: u8[>..] = [];
+    var key_pem:  u8[>..] = [];
+    make_p256_test_creds(cert_pem, key_pem, 0xA1);
+
+    var ep = quic::quic_server_open("\x02h3", 8, 30000);
+    defer quic::quic_server_close(ep);
+    var now_ns: u64 = 2000000000;
+
+    var c = TestQuicClient { .. };
+    let od: u8[8] = [0xEA, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+    let sc: u8[4] = [0xFA, 0x01, 0x02, 0x03];
+    let conn_id = connect_p256_session(
+        ep, srv_fd, srv_port, c, cert_pem[..], key_pem[..], od[..], sc[..], now_ns, 1048576, 65536,
+    );
+    defer close_test_client(c);
+    c.conn.stream_table.remote_max_streams_bidi = c.peer_tp.initial_max_streams_bidi;
+    c.conn.stream_table.has_remote_max_streams_bidi = true;
+    assert(c.conn.stream_table.remote_max_streams_bidi == 100);
+
+    var srv_rx: u8[>..] = [];
+    var ev = quic::QuicServerEvent { .. };
+    for r in 135 {
+        let sid, st_idx, ok_open = quic::open_local_stream(c.conn.stream_table, true, 65536);
+        assert(ok_open && sid == ((r as u64) * 4));
+        let _, ok_tx = quic::on_send_data(c.conn.stream_table.streams[st_idx], 0, 2, true);
+        assert(ok_tx);
+
+        client_send_stream_bytes(c, sid, 0, "ok", true, now_ns / 1000);
+        assert(drain_udp_into_server(srv_fd, ep, now_ns) >= 1);
+
+        var read_fin = false;
+        while quic::quic_server_poll_event(ep, ev) {
+            if ev.kind == quic::QuicServerEventKind.StreamReadable && ev.stream_id == sid {
+                srv_rx.clear();
+                var fin = false;
+                let nr = quic::quic_server_stream_read(ep, conn_id, sid, srv_rx, fin);
+                assert(nr == 2 && fin && srv_rx[..] == "ok");
+                read_fin = true;
+            }
+        }
+        assert(read_fin);
+
+        let wn, wok = quic::quic_server_stream_write(ep, conn_id, sid, "pong", true);
+        assert(wok && wn == 4);
+        assert(client_drain_and_ack(c, srv_fd, ep, now_ns) >= 1);
+
+        let c_st, ok_cs = quic::find_stream(c.conn.stream_table, sid);
+        assert(ok_cs);
+        assert(c.conn.stream_table.streams[c_st].recv_state == quic::QuicRecvState.DataRecvd);
+        let _ = quic::on_send_ack(c.conn.stream_table.streams[c_st], true);
+        assert(quic::on_app_read(c.conn.stream_table.streams[c_st], 4));
+    }
+
+    assert(c.conn.stream_table.remote_max_streams_bidi >= 135);
+    let cs_idx = find_srv_conn_slot_idx(conn_id);
+    assert(cs_idx >= 0 && quic::g_quic_srv_conns[cs_idx].conn.stream_table.streams.len == 0);
+    assert(count_active_quic_srv_slabs() == base_slabs);
+
+    net::tcp_close(srv_fd);
+    print("CHECK_QUIC_MAX_STREAMS_135_OK\n");
+}
+
+fn test_stop_sending_halts_tx_and_emits_reset_stream() {
+    let base_slabs = count_active_quic_srv_slabs();
+    let srv_fd = net::udp_open_dual("::", 0, 0);
+    assert(srv_fd > 0);
+    let srv_port = net::tcp_getsockname_port(srv_fd);
+
+    var cert_pem: u8[>..] = [];
+    var key_pem:  u8[>..] = [];
+    make_p256_test_creds(cert_pem, key_pem, 0xB2);
+
+    var ep = quic::quic_server_open("\x02h3", 8, 30000);
+    defer quic::quic_server_close(ep);
+    var now_ns: u64 = 2000000000;
+
+    var c = TestQuicClient { .. };
+    let od: u8[8] = [0xEB, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+    let sc: u8[4] = [0xFB, 0x01, 0x02, 0x03];
+    let conn_id = connect_p256_session(ep, srv_fd, srv_port, c, cert_pem[..], key_pem[..], od[..], sc[..], now_ns);
+    defer close_test_client(c);
+    let sid, _, ok_open = quic::open_local_stream(c.conn.stream_table, true, 65536);
+    assert(ok_open && sid == 0);
+
+    client_send_stream_bytes(c, 0, 0, "req", true, now_ns / 1000);
+    assert(drain_udp_into_server(srv_fd, ep, now_ns) == 1);
+    var srv_rx: u8[>..] = [];
+    var srv_fin = false;
+    assert(quic::quic_server_stream_read(ep, conn_id, 0, srv_rx, srv_fin) == 3 && srv_fin);
+    var ev = quic::QuicServerEvent { .. };
+    while quic::quic_server_poll_event(ep, ev) {}
+
+    var body_6k: u8[>..] = [];
+    for i in 6000 { body_6k.push((i & 0xFF) as u8); }
+    let wn, wok = quic::quic_server_stream_write(ep, conn_id, 0, body_6k[..], false);
+    assert(wok && wn == 6000);
+
+    // Emit ONLY the first STREAM packet (~1200 bytes), leaving >4500 bytes buffered on server.
+    var out_pkt: u8[..1500] = [];
+    var out_ip:  u8[..64]   = [];
+    var out_p:   u16        = 0;
+    assert(quic::quic_server_poll_transmit(ep, now_ns, out_pkt, out_ip, out_p));
+    client_feed_dgram(c, out_pkt[..], now_ns / 1000);
+    let bytes_before_stop = c.stream_rx_contig;
+    assert(bytes_before_stop > 0 && bytes_before_stop < 6000);
+
+    // Client sends STOP_SENDING(0, 0x1234). Server MUST stop emitting STREAM frames and emit StreamReset.
+    var stop_plain: u8[..32] = [];
+    assert(quic::encode_stop_sending_frame(0, 0x1234, stop_plain));
+    client_send_1rtt_frames(c, c.conn.dcid[..], stop_plain[..], true, now_ns / 1000);
+    assert(drain_udp_into_server(srv_fd, ep, now_ns) == 1);
+
+    var saw_reset_ev = false;
+    while quic::quic_server_poll_event(ep, ev) {
+        if ev.kind == quic::QuicServerEventKind.StreamReset && ev.conn_id == conn_id && ev.stream_id == 0 {
+            assert(ev.error_code == 0x1234);
+            saw_reset_ev = true;
+        }
+    }
+    assert(saw_reset_ev);
+
+    let w_post, ok_post = quic::quic_server_stream_write(ep, conn_id, 0, "more", true);
+    assert(!ok_post && w_post == 0);
+
+    // First server packet after STOP_SENDING carries RESET_STREAM (no further STREAM packets!); simulate drop + PTO retx.
+    var post_drop_cnt: i64 = 0;
+    while quic::quic_server_poll_transmit(ep, now_ns, out_pkt, out_ip, out_p) {
+        post_drop_cnt += 1;
+    }
+    assert(post_drop_cnt == 1 && !c.saw_reset_stream);
+
+    let pto_ns = quic::quic_server_next_timeout_ns(ep);
+    assert(pto_ns > now_ns);
+    now_ns = pto_ns;
+    quic::quic_server_on_timeout(ep, now_ns);
+    assert(client_recv_direct_packets(c, ep, now_ns) == 1);
+    assert(c.saw_reset_stream && c.last_reset_sid == 0 && c.last_reset_err == 0x1234);
+    assert(c.last_reset_final_size == bytes_before_stop);
+    assert(c.stream_rx_contig == bytes_before_stop);
+
+    // Client ACKs retransmitted RESET_STREAM; server reclaims stream slot & slabs completely.
+    client_send_app_ack_and_fc(c, c.conn.dcid[..], 0, 0, now_ns / 1000);
+    assert(drain_udp_into_server(srv_fd, ep, now_ns) == 1);
+    let cs_idx = find_srv_conn_slot_idx(conn_id);
+    assert(cs_idx >= 0 && quic::g_quic_srv_conns[cs_idx].conn.stream_table.streams.len == 0);
+    assert(count_active_quic_srv_slabs() == base_slabs);
+
+    net::tcp_close(srv_fd);
+    print("CHECK_QUIC_STOP_SENDING_OK\n");
+}
+
 fn main() {
     assert(net::tcp_init());
     test_anti_amplification_and_undersized_initial();
@@ -1753,6 +1939,8 @@ fn main() {
     test_small_tp_and_early_max_stream_data();
     test_ooo_fin_ack_retx_earlier_chunk();
     test_sent_chunks_capacity_and_no_drop();
+    test_persistent_max_streams_beyond_128();
+    test_stop_sending_halts_tx_and_emits_reset_stream();
 }
 
 // CHECK: CHECK_QUIC_AA_OK
@@ -1764,3 +1952,5 @@ fn main() {
 // CHECK: CHECK_QUIC_FIX4_SMALL_TP_OK
 // CHECK: CHECK_QUIC_FIX5_OOO_FIN_OK
 // CHECK: CHECK_QUIC_FIX6_SENT_CHUNKS_OK
+// CHECK: CHECK_QUIC_MAX_STREAMS_135_OK
+// CHECK: CHECK_QUIC_STOP_SENDING_OK

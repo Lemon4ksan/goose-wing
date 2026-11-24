@@ -27,17 +27,19 @@ import tls.quic_handshake;
 
 // ---- Public Endpoint Limits & Constants ------------------------------------
 
-const QUIC_SRV_CID_LEN:           i64 = 8;
-const QUIC_SRV_SHORT_PKT_MIN_LEN: i64 = 9;
-const QUIC_SRV_MAX_ENDPOINTS:     i64 = 256;
-const QUIC_SRV_MAX_CONNS_CAP:     i32 = 1024;
-const QUIC_SRV_DEFAULT_WINDOW:    u64 = 65536;
-const QUIC_SRV_MAX_STREAM_TX_BUF: u64 = 262144;
-const QUIC_SRV_SLAB_BYTES:        u64 = 4096;
-const QUIC_SRV_SLAB_SHIFT:        u64 = 12;
-const QUIC_SRV_SLAB_MASK:         u64 = 4095;
-const QUIC_SRV_MAX_DGRAM_OUT:     u64 = 1280;
-const QUIC_CRYPTO_ERROR_BASE:     u64 = 0x0100; // RFC 9000 Section 20.1
+const QUIC_SRV_CID_LEN:               i64 = 8;
+const QUIC_SRV_SHORT_PKT_MIN_LEN:     i64 = 9;
+const QUIC_SRV_MAX_ENDPOINTS:         i64 = 256;
+const QUIC_SRV_MAX_CONNS_CAP:         i32 = 1024;
+const QUIC_SRV_DEFAULT_WINDOW:        u64 = 65536;
+const QUIC_SRV_MAX_STREAM_TX_BUF:     u64 = 262144;
+const QUIC_SRV_SLAB_BYTES:            u64 = 4096;
+const QUIC_SRV_SLAB_SHIFT:            u64 = 12;
+const QUIC_SRV_SLAB_MASK:             u64 = 4095;
+const QUIC_SRV_MAX_DGRAM_OUT:         u64 = 1280;
+const QUIC_SRV_INIT_MAX_STREAMS_BIDI: u64 = 100;
+const QUIC_SRV_INIT_MAX_STREAMS_UNI:  u64 = 100;
+const QUIC_CRYPTO_ERROR_BASE:         u64 = 0x0100; // RFC 9000 Section 20.1
 
 // ---- Public Event & Handle Types -------------------------------------------
 
@@ -73,6 +75,9 @@ enum QuicSentChunkKind {
     StreamData,
     MaxData,
     MaxStreamData,
+    MaxStreamsBidi,
+    MaxStreamsUni,
+    ResetStream,
 }
 
 struct QuicSentChunk {
@@ -140,15 +145,21 @@ struct QuicSrvStreamRxSlot {
 }
 
 struct QuicSrvStreamTxSlot {
-    active:          bool      = false,
-    tx_unacked_base: u64       = 0,
-    tx_next_offset:  u64       = 0,
-    tx_fin_queued:   bool      = false,
-    tx_fin_sent:     bool      = false,
-    tx_fin_acked:    bool      = false,
-    tx_head_off:     u64       = 0,
-    tx_buf_len:      u64       = 0,
-    tx_slabs:        i64[..66] = [],
+    active:              bool      = false,
+    tx_unacked_base:     u64       = 0,
+    tx_next_offset:      u64       = 0,
+    tx_fin_queued:       bool      = false,
+    tx_fin_sent:         bool      = false,
+    tx_fin_acked:        bool      = false,
+    tx_reset_queued:     bool      = false,
+    tx_reset_sent:       bool      = false,
+    tx_reset_acked:      bool      = false,
+    tx_stop_notified:    bool      = false,
+    tx_reset_error:      u64       = 0,
+    tx_reset_final_size: u64       = 0,
+    tx_head_off:         u64       = 0,
+    tx_buf_len:          u64       = 0,
+    tx_slabs:            i64[..66] = [],
 }
 
 struct QuicSrvConnSlot {
@@ -193,6 +204,12 @@ struct QuicSrvConnSlot {
     peer_active_cid_limit:       u64                  = 2,
     need_max_data_tx:            bool                 = false,
     max_data_tx_val:             u64                  = 0,
+    reclaimed_bidi_streams:      u64                  = 0,
+    reclaimed_uni_streams:       u64                  = 0,
+    need_max_streams_bidi_tx:    bool                 = false,
+    max_streams_bidi_tx_val:     u64                  = 100,
+    need_max_streams_uni_tx:     bool                 = false,
+    max_streams_uni_tx_val:      u64                  = 100,
     tx_init_crypto:              u8[..4096]           = [],
     tx_init_crypto_sent:         u64                  = 0,
     tx_hs_crypto:                u8[..24576]          = [],
@@ -478,18 +495,21 @@ fn find_or_alloc_stream_slot(conn_idx: i64, conn_id: u64, stream_id: u64, create
     return free_idx;
 }
 
+fn release_stream_slot(s_slot: i64) {
+    guard s_slot >= 0 && s_slot < g_quic_srv_stream_rx.len else { return; }
+    let rx .= g_quic_srv_stream_rx[s_slot];
+    let tx .= g_quic_srv_stream_tx[s_slot];
+    slab_free_all(rx.rx_slabs, rx.rx_head_off, rx.rx_buf_len);
+    slab_free_all(tx.tx_slabs, tx.tx_head_off, tx.tx_buf_len);
+    rx = QuicSrvStreamRxSlot { .. };
+    tx = QuicSrvStreamTxSlot { .. };
+}
+
 fn free_conn_stream_slots(conn_idx: i64, conn_id: u64) {
     for i in g_quic_srv_stream_rx.len {
         let rx .= g_quic_srv_stream_rx[i];
-        let tx .= g_quic_srv_stream_tx[i];
         if rx.active && rx.conn_idx == conn_idx && rx.conn_id == conn_id {
-            slab_free_all(rx.rx_slabs, rx.rx_head_off, rx.rx_buf_len);
-            slab_free_all(tx.tx_slabs, tx.tx_head_off, tx.tx_buf_len);
-            rx.active = false;
-            tx.active = false;
-            rx.conn_idx = -1;
-            rx.conn_id = 0;
-            rx.rx_intervals.clear();
+            release_stream_slot(i);
         }
     }
 }
@@ -592,8 +612,8 @@ fn build_server_local_tp(
         initial_max_stream_data_bidi_local:  QUIC_SRV_DEFAULT_WINDOW,
         initial_max_stream_data_bidi_remote: QUIC_SRV_DEFAULT_WINDOW,
         initial_max_stream_data_uni:         QUIC_SRV_DEFAULT_WINDOW,
-        initial_max_streams_bidi:            100,
-        initial_max_streams_uni:             100,
+        initial_max_streams_bidi:            QUIC_SRV_INIT_MAX_STREAMS_BIDI,
+        initial_max_streams_uni:             QUIC_SRV_INIT_MAX_STREAMS_UNI,
         active_connection_id_limit:          4,
         ..
     };
@@ -665,6 +685,12 @@ fn reset_conn_slot_for_initial(
     cslot.ack_eliciting_sent_since_rx = false;
     cslot.drain_deadline_ns = 0;
     cslot.need_max_data_tx = false;
+    cslot.reclaimed_bidi_streams = 0;
+    cslot.reclaimed_uni_streams = 0;
+    cslot.need_max_streams_bidi_tx = false;
+    cslot.max_streams_bidi_tx_val = QUIC_SRV_INIT_MAX_STREAMS_BIDI;
+    cslot.need_max_streams_uni_tx = false;
+    cslot.max_streams_uni_tx_val = QUIC_SRV_INIT_MAX_STREAMS_UNI;
     cslot.tx_init_crypto.clear();
     cslot.tx_init_crypto_sent = 0;
     cslot.tx_hs_crypto.clear();
@@ -832,7 +858,11 @@ fn compact_stream_tx_buffer(cslot: QuicSrvConnSlot&, c_idx: i64, stream_id: u64)
 
 inline fn is_matching_sibling_chunk(sib: const QuicSentChunk&, ref_ch: const QuicSentChunk&) -> bool {
     guard sib.active && sib.kind == ref_ch.kind && sib.space == ref_ch.space else { return false; }
-    if ref_ch.kind == QuicSentChunkKind.MaxData { return sib.val <= ref_ch.val; }
+    if ref_ch.kind == QuicSentChunkKind.MaxData
+        || ref_ch.kind == QuicSentChunkKind.MaxStreamsBidi
+        || ref_ch.kind == QuicSentChunkKind.MaxStreamsUni {
+        return sib.val <= ref_ch.val;
+    }
     if ref_ch.kind == QuicSentChunkKind.MaxStreamData {
         return sib.stream_id == ref_ch.stream_id && sib.val <= ref_ch.val;
     }
@@ -845,6 +875,18 @@ fn retire_matching_sibling_chunks(cslot: QuicSrvConnSlot&, ref_ch: const QuicSen
         if is_matching_sibling_chunk(sib, ref_ch) {
             sib.active = false;
         }
+    }
+}
+
+fn retire_acked_reset_stream_chunk(cslot: QuicSrvConnSlot&, c_idx: i64, stream_id: u64) {
+    let s_slot = find_or_alloc_stream_slot(c_idx, cslot.conn_id, stream_id, false);
+    if s_slot >= 0 {
+        g_quic_srv_stream_tx[s_slot].tx_reset_acked = true;
+    }
+    let st_idx, found = find_stream(cslot.conn.stream_table, stream_id);
+    if found {
+        // RFC 9000 Section 3.1: Sending Stream States - Transition ResetSent to ResetRecvd upon ACK.
+        let _ = on_send_ack(cslot.conn.stream_table.streams[st_idx], true);
     }
 }
 
@@ -866,6 +908,8 @@ fn retire_acked_chunks_in_space(
                 if s_slot >= 0 { g_quic_srv_stream_tx[s_slot].tx_fin_acked = true; }
             }
             compact_stream_tx_buffer(cslot, c_idx, copy_ch.stream_id);
+        } else if copy_ch.kind == QuicSentChunkKind.ResetStream {
+            retire_acked_reset_stream_chunk(cslot, c_idx, copy_ch.stream_id);
         }
     }
 }
@@ -918,6 +962,107 @@ fn handle_inbound_ack_retirement(
     cslot.pto_count = 0;
 }
 
+// ---- Stream Reclamation & MAX_STREAMS Replenishment ------------------------
+
+fn has_active_stream_tx_or_reset_chunk(cslot: const QuicSrvConnSlot&, stream_id: u64) -> bool {
+    for i in cslot.sent_chunks.len {
+        let ch .= cslot.sent_chunks[i];
+        if ch.active && ch.stream_id == stream_id
+            && (ch.kind == QuicSentChunkKind.StreamData || ch.kind == QuicSentChunkKind.ResetStream) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn deactivate_stream_chunks(cslot: QuicSrvConnSlot&, stream_id: u64, kind: QuicSentChunkKind) {
+    for i in cslot.sent_chunks.len {
+        let ch .= cslot.sent_chunks[i];
+        if ch.active && ch.stream_id == stream_id && ch.kind == kind {
+            ch.active = false;
+        }
+    }
+}
+
+fn replenish_peer_stream_credit(cslot: QuicSrvConnSlot&, stream_id: u64) {
+    guard quic_internal::is_peer_initiated_stream(stream_id, QuicRole.Server) else { return; }
+    let tbl .= cslot.conn.stream_table;
+    if (stream_id & 2) == 0 {
+        cslot.reclaimed_bidi_streams = core::add_sat_u64(cslot.reclaimed_bidi_streams, 1);
+        let new_limit = min(
+            core::add_sat_u64(QUIC_SRV_INIT_MAX_STREAMS_BIDI, cslot.reclaimed_bidi_streams),
+            rfc::QUIC_MAX_STREAMS_LIMIT,
+        );
+        tbl.max_streams_bidi = max(tbl.max_streams_bidi, new_limit);
+        if new_limit > cslot.max_streams_bidi_tx_val {
+            // RFC 9000 Section 4.6: Controlling Concurrency - Replenish peer bidi stream credit on closure.
+            cslot.max_streams_bidi_tx_val = new_limit;
+            cslot.need_max_streams_bidi_tx = true;
+        }
+        return;
+    }
+    cslot.reclaimed_uni_streams = core::add_sat_u64(cslot.reclaimed_uni_streams, 1);
+    let new_limit = min(
+        core::add_sat_u64(QUIC_SRV_INIT_MAX_STREAMS_UNI, cslot.reclaimed_uni_streams),
+        rfc::QUIC_MAX_STREAMS_LIMIT,
+    );
+    tbl.max_streams_uni = max(tbl.max_streams_uni, new_limit);
+    if new_limit > cslot.max_streams_uni_tx_val {
+        cslot.max_streams_uni_tx_val = new_limit;
+        cslot.need_max_streams_uni_tx = true;
+    }
+}
+
+fn can_reclaim_stream_slot(cslot: const QuicSrvConnSlot&, c_idx: i64, qstream: const QuicStream&) -> i64, bool {
+    guard is_terminal(qstream, QuicRole.Server) else { return -1, false; }
+    guard !has_active_stream_tx_or_reset_chunk(cslot, qstream.stream_id) else { return -1, false; }
+    let s_slot = find_or_alloc_stream_slot(c_idx, cslot.conn_id, qstream.stream_id, false);
+    guard s_slot >= 0 else { return -1, true; }
+    let rx .= g_quic_srv_stream_rx[s_slot];
+    let tx .= g_quic_srv_stream_tx[s_slot];
+    guard rx.rx_buf_len == 0 && !rx.rx_readable_queued else { return -1, false; }
+    guard tx.tx_buf_len == 0 && !tx.tx_reset_queued else { return -1, false; }
+    if tx.tx_reset_sent && !tx.tx_reset_acked {
+        return -1, false;
+    }
+    return s_slot, true;
+}
+
+fn reclaim_stream_at_table_idx(cslot: QuicSrvConnSlot&, st_idx: i64, s_slot: i64) {
+    let sid = cslot.conn.stream_table.streams[st_idx].stream_id;
+    deactivate_stream_chunks(cslot, sid, QuicSentChunkKind.MaxStreamData);
+    if s_slot >= 0 {
+        release_stream_slot(s_slot);
+    }
+    quic_internal::record_evicted_closed_stream(cslot.conn.stream_table, sid);
+    cslot.conn.stream_table.streams.remove_at(st_idx);
+    replenish_peer_stream_credit(cslot, sid);
+}
+
+fn try_reclaim_single_stream(cslot: QuicSrvConnSlot&, c_idx: i64, stream_id: u64) {
+    let st_idx, found = find_stream(cslot.conn.stream_table, stream_id);
+    guard found else { return; }
+    let s_slot, ok = can_reclaim_stream_slot(cslot, c_idx, cslot.conn.stream_table.streams[st_idx]);
+    guard ok else { return; }
+    reclaim_stream_at_table_idx(cslot, st_idx, s_slot);
+}
+
+fn is_stream_tx_stopped(tx: const QuicSrvStreamTxSlot&) -> bool {
+    return tx.tx_reset_queued || tx.tx_reset_sent || tx.tx_reset_acked;
+}
+
+fn reclaim_closed_conn_streams(cslot: QuicSrvConnSlot&, c_idx: i64) {
+    var i: i64 = 0;
+    while i < cslot.conn.stream_table.streams.len {
+        let s_slot, ok = can_reclaim_stream_slot(cslot, c_idx, cslot.conn.stream_table.streams[i]);
+        if ok {
+            reclaim_stream_at_table_idx(cslot, i, s_slot);
+        } else {
+            i = core::add_sat_i64(i, 1);
+        }
+    }
+}
+
 // ---- Inbound Stream Buffering & Event Dispatch -----------------------------
 
 fn merge_rx_stream_interval(rx: QuicSrvStreamRxSlot&, start: u64, end_off: u64) -> bool {
@@ -940,9 +1085,14 @@ fn ingest_stream_frame_bytes(
     fin:       bool,
     now_ns:    u64,
 ) {
+    let st_idx, found_st = find_stream(cslot.conn.stream_table, stream_id);
+    guard found_st else { return; }
+    let rs = cslot.conn.stream_table.streams[st_idx].recv_state;
+    guard rs != QuicRecvState.ResetRecvd && rs != QuicRecvState.ResetRead else { return; }
     let s_slot = find_or_alloc_stream_slot(c_idx, cslot.conn_id, stream_id, true);
     guard s_slot >= 0 else { return; }
     let rx .= g_quic_srv_stream_rx[s_slot];
+    guard !rx.rx_reset_received else { return; }
     let end_off = core::add_sat_u64(offset, data.len as u64);
     if data.len > 0 && end_off > rx.rx_base_offset {
         let eff_start = max(offset, rx.rx_base_offset);
@@ -973,14 +1123,50 @@ fn handle_reset_stream_frame(
     stream_id: u64,
     err_code:  u64,
 ) {
+    let st_idx, found_st = find_stream(cslot.conn.stream_table, stream_id);
+    guard found_st else { return; }
+    let rs = cslot.conn.stream_table.streams[st_idx].recv_state;
+    guard rs == QuicRecvState.ResetRecvd || rs == QuicRecvState.ResetRead else { return; }
     let s_slot = find_or_alloc_stream_slot(c_idx, cslot.conn_id, stream_id, true);
     guard s_slot >= 0 else { return; }
     let rx .= g_quic_srv_stream_rx[s_slot];
+    slab_free_all(rx.rx_slabs, rx.rx_head_off, rx.rx_buf_len);
+    rx.rx_intervals.clear();
+    rx.rx_readable_queued = false;
     rx.rx_reset_received = true;
     rx.rx_reset_error = err_code;
     if !rx.rx_reset_delivered {
         rx.rx_reset_delivered = true;
         enqueue_srv_event(eslot, QuicServerEventKind.StreamReset, cslot.conn_id, stream_id, "", err_code);
+    }
+}
+
+fn handle_stop_sending_frame(
+    eslot:     QuicSrvEndpointSlot&,
+    cslot:     QuicSrvConnSlot&,
+    c_idx:     i64,
+    stream_id: u64,
+) {
+    let st_idx, found_st = find_stream(cslot.conn.stream_table, stream_id);
+    guard found_st else { return; }
+    let qstream .= cslot.conn.stream_table.streams[st_idx];
+    // RFC 9000 Section 3.5: Solicited State Transitions - Stop sending STREAM and emit RESET_STREAM on STOP_SENDING.
+    guard qstream.send_state == QuicSendState.ResetSent else { return; }
+    let s_slot = find_or_alloc_stream_slot(c_idx, cslot.conn_id, stream_id, true);
+    guard s_slot >= 0 else { return; }
+    let tx .= g_quic_srv_stream_tx[s_slot];
+    slab_free_all(tx.tx_slabs, tx.tx_head_off, tx.tx_buf_len);
+    deactivate_stream_chunks(cslot, stream_id, QuicSentChunkKind.StreamData);
+    if !is_stream_tx_stopped(tx) {
+        tx.tx_reset_queued = true;
+        tx.tx_reset_error = qstream.send_error_code;
+        tx.tx_reset_final_size = qstream.send_final_size;
+    }
+    if !tx.tx_stop_notified {
+        tx.tx_stop_notified = true;
+        enqueue_srv_event(
+            eslot, QuicServerEventKind.StreamReset, cslot.conn_id, stream_id, "", qstream.send_error_code,
+        );
     }
 }
 
@@ -993,23 +1179,30 @@ fn handle_decrypted_plain_frames(
     now_ns: u64,
 ) {
     var idx: i64 = 0;
+    var had_ack = false;
     while idx < plain.len {
         let frame, ok = decode_frame_cursor(plain, idx);
         guard ok else { return; }
         if frame.frame_type == QuicFrameType.Ack || frame.frame_type == QuicFrameType.AckEcn {
             handle_inbound_ack_retirement(cslot, c_idx, htype, frame);
+            had_ack = true;
         } else if frame.frame_type == QuicFrameType.Stream {
             ingest_stream_frame_bytes(
                 eslot, cslot, c_idx, frame.stream_id, frame.offset, frame.payload, frame.fin, now_ns,
             );
         } else if frame.frame_type == QuicFrameType.ResetStream {
             handle_reset_stream_frame(eslot, cslot, c_idx, frame.stream_id, frame.error_code);
+        } else if frame.frame_type == QuicFrameType.StopSending {
+            handle_stop_sending_frame(eslot, cslot, c_idx, frame.stream_id);
         } else if frame.frame_type == QuicFrameType.PathChallenge && frame.payload.len == 8 {
             for k in 8 { cslot.pending_path_resp[k] = frame.payload[k]; }
             cslot.has_path_resp = true;
         }
     }
     mark_lost_chunks_in_space(cslot, quic_internal::header_type_to_space_id(htype));
+    if had_ack && htype == QuicHeaderType.OneRtt {
+        reclaim_closed_conn_streams(cslot, c_idx);
+    }
 }
 
 // ---- TLS CRYPTO Pumping, Transport Params & Key Transitions ----------------
@@ -1644,6 +1837,31 @@ fn commit_tracked_ctrl_frame(
     return false;
 }
 
+fn try_emit_max_streams_kind(
+    cslot:     QuicSrvConnSlot&,
+    pn:        u64,
+    is_bidi:   bool,
+    plain:     u8[..1500]&,
+    max_plain: u64,
+    ack_el:    bool&,
+) {
+    let needed = if is_bidi { cslot.need_max_streams_bidi_tx } else { cslot.need_max_streams_uni_tx };
+    guard needed && core::add_sat_u64(plain.len as u64, 10) <= max_plain && has_sent_chunk_room(cslot, 1) else {
+        return;
+    }
+    let val = if is_bidi { cslot.max_streams_bidi_tx_val } else { cslot.max_streams_uni_tx_val };
+    let kind = if is_bidi { QuicSentChunkKind.MaxStreamsBidi } else { QuicSentChunkKind.MaxStreamsUni };
+    let mark = plain.len;
+    // RFC 9000 Section 19.11: MAX_STREAMS Frames - Advertise updated cumulative peer stream limit.
+    guard encode_max_streams_frame(val, is_bidi, plain) else { return; }
+    guard commit_tracked_ctrl_frame(cslot, pn, kind, 0, val, mark, plain, ack_el) else { return; }
+    if is_bidi {
+        cslot.need_max_streams_bidi_tx = false;
+    } else {
+        cslot.need_max_streams_uni_tx = false;
+    }
+}
+
 fn encode_app_window_frames(
     cslot:     QuicSrvConnSlot&,
     pn:        u64,
@@ -1666,6 +1884,8 @@ fn encode_app_window_frames(
                 cslot.need_max_data_tx = false;
             }
     }
+    try_emit_max_streams_kind(cslot, pn, true, plain, max_plain, ack_el);
+    try_emit_max_streams_kind(cslot, pn, false, plain, max_plain, ack_el);
 }
 
 fn encode_app_control_frames(
@@ -1695,6 +1915,37 @@ fn encode_app_control_frames(
         }
     }
     encode_app_window_frames(cslot, pn, plain, max_plain, ack_el);
+}
+
+fn encode_app_stream_resets(
+    cslot:     QuicSrvConnSlot&,
+    c_idx:     i64,
+    pn:        u64,
+    plain:     u8[..1500]&,
+    max_plain: u64,
+    ack_el:    bool&,
+) {
+    for i in g_quic_srv_stream_rx.len {
+        let rx .= g_quic_srv_stream_rx[i];
+        let tx .= g_quic_srv_stream_tx[i];
+        guard rx.active && rx.conn_idx == c_idx && rx.conn_id == cslot.conn_id && tx.tx_reset_queued else {
+            continue;
+        }
+        guard core::add_sat_u64(plain.len as u64, 25) <= max_plain && has_sent_chunk_room(cslot, 1) else { return; }
+        let mark = plain.len;
+        // RFC 9000 Section 19.4: RESET_STREAM Frames - Send error_code and final_size reliably.
+        guard encode_reset_stream_frame(rx.stream_id, tx.tx_reset_error, tx.tx_reset_final_size, plain) else {
+            plain.resize(mark);
+            return;
+        }
+        guard commit_tracked_ctrl_frame(
+            cslot, pn, QuicSentChunkKind.ResetStream, rx.stream_id, tx.tx_reset_error, mark, plain, ack_el,
+        ) else {
+            return;
+        }
+        tx.tx_reset_queued = false;
+        tx.tx_reset_sent = true;
+    }
 }
 
 fn encode_app_stream_window_updates(
@@ -1736,6 +1987,17 @@ fn try_retx_stream_data_chunk(
     let s_slot = find_or_alloc_stream_slot(c_idx, cslot.conn_id, copy_ch.stream_id, false);
     guard s_slot >= 0 else { ch.active = false; return false; }
     let tx .= g_quic_srv_stream_tx[s_slot];
+    guard !is_stream_tx_stopped(tx) else {
+        ch.active = false;
+        return false;
+    }
+    let st_idx, found_st = find_stream(cslot.conn.stream_table, copy_ch.stream_id);
+    guard found_st else { ch.active = false; return false; }
+    let ss = cslot.conn.stream_table.streams[st_idx].send_state;
+    guard ss != QuicSendState.ResetSent && ss != QuicSendState.ResetRecvd else {
+        ch.active = false;
+        return false;
+    }
     guard copy_ch.offset >= tx.tx_unacked_base else { return false; }
     let rel = core::sub_sat_u64(copy_ch.offset, tx.tx_unacked_base);
     let clen = copy_ch.length;
@@ -1748,6 +2010,36 @@ fn try_retx_stream_data_chunk(
     let flags = QuicStreamFlags { fin: copy_ch.fin, with_len: true, .. };
     guard encode_stream_frame(copy_ch.stream_id, copy_ch.offset, slice_buf[..], plain, flags) else { return false; }
     guard commit_retx_chunk_slot(cslot, ch_idx, pn, 0) else {
+        plain.resize(mark);
+        return false;
+    }
+    ack_el = true;
+    return true;
+}
+
+fn try_retx_max_streams_chunk(
+    cslot:     QuicSrvConnSlot&,
+    ch_idx:    i64,
+    pn:        u64,
+    plain:     u8[..1500]&,
+    max_plain: u64,
+    ack_el:    bool&,
+) -> bool {
+    let copy_ch = cslot.sent_chunks[ch_idx];
+    guard (!copy_ch.in_flight || has_sent_chunk_room(cslot, 1))
+        && core::add_sat_u64(plain.len as u64, 10) <= max_plain else {
+        return false;
+    }
+    let is_bidi = copy_ch.kind == QuicSentChunkKind.MaxStreamsBidi;
+    let tbl_val = if is_bidi {
+        cslot.conn.stream_table.max_streams_bidi
+    } else {
+        cslot.conn.stream_table.max_streams_uni
+    };
+    let cur_val = max(tbl_val, copy_ch.val);
+    let mark = plain.len;
+    guard encode_max_streams_frame(cur_val, is_bidi, plain) else { return false; }
+    guard commit_retx_chunk_slot(cslot, ch_idx, pn, cur_val) else {
         plain.resize(mark);
         return false;
     }
@@ -1796,6 +2088,38 @@ fn try_retx_window_chunk(
     return false;
 }
 
+fn try_retx_reset_stream_chunk(
+    cslot:     QuicSrvConnSlot&,
+    c_idx:     i64,
+    ch_idx:    i64,
+    pn:        u64,
+    plain:     u8[..1500]&,
+    max_plain: u64,
+    ack_el:    bool&,
+) -> bool {
+    let ch .= cslot.sent_chunks[ch_idx];
+    let copy_ch = ch;
+    guard (!copy_ch.in_flight || has_sent_chunk_room(cslot, 1))
+        && core::add_sat_u64(plain.len as u64, 25) <= max_plain else {
+        return false;
+    }
+    let s_slot = find_or_alloc_stream_slot(c_idx, cslot.conn_id, copy_ch.stream_id, false);
+    guard s_slot >= 0 else { ch.active = false; return false; }
+    let tx .= g_quic_srv_stream_tx[s_slot];
+    guard !tx.tx_reset_acked else { ch.active = false; return false; }
+    let mark = plain.len;
+    guard encode_reset_stream_frame(copy_ch.stream_id, tx.tx_reset_error, tx.tx_reset_final_size, plain) else {
+        plain.resize(mark);
+        return false;
+    }
+    guard commit_retx_chunk_slot(cslot, ch_idx, pn, tx.tx_reset_error) else {
+        plain.resize(mark);
+        return false;
+    }
+    ack_el = true;
+    return true;
+}
+
 fn try_retx_single_app_chunk(
     cslot:     QuicSrvConnSlot&,
     c_idx:     i64,
@@ -1809,24 +2133,42 @@ fn try_retx_single_app_chunk(
     let plen = plain.len as u64;
     guard !copy_ch.in_flight || has_sent_chunk_room(cslot, 1) else { return false; }
     let mark = plain.len;
-    if copy_ch.kind == QuicSentChunkKind.HandshakeDone && plen < max_plain {
-        guard encode_handshake_done_frame(plain) else { return false; }
-        guard commit_retx_chunk_slot(cslot, ch_idx, pn, 0) else { plain.resize(mark); return false; }
-        ack_el = true;
-        return true;
+    match copy_ch.kind {
+        HandshakeDone => {
+            guard plen < max_plain && encode_handshake_done_frame(plain) else { return false; }
+            guard commit_retx_chunk_slot(cslot, ch_idx, pn, 0) else { plain.resize(mark); return false; }
+            ack_el = true;
+            return true;
+        },
+        NewConnectionId => {
+            guard cslot.alt_cid.len > 0 && core::add_sat_u64(plen, 32) <= max_plain else { return false; }
+            guard encode_new_conn_id_frame(1, 0, cslot.alt_cid[..], cslot.alt_reset_token, plain) else {
+                return false;
+            }
+            guard commit_retx_chunk_slot(cslot, ch_idx, pn, 0) else { plain.resize(mark); return false; }
+            ack_el = true;
+            return true;
+        },
+        MaxData => {
+            return try_retx_window_chunk(cslot, ch_idx, pn, plain, max_plain, ack_el);
+        },
+        MaxStreamData => {
+            return try_retx_window_chunk(cslot, ch_idx, pn, plain, max_plain, ack_el);
+        },
+        MaxStreamsBidi => {
+            return try_retx_max_streams_chunk(cslot, ch_idx, pn, plain, max_plain, ack_el);
+        },
+        MaxStreamsUni => {
+            return try_retx_max_streams_chunk(cslot, ch_idx, pn, plain, max_plain, ack_el);
+        },
+        ResetStream => {
+            return try_retx_reset_stream_chunk(cslot, c_idx, ch_idx, pn, plain, max_plain, ack_el);
+        },
+        StreamData => {
+            return try_retx_stream_data_chunk(cslot, c_idx, ch_idx, pn, plain, max_plain, ack_el);
+        },
+        _ => { return false; },
     }
-    if copy_ch.kind == QuicSentChunkKind.NewConnectionId
-        && cslot.alt_cid.len > 0 && core::add_sat_u64(plen, 32) <= max_plain {
-        guard encode_new_conn_id_frame(1, 0, cslot.alt_cid[..], cslot.alt_reset_token, plain) else { return false; }
-        guard commit_retx_chunk_slot(cslot, ch_idx, pn, 0) else { plain.resize(mark); return false; }
-        ack_el = true;
-        return true;
-    }
-    if copy_ch.kind == QuicSentChunkKind.MaxData || copy_ch.kind == QuicSentChunkKind.MaxStreamData {
-        return try_retx_window_chunk(cslot, ch_idx, pn, plain, max_plain, ack_el);
-    }
-    guard copy_ch.kind == QuicSentChunkKind.StreamData else { return false; }
-    return try_retx_stream_data_chunk(cslot, c_idx, ch_idx, pn, plain, max_plain, ack_el);
 }
 
 fn encode_app_retransmit_chunks(
@@ -1860,10 +2202,70 @@ fn query_tx_stream_send_window(
     let st_idx, found_st = find_stream(cslot.conn.stream_table, stream_id);
     guard found_st else { return -1, 0, false; }
     let qstream .= cslot.conn.stream_table.streams[st_idx];
+    // RFC 9000 Section 3.5: Solicited State Transitions - Do not send STREAM frames once reset is initiated.
+    guard qstream.send_state == QuicSendState.Ready || qstream.send_state == QuicSendState.Send else {
+        return -1, 0, false;
+    }
     let avail_fc = min(conn_cred, remaining_stream_credit(qstream));
     guard unsent_bytes == 0 || avail_fc > 0 else { return -1, 0, false; }
     if !need_fin && avail_fc == 0 { return -1, 0, false; }
     return st_idx, avail_fc, true;
+}
+
+fn untrack_stream_data_chunk(cslot: QuicSrvConnSlot&, pn: u64, stream_id: u64, offset: u64) {
+    for i in cslot.sent_chunks.len {
+        let ch .= cslot.sent_chunks[i];
+        if ch.active && ch.pn == pn && ch.kind == QuicSentChunkKind.StreamData
+            && ch.stream_id == stream_id && ch.offset == offset {
+            ch.active = false;
+        }
+    }
+}
+
+fn emit_and_commit_stream_frame(
+    cslot:      QuicSrvConnSlot&,
+    slot_idx:   i64,
+    st_idx:     i32,
+    pn:         u64,
+    unsent_rel: u64,
+    send_len:   u64,
+    send_fin:   bool,
+    plain:      u8[..1500]&,
+    ack_el:     bool&,
+) -> bool {
+    let rx .= g_quic_srv_stream_rx[slot_idx];
+    let tx .= g_quic_srv_stream_tx[slot_idx];
+    var slice_buf: u8[..1500] = [];
+    guard slab_copy_slice(tx.tx_slabs, tx.tx_head_off, tx.tx_buf_len, unsent_rel, send_len, slice_buf) else {
+        return false;
+    }
+    let mark = plain.len;
+    let flags = QuicStreamFlags { fin: send_fin, with_len: true, .. };
+    guard encode_stream_frame(rx.stream_id, tx.tx_next_offset, slice_buf[..], plain, flags) else {
+        plain.resize(mark);
+        return false;
+    }
+    guard try_track_tx_chunk(
+        cslot, PnSpaceId.ApplicationData, pn, QuicSentChunkKind.StreamData,
+        rx.stream_id, tx.tx_next_offset, send_len, send_fin, 0,
+    ) else {
+        plain.resize(mark);
+        return false;
+    }
+    let qstream .= cslot.conn.stream_table.streams[st_idx];
+    let _, ok_send = on_send_data(qstream, tx.tx_next_offset, send_len, send_fin);
+    guard ok_send else {
+        plain.resize(mark);
+        untrack_stream_data_chunk(cslot, pn, rx.stream_id, tx.tx_next_offset);
+        return false;
+    }
+    if send_len > 0 {
+        let _ = record_send(cslot.conn.flow_ctrl, qstream, tx.tx_next_offset, send_len);
+    }
+    tx.tx_next_offset = core::add_sat_u64(tx.tx_next_offset, send_len);
+    if send_fin { tx.tx_fin_sent = true; }
+    ack_el = true;
+    return true;
 }
 
 fn try_emit_stream_tx_slot(
@@ -1877,6 +2279,7 @@ fn try_emit_stream_tx_slot(
 ) -> bool {
     let rx .= g_quic_srv_stream_rx[slot_idx];
     let tx .= g_quic_srv_stream_tx[slot_idx];
+    guard !is_stream_tx_stopped(tx) else { return false; }
     let unsent_rel = core::sub_sat_u64(tx.tx_next_offset, tx.tx_unacked_base);
     let unsent_bytes = core::sub_sat_u64(tx.tx_buf_len, unsent_rel);
     let fin_pending = tx.tx_fin_queued && !tx.tx_fin_sent;
@@ -1887,34 +2290,14 @@ fn try_emit_stream_tx_slot(
     );
     guard ok_fc && has_sent_chunk_room(cslot, 1) else { return false; }
 
-    let used = core::add_sat_u64(plain.len as u64, 20);
+    let used = core::add_sat_u64(plain.len as u64, 25);
     guard used <= max_plain else { return false; }
     let send_len = min(unsent_bytes, min(avail_fc, core::sub_sat_u64(max_plain, used)));
     let send_fin = fin_pending && (send_len == unsent_bytes);
     guard send_len > 0 || send_fin else { return false; }
-    var slice_buf: u8[..1500] = [];
-    guard slab_copy_slice(tx.tx_slabs, tx.tx_head_off, tx.tx_buf_len, unsent_rel, send_len, slice_buf) else {
-        return false;
-    }
-    let mark = plain.len;
-    let flags = QuicStreamFlags { fin: send_fin, with_len: true, .. };
-    guard encode_stream_frame(rx.stream_id, tx.tx_next_offset, slice_buf[..], plain, flags) else { return false; }
-    guard try_track_tx_chunk(
-        cslot, PnSpaceId.ApplicationData, pn, QuicSentChunkKind.StreamData,
-        rx.stream_id, tx.tx_next_offset, send_len, send_fin, 0,
-    ) else {
-        plain.resize(mark);
-        return false;
-    }
-    let qstream .= cslot.conn.stream_table.streams[st_idx];
-    if send_len > 0 {
-        let _ = record_send(cslot.conn.flow_ctrl, qstream, tx.tx_next_offset, send_len);
-    }
-    let _, _ = on_send_data(qstream, tx.tx_next_offset, send_len, send_fin);
-    tx.tx_next_offset = core::add_sat_u64(tx.tx_next_offset, send_len);
-    if send_fin { tx.tx_fin_sent = true; }
-    ack_el = true;
-    return true;
+    return emit_and_commit_stream_frame(
+        cslot, slot_idx, st_idx, pn, unsent_rel, send_len, send_fin, plain, ack_el,
+    );
 }
 
 fn encode_app_unsent_stream_data(
@@ -1954,6 +2337,7 @@ fn try_emit_app_packet(
     let pn = cslot.next_tx_pn_app;
     var plain: u8[..1500] = [];
     encode_app_control_frames(cslot, pn, plain, max_plain, out_ack_el);
+    encode_app_stream_resets(cslot, c_idx, pn, plain, max_plain, out_ack_el);
     encode_app_stream_window_updates(cslot, c_idx, pn, plain, max_plain, out_ack_el);
     let sent_retx = encode_app_retransmit_chunks(cslot, c_idx, pn, plain, max_plain, out_ack_el);
 
@@ -2236,6 +2620,22 @@ fn quic_server_feed_datagram(
     return process_conn_datagram_packets(eslot, c_idx, pkt, peer_ip, peer_port, now_ns, is_new);
 }
 
+fn complete_stream_reset_on_poll(
+    eslot:  const QuicSrvEndpointSlot&,
+    ep_idx: i64,
+    node:   const QuicSrvEventNode&,
+) {
+    guard node.kind == QuicServerEventKind.StreamReset else { return; }
+    let c_idx = find_conn_idx_by_id(ep_idx, eslot.generation, node.conn_id);
+    guard c_idx >= 0 else { return; }
+    let cslot .= g_quic_srv_conns[c_idx];
+    let st_idx, found = find_stream(cslot.conn.stream_table, node.stream_id);
+    if found {
+        let _ = on_app_read_reset(cslot.conn.stream_table.streams[st_idx]);
+        try_reclaim_single_stream(cslot, c_idx, node.stream_id);
+    }
+}
+
 // Pops the next pending connection or stream event into `out_ev`.
 fn quic_server_poll_event(ep: QuicServerEndpoint&, out_ev: QuicServerEvent&) -> bool {
     out_ev = QuicServerEvent { .. };
@@ -2257,6 +2657,7 @@ fn quic_server_poll_event(ep: QuicServerEndpoint&, out_ev: QuicServerEvent&) -> 
         sni:        node.sni,
         error_code: node.error_code,
     };
+    complete_stream_reset_on_poll(eslot, ep_idx, node);
     free_srv_event_node(ev_idx);
     return true;
 }
@@ -2447,7 +2848,12 @@ fn quic_server_stream_read(
     if rx.rx_fin_received && rx.rx_base_offset >= rx.rx_final_size {
         out_fin = true;
         rx.rx_fin_delivered = true;
+        let st_idx, found_st = find_stream(cslot.conn.stream_table, stream_id);
+        if found_st {
+            let _ = on_app_read(cslot.conn.stream_table.streams[st_idx], 0);
+        }
     }
+    try_reclaim_single_stream(cslot, c_idx, stream_id);
     return avail as i64;
 }
 
@@ -2464,6 +2870,7 @@ fn ensure_server_writable_stream(cslot: QuicSrvConnSlot&, stream_id: u64) -> i32
     if found {
         return st_idx, true;
     }
+    guard !is_evicted_closed_stream(cslot.conn.stream_table, stream_id) else { return -1, false; }
     // RFC 9000 Section 2.1: Stream Types and Identifiers - Server initiates odd stream IDs (1, 3, ...).
     guard !quic_internal::is_peer_initiated_stream(stream_id, QuicRole.Server) else { return -1, false; }
     let is_bidi = (stream_id & 2) == 0;
