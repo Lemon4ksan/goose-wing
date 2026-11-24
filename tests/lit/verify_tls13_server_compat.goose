@@ -746,35 +746,28 @@ fn client_complete_with_ch1(
     };
     assert(cli_cfg.server_name.try_set("localhost"));
 
-    var hs_reader = tls::HandshakeRecordReader { .. };
-    var ech_st = tls_internal::EchClientState { .. };
-    var neg_alpn: u8[..255] = [];
-    var cr_rx = false;
-    var cr_msg = tls::CertificateRequestMsg { .. };
-    guard tls_internal::tls_client_process_server_flight(
-        hs_reader, fd, sh.cipher_suite, s_hs_key[..klen], s_hs_iv, c_hs_key[..klen], c_hs_iv,
-        ks, tr, cli_cfg, ech_st, false, neg_alpn, cr_rx, cr_msg, slot_idx,
-    ) else { return false; }
-
-    var h_srv_fin: u8[..48] = [];
-    tls_internal::transcript_current_hash(tr, ks.hash_id, h_srv_fin);
-    guard tls_internal::ks_advance_to_master(ks, h_srv_fin[..]) else { return false; }
-    guard tls_internal::tls_client_send_finished(
-        fd, sh.cipher_suite, c_hs_key[..klen], c_hs_iv, ks, tr, cli_cfg, cr_rx, cr_msg,
-    ) else { return false; }
-
-    var c_ap_key: u8[32] = [0; 32];
-    var s_ap_key: u8[32] = [0; 32];
-    var c_ap_iv:  u8[12] = [0; 12];
-    var s_ap_iv:  u8[12] = [0; 12];
-    guard tls_internal::ks_derive_key_iv(ks.hash_id, ks.client_ap_traffic[..hlen], klen_u16, c_ap_key[..klen], c_ap_iv) &&
-        tls_internal::ks_derive_key_iv(ks.hash_id, ks.server_ap_traffic[..hlen], klen_u16, s_ap_key[..klen], s_ap_iv) else {
-        return false;
-    }
-    tls_internal::tls_setup_client_cipher_slot(
-        slot_idx, sh.cipher_suite, klen_u16, ks,
-        c_ap_key[..klen], c_ap_iv, s_ap_key[..klen], s_ap_iv, "localhost", neg_alpn[..], false,
-    );
+    var ep, ok_ep = tls_internal::pure_open_blocking_client_endpoint(cli_cfg, slot_idx);
+    guard ok_ep && ep.pure_slot >= 0 else { return false; }
+    let slot .= tls_internal::g_pure_tls_slots[ep.pure_slot as i64];
+    slot.stage = tls_internal::PureHsStage.ClientWaitEE;
+    slot.client_random = cli_rand;
+    slot.cipher_suite = sh.cipher_suite;
+    slot.key_len = klen_u16;
+    slot.transcript = tr;
+    slot.ks = ks;
+    slot.hs_tx_key = c_hs_key;
+    slot.hs_tx_iv = c_hs_iv;
+    slot.hs_tx_seq = 0;
+    slot.hs_rx_key = s_hs_key;
+    slot.hs_rx_iv = s_hs_iv;
+    slot.hs_rx_seq = 0;
+    slot.hs_keys_active = true;
+    defer {
+        let _ = tls_internal::pure_detach_cipher_slot(ep);
+        tls::tls_endpoint_close(ep);
+    };
+    guard tls_internal::tls_drive_blocking_endpoint_handshake(fd, ep, 5000) else { return false; }
+    guard tls_internal::pure_detach_cipher_slot(ep) == slot_idx else { return false; }
 
     guard tls::transport_send(fd, slot_idx, "PING") == 4 else { return false; }
     var rx: u8[16] = [0; 16];

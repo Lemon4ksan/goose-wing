@@ -568,37 +568,50 @@ fn encode_server_cert_chain_msg<B>(
     return frame_handshake_msg_4k(rfc::TLS_HS_CERTIFICATE, cert_payload[..], out_msg);
 }
 
-fn encode_server_cert_or_compressed_msg<B>(
-    config:                    const tls::ServerHandshakeConfig&,
+fn encode_server_cert_with_optional_compression<B>(
+    cert_der:                  const u8[:],
+    extra_certs_der:           const u8[..4096][:],
+    compressed_cert_algo:      u16,
+    compressed_cert_data:      const u8[:],
     negotiated_cert_comp_algo: u16,
     out_msg:                   B&,
 ) -> bool {
     out_msg.clear();
-    guard config.cert_der.len > 0 else { return false; }
+    guard cert_der.len > 0 else { return false; }
 
     let can_compress = negotiated_cert_comp_algo != 0 &&
-        negotiated_cert_comp_algo == config.compressed_cert_algo &&
-        config.compressed_cert_data.len > 0;
+        negotiated_cert_comp_algo == compressed_cert_algo &&
+        compressed_cert_data.len > 0;
     if can_compress {
         var cert_payload: u8[..20480] = [];
-        guard encode_client_certificate_chain(
-            cert_payload, "", config.cert_der[..], config.extra_certs_der[..],
-        ) else {
+        guard encode_client_certificate_chain(cert_payload, "", cert_der, extra_certs_der) else {
             return false;
         }
         var comp_payload: u8[..4096] = [];
         guard build_compressed_cert_payload(
-            config.compressed_cert_algo,
-            cert_payload.len,
-            config.compressed_cert_data[..],
-            comp_payload,
+            compressed_cert_algo, cert_payload.len, compressed_cert_data, comp_payload,
         ) else {
             return false;
         }
         return frame_handshake_msg_4k(rfc::TLS_HS_COMPRESSED_CERTIFICATE, comp_payload[..], out_msg);
     }
 
-    return encode_server_cert_chain_msg(config.cert_der[..], config.extra_certs_der[..], out_msg);
+    return encode_server_cert_chain_msg(cert_der, extra_certs_der, out_msg);
+}
+
+fn encode_server_cert_or_compressed_msg<B>(
+    config:                    const tls::ServerHandshakeConfig&,
+    negotiated_cert_comp_algo: u16,
+    out_msg:                   B&,
+) -> bool {
+    return encode_server_cert_with_optional_compression(
+        config.cert_der[..],
+        config.extra_certs_der[..],
+        config.compressed_cert_algo,
+        config.compressed_cert_data[..],
+        negotiated_cert_comp_algo,
+        out_msg,
+    );
 }
 
 fn generate_client_handshake_keys(

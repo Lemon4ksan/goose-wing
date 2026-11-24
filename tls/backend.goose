@@ -24,7 +24,6 @@ import .session_codec_internal;
 import .session;
 import .handshake_io_client_internal;
 import .handshake_io_server_internal;
-import .client_handshake;
 import net.tcp;
 import net.transport;
 import .handshake_wire_internal;
@@ -258,16 +257,18 @@ fn tls_endpoint_set_server_credentials_pem(
         slot.stage = tls_internal::PureHsStage.Failed;
         return TlsBackendStatus.HandshakeError;
     }
-    if slot.rsa_key_slot >= 0 {
+    if slot.owns_rsa_key_slot && slot.rsa_key_slot >= 0 {
         release_rsa_key_slot(slot.rsa_key_slot, slot.rsa_key_gen);
         slot.rsa_key_slot = -1;
         slot.rsa_key_gen = 0;
+        slot.owns_rsa_key_slot = false;
     }
     slot.extra_certs_der = copy(srv_cfg.extra_certs_der);
     slot.priv_seed = srv_cfg.priv_seed;
     slot.key_kind = srv_cfg.key_kind;
     slot.rsa_key_slot = srv_cfg.rsa_key_slot;
     slot.rsa_key_gen = srv_cfg.rsa_key_gen;
+    slot.owns_rsa_key_slot = srv_cfg.rsa_key_slot >= 0;
     srv_cfg.rsa_key_slot = -1;
     srv_cfg.rsa_key_gen = 0;
     slot.defer_sni_credentials = false;
@@ -293,7 +294,9 @@ fn tls_endpoint_selected_alpn(ep: const TlsEndpoint&) -> u8[..64] {
         tls_internal::is_live_pure_slot(tls_internal::g_pure_tls_slots[idx], ep.pure_gen) else {
         return out;
     }
-    let _ = out.try_set(tls_internal::g_pure_tls_slots[idx].selected_alpn[..]);
+    let sel .= tls_internal::g_pure_tls_slots[idx].selected_alpn;
+    let take = min(sel.len, out.cap);
+    let _ = out.try_set(sel[..take]);
     return out;
 }
 

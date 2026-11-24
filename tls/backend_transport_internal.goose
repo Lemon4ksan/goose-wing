@@ -7,10 +7,13 @@ namespace tls_internal;
 import std;
 import core;
 import .types;
+import .record;
 import .backend;
 import .backend_native_internal;
 import .backend_pure_internal;
 import .backend_pure_hs_internal;
+import .handshake_io_server_internal;
+import .session_internal;
 import net.tcp;
 import net.transport;
 
@@ -184,4 +187,158 @@ fn endpoint_run_handshake_fd(
         guard fed > 0 else { return -1, alpn, tls::TlsBackendStatus.HandshakeError; }
     }
     return -1, alpn, tls::TlsBackendStatus.HandshakeError;
+}
+
+fn pure_queue_endpoint_alert(ep: tls::TlsEndpoint&, alert: tls::Alert) {
+    guard !ep.closed && ep.active_kind == tls::TlsBackendKind.PureGoose else { return; }
+    let idx = ep.pure_slot as i64;
+    guard idx >= 0 &&
+        idx < g_pure_tls_slots.len &&
+        is_live_pure_slot(g_pure_tls_slots[idx], ep.pure_gen) else {
+        return;
+    }
+    pure_queue_fatal_alert(g_pure_tls_slots[idx], alert);
+}
+
+fn pure_open_blocking_client_endpoint(
+    cfg:             const tls::ClientHandshakeConfig&,
+    pre_cipher_slot: u16,
+) -> tls::TlsEndpoint, bool {
+    let idx, gen = alloc_pure_tls_slot();
+    guard idx >= 0 else { return tls::TlsEndpoint { .. }, false; }
+    let slot .= g_pure_tls_slots[idx as i64];
+    slot.is_server = false;
+    slot.cipher_slot = pre_cipher_slot;
+    slot.stage = PureHsStage.ClientInit;
+    slot.client_cfg = cfg;
+    let _ = slot.server_name.try_set(cfg.server_name[..]);
+    let _ = slot.alpn_csv.try_set(cfg.alpn[..]);
+    let _ = slot.keylog_file.try_set(cfg.keylog_file[..]);
+    return tls::TlsEndpoint {
+        kind:        tls::TlsBackendKind.PureGoose,
+        active_kind: tls::TlsBackendKind.PureGoose,
+        is_server:   false,
+        established: false,
+        closed:      false,
+        pure_slot:   idx,
+        pure_gen:    gen,
+        native_id:   -1,
+    }, true;
+}
+
+fn pure_open_blocking_server_endpoint(
+    cfg:             const tls::ServerHandshakeConfig&,
+    ch_msg:          const u8[:],
+    pre_cipher_slot: u16,
+) -> tls::TlsEndpoint, bool {
+    let idx, gen = alloc_pure_tls_slot();
+    guard idx >= 0 else { return tls::TlsEndpoint { .. }, false; }
+    let slot .= g_pure_tls_slots[idx as i64];
+    slot.is_server = true;
+    slot.defer_sni_credentials = false;
+    slot.require_client_cert = cfg.require_client_cert;
+    slot.psk_policy = ServerPskPolicy.AllowResumption;
+    slot.cipher_slot = pre_cipher_slot;
+    slot.stage = PureHsStage.ServerWaitClientHello;
+
+    var committed = false;
+    defer if !committed {
+        slot.cipher_slot = 0xFFFF;
+        reset_and_wipe_pure_slot(slot);
+    };
+    guard slot.cert_der.try_set(cfg.cert_der[..]) &&
+        slot.alpn_csv.try_set(cfg.alpn[..]) &&
+        slot.compressed_cert_data.try_set(cfg.compressed_cert_data[..]) &&
+        slot.keylog_file.try_set(cfg.keylog_file[..]) else {
+        return tls::TlsEndpoint { .. }, false;
+    }
+    if ch_msg.len > 0 {
+        guard slot.pending_ch_msg.try_set(ch_msg) else { return tls::TlsEndpoint { .. }, false; }
+    }
+    slot.extra_certs_der = copy(cfg.extra_certs_der);
+    slot.priv_seed = cfg.priv_seed;
+    slot.key_kind = cfg.key_kind;
+    slot.rsa_key_slot = cfg.rsa_key_slot;
+    slot.rsa_key_gen = cfg.rsa_key_gen;
+    slot.owns_rsa_key_slot = false;
+    slot.compressed_cert_algo = cfg.compressed_cert_algo;
+    slot.client_cfg.trust_store = cfg.client_trust_store;
+    committed = true;
+    return tls::TlsEndpoint {
+        kind:        tls::TlsBackendKind.PureGoose,
+        active_kind: tls::TlsBackendKind.PureGoose,
+        is_server:   true,
+        established: false,
+        closed:      false,
+        pure_slot:   idx,
+        pure_gen:    gen,
+        native_id:   -1,
+    }, true;
+}
+
+recursive fn pure_blocking_drain_to_fd(fd: i64, ep: tls::TlsEndpoint&) -> bool {
+    var wire: u8[16640] = [0; 16640];
+    for _ in 64 {
+        let n, st = tls::tls_endpoint_drain_wire(ep, wire[..]);
+        guard st == tls::TlsBackendStatus.Ok else { return false; }
+        if n <= 0 { return true; }
+        guard n <= wire.len && tls_write_all(fd, wire[..n]) else { return false; }
+    }
+    return true;
+}
+
+recursive fn pure_blocking_feed_one_record(
+    fd:         i64,
+    ep:         tls::TlsEndpoint&,
+    timeout_ms: u32,
+) -> bool {
+    var rec: u8[16645] = [0; 16645];
+    guard tls_read_exact(fd, rec[..5], timeout_ms) else { return false; }
+    let _, _, plen_u16, alert, ok_hdr = tls::parse_record_header(rec[..5]);
+    guard ok_hdr else {
+        if alert != tls::Alert.CloseNotify {
+            pure_queue_endpoint_alert(ep, alert);
+        }
+        return false;
+    }
+    let plen = plen_u16 as i64;
+    guard plen <= rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN else {
+        pure_queue_endpoint_alert(ep, tls::Alert.RecordOverflow);
+        return false;
+    }
+    let total = core::add_sat_i64(5, plen);
+    if plen > 0 {
+        guard total <= rec.len && tls_read_exact(fd, rec[5..total], timeout_ms) else {
+            return false;
+        }
+    }
+    let fed, fst = tls::tls_endpoint_feed_wire(ep, rec[..total]);
+    return fst == tls::TlsBackendStatus.Ok && fed == total;
+}
+
+recursive fn tls_drive_blocking_endpoint_handshake(
+    fd:         i64,
+    ep:         tls::TlsEndpoint&,
+    timeout_ms: u32,
+) -> bool {
+    guard fd > 0 && !ep.closed else { return false; }
+    for _ in 64 {
+        let st = tls::tls_endpoint_step_handshake(ep);
+        let flushed = pure_blocking_drain_to_fd(fd, ep);
+        if st == tls::TlsBackendStatus.Ok || tls::tls_endpoint_is_established(ep) {
+            return flushed;
+        }
+        if st == tls::TlsBackendStatus.WantWrite {
+            guard flushed else { return false; }
+            continue;
+        }
+        if st != tls::TlsBackendStatus.WantRead {
+            return false;
+        }
+        guard flushed && pure_blocking_feed_one_record(fd, ep, timeout_ms) else {
+            let _ = pure_blocking_drain_to_fd(fd, ep);
+            return false;
+        }
+    }
+    return false;
 }
