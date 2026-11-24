@@ -155,3 +155,36 @@ fn check_probe_timeouts(checker: ClusterHealthChecker&, cluster: UpstreamCluster
 `unhealthy_threshold` consecutive failures or timeouts (`check_probe_timeouts`)
 to mark a node `Down`. Gateway GCRA rate limiting (`GcraConfig`,
 `GatewayRateLimiter`) lives in `security/gcra.goose`.
+
+### 4. HTTP/2 Upstream Multiplexer (`proxy/h2_upstream.goose`, RFC 9113, RFC 7541)
+
+```goose
+enum H2UpstreamTransport { H2Tls, H2c }
+enum H2UpstreamStreamEnd { OpenBody, EndStream }
+enum H2UpstreamHeaderFilter { ApplyProxyFilters, DirectHeaders }
+enum H2UpstreamEventKind { None, ResponseHead, ResponseData, ResponseTrailers, ResponseEnd, StreamReset, GoAway, PingAck, ProtocolError }
+struct H2UpstreamConfig
+struct H2UpstreamEvent
+struct H2UpstreamSession
+
+fn h2_upstream_open(cfg: H2UpstreamConfig) -> H2UpstreamSession
+fn h2_upstream_close(sess: H2UpstreamSession&)
+fn h2_upstream_poll_event(sess: H2UpstreamSession&, out_ev: H2UpstreamEvent&) -> bool
+fn h2_upstream_drain_wire(sess: H2UpstreamSession&, out: u8[>..]&) -> i64
+fn h2_upstream_open_stream(sess: H2UpstreamSession&, method: const u8[:], scheme: const u8[:], authority: const u8[:], path: const u8[:], in_headers: const http::HeaderMap&, client_ip: const u8[:], stream_end: H2UpstreamStreamEnd = H2UpstreamStreamEnd.OpenBody, header_filter: H2UpstreamHeaderFilter = H2UpstreamHeaderFilter.ApplyProxyFilters) -> u32, bool
+fn h2_upstream_send_data(sess: H2UpstreamSession&, stream_id: u32, data: const u8[:], end_stream: bool) -> i64, bool
+fn h2_upstream_send_trailers(sess: H2UpstreamSession&, stream_id: u32, trailers: const http::HeaderMap&) -> bool
+fn h2_upstream_reset_stream(sess: H2UpstreamSession&, stream_id: u32, error_code: u32 = rfc::H2_ERR_CANCEL) -> bool
+fn h2_upstream_send_ping(sess: H2UpstreamSession&, opaque_data: const u8[:]) -> bool
+fn h2_upstream_send_goaway(sess: H2UpstreamSession&, error_code: u32 = rfc::H2_ERR_NO_ERROR) -> bool
+fn h2_upstream_feed(sess: H2UpstreamSession&, wire_in: const u8[:]) -> bool
+fn h2_upstream_can_open_stream(sess: const H2UpstreamSession&) -> bool
+fn h2_upstream_active_streams(sess: const H2UpstreamSession&) -> u32
+fn h2_upstream_is_draining(sess: const H2UpstreamSession&) -> bool
+```
+
+`H2UpstreamSession` multiplexes client-initiated odd HTTP/2 streams (`1, 3, 5,
+...`) over thread-local shared-nothing pools using generation-guarded handles.
+It preserves `te: trailers` and `HEADER_FLAG_SENSITIVE` (`NeverIndexed`) across
+gRPC, Connect-RPC, full-duplex bidirectional streaming, flow-controlled WAN
+fan-out, and graceful `GOAWAY` draining.

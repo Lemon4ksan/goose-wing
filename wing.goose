@@ -396,3 +396,4 @@ import proxy.health_check;
 import proxy.load_balancer;
 import proxy.reverse_proxy;
 import proxy.stream_relay;
+import proxy.h2_upstream;
