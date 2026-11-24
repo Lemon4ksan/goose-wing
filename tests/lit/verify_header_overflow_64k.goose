@@ -558,7 +558,7 @@ fn test_http3_64k_spill_and_view() {
     assert(http3::h3_edge_encode_response_headers_spill(sess, 200, resp_map, resp_arena, out_wire));
     assert(out_wire.len > 16384);
 
-    // Verify QPACK N=1 encodings for static-name ref (0x70) and literal non-Huffman name (0x30).
+    // Verify QPACK N=1 encodings: static-name ref (0x70), literal raw (0x30), and Huffman (0x38).
     var qn1_static: u8[..64] = [0x00, 0x00];
     assert(http3::encode_qpack_field(
         qn1_static, "authorization", "tok", false, http3::QpackIndexingPolicy.NeverIndex,
@@ -569,12 +569,23 @@ fn test_http3_64k_spill_and_view() {
         qn1_raw, "x-raw", "val", false, http3::QpackIndexingPolicy.NeverIndex,
     ));
     assert((qn1_raw[2] & 0xF8) == 0x30);
-    var qn1_ps = http3::PseudoHeaders { is_trailer: true, .. };
     var qn1_map = http::HeaderMap { .. };
     var qn1_tbl = http3::new_qpack_table(0, 0);
+    var qn1_ps = http3::PseudoHeaders { is_trailer: true, .. };
     assert(http3::decode_or_track_blocked_qpack_to_map(qn1_tbl, 99, qn1_raw[..], qn1_ps, qn1_map, 4096)
         == http3::QpackError.None);
     assert(qn1_map.entries.len == 1 && http::is_sensitive(qn1_map.entries[0]));
+    var qn1_huff: u8[..64] = [0x00, 0x00];
+    assert(http3::encode_qpack_field(
+        qn1_huff, "x-huff-secret", "val", true, http3::QpackIndexingPolicy.NeverIndex,
+    ));
+    assert((qn1_huff[2] & 0xF8) == 0x38);
+    var qn1_huff_map = http::HeaderMap { .. };
+    var qn1_huff_ps = http3::PseudoHeaders { is_trailer: true, .. };
+    assert(http3::decode_or_track_blocked_qpack_to_map(
+        qn1_tbl, 100, qn1_huff[..], qn1_huff_ps, qn1_huff_map, 4096,
+    ) == http3::QpackError.None);
+    assert(qn1_huff_map.entries.len == 1 && http::is_sensitive(qn1_huff_map.entries[0]));
 
     var rdec_tbl = http3::new_qpack_table(0, 0);
     var rdec_ps = http3::PseudoHeaders { .. };
