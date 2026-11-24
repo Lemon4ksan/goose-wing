@@ -53,13 +53,18 @@ struct H2EdgeSession {
 
 // ---- Thread-Local Slot & Event Arena Storage -----------------------------
 
+struct H2EdgeDataChunk {
+    in_use:   bool        = false,
+    next_idx: i64         = -1,
+    buf:      u8[..16384] = [],
+}
+
 struct H2EdgeEventNode {
     active:      bool            = false,
     kind:        H2EdgeEventKind = H2EdgeEventKind.None,
     stream_id:   u32             = 0,
     header_slot: i64             = -1,
-    data_off:    i64             = 0,
-    data_len:    i64             = 0,
+    chunk_idx:   i64             = -1,
     end_stream:  bool            = false,
     error_code:  u32             = 0,
     next_idx:    i64             = -1,
@@ -93,17 +98,17 @@ struct H2EdgeSlot {
     ev_data_buf:                   u8[..16384]  = [],
 }
 
-var g_h2_edge_slots:           H2EdgeSlot[>..]      = [];
-var g_h2_edge_active_count:    i64                  = 0;
-var g_h2_edge_next_gen:        u64                  = 0;
-var g_h2_edge_events:          H2EdgeEventNode[>..] = [];
-var g_h2_edge_free_event:      i64                  = -1;
-var g_h2_edge_headers:         http::HeaderMap[>..] = [];
-var g_h2_edge_hdr_next_free:   i64[>..]             = [];
-var g_h2_edge_free_hdr:        i64                  = -1;
-var g_h2_edge_data_arena:      u8[>..]              = [];
-var g_h2_edge_live_data_bytes: i64                  = 0;
-var g_h2_edge_hpack_scratch:   u8[>..]              = [];
+var g_h2_edge_slots:         H2EdgeSlot[>..]      = [];
+var g_h2_edge_active_count:  i64                  = 0;
+var g_h2_edge_next_gen:      u64                  = 0;
+var g_h2_edge_events:        H2EdgeEventNode[>..] = [];
+var g_h2_edge_free_event:    i64                  = -1;
+var g_h2_edge_headers:       http::HeaderMap[>..] = [];
+var g_h2_edge_hdr_next_free: i64[>..]             = [];
+var g_h2_edge_free_hdr:      i64                  = -1;
+var g_h2_edge_data_chunks:   H2EdgeDataChunk[>..] = [];
+var g_h2_edge_free_chunk:    i64                  = -1;
+var g_h2_edge_hpack_scratch: u8[>..]              = [];
 
 // ---- Slot & Arena Lifecycle Helpers --------------------------------------
 
@@ -139,6 +144,37 @@ fn free_edge_header_map(h_idx: i64) {
     g_h2_edge_free_hdr = h_idx;
 }
 
+fn free_edge_data_chunk(c_idx: i64) {
+    guard c_idx >= 0 && c_idx < g_h2_edge_data_chunks.len else { return; }
+    let ch .= g_h2_edge_data_chunks[c_idx];
+    guard ch.in_use else { return; }
+    ch.buf.clear();
+    ch.in_use = false;
+    ch.next_idx = g_h2_edge_free_chunk;
+    g_h2_edge_free_chunk = c_idx;
+}
+
+fn alloc_edge_data_chunk(payload: const u8[:]) -> i64 {
+    guard payload.len <= H2_EDGE_EV_DATA_CAP else { return -1; }
+    var c_idx: i64 = -1;
+    if g_h2_edge_free_chunk >= 0 {
+        c_idx = g_h2_edge_free_chunk;
+        let ch .= g_h2_edge_data_chunks[c_idx];
+        g_h2_edge_free_chunk = ch.next_idx;
+        ch.next_idx = -1;
+        ch.in_use = true;
+        ch.buf.clear();
+    } else {
+        c_idx = g_h2_edge_data_chunks.len;
+        g_h2_edge_data_chunks.push(H2EdgeDataChunk { in_use: true, .. });
+    }
+    guard g_h2_edge_data_chunks[c_idx].buf.try_set(payload) else {
+        free_edge_data_chunk(c_idx);
+        return -1;
+    }
+    return c_idx;
+}
+
 fn alloc_edge_event_node() -> i64 {
     if g_h2_edge_free_event >= 0 {
         let idx = g_h2_edge_free_event;
@@ -157,11 +193,8 @@ fn free_edge_event_node(ev_idx: i64) {
     if node.header_slot >= 0 {
         free_edge_header_map(node.header_slot);
     }
-    if node.data_len > 0 {
-        g_h2_edge_live_data_bytes = core::sub_sat_i64(g_h2_edge_live_data_bytes, node.data_len);
-        if g_h2_edge_live_data_bytes == 0 {
-            g_h2_edge_data_arena.clear();
-        }
+    if node.chunk_idx >= 0 {
+        free_edge_data_chunk(node.chunk_idx);
     }
     g_h2_edge_events[ev_idx] = H2EdgeEventNode { next_idx: g_h2_edge_free_event, .. };
     g_h2_edge_free_event = ev_idx;
@@ -187,16 +220,13 @@ fn enqueue_edge_event(
     end_stream:  bool,
     error_code:  u32,
 ) -> bool {
-    var data_off: i64 = 0;
-    let data_len = payload.len;
-    if data_len > 0 {
-        guard data_len <= H2_EDGE_EV_DATA_CAP else {
+    var chunk_idx: i64 = -1;
+    if payload.len > 0 {
+        chunk_idx = alloc_edge_data_chunk(payload);
+        guard chunk_idx >= 0 else {
             free_edge_header_map(header_slot);
             return false;
         }
-        data_off = g_h2_edge_data_arena.len;
-        g_h2_edge_data_arena.append(payload);
-        g_h2_edge_live_data_bytes = core::add_sat_i64(g_h2_edge_live_data_bytes, data_len);
     }
 
     let ev_idx = alloc_edge_event_node();
@@ -204,8 +234,7 @@ fn enqueue_edge_event(
     node.kind = kind;
     node.stream_id = stream_id;
     node.header_slot = header_slot;
-    node.data_off = data_off;
-    node.data_len = data_len;
+    node.chunk_idx = chunk_idx;
     node.end_stream = end_stream;
     node.error_code = error_code;
     node.next_idx = -1;
@@ -1147,9 +1176,8 @@ fn h2_edge_poll_event(sess: H2EdgeSession&, out_ev: H2EdgeEvent&) -> bool {
     if node.header_slot >= 0 {
         http::copy_headers(g_h2_edge_headers[node.header_slot], out_ev.headers);
     }
-    if node.data_len > 0 {
-        let data_end = core::add_sat_i64(node.data_off, node.data_len);
-        let src = g_h2_edge_data_arena[node.data_off..data_end];
+    if node.chunk_idx >= 0 {
+        let src = g_h2_edge_data_chunks[node.chunk_idx].buf[..];
         guard slot.ev_data_buf.try_set(src) else {
             free_edge_event_node(ev_idx);
             out_ev = H2EdgeEvent { .. };
@@ -1247,7 +1275,7 @@ fn h2_edge_send_headers(
 fn send_edge_zero_data(slot: H2EdgeSlot&, stream_id: u32, end_stream: bool) -> i64, bool {
     guard end_stream else { return 0, true; }
     guard core::sub_sat_i64(slot.wire_out.cap, slot.wire_out.len) >= rfc::H2_FRAME_HEADER_LEN else {
-        return 0, true;
+        return 0, false;
     }
     guard append_edge_frame(slot.wire_out, rfc::H2_FRAME_DATA, rfc::H2_FLAG_END_STREAM, stream_id, "") else {
         return 0, false;
@@ -1289,7 +1317,8 @@ fn send_edge_data_loop(
 }
 
 // Emits up to the minimum of connection window, stream window, peer max frame size, and wire space.
-// Returns `(accepted, true)` on send or flow-control pause (`0`), or `(0, false)` on closed state.
+// Returns `(accepted, true)` on send or flow-control pause (`0`), or `(0, false)` on closed state
+// or when a zero-length `end_stream` frame cannot fit in `wire_out`.
 //
 // Example:
 //   stream send window = 1000, data.len = 2500, end_stream = true

@@ -988,6 +988,107 @@ fn test_h2_edge_round1_regressions() {
     // CHECK: H2_EDGE_ROUND1_REGRESSIONS: OK
 }
 
+fn test_h2_edge_zero_data_and_chunk_reclaim() {
+    // 1. h2_edge_send_data(sess, sid, "", true) returns (0, false) without closing stream when wire_out has < 9 bytes free.
+    var s = http2::h2_edge_open(128, 131072);
+    defer http2::h2_edge_close(s);
+
+    var req_w: u8[>..] = [];
+    req_w.append(rfc::H2_CLIENT_PREFACE[..]);
+    let set_win: wire::WireSetting[1] = [
+        wire::WireSetting { id: rfc::H2_SETTING_INITIAL_WINDOW_SIZE, val: 262144 },
+    ];
+    assert(wire::encode_settings_frame(set_win[..], req_w));
+    var wu4: u8[4] = [0x00, 0x04, 0x00, 0x00]; // 262144
+    append_h2_frame(req_w, rfc::H2_FRAME_WINDOW_UPDATE, 0, 0, wu4[..]);
+    var dt = http2::new_dynamic_table(4096);
+    var empty_h = http::HeaderMap { .. };
+    append_h2_req_headers(req_w, dt, 1, "GET", "/fill", empty_h, true);
+    append_h2_req_headers(req_w, dt, 3, "GET", "/zero", empty_h, true);
+    let _, ok_f = http2::h2_edge_feed(s, req_w[..]);
+    assert(ok_f);
+
+    var ev = http2::H2EdgeEvent { .. };
+    while http2::h2_edge_poll_event(s, ev) {}
+
+    // Drain initial server SETTINGS + SETTINGS ACK so wire_out starts empty, then fill wire_out until < 9 bytes free.
+    var dump: u8[>..] = [];
+    let _ = http2::h2_edge_drain_wire(s, dump);
+    assert(http2::h2_edge_send_headers(s, 1, 200, empty_h, false));
+    assert(http2::h2_edge_send_headers(s, 3, 200, empty_h, false));
+    dump.clear();
+    let _ = http2::h2_edge_drain_wire(s, dump);
+
+    // Send 147370-byte body on stream 1 across 16384-byte chunks so remaining wire_out capacity is < 9 bytes.
+    var big_fill: u8[>..] = [];
+    for _ in 147370 { big_fill.push('x'); }
+    let sent_fill, ok_fill = http2::h2_edge_send_data(s, 1, big_fill[..], false);
+    assert(ok_fill && sent_fill == 147370);
+    // Ensure remaining free room in wire_out is strictly < 9 bytes.
+    let s_slot_idx = s.slot_idx;
+    let wire_cap = http2::g_h2_edge_slots[s_slot_idx].wire_out.cap;
+    let rem_room = wire_cap - http2::g_h2_edge_slots[s_slot_idx].wire_out.len;
+    assert(rem_room < rfc::H2_FRAME_HEADER_LEN);
+
+    let nz, ok_z = http2::h2_edge_send_data(s, 3, "", true);
+    assert(!ok_z && nz == 0);
+
+    dump.clear();
+    assert(http2::h2_edge_drain_wire(s, dump) == wire_cap - rem_room);
+    let nz2, ok_z2 = http2::h2_edge_send_data(s, 3, "", true);
+    assert(ok_z2 && nz2 == 0);
+    dump.clear();
+    assert(http2::h2_edge_drain_wire(s, dump) == rfc::H2_FRAME_HEADER_LEN);
+    var r3 = wire::new_wire_h2_frame_reader(dump[..]);
+    let fh3, fp3, ok_r3 = wire::next_frame(r3);
+    assert(ok_r3 && fh3.stream_id == 3 && fh3.frame_type == rfc::H2_FRAME_DATA);
+    assert((fh3.flags & rfc::H2_FLAG_END_STREAM) != 0 && fp3.len == 0);
+
+    // 2. Concurrent multiplexed uploads across two sessions keep g_h2_edge_data_chunks strictly bounded.
+    var sa = http2::h2_edge_open(128, 1048576);
+    var sb = http2::h2_edge_open(128, 1048576);
+    defer http2::h2_edge_close(sa);
+    defer http2::h2_edge_close(sb);
+
+    var dta = http2::new_dynamic_table(4096);
+    var dtb = http2::new_dynamic_table(4096);
+    var wa: u8[>..] = [];
+    wa.append(rfc::H2_CLIENT_PREFACE[..]);
+    append_h2_req_headers(wa, dta, 1, "POST", "/hold", empty_h, false);
+    append_h2_frame(wa, rfc::H2_FRAME_DATA, rfc::H2_FLAG_END_STREAM, 1, "held-unpolled-event");
+    let _, oka = http2::h2_edge_feed(sa, wa[..]);
+    assert(oka);
+
+    var wb_init: u8[>..] = [];
+    wb_init.append(rfc::H2_CLIENT_PREFACE[..]);
+    append_h2_req_headers(wb_init, dtb, 1, "POST", "/stream", empty_h, false);
+    let _, okb0 = http2::h2_edge_feed(sb, wb_init[..]);
+    assert(okb0);
+    while http2::h2_edge_poll_event(sb, ev) {}
+
+    var chunk_4k: u8[4096] = [0x4B; 4096];
+    var total_rx: u64      = 0;
+    for r in 300 {
+        var wu_b: u8[>..] = [];
+        append_h2_frame(wu_b, rfc::H2_FRAME_DATA, if r == 299 { rfc::H2_FLAG_END_STREAM } else { 0 }, 1, chunk_4k[..]);
+        let _, okb = http2::h2_edge_feed(sb, wu_b[..]);
+        assert(okb);
+        while http2::h2_edge_poll_event(sb, ev) {
+            if ev.kind == http2::H2EdgeEventKind.RequestData {
+                assert(ev.data.len == 4096 && ev.data[0] == 0x4B);
+                total_rx += ev.data.len as u64;
+            }
+        }
+        dump.clear();
+        let _ = http2::h2_edge_drain_wire(sb, dump);
+    }
+    assert(total_rx == 300 * 4096);
+    assert(http2::g_h2_edge_data_chunks.len <= 16);
+
+    print("H2_EDGE_ZERO_AND_CHUNKS_OK: OK");
+    // CHECK: H2_EDGE_ZERO_AND_CHUNKS_OK: OK
+}
+
 fn test_h2_edge_thread_safety() {
     let tid = thread_spawn(edge_worker_thread, 1);
     assert(thread_wait(tid));
@@ -1000,5 +1101,6 @@ fn main() {
     test_h2_edge_preface_multiplex_upload_sse();
     test_h2_edge_security_and_aba();
     test_h2_edge_round1_regressions();
+    test_h2_edge_zero_data_and_chunk_reclaim();
     test_h2_edge_thread_safety();
 }
