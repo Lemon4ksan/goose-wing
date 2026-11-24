@@ -20,17 +20,34 @@ enum HeaderParseError {
 enum WellKnownHeader
 struct HeaderEntry
 struct HeaderMap
+struct HeaderView
 root struct OverflowArena
 
+fn reset_overflow_arena(arena: OverflowArena&)
 fn append_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool
+fn append_header_spill(map: HeaderMap&, arena: OverflowArena&, name: const u8[:], val: const u8[:], flags: u8 = 0) -> bool
 fn set_header(map: HeaderMap&, name: const u8[:], value: const u8[:], is_sensitive: bool = false)
 fn set_or_replace(map: HeaderMap&, name: const u8[:], value: const u8[:], is_sensitive: bool = false) -> bool
+fn set_or_replace_spill(map: HeaderMap&, arena: OverflowArena&, name: const u8[:], value: const u8[:], flags: u8 = 0) -> bool
 fn get_header(map: const HeaderMap&, name: const u8[:]) -> const u8[:]
+fn get_header_spill(map: const HeaderMap&, arena: const OverflowArena&, name: const u8[:]) -> const u8[:]
 fn has_header(map: const HeaderMap&, name: const u8[:]) -> bool
+fn has_header_spill(map: const HeaderMap&, arena: const OverflowArena&, name: const u8[:]) -> bool
+fn entry_name_spill(map: const HeaderMap&, arena: const OverflowArena&, entry: const HeaderEntry&) -> const u8[:]
+fn entry_value_spill(map: const HeaderMap&, arena: const OverflowArena&, entry: const HeaderEntry&) -> const u8[:]
+fn header_count_spill(map: const HeaderMap&, arena: const OverflowArena&) -> i64
+fn header_entry_at_spill(map: const HeaderMap&, arena: const OverflowArena&, idx: i64) -> const HeaderEntry&, bool
+fn is_token_in_connection_header_spill(map: const HeaderMap&, arena: const OverflowArena&, token: const u8[:]) -> bool
 fn get_combined<B>(map: const HeaderMap&, name: const u8[:], out: B&, max_out_len: i64 = 8192) -> bool
+fn get_combined_spill<B>(map: const HeaderMap&, arena: const OverflowArena&, name: const u8[:], out: B&, max_out_len: i64 = 65535) -> bool
 fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool
+fn remove_header_spill(map: HeaderMap&, arena: OverflowArena&, name: const u8[:]) -> bool
 fn clear(map: HeaderMap&)
 fn reset_for_keep_alive(map: HeaderMap&)
+fn header_view_name(v: const HeaderView&, entry: const HeaderEntry&) -> const u8[:]
+fn header_view_value(v: const HeaderView&, entry: const HeaderEntry&) -> const u8[:]
+fn header_view_get(v: const HeaderView&, name: const u8[:]) -> const u8[:], bool
+fn header_view_copy_to_spill(v: const HeaderView&, out_map: HeaderMap&, out_arena: OverflowArena&) -> bool
 fn serialize_headers(map: const HeaderMap&, out: u8[>..]&)
 fn parse_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool = false, mode: H1ResponseParseMode = H1ResponseParseMode.Strict) -> HeaderParseError
 fn parse_request_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool = false) -> HeaderParseError

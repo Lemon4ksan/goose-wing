@@ -473,10 +473,106 @@ fn decode_or_block_qpack_section<F>(
     return decode_qpack_section(tbl, src, out_fields, max_field_section);
 }
 
+fn reset_qpack_map_outputs(
+    out_pseudo:  PseudoHeaders&,
+    out_headers: http::HeaderMap&,
+    out_arena:   http::OverflowArena&,
+    spill_mode:  h3_internal::QpackSpillMode,
+) {
+    h3_internal::clear_h3_pseudo_headers(out_pseudo, true);
+    out_headers.clear();
+    if spill_mode == h3_internal::QpackSpillMode.AllowSpill {
+        http::reset_overflow_arena(out_arena);
+    }
+}
+
+// Decodes and validates the QPACK section prefix (RIC, Delta Base, Base).
+//
+// Example:
+//   src = [0x00, 0x00, 0xD1], tbl = QpackTable { .. }
+//   returns: ric = 0, base = 0, fields_off = 2, err = QpackError.None
+fn decode_qpack_map_prefix(
+    tbl: const QpackTable&,
+    src: const u8[:],
+) -> u64, u64, u64, QpackError {
+    guard src.len >= 2 else { return 0, 0, 0, QpackError.DecompressionFailed; }
+    let enc_ric, base_off, ok_ric = qpack_decode_int(src, 0, 8);
+    guard ok_ric else { return 0, 0, 0, QpackError.DecompressionFailed; }
+
+    let ric, ric_err = decode_ric(enc_ric, tbl.insert_count, tbl.max_capacity_bytes);
+    guard ric_err == QpackError.None else { return 0, 0, 0, ric_err; }
+
+    if ric > tbl.insert_count && !qpack_can_block_stream(tbl) {
+        return 0, 0, 0, QpackError.BlockedStreamsExhausted;
+    }
+
+    guard base_off < (src.len as u64) else { return 0, 0, 0, QpackError.DecompressionFailed; }
+    let sign_bit: u8 = if (src[base_off] & 0x80) != 0 { 1 } else { 0 };
+    let delta_base, fields_off, ok_db = qpack_decode_int(src, base_off, 7);
+    guard ok_db else { return 0, 0, 0, QpackError.DecompressionFailed; }
+
+    let base, base_err = decode_base(sign_bit, delta_base, ric);
+    guard base_err == QpackError.None else { return 0, 0, 0, base_err; }
+    return ric, base, fields_off, QpackError.None;
+}
+
 // Decodes a complete QPACK Encoded Field Section directly into `out_pseudo` and `out_headers` (RFC 9204 §4.5).
 //
 // Example:
 //   src = [0x00, 0x00, 0xD1], decode_qpack_to_map(tbl, src, out_pseudo, out_headers, 16384)
+fn decode_qpack_to_map_impl<B>(
+    tbl:               const QpackTable&,
+    src:               const u8[:],
+    out_pseudo:        PseudoHeaders&,
+    out_headers:       http::HeaderMap&,
+    out_arena:         http::OverflowArena&,
+    spill_mode:        h3_internal::QpackSpillMode,
+    val_buf:           B&,
+    max_field_section: u64,
+) -> QpackError {
+    let ric, base, fields_off, prefix_err = decode_qpack_map_prefix(tbl, src);
+    guard prefix_err == QpackError.None else { return prefix_err; }
+
+    reset_qpack_map_outputs(out_pseudo, out_headers, out_arena, spill_mode);
+    var committed = false;
+    defer if !committed {
+        reset_qpack_map_outputs(out_pseudo, out_headers, out_arena, spill_mode);
+    };
+
+    var budget = max_field_section;
+    var offset = fields_off;
+    var max_dyn_abs_used: u64 = 0;
+    var used_any_dyn = false;
+
+    while offset < (src.len as u64) {
+        let f_err = h3_internal::decode_qpack_field_line_to_map(
+            tbl,
+            src,
+            offset,
+            base,
+            ric,
+            budget,
+            out_pseudo,
+            out_headers,
+            out_arena,
+            spill_mode,
+            val_buf,
+            max_dyn_abs_used,
+            used_any_dyn,
+        );
+        guard f_err == QpackError.None else { return f_err; }
+    }
+
+    let min_ric = if used_any_dyn { core::add_sat_u64(max_dyn_abs_used, 1) } else { 0 };
+    guard ric >= min_ric && ric <= tbl.insert_count else { return QpackError.DecompressionFailed; }
+    committed = true;
+    return QpackError.None;
+}
+
+// Decodes an Encoded Field Section directly into `out_pseudo` and `out_headers`.
+//
+// Example:
+//   src = [0x00, 0x00, 0xD1], tbl = QpackTable { .. }
 //   returns: QpackError.None, out_pseudo.method = "GET"
 fn decode_qpack_to_map(
     tbl:               const QpackTable&,
@@ -485,50 +581,18 @@ fn decode_qpack_to_map(
     out_headers:       http::HeaderMap&,
     max_field_section: u64 = 16384,
 ) -> QpackError {
-    guard src.len >= 2 else { return QpackError.DecompressionFailed; }
-    let enc_ric, base_off, ok_ric = qpack_decode_int(src, 0, 8);
-    guard ok_ric else { return QpackError.DecompressionFailed; }
-
-    let ric, ric_err = decode_ric(enc_ric, tbl.insert_count, tbl.max_capacity_bytes);
-    guard ric_err == QpackError.None else { return ric_err; }
-
-    if ric > tbl.insert_count && !qpack_can_block_stream(tbl) {
-        return QpackError.BlockedStreamsExhausted;
-    }
-
-    guard base_off < (src.len as u64) else { return QpackError.DecompressionFailed; }
-    let sign_bit: u8 = if (src[base_off] & 0x80) != 0 { 1 } else { 0 };
-    let delta_base, fields_off, ok_db = qpack_decode_int(src, base_off, 7);
-    guard ok_db else { return QpackError.DecompressionFailed; }
-
-    let base, base_err = decode_base(sign_bit, delta_base, ric);
-    guard base_err == QpackError.None else { return base_err; }
-
-    h3_internal::clear_h3_pseudo_headers(out_pseudo, true);
-    out_headers.clear();
-    var budget = max_field_section;
-    var offset = fields_off;
-    var max_dyn_abs_used: u64 = 0;
-    var used_any_dyn = false;
-
-    while offset < (src.len as u64) {
-        let f_err = h3_internal::decode_qpack_field_line_to_map(
-            tbl, src, offset, base, ric, budget, out_pseudo, out_headers, max_dyn_abs_used, used_any_dyn,
-        );
-        guard f_err == QpackError.None else {
-            h3_internal::clear_h3_pseudo_headers(out_pseudo, true);
-            out_headers.clear();
-            return f_err;
-        }
-    }
-
-    let min_ric = if used_any_dyn { max_dyn_abs_used + 1 } else { 0 };
-    guard ric >= min_ric && ric <= tbl.insert_count else {
-        h3_internal::clear_h3_pseudo_headers(out_pseudo, true);
-        out_headers.clear();
-        return QpackError.DecompressionFailed;
-    }
-    return QpackError.None;
+    var unused_arena = http::OverflowArena { .. };
+    var val_buf: u8[..8192] = [];
+    return decode_qpack_to_map_impl(
+        tbl,
+        src,
+        out_pseudo,
+        out_headers,
+        unused_arena,
+        h3_internal::QpackSpillMode.StackOnly,
+        val_buf,
+        max_field_section,
+    );
 }
 
 // Decodes and validates the Required Insert Count prefix from an encoded QPACK field section.
@@ -570,6 +634,18 @@ fn decode_or_block_qpack_to_map(
     return decode_qpack_to_map(tbl, src, out_pseudo, out_headers, max_field_section);
 }
 
+inline fn track_qpack_blocked_prefix(tbl: QpackTable&, stream_id: u64, src: const u8[:]) -> QpackError {
+    let ric, ric_err = decode_qpack_section_ric(tbl, src);
+    guard ric_err == QpackError.None else { return ric_err; }
+    if qpack_is_stream_blocked(tbl, stream_id) || ric > tbl.insert_count {
+        guard qpack_track_blocked_stream(tbl, stream_id, ric) else {
+            return QpackError.BlockedStreamsExhausted;
+        }
+        return QpackError.StreamBlocked;
+    }
+    return QpackError.None;
+}
+
 // Decodes an Encoded Field Section directly into `out_pseudo` and `out_headers`,
 // or tracks blocked stream RIC without copying `src` into the 4096-byte slot buffer.
 //
@@ -584,17 +660,39 @@ fn decode_or_track_blocked_qpack_to_map(
     out_headers:       http::HeaderMap&,
     max_field_section: u64 = 16384,
 ) -> QpackError {
-    let ric, ric_err = decode_qpack_section_ric(tbl, src);
-    guard ric_err == QpackError.None else { return ric_err; }
-
-    if qpack_is_stream_blocked(tbl, stream_id) || ric > tbl.insert_count {
-        guard qpack_track_blocked_stream(tbl, stream_id, ric) else {
-            return QpackError.BlockedStreamsExhausted;
-        }
-        return QpackError.StreamBlocked;
-    }
-
+    let track_err = track_qpack_blocked_prefix(tbl, stream_id, src);
+    guard track_err == QpackError.None else { return track_err; }
     return decode_qpack_to_map(tbl, src, out_pseudo, out_headers, max_field_section);
+}
+
+// Decodes an Encoded Field Section up to 64 KiB into `out_headers` + `out_arena`,
+// or tracks blocked stream RIC without copying `src`.
+//
+// Example:
+//   src = [0x00, 0x00, 0xD1, ...], stream_id = 0, max_field_section = 65535
+//   returns: QpackError.None, oversized entries spilled to out_arena
+fn decode_or_track_blocked_qpack_to_map_spill(
+    tbl:               QpackTable&,
+    stream_id:         u64,
+    src:               const u8[:],
+    out_pseudo:        PseudoHeaders&,
+    out_headers:       http::HeaderMap&,
+    out_arena:         http::OverflowArena&,
+    max_field_section: u64 = 65535,
+) -> QpackError {
+    let track_err = track_qpack_blocked_prefix(tbl, stream_id, src);
+    guard track_err == QpackError.None else { return track_err; }
+    var val_buf: u8[>..] = [];
+    return decode_qpack_to_map_impl(
+        tbl,
+        src,
+        out_pseudo,
+        out_headers,
+        out_arena,
+        h3_internal::QpackSpillMode.AllowSpill,
+        val_buf,
+        max_field_section,
+    );
 }
 
 // ---- QPACK Field & Encoder Stream Encoding ---------------------------------

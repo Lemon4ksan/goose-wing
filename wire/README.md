@@ -83,8 +83,9 @@ fn new_singleflight_service<Inner>(inner: Inner) -> SingleflightService<Inner>
 ### 4. Sans-IO codecs (`wire/h1.goose`, `wire/h1_exchange.goose`, `wire/hpack.goose`, `wire/h2.goose`, `wire/h3.goose`)
 
 - `wire/h1.goose`: HTTP/1.1 request and response wire framing
-  (`encode_h1_request`, `encode_h1_response`, `decode_h1_response_head`,
-  `scan_h1_wire_field_name`, `parse_h1_wire_status_line`).
+  (`encode_h1_request`, `encode_h1_request_spill`, `encode_h1_response`,
+  `decode_h1_response_head`, `scan_h1_wire_field_name`,
+  `parse_h1_wire_status_line`).
 - `wire/h1_exchange.goose`: Pooled HTTP/1.1 exchange driver over
   `wing::Transport` (`execute_h1_exchange`, `read_response_headers`,
   `pump_response_body`).

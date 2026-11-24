@@ -609,14 +609,95 @@ fn validate_and_record_pseudo_header(
     return if validate_http2_rules { rfc::H2_ERR_PROTOCOL_ERROR } else { rfc::H2_ERR_NO_ERROR };
 }
 
-// Validates and records a single decoded HPACK field into `out_pseudo` and `out_headers`.
-fn validate_header_ordering_and_rules(
+fn validate_regular_field_rules(
     out_pseudo:           PseudoHeaders&,
-    out_headers:          http::HeaderMap&,
+    out_headers:          const http::HeaderMap&,
+    out_arena:            const http::OverflowArena&,
+    spill_mode:           h2_internal::HpackSpillMode,
     name:                 const u8[:],
     val:                  const u8[:],
-    validate_http2_rules: bool        = true,
-    origin:               FieldOrigin = FieldOrigin.Wire,
+    validate_http2_rules: bool,
+) -> u32 {
+    if !validate_http2_rules {
+        out_pseudo.has_regular_header = true;
+        return rfc::H2_ERR_NO_ERROR;
+    }
+    let spill_entries = if spill_mode == h2_internal::HpackSpillMode.AllowSpill {
+        out_arena.spill_entries[..]
+    } else {
+        out_headers.entries[..0]
+    };
+    let spill_raw = if spill_mode == h2_internal::HpackSpillMode.AllowSpill {
+        out_arena.spill_raw[..]
+    } else {
+        ""
+    };
+    return h2_internal::validate_regular_header_slices(
+        out_pseudo, out_headers, spill_entries, spill_raw, name, val,
+    );
+}
+
+fn record_validated_regular_field<C>(
+    out_pseudo:           PseudoHeaders&,
+    out_headers:          http::HeaderMap&,
+    out_arena:            http::OverflowArena&,
+    spill_mode:           h2_internal::HpackSpillMode,
+    cookie_buf:           C&,
+    name:                 const u8[:],
+    val:                  const u8[:],
+    max_header_list_size: u32,
+    validate_http2_rules: bool,
+) -> u32 {
+    let saved_has_reg = out_pseudo.has_regular_header;
+    let saved_has_cl = out_pseudo.has_content_length;
+    let saved_cl_val = out_pseudo.content_length_val;
+    var committed = false;
+    defer if !committed {
+        out_pseudo.has_regular_header = saved_has_reg;
+        out_pseudo.has_content_length = saved_has_cl;
+        out_pseudo.content_length_val = saved_cl_val;
+    };
+
+    let v_reg = validate_regular_field_rules(
+        out_pseudo, out_headers, out_arena, spill_mode, name, val, validate_http2_rules,
+    );
+    guard v_reg == rfc::H2_ERR_NO_ERROR else { return v_reg; }
+
+    let is_cookie = if validate_http2_rules { name == "cookie" } else { name.eq_ascii_fold("cookie") };
+    if is_cookie {
+        let join_st = h2_internal::join_existing_cookie_impl(
+            out_headers, out_arena, spill_mode, cookie_buf, name, val, max_header_list_size,
+        );
+        if join_st == h2_internal::CookieJoinStatus.Overflow {
+            return rfc::H2_ERR_ENHANCE_YOUR_CALM;
+        }
+        if join_st == h2_internal::CookieJoinStatus.Joined {
+            committed = true;
+            return rfc::H2_ERR_NO_ERROR;
+        }
+    }
+
+    let ok_app = if spill_mode == h2_internal::HpackSpillMode.AllowSpill {
+        http::append_validated_header_spill(out_headers, out_arena, name, val, 0)
+    } else {
+        http::append_validated_header(out_headers, name, val)
+    };
+    guard ok_app else { return rfc::H2_ERR_ENHANCE_YOUR_CALM; }
+    committed = true;
+    return rfc::H2_ERR_NO_ERROR;
+}
+
+fn validate_header_ordering_impl<C>(
+    out_pseudo:           PseudoHeaders&,
+    out_headers:          http::HeaderMap&,
+    out_arena:            http::OverflowArena&,
+    spill_mode:           h2_internal::HpackSpillMode,
+    cookie_buf:           C&,
+    name:                 const u8[:],
+    val:                  const u8[:],
+    max_header_list_size: u32,
+    validate_http2_rules: bool,
+    origin:               FieldOrigin,
 ) -> u32 {
     if validate_http2_rules {
         guard h2_internal::validate_h2_field_by_origin(name, val, origin) else {
@@ -634,52 +715,56 @@ fn validate_header_ordering_and_rules(
         return validate_and_record_pseudo_header(out_pseudo, name, val, validate_http2_rules);
     }
 
-    let saved_has_reg = out_pseudo.has_regular_header;
-    let saved_has_cl = out_pseudo.has_content_length;
-    let saved_cl_val = out_pseudo.content_length_val;
-    var committed = false;
-    defer if !committed {
-        out_pseudo.has_regular_header = saved_has_reg;
-        out_pseudo.has_content_length = saved_has_cl;
-        out_pseudo.content_length_val = saved_cl_val;
-    };
-
-    if validate_http2_rules {
-        let v_reg = h2_internal::validate_regular_header_to_map(out_pseudo, out_headers, name, val);
-        guard v_reg == rfc::H2_ERR_NO_ERROR else { return v_reg; }
-    } else {
-        out_pseudo.has_regular_header = true;
-    }
-    let is_cookie = name.len == 6 && (name == "cookie" || (!validate_http2_rules && name.eq_ascii_fold("cookie")));
-    if is_cookie {
-        let join_st = h2_internal::join_existing_cookie(out_headers, name, val);
-        if join_st == h2_internal::CookieJoinStatus.Overflow {
-            return rfc::H2_ERR_ENHANCE_YOUR_CALM;
-        }
-        if join_st == h2_internal::CookieJoinStatus.Joined {
-            committed = true;
-            return rfc::H2_ERR_NO_ERROR;
-        }
-    }
-    guard http::append_validated_header(out_headers, name, val) else {
-        return rfc::H2_ERR_ENHANCE_YOUR_CALM;
-    }
-    committed = true;
-    return rfc::H2_ERR_NO_ERROR;
+    return record_validated_regular_field(
+        out_pseudo,
+        out_headers,
+        out_arena,
+        spill_mode,
+        cookie_buf,
+        name,
+        val,
+        max_header_list_size,
+        validate_http2_rules,
+    );
 }
 
-// Decodes an HPACK literal header field with given prefix bits into bounded name/value buffers.
+// Validates and records a single decoded HPACK field into `out_pseudo` and `out_headers`.
+fn validate_header_ordering_and_rules(
+    out_pseudo:           PseudoHeaders&,
+    out_headers:          http::HeaderMap&,
+    name:                 const u8[:],
+    val:                  const u8[:],
+    validate_http2_rules: bool        = true,
+    origin:               FieldOrigin = FieldOrigin.Wire,
+) -> u32 {
+    var unused_arena = http::OverflowArena { .. };
+    var ck: u8[..8192] = [];
+    return validate_header_ordering_impl(
+        out_pseudo,
+        out_headers,
+        unused_arena,
+        h2_internal::HpackSpillMode.StackOnly,
+        ck,
+        name,
+        val,
+        8192,
+        validate_http2_rules,
+        origin,
+    );
+}
+
+// Decodes an HPACK literal header field with given prefix bits into bounded or resizable name/value buffers.
 //
 // Example:
 //   src = [0x00, 0x04, 'n', 'a', 'm', 'e', 0x03, 'v', 'a', 'l'], offset = 0, prefix_bits = 4
 //   returns: val_next_off = 10, error_code = ERR_NO_ERROR
-fn decode_literal_field_slices(
+fn decode_literal_field_slices<B>(
     dt:          const DynamicTable&,
     src:         const u8[:],
     offset:      u64,
     prefix_bits: u8,
     name_buf:    u8[..256]&,
-    val_buf:     u8[..8192]&,
+    val_buf:     B&,
 ) -> u64, const u8[:], FieldOrigin, u32 {
     let name_mark = name_buf.len;
     let val_mark = val_buf.len;
@@ -701,7 +786,9 @@ fn decode_literal_field_slices(
     }
 
     let val_next_off, ok_val = decode_hpack_string(src, mut_off, val_buf);
-    guard ok_val else { return offset, "", FieldOrigin.Wire, rfc::H2_ERR_COMPRESSION_ERROR; }
+    guard ok_val && val_buf.len <= 65536 else {
+        return offset, "", FieldOrigin.Wire, rfc::H2_ERR_COMPRESSION_ERROR;
+    }
     committed = true;
     guard name_idx >= 1 && name_idx <= 61 else {
         return val_next_off, name_buf[..], FieldOrigin.Wire, rfc::H2_ERR_NO_ERROR;
@@ -774,6 +861,111 @@ fn validate_mandatory_pseudo_headers(pseudo: const PseudoHeaders&) -> u32 {
     return rfc::H2_ERR_PROTOCOL_ERROR;
 }
 
+// Decodes a complete HPACK block into `out_pseudo`, `out_headers`, and optional `out_arena`.
+//
+// Example:
+//   src = [0x82, 0x86, 0x84], spill_mode = AllowSpill
+//   returns: H2_ERR_NO_ERROR
+fn decode_hpack_to_map_loop<B, C>(
+    dt:                   DynamicTable&,
+    src:                  const u8[:],
+    out_pseudo:           PseudoHeaders&,
+    out_headers:          http::HeaderMap&,
+    out_arena:            http::OverflowArena&,
+    spill_mode:           h2_internal::HpackSpillMode,
+    name_buf:             u8[..256]&,
+    val_buf:              B&,
+    cookie_buf:           C&,
+    max_header_list_size: u32,
+    validate_http2_rules: bool,
+) -> u32 {
+    var offset: u64 = 0;
+    let src_len = src.len as u64;
+    var updates_allowed = true;
+    var update_count: u32 = 0;
+    var first_err:    u32 = rfc::H2_ERR_NO_ERROR;
+
+    while offset < src_len {
+        let next_off, err = h2_internal::decode_hpack_field_step_impl(
+            dt,
+            src,
+            offset,
+            updates_allowed,
+            update_count,
+            out_pseudo,
+            out_headers,
+            out_arena,
+            spill_mode,
+            max_header_list_size,
+            validate_http2_rules,
+            name_buf,
+            val_buf,
+            cookie_buf,
+        );
+        if err == rfc::H2_ERR_COMPRESSION_ERROR {
+            return err;
+        }
+        if err != rfc::H2_ERR_NO_ERROR && first_err == rfc::H2_ERR_NO_ERROR {
+            first_err = err;
+        }
+        offset = next_off;
+    }
+
+    guard !dt.pending_size_update_req && dt.current_max_size <= dt.max_allowed_size else {
+        return rfc::H2_ERR_COMPRESSION_ERROR;
+    }
+    return first_err;
+}
+
+// Decodes and validates a complete HPACK block into `out_pseudo`, `out_headers`, and optional `out_arena`.
+//
+// Example:
+//   src = [0x82, 0x86, 0x84], out_pseudo = PseudoHeaders { .. }, out_headers = http::HeaderMap { .. }
+//   returns: error_code = ERR_NO_ERROR, out_pseudo.method = "GET"
+fn decode_hpack_to_map_impl<B, C>(
+    dt:                   DynamicTable&,
+    src:                  const u8[:],
+    out_pseudo:           PseudoHeaders&,
+    out_headers:          http::HeaderMap&,
+    out_arena:            http::OverflowArena&,
+    spill_mode:           h2_internal::HpackSpillMode,
+    name_buf:             u8[..256]&,
+    val_buf:              B&,
+    cookie_buf:           C&,
+    max_header_list_size: u32,
+    validate_http2_rules: bool,
+) -> u32 {
+    var committed = false;
+    clear_pseudo_headers(out_pseudo, true);
+    out_headers.clear();
+    if spill_mode == h2_internal::HpackSpillMode.AllowSpill {
+        http::reset_overflow_arena(out_arena);
+    }
+    name_buf.clear();
+    val_buf.clear();
+    defer if !committed {
+        clear_pseudo_headers(out_pseudo, true);
+        out_headers.clear();
+        if spill_mode == h2_internal::HpackSpillMode.AllowSpill {
+            http::reset_overflow_arena(out_arena);
+        }
+    };
+
+    let err = decode_hpack_to_map_loop(
+        dt, src, out_pseudo, out_headers, out_arena, spill_mode,
+        name_buf, val_buf, cookie_buf, max_header_list_size, validate_http2_rules,
+    );
+    guard err == rfc::H2_ERR_NO_ERROR else { return err; }
+
+    if validate_http2_rules && !out_pseudo.is_trailer {
+        let v_err = validate_mandatory_pseudo_headers(out_pseudo);
+        guard v_err == rfc::H2_ERR_NO_ERROR else { return v_err; }
+    }
+
+    committed = true;
+    return rfc::H2_ERR_NO_ERROR;
+}
+
 // Decodes a complete HPACK header block directly into `out_pseudo` and `out_headers` (RFC 7541, RFC 9113 §8.2).
 // Enforces RFC 9113 pseudo-header ordering, duplicate content-length checks (CVE-2026-78660),
 // iterative dynamic table size updates only at the start of the block, and `max_header_list_size`.
@@ -791,58 +983,21 @@ fn decode_hpack_to_map_with_scratch(
     max_header_list_size: u32  = 8192,
     validate_http2_rules: bool = true,
 ) -> u32 {
-    var offset: u64 = 0;
-    let src_len = src.len as u64;
-    var updates_allowed = true;
-    var update_count: u32 = 0;
-    var first_err:    u32 = rfc::H2_ERR_NO_ERROR;
-    var committed = false;
-
-    clear_pseudo_headers(out_pseudo, true);
-    out_headers.clear();
-    name_buf.clear();
-    val_buf.clear();
-    defer if !committed {
-        clear_pseudo_headers(out_pseudo, true);
-        out_headers.clear();
-    };
-
-    while offset < src_len {
-        let next_off, err = h2_internal::decode_hpack_field_step_with_scratch(
-            dt,
-            src,
-            offset,
-            updates_allowed,
-            update_count,
-            out_pseudo,
-            out_headers,
-            max_header_list_size,
-            validate_http2_rules,
-            name_buf,
-            val_buf,
-        );
-        if err == rfc::H2_ERR_COMPRESSION_ERROR {
-            return err;
-        }
-        if err != rfc::H2_ERR_NO_ERROR && first_err == rfc::H2_ERR_NO_ERROR {
-            first_err = err;
-        }
-        offset = next_off;
-    }
-
-    guard !dt.pending_size_update_req && dt.current_max_size <= dt.max_allowed_size else {
-        return rfc::H2_ERR_COMPRESSION_ERROR;
-    }
-
-    guard first_err == rfc::H2_ERR_NO_ERROR else { return first_err; }
-
-    if validate_http2_rules && !out_pseudo.is_trailer {
-        let v_err = validate_mandatory_pseudo_headers(out_pseudo);
-        guard v_err == rfc::H2_ERR_NO_ERROR else { return v_err; }
-    }
-
-    committed = true;
-    return rfc::H2_ERR_NO_ERROR;
+    var unused_arena = http::OverflowArena { .. };
+    var ck: u8[..8192] = [];
+    return decode_hpack_to_map_impl(
+        dt,
+        src,
+        out_pseudo,
+        out_headers,
+        unused_arena,
+        h2_internal::HpackSpillMode.StackOnly,
+        name_buf,
+        val_buf,
+        ck,
+        max_header_list_size,
+        validate_http2_rules,
+    );
 }
 
 // Decodes a complete HPACK header block into `out_pseudo` and `out_headers` using stack scratch buffers.
@@ -868,6 +1023,38 @@ fn decode_hpack_to_map(
         name_buf,
         val_buf,
         max_header_list_size,
+        validate_http2_rules,
+    );
+}
+
+// Decodes an HPACK header block up to `max_header_list_size` (<= 65535) bytes into `out_headers` + `out_arena`.
+//
+// Example:
+//   src = [0x82, 0x86, 0x84], out_pseudo = PseudoHeaders { .. }, out_arena = OverflowArena { .. }
+//   returns: error_code = ERR_NO_ERROR, oversized values and > 128 entries spill into out_arena
+fn decode_hpack_to_map_spill(
+    dt:                   DynamicTable&,
+    src:                  const u8[:],
+    out_pseudo:           PseudoHeaders&,
+    out_headers:          http::HeaderMap&,
+    out_arena:            http::OverflowArena&,
+    max_header_list_size: u32  = 65535,
+    validate_http2_rules: bool = true,
+) -> u32 {
+    var name_buf: u8[..256] = [];
+    var val_buf:  u8[>..]   = [];
+    var ck_buf:   u8[>..]   = [];
+    return decode_hpack_to_map_impl(
+        dt,
+        src,
+        out_pseudo,
+        out_headers,
+        out_arena,
+        h2_internal::HpackSpillMode.AllowSpill,
+        name_buf,
+        val_buf,
+        ck_buf,
+        min(max_header_list_size, http::MAX_OVERFLOW_RAW_BYTES as u32),
         validate_http2_rules,
     );
 }

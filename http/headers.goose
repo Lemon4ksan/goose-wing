@@ -185,6 +185,13 @@ root struct OverflowArena {
 
 let EMPTY_OVERFLOW_ARENA: OverflowArena = OverflowArena { .. };
 
+// Clears all overflow spill buffers while preserving underlying stack allocations for reuse.
+checkfree fn reset_overflow_arena(arena: OverflowArena&) {
+    arena.spill_raw.clear();
+    arena.spill_entries.clear();
+    arena.spill_url.clear();
+}
+
 // Parses an oversized URL up to MAX_OVERFLOW_URL_BYTES using the arena's spill_url storage.
 //
 // Example:
@@ -460,6 +467,15 @@ struct HeaderEntry {
     name_hash:     u32 = 0,
 }
 
+let EMPTY_HEADER_ENTRY: HeaderEntry = HeaderEntry { .. };
+const EMPTY_HEADER_ENTRY_ARR: const HeaderEntry[1] = [HeaderEntry { .. }];
+
+// Zero-copy read-only view over contiguous header entries and backing byte slice.
+struct HeaderView {
+    entries: const HeaderEntry[:] = EMPTY_HEADER_ENTRY_ARR[..0],
+    raw:     const u8[:]          = "",
+}
+
 checkfree fn is_continuation(entry: const HeaderEntry&) -> bool {
     return (entry.flags & HEADER_FLAG_CONTINUATION) != 0 || entry.name_begin == entry.name_end;
 }
@@ -535,14 +551,14 @@ fn handle_obs_fold_arena(
     in_spill:             bool,
 ) -> HeaderParseError {
     let orig_name = if in_spill {
-        resolve_entry_name(arena.spill_entries[arena.spill_entries.len - 1], map, arena)
+        entry_name_spill(map, arena, arena.spill_entries[arena.spill_entries.len - 1])
     } else {
-        resolve_entry_name(map.entries[map.entries.len - 1], map, arena)
+        entry_name_spill(map, arena, map.entries[map.entries.len - 1])
     };
     let orig_val = if in_spill {
-        http_internal::resolve_entry_value(arena.spill_entries[arena.spill_entries.len - 1], map, arena)
+        entry_value_spill(map, arena, arena.spill_entries[arena.spill_entries.len - 1])
     } else {
-        http_internal::resolve_entry_value(map.entries[map.entries.len - 1], map, arena)
+        entry_value_spill(map, arena, map.entries[map.entries.len - 1])
     };
     let migrate_name = if in_spill {
         arena.spill_entries[arena.spill_entries.len - 1].reserved != HEADER_SRC_ARENA
@@ -715,11 +731,11 @@ fn parse_headers_with_overflow(
     allow_obs_fold: bool = false,
 ) -> HeaderParseError {
     reset_for_keep_alive(map);
-    http_internal::reset_overflow_arena(arena);
+    reset_overflow_arena(arena);
     map.valid = false;
     defer if !map.valid {
         reset_for_keep_alive(map);
-        http_internal::reset_overflow_arena(arena);
+        reset_overflow_arena(arena);
         map.valid = false;
     };
     guard raw_input.len > 0 else {
@@ -810,7 +826,7 @@ fn parse_response_headers_with_overflow(
     allow_obs_fold: bool = false,
 ) -> HeaderParseError {
     reset_for_keep_alive(map);
-    http_internal::reset_overflow_arena(arena);
+    reset_overflow_arena(arena);
     map.valid = false;
     guard raw_input.len > 0 else {
         return HeaderParseError.EmptyInput;
@@ -897,7 +913,7 @@ fn parse_request_headers_with_overflow(
     allow_obs_fold: bool = false,
 ) -> HeaderParseError {
     reset_for_keep_alive(map);
-    http_internal::reset_overflow_arena(arena);
+    reset_overflow_arena(arena);
     map.valid = false;
     guard raw_input.len > 0 else {
         return HeaderParseError.EmptyInput;
@@ -968,60 +984,185 @@ fn get_header(map: const HeaderMap&, name: const u8[:]) -> const u8[:] {
     return "";
 }
 
-checkfree fn resolve_entry_name(
-    entry: const HeaderEntry&,
-    map:   const HeaderMap&,
-    arena: const OverflowArena&,
+checkfree inline fn resolve_entry_name_buf(
+    stack_raw: const u8[:],
+    spill_raw: const u8[:],
+    entry:     const HeaderEntry&,
 ) -> const u8[:] {
     let b: i64 = entry.name_begin;
     let e: i64 = entry.name_end;
     if entry.reserved == HEADER_SRC_ARENA {
-        guard b >= 0 && b <= e && e <= arena.spill_raw.len else { return ""; }
-        return arena.spill_raw[b..e];
+        guard b >= 0 && b <= e && e <= spill_raw.len else { return ""; }
+        return spill_raw[b..e];
     }
-    guard b >= 0 && b <= e && e <= map.raw_buf.len else { return ""; }
-    return map.raw_buf[b..e];
+    guard b >= 0 && b <= e && e <= stack_raw.len else { return ""; }
+    return stack_raw[b..e];
 }
 
-// Case-insensitive header lookup resolving from either stack map or arena spill storage.
-fn get_header_spill(map: const HeaderMap&, arena: const OverflowArena&, name: const u8[:]) -> const u8[:] {
-    let wk_id = classify_well_known_header(name);
-    if wk_id != WellKnownHeader.Unknown {
-        let slot = well_known_to_slot(wk_id);
-        let idx = map.inline_slots[slot];
-        if idx != 0xFF && idx < map.entries.len {
-            return http_internal::resolve_entry_value(map.entries[idx as i64], map, arena);
-        }
+checkfree inline fn resolve_entry_value_buf(
+    stack_raw: const u8[:],
+    spill_raw: const u8[:],
+    entry:     const HeaderEntry&,
+) -> const u8[:] {
+    let b: i64 = entry.values_begin;
+    let e: i64 = entry.values_end;
+    if entry.reserved == HEADER_SRC_ARENA {
+        guard b >= 0 && b <= e && e <= spill_raw.len else { return ""; }
+        return spill_raw[b..e];
     }
-
-    let hname = hash_header_name(name);
-    let val1 = http_internal::find_entry_in_entries(map.entries[..], name, hname, map, arena);
-    if val1.len > 0 { return val1; }
-    return http_internal::find_entry_in_entries(arena.spill_entries[..], name, hname, map, arena);
+    guard b >= 0 && b <= e && e <= stack_raw.len else { return ""; }
+    return stack_raw[b..e];
 }
 
-// Case-insensitive presence check for a header resolving from either stack map or arena spill storage.
-fn has_header_spill(map: const HeaderMap&, arena: const OverflowArena&, name: const u8[:]) -> bool {
-    let wk_id = classify_well_known_header(name);
-    if wk_id != WellKnownHeader.Unknown {
-        let slot = well_known_to_slot(wk_id);
-        let idx = map.inline_slots[slot];
-        if idx != 0xFF && idx < map.entries.len {
-            return true;
-        }
+checkfree fn entry_name_spill(
+    map:   const HeaderMap&,
+    arena: const OverflowArena&,
+    entry: const HeaderEntry&,
+) -> const u8[:] {
+    return resolve_entry_name_buf(map.raw_buf[..], arena.spill_raw[..], entry);
+}
+
+checkfree fn entry_value_spill(
+    map:   const HeaderMap&,
+    arena: const OverflowArena&,
+    entry: const HeaderEntry&,
+) -> const u8[:] {
+    return resolve_entry_value_buf(map.raw_buf[..], arena.spill_raw[..], entry);
+}
+
+checkfree fn header_count_spill(map: const HeaderMap&, arena: const OverflowArena&) -> i64 {
+    return core::add_sat_i64(map.entries.len, arena.spill_entries.len);
+}
+
+checkfree fn header_entry_at_spill(
+    map:   const HeaderMap&,
+    arena: const OverflowArena&,
+    idx:   i64,
+) -> const HeaderEntry&, bool {
+    guard idx >= 0 else { return EMPTY_HEADER_ENTRY, false; }
+    let stack_len = map.entries.len;
+    if idx < stack_len {
+        return map.entries[idx], true;
     }
+    let spill_idx = core::sub_sat_i64(idx, stack_len);
+    guard spill_idx >= 0 && spill_idx < arena.spill_entries.len else { return EMPTY_HEADER_ENTRY, false; }
+    return arena.spill_entries[spill_idx], true;
+}
+
+checkfree fn header_view_name(v: const HeaderView&, entry: const HeaderEntry&) -> const u8[:] {
+    let b: i64 = entry.name_begin;
+    let e: i64 = entry.name_end;
+    guard b >= 0 && b <= e && e <= v.raw.len else { return ""; }
+    return v.raw[b..e];
+}
+
+checkfree fn header_view_value(v: const HeaderView&, entry: const HeaderEntry&) -> const u8[:] {
+    let b: i64 = entry.values_begin;
+    let e: i64 = entry.values_end;
+    guard b >= 0 && b <= e && e <= v.raw.len else { return ""; }
+    return v.raw[b..e];
+}
+
+fn header_view_get(v: const HeaderView&, name: const u8[:]) -> const u8[:], bool {
+    guard name.len > 0 else { return "", false; }
     let hname = hash_header_name(name);
-    for &entry in map.entries {
-        if entry.name_hash == hname && resolve_entry_name(entry, map, arena).eq_ascii_fold(name) {
-            return true;
+    for &entry in v.entries {
+        guard entry.name_hash == hname || entry.name_hash == 0 else { continue; }
+        if header_view_name(v, entry).eq_ascii_fold(name) {
+            return header_view_value(v, entry), true;
         }
     }
-    for &entry in arena.spill_entries {
-        if entry.name_hash == hname && resolve_entry_name(entry, map, arena).eq_ascii_fold(name) {
+    return "", false;
+}
+
+fn header_view_copy_to_spill(
+    v:         const HeaderView&,
+    out_map:   HeaderMap&,
+    out_arena: OverflowArena&,
+) -> bool {
+    reset_for_keep_alive(out_map);
+    reset_overflow_arena(out_arena);
+    var committed = false;
+    defer if !committed {
+        reset_for_keep_alive(out_map);
+        reset_overflow_arena(out_arena);
+    };
+    for &entry in v.entries {
+        let name = header_view_name(v, entry);
+        let val = header_view_value(v, entry);
+        guard append_header_spill(
+            out_map, out_arena, name, val, entry.flags & HEADER_FLAG_SENSITIVE,
+        ) else {
+            return false;
+        }
+    }
+    out_map.valid = true;
+    committed = true;
+    return true;
+}
+
+fn entries_have_header_name(
+    entries:   const HeaderEntry[:],
+    stack_raw: const u8[:],
+    spill_raw: const u8[:],
+    name:      const u8[:],
+    hname:     u32,
+) -> bool {
+    for &entry in entries {
+        if entry.name_hash == hname && resolve_entry_name_buf(stack_raw, spill_raw, entry).eq_ascii_fold(name) {
             return true;
         }
     }
     return false;
+}
+
+fn get_header_slices(
+    map:           const HeaderMap&,
+    spill_entries: const HeaderEntry[:],
+    spill_raw:     const u8[:],
+    name:          const u8[:],
+) -> const u8[:] {
+    let wk_id = classify_well_known_header(name);
+    if wk_id != WellKnownHeader.Unknown {
+        let slot = well_known_to_slot(wk_id);
+        let idx = map.inline_slots[slot];
+        if idx != 0xFF && idx < map.entries.len {
+            return resolve_entry_value_buf(map.raw_buf[..], spill_raw, map.entries[idx as i64]);
+        }
+    }
+    let hname = hash_header_name(name);
+    let val1 = http_internal::find_entry_in_entries(map.entries[..], map.raw_buf[..], spill_raw, name, hname);
+    if val1.len > 0 { return val1; }
+    return http_internal::find_entry_in_entries(spill_entries, map.raw_buf[..], spill_raw, name, hname);
+}
+
+fn has_header_slices(
+    map:           const HeaderMap&,
+    spill_entries: const HeaderEntry[:],
+    spill_raw:     const u8[:],
+    name:          const u8[:],
+) -> bool {
+    let wk_id = classify_well_known_header(name);
+    if wk_id != WellKnownHeader.Unknown {
+        let slot = well_known_to_slot(wk_id);
+        let idx = map.inline_slots[slot];
+        if idx != 0xFF && idx < map.entries.len {
+            return true;
+        }
+    }
+    let hname = hash_header_name(name);
+    return entries_have_header_name(map.entries[..], map.raw_buf[..], spill_raw, name, hname) ||
+        entries_have_header_name(spill_entries, map.raw_buf[..], spill_raw, name, hname);
+}
+
+// Case-insensitive header lookup resolving from either stack map or arena spill storage.
+fn get_header_spill(map: const HeaderMap&, arena: const OverflowArena&, name: const u8[:]) -> const u8[:] {
+    return get_header_slices(map, arena.spill_entries[..], arena.spill_raw[..], name);
+}
+
+// Case-insensitive presence check for a header resolving from either stack map or arena spill storage.
+fn has_header_spill(map: const HeaderMap&, arena: const OverflowArena&, name: const u8[:]) -> bool {
+    return has_header_slices(map, arena.spill_entries[..], arena.spill_raw[..], name);
 }
 
 checkfree fn get_inline(map: const HeaderMap&, id: WellKnownHeader) -> const u8[:] {
@@ -1041,28 +1182,21 @@ checkfree fn get_inline(map: const HeaderMap&, id: WellKnownHeader) -> const u8[
     return "";
 }
 
-fn append_validated_header(map: HeaderMap&, name: const u8[:], trimmed: const u8[:]) -> bool {
-    guard map.entries.len < 128 else { return false; }
-
-    let needed = core::add_sat_i64(name.len, trimmed.len);
-    guard core::add_sat_i64(map.raw_buf.len, needed) <= 8192 else { return false; }
-
-    let n_begin = map.raw_buf.len as u16;
-    map.raw_buf.append(name);
-    let n_end = map.raw_buf.len as u16;
-
-    let v_begin = map.raw_buf.len as u16;
-    map.raw_buf.append(trimmed);
-    let v_end = map.raw_buf.len as u16;
-
+inline fn make_header_entry(
+    name:        const u8[:],
+    trimmed:     const u8[:],
+    n_begin:     u16,
+    n_end:       u16,
+    v_begin:     u16,
+    v_end:       u16,
+    src_type:    u8,
+    extra_flags: u8,
+) -> HeaderEntry, WellKnownHeader, u32 {
     let wk_id = classify_well_known_header(name);
     let flags = http_internal::well_known_header_flags(wk_id, name);
     let hname = http_internal::well_known_header_hash(wk_id, name);
-
-    let contains_comma = trimmed.contains_byte(',');
-    let entry_flags = if contains_comma { flags | HEADER_FLAG_CONTAINS_COMMA } else { flags };
-
-    let new_idx = map.entries.len as u8;
+    let comma_flag = if trimmed.contains_byte(',') { HEADER_FLAG_CONTAINS_COMMA } else { 0 };
+    let entry_flags = flags | comma_flag | extra_flags;
     let entry = HeaderEntry {
         name_begin:    n_begin,
         name_end:      n_end,
@@ -1071,13 +1205,92 @@ fn append_validated_header(map: HeaderMap&, name: const u8[:], trimmed: const u8
         next_idx:      0xFF,
         flags:         entry_flags,
         well_known_id: if wk_id != WellKnownHeader.Unknown { well_known_to_slot(wk_id) as u8 } else { 0xFF },
-        reserved:      0,
+        reserved:      src_type,
         name_hash:     hname,
     };
+    return entry, wk_id, hname;
+}
 
-    http_internal::link_header_entry_stack(map, wk_id, name, hname, new_idx);
+fn append_to_stack_raw(
+    map:         HeaderMap&,
+    spill_raw:   const u8[:],
+    name:        const u8[:],
+    trimmed:     const u8[:],
+    extra_flags: u8,
+) {
+    let n_begin = map.raw_buf.len as u16;
+    map.raw_buf.append(name);
+    let n_end = map.raw_buf.len as u16;
+    map.raw_buf.append(trimmed);
+    let v_end = map.raw_buf.len as u16;
+    let entry, wk_id, hname = make_header_entry(
+        name, trimmed, n_begin, n_end, n_end, v_end, HEADER_SRC_STACK, extra_flags,
+    );
+    let new_idx = map.entries.len as u8;
+    http_internal::link_header_entry(map, wk_id, name, hname, new_idx, spill_raw);
     map.entries.push(entry);
-    map.header_contains_comma.push(contains_comma);
+    map.header_contains_comma.push((entry.flags & HEADER_FLAG_CONTAINS_COMMA) != 0);
+}
+
+fn append_validated_header(map: HeaderMap&, name: const u8[:], trimmed: const u8[:]) -> bool {
+    guard map.entries.len < 128 else { return false; }
+    let needed = core::add_sat_i64(name.len, trimmed.len);
+    guard core::add_sat_i64(map.raw_buf.len, needed) <= 8192 else { return false; }
+    append_to_stack_raw(map, "", name, trimmed, 0);
+    return true;
+}
+
+fn append_validated_header_spill(
+    map:         HeaderMap&,
+    arena:       OverflowArena&,
+    name:        const u8[:],
+    trimmed:     const u8[:],
+    extra_flags: u8,
+) -> bool {
+    let needed = core::add_sat_i64(name.len, trimmed.len);
+    if map.entries.len < 128 && core::add_sat_i64(map.raw_buf.len, needed) <= 8192 {
+        append_to_stack_raw(map, arena.spill_raw[..], name, trimmed, extra_flags);
+        return true;
+    }
+
+    guard core::add_sat_i64(arena.spill_raw.len, needed) <= MAX_OVERFLOW_RAW_BYTES else {
+        return false;
+    }
+    let use_stack_entries = map.entries.len < 128;
+    if !use_stack_entries {
+        guard arena.spill_entries.len < MAX_OVERFLOW_SPILL_ENTRIES else { return false; }
+    }
+
+    let saved_map_entries = map.entries.len;
+    let saved_spill_raw = arena.spill_raw.len;
+    let saved_spill_entries = arena.spill_entries.len;
+    var committed = false;
+    defer if !committed {
+        map.entries.resize(saved_map_entries);
+        while map.header_contains_comma.len > saved_map_entries {
+            map.header_contains_comma.pop();
+        }
+        arena.spill_raw.resize(saved_spill_raw);
+        arena.spill_entries.resize(saved_spill_entries);
+    };
+
+    let n_begin = arena.spill_raw.len as u16;
+    arena.spill_raw.append(name);
+    let n_end = arena.spill_raw.len as u16;
+    arena.spill_raw.append(trimmed);
+    let v_end = arena.spill_raw.len as u16;
+    let entry, wk_id, hname = make_header_entry(
+        name, trimmed, n_begin, n_end, n_end, v_end, HEADER_SRC_ARENA, extra_flags,
+    );
+    if use_stack_entries {
+        let new_idx = map.entries.len as u8;
+        http_internal::link_header_entry(map, wk_id, name, hname, new_idx, arena.spill_raw[..]);
+        map.entries.push(entry);
+        map.header_contains_comma.push((entry.flags & HEADER_FLAG_CONTAINS_COMMA) != 0);
+    } else {
+        arena.spill_entries.push(entry);
+    }
+    committed = true;
     return true;
 }
 
@@ -1085,6 +1298,18 @@ fn append_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool
     let valid_name = is_valid_header_name(name) || is_valid_header_name_h2(name);
     guard valid_name && is_valid_header_value(value) else { return false; }
     return append_validated_header(map, name, value.trim_lws());
+}
+
+fn append_header_spill(
+    map:   HeaderMap&,
+    arena: OverflowArena&,
+    name:  const u8[:],
+    val:   const u8[:],
+    flags: u8 = 0,
+) -> bool {
+    let valid_name = is_valid_header_name(name) || is_valid_header_name_h2(name);
+    guard valid_name && is_valid_header_value(val) else { return false; }
+    return append_validated_header_spill(map, arena, name, val.trim_lws(), flags);
 }
 
 const SLOT_CONTENT_TYPE:     u8 = 1;  // WellKnownHeader.ContentType
@@ -1290,7 +1515,12 @@ fn compact_kept_entry_in_place(map: HeaderMap&, read_i: i64, write_entry_i: i64&
     write_entry_i += 1;
 }
 
-fn finish_in_place_compaction(map: HeaderMap&, write_entry_i: i64, write_raw_pos: u16) {
+fn finish_in_place_compaction(
+    map:           HeaderMap&,
+    write_entry_i: i64,
+    write_raw_pos: u16,
+    spill_raw:     const u8[:] = "",
+) {
     while map.entries.len > write_entry_i {
         map.entries.pop();
     }
@@ -1301,7 +1531,7 @@ fn finish_in_place_compaction(map: HeaderMap&, write_entry_i: i64, write_raw_pos
     while map.raw_buf.len > target_raw_len {
         map.raw_buf.pop();
     }
-    http_internal::rebuild_inline_slots_and_chains(map);
+    http_internal::rebuild_inline_slots_and_chains(map, spill_raw);
 }
 
 fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
@@ -1327,6 +1557,57 @@ fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
         finish_in_place_compaction(map, write_entry_i, write_raw_pos);
     }
     return found;
+}
+
+fn remove_header_spill(map: HeaderMap&, arena: OverflowArena&, name: const u8[:]) -> bool {
+    var found = false;
+    var write_entry_i: i64 = 0;
+    var write_raw_pos: u16 = 0;
+    for read_i in map.entries.len {
+        let e .= map.entries[read_i];
+        if entry_name_spill(map, arena, e).eq_ascii_fold(name) {
+            found = true;
+            continue;
+        }
+        compact_kept_entry_in_place(map, read_i, write_entry_i, write_raw_pos);
+    }
+    var spill_write: i64 = 0;
+    for si in arena.spill_entries.len {
+        let se = arena.spill_entries[si];
+        if entry_name_spill(map, arena, se).eq_ascii_fold(name) {
+            found = true;
+            continue;
+        }
+        arena.spill_entries[spill_write] = se;
+        spill_write = core::add_sat_i64(spill_write, 1);
+    }
+    if found {
+        while arena.spill_entries.len > spill_write {
+            arena.spill_entries.pop();
+        }
+        finish_in_place_compaction(map, write_entry_i, write_raw_pos, arena.spill_raw[..]);
+    }
+    return found;
+}
+
+fn set_or_replace_spill(
+    map:   HeaderMap&,
+    arena: OverflowArena&,
+    name:  const u8[:],
+    value: const u8[:],
+    flags: u8 = 0,
+) -> bool {
+    let valid_name = is_valid_header_name(name) || is_valid_header_name_h2(name);
+    guard valid_name && is_valid_header_value(value) else { return false; }
+    let trimmed = value.trim_lws();
+    let needed = core::add_sat_i64(name.len, trimmed.len);
+    let can_stack = core::add_sat_i64(map.raw_buf.len, needed) <= 8192;
+    let can_spill = core::add_sat_i64(arena.spill_raw.len, needed) <= MAX_OVERFLOW_RAW_BYTES;
+    guard can_stack || can_spill else { return false; }
+    if has_header_spill(map, arena, name) {
+        let _ = remove_header_spill(map, arena, name);
+    }
+    return append_validated_header_spill(map, arena, name, trimmed, flags);
 }
 
 fn remove_header_by_name(map: HeaderMap&, target_name: const u8[:]) -> bool {
@@ -1385,12 +1666,46 @@ fn remove_sensitive_headers(map: HeaderMap&) {
     }
 }
 
-// RFC 9110 Section 5.3 comma combining. BLOCKS Set-Cookie & NO_COMMA_FOLD headers.
-fn get_combined<B>(map: const HeaderMap&, name: const u8[:], out: B&, max_out_len: i64 = 8192) -> bool {
+fn append_combined_from_entries<B>(
+    entries:     const HeaderEntry[:],
+    stack_raw:   const u8[:],
+    spill_raw:   const u8[:],
+    name:        const u8[:],
+    hname:       u32,
+    sep_ch:      u8,
+    max_out_len: i64,
+    first:       bool&,
+    found:       bool&,
+    out:         B&,
+) -> bool {
+    for &entry in entries {
+        guard entry.name_hash == hname else { continue; }
+        guard resolve_entry_name_buf(stack_raw, spill_raw, entry).eq_ascii_fold(name) else { continue; }
+        found = true;
+        if !first {
+            guard core::add_sat_i64(out.len, 2) <= max_out_len else { out.clear(); return false; }
+            out.push(sep_ch);
+            out.push(' ');
+        }
+        first = false;
+        let val = resolve_entry_value_buf(stack_raw, spill_raw, entry);
+        guard core::add_sat_i64(out.len, val.len) <= max_out_len else { out.clear(); return false; }
+        out.append(val);
+    }
+    return true;
+}
+
+fn get_combined_slices<B>(
+    map:           const HeaderMap&,
+    spill_entries: const HeaderEntry[:],
+    spill_raw:     const u8[:],
+    name:          const u8[:],
+    out:           B&,
+    max_out_len:   i64,
+) -> bool {
     let wk_id = classify_well_known_header(name);
     let flags = http_internal::well_known_header_flags(wk_id, name);
     guard (flags & HEADER_FLAG_NO_COMMA_FOLD) == 0 else {
-        // Absolute RFC 9110 Section 5.3 / RFC 6265bis prohibition on folding Set-Cookie
         out.clear();
         return false;
     }
@@ -1405,23 +1720,40 @@ fn get_combined<B>(map: const HeaderMap&, name: const u8[:], out: B&, max_out_le
     // RFC 9113 Section 8.2.3: Compressing the Cookie Header Field - Join multiple Cookie fields with "; "
     let sep_ch: u8 = if name.eq_ascii_fold("cookie") { ';' } else { ',' };
 
-    for &entry in map.entries {
-        guard entry.name_hash == hname else { continue; }
-        let entry_name = map.raw_buf[entry.name_begin..entry.name_end];
-        guard entry_name.eq_ascii_fold(name) else { continue; }
-        found = true;
-        if !first {
-            guard out.len + 2 <= max_out_len else { out.clear(); return false; }
-            out.push(sep_ch);
-            out.push(' ');
-        }
-        first = false;
-        let val = map.raw_buf[entry.values_begin..entry.values_end];
-        guard out.len + val.len <= max_out_len else { out.clear(); return false; }
-        out.append(val);
+    guard append_combined_from_entries(
+        map.entries[..], map.raw_buf[..], spill_raw, name, hname, sep_ch, max_out_len, first, found, out,
+    ) else {
+        out.clear();
+        return false;
     }
-    committed = found;
-    return found;
+    guard append_combined_from_entries(
+        spill_entries, map.raw_buf[..], spill_raw, name, hname, sep_ch, max_out_len, first, found, out,
+    ) else {
+        out.clear();
+        return false;
+    }
+    if !found {
+        out.clear();
+        return false;
+    }
+    committed = true;
+    return true;
+}
+
+// RFC 9110 Section 5.3 comma combining across stack map + OverflowArena. BLOCKS Set-Cookie & NO_COMMA_FOLD headers.
+fn get_combined_spill<B>(
+    map:         const HeaderMap&,
+    arena:       const OverflowArena&,
+    name:        const u8[:],
+    out:         B&,
+    max_out_len: i64 = 65535,
+) -> bool {
+    return get_combined_slices(map, arena.spill_entries[..], arena.spill_raw[..], name, out, max_out_len);
+}
+
+// RFC 9110 Section 5.3 comma combining. BLOCKS Set-Cookie & NO_COMMA_FOLD headers.
+fn get_combined<B>(map: const HeaderMap&, name: const u8[:], out: B&, max_out_len: i64 = 8192) -> bool {
+    return get_combined_slices(map, map.entries[..0], "", name, out, max_out_len);
 }
 
 // Iterates multi-value headers by following intrusive next_idx collision chains.
@@ -1515,29 +1847,16 @@ fn get_all_values_spill(
     out_values: u8[..256][>..]&,
 ) {
     let hname = hash_header_name(name);
-    for &entry in map.entries {
-        if entry.name_hash == hname {
-            let entry_name = resolve_entry_name(entry, map, arena);
-            if entry_name.eq_ascii_fold(name) {
-                let val = http_internal::resolve_entry_value(entry, map, arena);
-                var item: u8[..256] = [];
-                let v_len = min(val.len, item.cap);
-                item.append(val[..v_len]);
-                out_values.push(item);
-            }
-        }
-    }
-    for &entry in arena.spill_entries {
-        if entry.name_hash == hname {
-            let entry_name = resolve_entry_name(entry, map, arena);
-            if entry_name.eq_ascii_fold(name) {
-                let val = http_internal::resolve_entry_value(entry, map, arena);
-                var item: u8[..256] = [];
-                let v_len = min(val.len, item.cap);
-                item.append(val[..v_len]);
-                out_values.push(item);
-            }
-        }
+    let total = header_count_spill(map, arena);
+    for i in total {
+        let entry, ok = header_entry_at_spill(map, arena, i);
+        guard ok && entry.name_hash == hname else { continue; }
+        guard entry_name_spill(map, arena, entry).eq_ascii_fold(name) else { continue; }
+        let val = entry_value_spill(map, arena, entry);
+        var item: u8[..256] = [];
+        let v_len = min(val.len, item.cap);
+        item.append(val[..v_len]);
+        out_values.push(item);
     }
 }
 
@@ -1572,18 +1891,12 @@ fn raw_headers(map: const HeaderMap&, out: u8[>..]&) {
 
 // Chromium raw_headers_ format with overflow arena support
 fn raw_headers_spill(map: const HeaderMap&, arena: const OverflowArena&, out: u8[>..]&) {
-    for &entry in map.entries {
-        let name = resolve_entry_name(entry, map, arena);
-        let val = http_internal::resolve_entry_value(entry, map, arena);
-        out.append(name);
-        out.push(':');
-        out.push(' ');
-        out.append(val);
-        out.push(0);
-    }
-    for &entry in arena.spill_entries {
-        let name = resolve_entry_name(entry, map, arena);
-        let val = http_internal::resolve_entry_value(entry, map, arena);
+    let total = header_count_spill(map, arena);
+    for i in total {
+        let entry, ok = header_entry_at_spill(map, arena, i);
+        guard ok else { break; }
+        let name = entry_name_spill(map, arena, entry);
+        let val = entry_value_spill(map, arena, entry);
         out.append(name);
         out.push(':');
         out.push(' ');
@@ -1715,23 +2028,35 @@ fn collect_connection_tokens(src: const HeaderMap&, out_tokens: u8[..64][..32]&)
     }
 }
 
-fn is_token_in_connection_header_map(src: const HeaderMap&, target_name: const u8[:]) -> bool {
-    for &entry in src.entries {
-        let name = src.raw_buf[entry.name_begin..entry.name_end];
-        guard name.eq_ascii_fold("connection") else { continue; }
-
-        let val = src.raw_buf[entry.values_begin..entry.values_end];
-        var tok = core::make_byte_tokenizer(val, ',');
-        while true {
-            let raw_tok, ok = core::token_next(tok);
-            guard ok else { break; }
-            let token = raw_tok.trim_lws();
-            if token.len > 0 && token.eq_ascii_fold(target_name) {
-                return true;
-            }
+fn entries_have_connection_token(
+    entries:   const HeaderEntry[:],
+    stack_raw: const u8[:],
+    spill_raw: const u8[:],
+    token:     const u8[:],
+) -> bool {
+    for &entry in entries {
+        guard resolve_entry_name_buf(stack_raw, spill_raw, entry).eq_ascii_fold("connection") else {
+            continue;
+        }
+        let val = resolve_entry_value_buf(stack_raw, spill_raw, entry);
+        if http_internal::connection_val_has_token(val, token) {
+            return true;
         }
     }
     return false;
+}
+
+fn is_token_in_connection_header_spill(
+    map:   const HeaderMap&,
+    arena: const OverflowArena&,
+    token: const u8[:],
+) -> bool {
+    return entries_have_connection_token(map.entries[..], map.raw_buf[..], arena.spill_raw[..], token) ||
+        entries_have_connection_token(arena.spill_entries[..], map.raw_buf[..], arena.spill_raw[..], token);
+}
+
+fn is_token_in_connection_header_map(src: const HeaderMap&, target_name: const u8[:]) -> bool {
+    return entries_have_connection_token(src.entries[..], src.raw_buf[..], "", target_name);
 }
 
 // Copies headers from src to dst, omitting standard hop-by-hop headers and

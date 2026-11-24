@@ -82,6 +82,7 @@ fn update_dynamic_table_max_size(dt: DynamicTable&, new_max: u64) -> bool
 fn clear_pseudo_headers(p: PseudoHeaders&, keep_trailer_flag: bool = true)
 fn decode_hpack_field_step_to_map(dt: DynamicTable&, src: const u8[:], offset: u64, updates_allowed: bool&, update_count: u32&, out_pseudo: PseudoHeaders&, out_headers: wing::HeaderMap&, max_header_list_size: u32, validate_http2_rules: bool) -> u64, u32
 fn decode_hpack_to_map(dt: DynamicTable&, src: const u8[:], out_pseudo: PseudoHeaders&, out_headers: wing::HeaderMap&, max_header_list_size: u32 = 8192, validate_http2_rules: bool = true) -> u32
+fn decode_hpack_to_map_spill(dt: DynamicTable&, src: const u8[:], out_pseudo: PseudoHeaders&, out_headers: http::HeaderMap&, out_arena: http::OverflowArena&, max_header_list_size: u32 = 65535, validate_http2_rules: bool = true) -> u32
 fn encode_hpack_field<B>(dt: DynamicTable&, out: B&, name: const u8[:], val: const u8[:], indexing: HpackIndexing = HpackIndexing.Incremental, use_huffman: bool = true) -> bool
 fn select_hpack_indexing(name: const u8[:], val: const u8[:], max_table_size: i64) -> HpackIndexing
 ```
@@ -124,3 +125,26 @@ and stream flow-control windows, and rate limiting via `core::TokenBucket`
 `PING`/`SETTINGS` floods, and empty-frame streaks). `schedule_next_write`
 implements an RFC 9218 stream scheduler across urgency buckets `0..7` with
 incremental round-robin sharing and anti-starvation yielding.
+
+### Edge Server Session (`server_session.goose`)
+
+```goose
+struct H2EdgeEvent { .. }
+struct H2EdgeEventView { .. }
+struct H2EdgeSession { .. }
+
+fn h2_edge_poll_event(sess: H2EdgeSession&, out_ev: H2EdgeEvent&) -> bool
+fn h2_edge_poll_event_spill(sess: H2EdgeSession&, out_ev: H2EdgeEvent&, out_arena: http::OverflowArena&) -> bool
+fn h2_edge_poll_event_view(sess: H2EdgeSession&, out_ev: H2EdgeEventView&) -> bool
+fn h2_edge_send_headers(sess: H2EdgeSession&, stream_id: u32, status_code: i32, headers: const http::HeaderMap&, end_stream: bool) -> bool
+fn h2_edge_send_headers_spill(sess: H2EdgeSession&, stream_id: u32, status_code: i32, headers: const http::HeaderMap&, arena: const http::OverflowArena&, end_stream: bool) -> bool
+```
+
+`H2EdgeSession` accepts up to 65535-byte / 512-entry request header blocks using
+pooled storage reclaimed on poll, reset, or close. `h2_edge_poll_event` copies
+events fitting in `http::HeaderMap` (8 KiB / 128 entries),
+`h2_edge_poll_event_spill` populates `out_ev.headers` plus `http::OverflowArena`
+for up to 64 KiB sections, and `h2_edge_poll_event_view` yields zero-copy
+`http::HeaderView` slices into the session staging buffer valid until the next
+poll, feed, or close. `h2_edge_send_headers_spill` serializes up to 64 KiB
+response headers across `HEADERS` and `CONTINUATION` frames.

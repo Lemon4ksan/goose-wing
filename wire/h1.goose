@@ -30,17 +30,20 @@ inline fn is_valid_h1_host_value(host: const u8[:]) -> bool {
     return true;
 }
 
-inline fn should_skip_h1_header(
-    headers:     const http::HeaderMap&,
-    name:        const u8[:],
-    val:         const u8[:],
-    filter_mode: H1HeaderFilterMode,
+inline fn should_skip_h1_header_slices(
+    headers:       const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    name:          const u8[:],
+    val:           const u8[:],
+    filter_mode:   H1HeaderFilterMode,
 ) -> bool {
     guard filter_mode == H1HeaderFilterMode.StripHopByHop else { return false; }
     if http::is_hop_by_hop_header_name(name) {
         return !(name.eq_ascii_fold("te") && val.trim_lws().eq_ascii_fold("trailers"));
     }
-    return http::is_token_in_connection_header_map(headers, name);
+    return http::entries_have_connection_token(headers.entries[..], headers.raw_buf[..], spill_raw, name) ||
+        http::entries_have_connection_token(spill_entries, headers.raw_buf[..], spill_raw, name);
 }
 
 struct H1HeaderScanFlags {
@@ -89,16 +92,19 @@ fn check_and_record_h1_header_entry(
     return record_h1_framing_header(name, val, flags);
 }
 
-fn append_h1_request_headers<B>(
-    headers:     const http::HeaderMap&,
-    filter_mode: H1HeaderFilterMode,
-    flags:       H1HeaderScanFlags&,
-    out:         B&,
+fn append_h1_request_entries<B>(
+    entries:       const http::HeaderEntry[:],
+    headers:       const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    filter_mode:   H1HeaderFilterMode,
+    flags:         H1HeaderScanFlags&,
+    out:           B&,
 ) -> bool {
-    for &e in headers.entries {
-        let name = http::entry_name(headers, e);
-        let val = http::entry_value(headers, e);
-        if should_skip_h1_header(headers, name, val, filter_mode) {
+    for &e in entries {
+        let name = http::resolve_entry_name_buf(headers.raw_buf[..], spill_raw, e);
+        let val = http::resolve_entry_value_buf(headers.raw_buf[..], spill_raw, e);
+        if should_skip_h1_header_slices(headers, spill_entries, spill_raw, name, val, filter_mode) {
             continue;
         }
         guard check_and_record_h1_header_entry(name, val, true, flags) else { return false; }
@@ -112,36 +118,17 @@ fn append_h1_request_headers<B>(
     return true;
 }
 
-// Serializes an HTTP/1.1 request head and optional body into `out` (RFC 9112 §3).
-// Validates method token, request-target, and header field values against CRLF injection.
-//
-// Example:
-//   encode_h1_request("GET", "/index.html", "example.com", headers, "", H1HeaderFilterMode.PreserveAll, out)
-//   returns: true, out = "GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n"
-fn encode_h1_request<B>(
-    method:       const u8[:],
-    target:       const u8[:],
-    host:         const u8[:],
-    headers:      const http::HeaderMap&,
-    body:         const u8[:],
-    filter_mode:  H1HeaderFilterMode,
-    out:          B&,
-    http_version: const u8[:] = "HTTP/1.1",
+fn append_h1_request_head_lines<B>(
+    method:        const u8[:],
+    eff_target:    const u8[:],
+    eff_ver:       const u8[:],
+    headers:       const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    filter_mode:   H1HeaderFilterMode,
+    flags:         H1HeaderScanFlags&,
+    out:           B&,
 ) -> bool {
-    let eff_target = if target.len > 0 { target } else { "/" };
-    let eff_ver = if http_version.len > 0 { http_version } else { "HTTP/1.1" };
-    let valid_ver = eff_ver == "HTTP/1.1" || eff_ver == "HTTP/1.0";
-    guard http::is_valid_header_name(method) &&
-          is_valid_h1_request_target(eff_target) &&
-          is_valid_h1_host_value(host) &&
-          valid_ver else {
-        return false;
-    }
-
-    let start_len = out.len;
-    var committed = false;
-    defer if !committed { out.resize(start_len); };
-
     guard out.try_append(method) &&
           out.try_append(" ") &&
           out.try_append(eff_target) &&
@@ -150,9 +137,26 @@ fn encode_h1_request<B>(
           out.try_append("\r\n") else {
         return false;
     }
+    guard append_h1_request_entries(
+        headers.entries[..], headers, spill_entries, spill_raw, filter_mode, flags, out,
+    ) else {
+        return false;
+    }
+    if spill_entries.len > 0 {
+        return append_h1_request_entries(
+            spill_entries, headers, spill_entries, spill_raw, filter_mode, flags, out,
+        );
+    }
+    return true;
+}
 
-    var flags = H1HeaderScanFlags { .. };
-    guard append_h1_request_headers(headers, filter_mode, flags, out) else { return false; }
+fn finish_h1_request_framing_and_body<B>(
+    eff_ver: const u8[:],
+    host:    const u8[:],
+    body:    const u8[:],
+    flags:   const H1HeaderScanFlags&,
+    out:     B&,
+) -> bool {
     // RFC 9112 Section 3.2: Request Target - an HTTP/1.1 client MUST send a Host header field in all requests.
     guard eff_ver != "HTTP/1.1" || flags.has_host || host.len > 0 else { return false; }
     // RFC 9112 Section 6.1: Transfer-Encoding - MUST NOT apply Transfer-Encoding to an HTTP/1.0 message.
@@ -177,9 +181,97 @@ fn encode_h1_request<B>(
         }
     }
 
-    guard out.try_append("\r\n") && out.try_append(body) else { return false; }
+    return out.try_append("\r\n") && out.try_append(body);
+}
+
+fn encode_h1_request_slices<B>(
+    method:        const u8[:],
+    target:        const u8[:],
+    host:          const u8[:],
+    headers:       const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    body:          const u8[:],
+    filter_mode:   H1HeaderFilterMode,
+    out:           B&,
+    http_version:  const u8[:],
+) -> bool {
+    let eff_target = if target.len > 0 { target } else { "/" };
+    let eff_ver = if http_version.len > 0 { http_version } else { "HTTP/1.1" };
+    let valid_ver = eff_ver == "HTTP/1.1" || eff_ver == "HTTP/1.0";
+    guard http::is_valid_header_name(method) &&
+          is_valid_h1_request_target(eff_target) &&
+          is_valid_h1_host_value(host) &&
+          valid_ver else {
+        return false;
+    }
+
+    let start_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(start_len); };
+
+    var flags = H1HeaderScanFlags { .. };
+    guard append_h1_request_head_lines(
+        method, eff_target, eff_ver, headers, spill_entries, spill_raw, filter_mode, flags, out,
+    ) else {
+        return false;
+    }
+    guard finish_h1_request_framing_and_body(eff_ver, host, body, flags, out) else {
+        return false;
+    }
     committed = true;
     return true;
+}
+
+// Serializes an HTTP/1.1 request head and optional body into `out` (RFC 9112 §3).
+// Validates method token, request-target, and header field values against CRLF injection.
+//
+// Example:
+//   encode_h1_request("GET", "/index.html", "example.com", headers, "", H1HeaderFilterMode.PreserveAll, out)
+//   returns: true, out = "GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n"
+fn encode_h1_request<B>(
+    method:       const u8[:],
+    target:       const u8[:],
+    host:         const u8[:],
+    headers:      const http::HeaderMap&,
+    body:         const u8[:],
+    filter_mode:  H1HeaderFilterMode,
+    out:          B&,
+    http_version: const u8[:] = "HTTP/1.1",
+) -> bool {
+    return encode_h1_request_slices(
+        method, target, host, headers, headers.entries[..0], "", body, filter_mode, out, http_version,
+    );
+}
+
+// Serializes an HTTP/1.1 request head and body resolving both stack `HeaderMap` and `OverflowArena`.
+//
+// Example:
+//   encode_h1_request_spill("POST", "/upload", "api.example.com", headers, arena, "ok", PreserveAll, out)
+//   returns: true, out = "POST /upload HTTP/1.1\r\n..."
+fn encode_h1_request_spill<B>(
+    method:       const u8[:],
+    target:       const u8[:],
+    host:         const u8[:],
+    headers:      const http::HeaderMap&,
+    arena:        const http::OverflowArena&,
+    body:         const u8[:],
+    filter_mode:  H1HeaderFilterMode,
+    out:          B&,
+    http_version: const u8[:] = "HTTP/1.1",
+) -> bool {
+    return encode_h1_request_slices(
+        method,
+        target,
+        host,
+        headers,
+        arena.spill_entries[..],
+        arena.spill_raw[..],
+        body,
+        filter_mode,
+        out,
+        http_version,
+    );
 }
 
 fn append_h1_response_headers<B>(

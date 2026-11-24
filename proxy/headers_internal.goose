@@ -23,18 +23,28 @@ fn format_chained_xff(buf: u8[..1024]&, existing_xff: const u8[:], client_ip: co
     return true;
 }
 
-fn append_chained_xff(out_headers: http::HeaderMap&, existing_xff: const u8[:], client_ip: const u8[:]) -> bool {
+fn append_chained_xff(
+    out_headers:  http::HeaderMap&,
+    out_arena:    http::OverflowArena&,
+    existing_xff: const u8[:],
+    client_ip:    const u8[:],
+) -> bool {
     var chained: u8[..1024] = [];
     guard format_chained_xff(chained, existing_xff, client_ip) else { return false; }
-    return http::append_header(out_headers, "X-Forwarded-For", chained[..]);
+    return http::append_header_spill(out_headers, out_arena, "X-Forwarded-For", chained[..]);
 }
 
-fn append_forwarded_for(out_headers: http::HeaderMap&, existing_xff: const u8[:], client_ip: const u8[:]) -> bool {
+fn append_forwarded_for(
+    out_headers:  http::HeaderMap&,
+    out_arena:    http::OverflowArena&,
+    existing_xff: const u8[:],
+    client_ip:    const u8[:],
+) -> bool {
     guard client_ip.len > 0 else { return true; }
     if existing_xff.len > 0 {
-        return append_chained_xff(out_headers, existing_xff, client_ip);
+        return append_chained_xff(out_headers, out_arena, existing_xff, client_ip);
     }
-    return http::append_header(out_headers, "X-Forwarded-For", client_ip);
+    return http::append_header_spill(out_headers, out_arena, "X-Forwarded-For", client_ip);
 }
 
 inline fn is_standard_h2_request_pseudo(name: const u8[:]) -> bool {
@@ -45,14 +55,18 @@ inline fn is_standard_h2_request_pseudo(name: const u8[:]) -> bool {
         name == ":protocol";
 }
 
-inline fn header_map_has_token(
-    headers:    const http::HeaderMap&,
+fn entries_have_header_token(
+    entries:    const http::HeaderEntry[:],
+    stack_raw:  const u8[:],
+    spill_raw:  const u8[:],
     hdr_name:   const u8[:],
     target_tok: const u8[:],
 ) -> bool {
-    for &entry in headers.entries {
-        guard http::entry_name(headers, entry).eq_ascii_fold(hdr_name) else { continue; }
-        let val = http::entry_value(headers, entry);
+    for &entry in entries {
+        guard http::resolve_entry_name_buf(stack_raw, spill_raw, entry).eq_ascii_fold(hdr_name) else {
+            continue;
+        }
+        let val = http::resolve_entry_value_buf(stack_raw, spill_raw, entry);
         var tok = core::make_byte_tokenizer(val, ',');
         loop {
             let raw_tok, ok = core::token_next(tok);
@@ -65,45 +79,102 @@ inline fn header_map_has_token(
     return false;
 }
 
-// Validates RFC 6455 Section 4.1 WebSocket upgrade headers under `UpgradePolicy.AllowWebSocket`.
-fn is_valid_websocket_upgrade_headers(
-    in_headers: const http::HeaderMap&,
-    config:     const proxy::Config&,
-    method:     const u8[:] = "GET",
+inline fn header_map_has_token_slices(
+    headers:       const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    hdr_name:      const u8[:],
+    target_tok:    const u8[:],
 ) -> bool {
-    guard config.upgrade_policy == proxy::UpgradePolicy.AllowWebSocket else { return false; }
-    guard method.eq_ascii_fold("GET") && !config.http_version[..].eq_ascii_fold("HTTP/1.0") else {
-        return false;
-    }
-    // RFC 6455 Section 4.1: Client Requirements - require Connection: upgrade, Upgrade: websocket, 16B key, and v13.
-    guard http::is_token_in_connection_header_map(in_headers, "upgrade") else { return false; }
-    guard header_map_has_token(in_headers, "upgrade", "websocket") else { return false; }
+    return entries_have_header_token(headers.entries[..], headers.raw_buf[..], spill_raw, hdr_name, target_tok) ||
+        entries_have_header_token(spill_entries, headers.raw_buf[..], spill_raw, hdr_name, target_tok);
+}
 
-    var key_count: i64 = 0;
-    var ver_count: i64 = 0;
-    var key_valid = false;
-    var ver_valid = false;
-    for &entry in in_headers.entries {
-        let name = http::entry_name(in_headers, entry);
+// Validates `sec-websocket-key` (base64-encoded 16-byte nonce) and `sec-websocket-version` ("13") entries.
+//
+// Example:
+//   entries = [Sec-WebSocket-Key: ..., Sec-WebSocket-Version: 13]
+//   returns: key_count = 1, ver_count = 1, key_valid = true, ver_valid = true
+fn scan_ws_entries(
+    entries:   const http::HeaderEntry[:],
+    stack_raw: const u8[:],
+    spill_raw: const u8[:],
+    key_count: i64&,
+    ver_count: i64&,
+    key_valid: bool&,
+    ver_valid: bool&,
+) {
+    for &entry in entries {
+        let name = http::resolve_entry_name_buf(stack_raw, spill_raw, entry);
         if name.eq_ascii_fold("sec-websocket-key") {
             key_count = core::add_sat_i64(key_count, 1);
-            let ws_key = http::entry_value(in_headers, entry).trim_lws();
+            let ws_key = http::resolve_entry_value_buf(stack_raw, spill_raw, entry).trim_lws();
             var decoded_key: u8[..24] = [];
             key_valid = ws_key.len == 24 &&
                 core::base64_decode(ws_key, decoded_key) &&
                 decoded_key.len == 16;
         } else if name.eq_ascii_fold("sec-websocket-version") {
             ver_count = core::add_sat_i64(ver_count, 1);
-            ver_valid = http::entry_value(in_headers, entry).trim_lws() == "13";
+            ver_valid = http::resolve_entry_value_buf(stack_raw, spill_raw, entry).trim_lws() == "13";
         }
     }
+}
+
+// Validates RFC 6455 Section 4.1 WebSocket upgrade headers under `UpgradePolicy.AllowWebSocket`.
+fn is_valid_websocket_upgrade_headers_slices(
+    in_headers:    const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    config:        const proxy::Config&,
+    method:        const u8[:] = "GET",
+) -> bool {
+    guard config.upgrade_policy == proxy::UpgradePolicy.AllowWebSocket else { return false; }
+    guard method.eq_ascii_fold("GET") && !config.http_version[..].eq_ascii_fold("HTTP/1.0") else {
+        return false;
+    }
+    let has_conn_upg = http::entries_have_connection_token(
+        in_headers.entries[..], in_headers.raw_buf[..], spill_raw, "upgrade",
+    ) || http::entries_have_connection_token(
+        spill_entries, in_headers.raw_buf[..], spill_raw, "upgrade",
+    );
+    guard has_conn_upg else { return false; }
+    guard header_map_has_token_slices(in_headers, spill_entries, spill_raw, "upgrade", "websocket") else {
+        return false;
+    }
+
+    var key_count: i64 = 0;
+    var ver_count: i64 = 0;
+    var key_valid = false;
+    var ver_valid = false;
+    scan_ws_entries(
+        in_headers.entries[..], in_headers.raw_buf[..], spill_raw, key_count, ver_count, key_valid, ver_valid,
+    );
+    scan_ws_entries(
+        spill_entries, in_headers.raw_buf[..], spill_raw, key_count, ver_count, key_valid, ver_valid,
+    );
     return key_count == 1 && ver_count == 1 && key_valid && ver_valid;
 }
 
-fn should_forward_header(
+inline fn should_forward_ws_upgrade_field(
+    name:               const u8[:],
+    config:             const proxy::Config&,
+    ws_upgrade_allowed: bool,
+) -> bool {
+    guard config.upgrade_policy == proxy::UpgradePolicy.AllowWebSocket && ws_upgrade_allowed else {
+        return false;
+    }
+    if name.starts_with_fold("sec-websocket-") {
+        return true;
+    }
+    return !config.strip_hop_by_hop;
+}
+
+fn should_forward_header_slices(
     name:               const u8[:],
     val:                const u8[:],
     in_headers:         const http::HeaderMap&,
+    spill_entries:      const http::HeaderEntry[:],
+    spill_raw:          const u8[:],
     config:             const proxy::Config&,
     ws_upgrade_allowed: bool,
 ) -> bool {
@@ -117,18 +188,13 @@ fn should_forward_header(
         return true;
     }
     // RFC 9112 Section 6.3: Message Body Length - remove Content-Length if Transfer-Encoding is present.
-    if name.eq_ascii_fold("content-length") && http::has_header(in_headers, "transfer-encoding") {
+    if name.eq_ascii_fold("content-length") &&
+       http::has_header_slices(in_headers, spill_entries, spill_raw, "transfer-encoding") {
         return false;
     }
     // RFC 9110 Section 7.8: Strip Upgrade and Sec-WebSocket-* under Strip, or under AllowWebSocket unless valid.
     if name.eq_ascii_fold("upgrade") || name.starts_with_fold("sec-websocket-") {
-        guard config.upgrade_policy == proxy::UpgradePolicy.AllowWebSocket && ws_upgrade_allowed else {
-            return false;
-        }
-        if name.starts_with_fold("sec-websocket-") {
-            return true;
-        }
-        return !config.strip_hop_by_hop;
+        return should_forward_ws_upgrade_field(name, config, ws_upgrade_allowed);
     }
     guard config.strip_hop_by_hop else { return true; }
 
@@ -137,7 +203,8 @@ fn should_forward_header(
         return name.eq_ascii_fold("te") && val.trim_lws().eq_ascii_fold("trailers");
     }
 
-    if http::is_token_in_connection_header_map(in_headers, name) {
+    if http::entries_have_connection_token(in_headers.entries[..], in_headers.raw_buf[..], spill_raw, name) ||
+       http::entries_have_connection_token(spill_entries, in_headers.raw_buf[..], spill_raw, name) {
         return false;
     }
 
@@ -155,33 +222,46 @@ inline fn check_cl_match(val: const u8[:], first_found: bool&, target_val: i64&)
     return parsed_cl == target_val;
 }
 
+inline fn format_canonical_content_length(val: const u8[:], out_buf: u8[..24]&) -> bool {
+    let parsed_cl, ok_cl = http::validate_content_length_value(val);
+    guard ok_cl else { return false; }
+    out_buf.clear();
+    parsed_cl.format_i64_dec(out_buf);
+    return true;
+}
+
 inline fn append_canonical_content_length(
     out_headers: http::HeaderMap&,
     name:        const u8[:],
     val:         const u8[:],
 ) -> bool {
-    let parsed_cl, ok_cl = http::validate_content_length_value(val);
-    guard ok_cl else { return false; }
     var cl_buf: u8[..24] = [];
-    parsed_cl.format_i64_dec(cl_buf);
+    guard format_canonical_content_length(val, cl_buf) else { return false; }
     return http::append_header(out_headers, name, cl_buf[..]);
 }
 
-// Validates framing header integrity before forwarding.
-fn has_consistent_framing_headers(in_headers: const http::HeaderMap&) -> bool {
-    // RFC 9110 Section 7.6.1: Connection - MUST NOT send connection option for end-to-end framing or routing fields.
-    guard !http::is_token_in_connection_header_map(in_headers, "content-length") else { return false; }
-    guard !http::is_token_in_connection_header_map(in_headers, "transfer-encoding") else { return false; }
-    guard !http::is_token_in_connection_header_map(in_headers, "host") else { return false; }
-    guard !http::is_token_in_connection_header_map(in_headers, "max-forwards") else { return false; }
+inline fn append_canonical_content_length_spill(
+    out_headers: http::HeaderMap&,
+    out_arena:   http::OverflowArena&,
+    name:        const u8[:],
+    val:         const u8[:],
+) -> bool {
+    var cl_buf: u8[..24] = [];
+    guard format_canonical_content_length(val, cl_buf) else { return false; }
+    return http::append_header_spill(out_headers, out_arena, name, cl_buf[..]);
+}
 
-    var first_cl_found = false;
-    var first_cl_val: i64 = 0;
-    var has_te = false;
-
-    for &entry in in_headers.entries {
-        let name = http::entry_name(in_headers, entry);
-        let val = http::entry_value(in_headers, entry);
+fn check_framing_entries(
+    entries:        const http::HeaderEntry[:],
+    stack_raw:      const u8[:],
+    spill_raw:      const u8[:],
+    first_cl_found: bool&,
+    first_cl_val:   i64&,
+    has_te:         bool&,
+) -> bool {
+    for &entry in entries {
+        let name = http::resolve_entry_name_buf(stack_raw, spill_raw, entry);
+        let val = http::resolve_entry_value_buf(stack_raw, spill_raw, entry);
 
         if name.eq_ascii_fold("content-length") {
             guard check_cl_match(val, first_cl_found, first_cl_val) else { return false; }
@@ -191,38 +271,103 @@ fn has_consistent_framing_headers(in_headers: const http::HeaderMap&) -> bool {
             has_te = true;
         }
     }
+    return true;
+}
+
+fn has_consistent_framing_headers_slices(
+    in_headers:    const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+) -> bool {
+    let bad_cl = http::entries_have_connection_token(
+        in_headers.entries[..], in_headers.raw_buf[..], spill_raw, "content-length",
+    ) || http::entries_have_connection_token(spill_entries, in_headers.raw_buf[..], spill_raw, "content-length");
+    let bad_te = http::entries_have_connection_token(
+        in_headers.entries[..], in_headers.raw_buf[..], spill_raw, "transfer-encoding",
+    ) || http::entries_have_connection_token(spill_entries, in_headers.raw_buf[..], spill_raw, "transfer-encoding");
+    let bad_host = http::entries_have_connection_token(
+        in_headers.entries[..], in_headers.raw_buf[..], spill_raw, "host",
+    ) || http::entries_have_connection_token(spill_entries, in_headers.raw_buf[..], spill_raw, "host");
+    let bad_mf = http::entries_have_connection_token(
+        in_headers.entries[..], in_headers.raw_buf[..], spill_raw, "max-forwards",
+    ) || http::entries_have_connection_token(spill_entries, in_headers.raw_buf[..], spill_raw, "max-forwards");
+    // RFC 9110 Section 7.6.1: Connection - MUST NOT send connection option for end-to-end framing or routing fields.
+    guard !bad_cl && !bad_te && !bad_host && !bad_mf else { return false; }
+
+    var first_cl_found = false;
+    var first_cl_val: i64 = 0;
+    var has_te = false;
+    guard check_framing_entries(
+        in_headers.entries[..], in_headers.raw_buf[..], spill_raw, first_cl_found, first_cl_val, has_te,
+    ) else { return false; }
+    guard check_framing_entries(
+        spill_entries, in_headers.raw_buf[..], spill_raw, first_cl_found, first_cl_val, has_te,
+    ) else { return false; }
     // RFC 9112 Section 6.3: Message Body Length - reject messages with both Transfer-Encoding and Content-Length.
     guard !(first_cl_found && has_te) else { return false; }
     return true;
 }
 
-fn copy_filtered_headers(
-    in_headers:  const http::HeaderMap&,
-    out_headers: http::HeaderMap&,
-    config:      const proxy::Config&,
-    method:      const u8[:] = "GET",
+// Validates framing header integrity before forwarding.
+fn has_consistent_framing_headers(in_headers: const http::HeaderMap&) -> bool {
+    return has_consistent_framing_headers_slices(in_headers, in_headers.entries[..0], "");
+}
+
+fn copy_filtered_entries_spill(
+    entries:       const http::HeaderEntry[:],
+    in_headers:    const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    out_headers:   http::HeaderMap&,
+    out_arena:     http::OverflowArena&,
+    config:        const proxy::Config&,
+    allow_ws:      bool,
 ) -> bool {
-    let allow_ws = is_valid_websocket_upgrade_headers(in_headers, config, method);
-    for &entry in in_headers.entries {
-        let name = http::entry_name(in_headers, entry);
-        let val = http::entry_value(in_headers, entry);
+    for &entry in entries {
+        let name = http::resolve_entry_name_buf(in_headers.raw_buf[..], spill_raw, entry);
+        let val = http::resolve_entry_value_buf(in_headers.raw_buf[..], spill_raw, entry);
 
         if is_standard_h2_request_pseudo(name) {
             continue;
         }
         // RFC 9113 Section 8.3: HTTP Control Data - reject non-standard or unstripped pseudo-headers.
         guard http::is_valid_header_name(name) && http::is_valid_header_value(val) else { return false; }
-        if !should_forward_header(name, val, in_headers, config, allow_ws) {
+        if !should_forward_header_slices(name, val, in_headers, spill_entries, spill_raw, config, allow_ws) {
             continue;
         }
         if name.eq_ascii_fold("content-length") {
-            guard http::has_header(out_headers, "content-length") ||
-                append_canonical_content_length(out_headers, name, val) else {
+            guard http::has_header_spill(out_headers, out_arena, "content-length") ||
+                append_canonical_content_length_spill(out_headers, out_arena, name, val) else {
                 return false;
             }
             continue;
         }
-        guard http::append_header(out_headers, name, val) else { return false; }
+        guard http::append_header_spill(
+            out_headers, out_arena, name, val, entry.flags & http::HEADER_FLAG_SENSITIVE,
+        ) else { return false; }
+    }
+    return true;
+}
+
+fn copy_filtered_headers_spill(
+    in_headers:    const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    out_headers:   http::HeaderMap&,
+    out_arena:     http::OverflowArena&,
+    config:        const proxy::Config&,
+    method:        const u8[:] = "GET",
+) -> bool {
+    let allow_ws = is_valid_websocket_upgrade_headers_slices(
+        in_headers, spill_entries, spill_raw, config, method,
+    );
+    guard copy_filtered_entries_spill(
+        in_headers.entries[..], in_headers, spill_entries, spill_raw, out_headers, out_arena, config, allow_ws,
+    ) else { return false; }
+    if spill_entries.len > 0 {
+        return copy_filtered_entries_spill(
+            spill_entries, in_headers, spill_entries, spill_raw, out_headers, out_arena, config, allow_ws,
+        );
     }
     return true;
 }
@@ -329,44 +474,54 @@ fn has_via_pseudonym_loop(combined_via: const u8[:], pseudonym: const u8[:]) -> 
     return false;
 }
 
-fn inject_via_header(
-    out_headers:  http::HeaderMap&,
-    in_headers:   const http::HeaderMap&,
-    pseudonym:    const u8[:],
-    http_version: const u8[:],
+fn inject_via_header_spill(
+    out_headers:   http::HeaderMap&,
+    out_arena:     http::OverflowArena&,
+    in_headers:    const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    pseudonym:     const u8[:],
+    http_version:  const u8[:],
 ) -> bool {
     var combined: u8[..1024] = [];
-    let has_existing = http::has_header(in_headers, "Via");
+    let has_existing = http::has_header_slices(in_headers, spill_entries, spill_raw, "Via");
     if has_existing {
-        guard http::get_combined(in_headers, "Via", combined, 950) else { return false; }
+        guard http::get_combined_slices(in_headers, spill_entries, spill_raw, "Via", combined, 950) else {
+            return false;
+        }
         // RFC 9110 Section 7.6.3: Via - detect forwarding loops when own pseudonym is already present.
         guard !has_via_pseudonym_loop(combined[..], pseudonym) else { return false; }
     }
     guard pseudonym.len > 0 else {
         guard combined.len > 0 else { return true; }
-        return http::append_header(out_headers, "Via", combined[..]);
+        return http::append_header_spill(out_headers, out_arena, "Via", combined[..]);
     }
     var via_buf: u8[..64] = [];
     guard format_via(via_buf, pseudonym, http_version) else { return false; }
     guard combined.len > 0 else {
-        return http::append_header(out_headers, "Via", via_buf[..]);
+        return http::append_header_spill(out_headers, out_arena, "Via", via_buf[..]);
     }
     guard combined.try_append(", ") && combined.try_append(via_buf[..]) else { return false; }
-    return http::append_header(out_headers, "Via", combined[..]);
+    return http::append_header_spill(out_headers, out_arena, "Via", combined[..]);
 }
 
-fn append_forwarded_metadata_xff(
+fn append_forwarded_metadata_xff_spill(
     out_headers:        http::HeaderMap&,
+    out_arena:          http::OverflowArena&,
     in_headers:         const http::HeaderMap&,
+    spill_entries:      const http::HeaderEntry[:],
+    spill_raw:          const u8[:],
     client_ip:          const u8[:],
     trust_incoming_xff: bool,
 ) -> bool {
-    guard trust_incoming_xff && http::has_header(in_headers, "X-Forwarded-For") else {
-        return append_forwarded_for(out_headers, "", client_ip);
+    guard trust_incoming_xff && http::has_header_slices(in_headers, spill_entries, spill_raw, "X-Forwarded-For") else {
+        return append_forwarded_for(out_headers, out_arena, "", client_ip);
     }
     var combined_buf: u8[..1024] = [];
-    guard http::get_combined(in_headers, "X-Forwarded-For", combined_buf, 1024) else { return false; }
-    return append_forwarded_for(out_headers, combined_buf[..], client_ip);
+    guard http::get_combined_slices(
+        in_headers, spill_entries, spill_raw, "X-Forwarded-For", combined_buf, 1024,
+    ) else { return false; }
+    return append_forwarded_for(out_headers, out_arena, combined_buf[..], client_ip);
 }
 
 inline fn populate_forwarded_for_node(elem: http::ForwardedElement&, client_ip: const u8[:]) -> bool {
@@ -379,103 +534,133 @@ inline fn populate_forwarded_for_node(elem: http::ForwardedElement&, client_ip: 
     return elem.for_node.try_set(client_ip);
 }
 
-fn inject_forwarded_metadata(
+fn append_rfc7239_forwarded_spill(
     out_headers: http::HeaderMap&,
-    in_headers:  const http::HeaderMap&,
+    out_arena:   http::OverflowArena&,
     client_ip:   const u8[:],
+    orig_host:   const u8[:],
     proto:       const u8[:],
     config:      const proxy::Config&,
 ) -> bool {
-    guard append_forwarded_metadata_xff(
+    guard config.emit_rfc7239_forwarded else { return true; }
+    var elem = http::ForwardedElement { .. };
+    guard elem.by.try_set(config.via_pseudonym[..]) else { return false; }
+    guard populate_forwarded_for_node(elem, client_ip) else { return false; }
+    guard elem.host.try_set(orig_host) else { return false; }
+    guard elem.proto.try_set(proto) else { return false; }
+    var fwd_buf: u8[..512] = [];
+    http::format_forwarded_element(elem, fwd_buf);
+    guard fwd_buf.len > 0 else { return false; }
+    return http::append_header_spill(out_headers, out_arena, rfc::HEADER_FORWARDED, fwd_buf[..]);
+}
+
+fn inject_forwarded_metadata_spill(
+    out_headers:   http::HeaderMap&,
+    out_arena:     http::OverflowArena&,
+    in_headers:    const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    client_ip:     const u8[:],
+    proto:         const u8[:],
+    config:        const proxy::Config&,
+) -> bool {
+    guard append_forwarded_metadata_xff_spill(
         out_headers,
+        out_arena,
         in_headers,
+        spill_entries,
+        spill_raw,
         client_ip,
         config.trust_incoming_xff,
     ) else { return false; }
 
-    let orig_host = http::get_header(in_headers, "Host");
+    let orig_host = http::get_header_slices(in_headers, spill_entries, spill_raw, "Host");
     if proto.len > 0 {
-        guard http::append_header(out_headers, "X-Forwarded-Proto", proto) else { return false; }
+        guard http::append_header_spill(out_headers, out_arena, "X-Forwarded-Proto", proto) else { return false; }
     }
-    let existing_xf_host = http::get_header(in_headers, "X-Forwarded-Host");
+    let existing_xf_host = http::get_header_slices(in_headers, spill_entries, spill_raw, "X-Forwarded-Host");
     if config.trust_incoming_xff && existing_xf_host.len > 0 {
-        guard http::append_header(out_headers, "X-Forwarded-Host", existing_xf_host) else { return false; }
+        guard http::append_header_spill(out_headers, out_arena, "X-Forwarded-Host", existing_xf_host) else {
+            return false;
+        }
     } else if orig_host.len > 0 && !config.preserve_host {
-        guard http::append_header(out_headers, "X-Forwarded-Host", orig_host) else { return false; }
+        guard http::append_header_spill(out_headers, out_arena, "X-Forwarded-Host", orig_host) else { return false; }
     }
-    if config.emit_rfc7239_forwarded {
-        var elem = http::ForwardedElement { .. };
-        guard elem.by.try_set(config.via_pseudonym[..]) else { return false; }
-        guard populate_forwarded_for_node(elem, client_ip) else { return false; }
-        guard elem.host.try_set(orig_host) else { return false; }
-        guard elem.proto.try_set(proto) else { return false; }
-        guard http::append_forwarded_header(out_headers, elem) else { return false; }
-    }
-    return true;
+    return append_rfc7239_forwarded_spill(out_headers, out_arena, client_ip, orig_host, proto, config);
 }
 
-fn ensure_forwarded_head_framing(
+fn ensure_forwarded_head_framing_spill(
     in_headers:      const http::HeaderMap&,
+    spill_entries:   const http::HeaderEntry[:],
+    spill_raw:       const u8[:],
     forward_headers: http::HeaderMap&,
+    forward_arena:   http::OverflowArena&,
     method:          const u8[:],
     http_version:    const u8[:],
 ) -> bool {
-    let has_cl = http::has_header(forward_headers, "content-length");
-    if http::has_header(in_headers, "transfer-encoding") {
+    let has_cl = http::has_header_spill(forward_headers, forward_arena, "content-length");
+    if http::has_header_slices(in_headers, spill_entries, spill_raw, "transfer-encoding") {
         guard !has_cl && http_version != "HTTP/1.0" else { return false; }
-        if !http::has_header(forward_headers, "transfer-encoding") {
-            let te_val = http::get_header(in_headers, "transfer-encoding").trim_lws();
+        if !http::has_header_spill(forward_headers, forward_arena, "transfer-encoding") {
+            let te_val = http::get_header_slices(in_headers, spill_entries, spill_raw, "transfer-encoding").trim_lws();
             guard te_val.len > 0 else { return false; }
-            return http::append_header(forward_headers, "Transfer-Encoding", te_val);
+            return http::append_header_spill(forward_headers, forward_arena, "Transfer-Encoding", te_val);
         }
         return true;
     }
     guard !has_cl else { return true; }
     if method == "POST" || method == "PUT" || method == "PATCH" {
-        return http::append_header(forward_headers, "Content-Length", "0");
+        return http::append_header_spill(forward_headers, forward_arena, "Content-Length", "0");
     }
     return true;
 }
 
-fn ensure_forwarded_body_framing(
+fn ensure_forwarded_body_framing_spill(
     forward_headers: http::HeaderMap&,
+    forward_arena:   http::OverflowArena&,
     body:            const u8[:],
     method:          const u8[:] = "",
 ) -> bool {
-    let has_cl = http::has_header(forward_headers, "content-length");
-    let has_te = http::has_header(forward_headers, "transfer-encoding");
+    let has_cl = http::has_header_spill(forward_headers, forward_arena, "content-length");
+    let has_te = http::has_header_spill(forward_headers, forward_arena, "transfer-encoding");
     guard !(has_cl && has_te) else { return false; }
     if has_cl {
         let parsed_cl, ok_cl = http::validate_content_length_value(
-            http::get_header(forward_headers, "content-length"),
+            http::get_header_spill(forward_headers, forward_arena, "content-length"),
         );
         guard ok_cl else { return false; }
         return parsed_cl == body.len;
     }
     if body.len == 0 {
         if method == "POST" || method == "PUT" || method == "PATCH" {
-            return http::append_header(forward_headers, "Content-Length", "0");
+            return http::append_header_spill(forward_headers, forward_arena, "Content-Length", "0");
         }
         return true;
     }
     var cl_buf: u8[..32] = [];
     body.len.format_i64_dec(cl_buf);
-    return http::append_header(forward_headers, "Content-Length", cl_buf[..]);
+    return http::append_header_spill(forward_headers, forward_arena, "Content-Length", cl_buf[..]);
 }
 
 // Enforces RFC 9110 Section 7.6.2 Max-Forwards hop decrement and zero-hop halt on TRACE and OPTIONS.
-fn apply_max_forwards_policy(method: const u8[:], forward_headers: http::HeaderMap&) -> bool {
+fn apply_max_forwards_policy_spill(
+    method:          const u8[:],
+    forward_headers: http::HeaderMap&,
+    forward_arena:   http::OverflowArena&,
+) -> bool {
     guard method.eq_ascii_fold("TRACE") || method.eq_ascii_fold("OPTIONS") else {
         return true;
     }
     var found = false;
     var hops: u64 = 0;
-    for &entry in forward_headers.entries {
-        let name = http::entry_name(forward_headers, entry);
-        if !name.eq_ascii_fold("max-forwards") {
+    let total = http::header_count_spill(forward_headers, forward_arena);
+    for i in total {
+        let entry, ok_e = http::header_entry_at_spill(forward_headers, forward_arena, i);
+        guard ok_e else { break; }
+        guard http::entry_name_spill(forward_headers, forward_arena, entry).eq_ascii_fold("max-forwards") else {
             continue;
         }
-        let val = http::entry_value(forward_headers, entry).trim_lws();
+        let val = http::entry_value_spill(forward_headers, forward_arena, entry).trim_lws();
         let parsed, ok = val.parse_u64_dec();
         guard ok else { return false; }
         if !found {
@@ -491,7 +676,7 @@ fn apply_max_forwards_policy(method: const u8[:], forward_headers: http::HeaderM
     var mf_buf: u8[..24] = [];
     let next_hops = core::sub_sat_u64(hops, 1);
     next_hops.format_u64_dec(mf_buf);
-    return http::set_or_replace(forward_headers, "Max-Forwards", mf_buf[..]);
+    return http::set_or_replace_spill(forward_headers, forward_arena, "Max-Forwards", mf_buf[..]);
 }
 
 inline fn is_valid_accel_redirect_target(target: const u8[:]) -> bool {

@@ -75,6 +75,8 @@ fn qpack_process_encoder_instruction(tbl: QpackTable&, src: const u8[:], offset:
 fn qpack_process_decoder_instruction(tbl: QpackTable&, src: const u8[:], offset: u64) -> u64, QpackError
 fn decode_qpack_to_map(tbl: const QpackTable&, src: const u8[:], out_pseudo: PseudoHeaders&, out_headers: wing::HeaderMap&, max_field_section: u64 = 16384) -> QpackError
 fn decode_or_block_qpack_to_map(tbl: QpackTable&, stream_id: u64, src: const u8[:], out_pseudo: PseudoHeaders&, out_headers: wing::HeaderMap&, max_field_section: u64 = 16384) -> QpackError
+fn decode_or_track_blocked_qpack_to_map(tbl: QpackTable&, stream_id: u64, src: const u8[:], out_pseudo: PseudoHeaders&, out_headers: http::HeaderMap&, max_field_section: u64 = 16384) -> QpackError
+fn decode_or_track_blocked_qpack_to_map_spill(tbl: QpackTable&, stream_id: u64, src: const u8[:], out_pseudo: PseudoHeaders&, out_headers: http::HeaderMap&, out_arena: http::OverflowArena&, max_field_section: u64 = 65535) -> QpackError
 fn decode_qpack_section<F>(tbl: const QpackTable&, src: const u8[:], out_fields: F&, max_field_section: u64 = 16384) -> QpackError
 fn decode_or_block_qpack_section<F>(tbl: QpackTable&, stream_id: u64, src: const u8[:], out_fields: F&, max_field_section: u64 = 16384, is_push_promise: bool = false, push_id: u64 = 0) -> QpackError
 fn encode_qpack_field<B>(out: B&, name: const u8[:], val: const u8[:], use_huffman: bool = true) -> bool
@@ -123,3 +125,22 @@ RFC 9114 §4.1). `handle_stream_data` demultiplexes incoming stream slices and
 unblocks waiting QPACK streams as encoder instructions arrive.
 `apply_stream_priority` and `select_next_tx_stream` schedule outbound request
 streams according to RFC 9218 urgency and incremental parameters.
+
+### Edge Server Session (`server_session.goose`)
+
+```goose
+struct H3EdgeEvent { .. }
+struct H3EdgeEventView { .. }
+
+fn h3_edge_poll_event(sess: H3EdgeSession&, out_ev: H3EdgeEvent&) -> bool
+fn h3_edge_poll_event_spill(sess: H3EdgeSession&, out_ev: H3EdgeEvent&, out_arena: http::OverflowArena&) -> bool
+fn h3_edge_poll_event_view(sess: H3EdgeSession&, out_ev: H3EdgeEventView&) -> bool
+fn h3_edge_encode_response_headers(sess: H3EdgeSession&, status_code: i32, headers: const http::HeaderMap&, out_wire: u8[>..]&) -> bool
+fn h3_edge_encode_response_headers_spill(sess: H3EdgeSession&, status_code: i32, headers: const http::HeaderMap&, arena: const http::OverflowArena&, out_wire: u8[>..]&) -> bool
+```
+
+`H3EdgeSession` decodes up to 64 KiB / 512-entry field sections into pooled
+storage reclaimed on poll, reset, or close. `h3_edge_poll_event_spill` populates
+`http::OverflowArena`, `h3_edge_poll_event_view` yields zero-copy
+`http::HeaderView` slices backed by slot staging buffers, and
+`h3_edge_encode_response_headers_spill` encodes up to 64 KiB response headers.

@@ -16,14 +16,15 @@ import .connection;
 
 // ---- Session Public Limits & Constants -----------------------------------
 
-const MAX_H2_EDGE_SLOTS:       i64 = 4096;
-const H2_EDGE_MAX_STREAMS:     u32 = 128;
-const H2_EDGE_WIRE_IN_CAP:     i64 = 16393;    // 9-byte header + 16384-byte default MAX_FRAME_SIZE
-const H2_EDGE_WIRE_OUT_CAP:    i64 = 147456;   // 144 KiB outbound framing buffer (HEADERS + CONTINUATION + DATA)
-const H2_EDGE_EV_DATA_CAP:     i64 = 16384;    // Max single DATA frame payload per RFC 9113 Section 4.2 default
-const H2_EDGE_PREFACE_LEN:     i64 = 24;       // RFC 9113 Section 3.4: HTTP/2 Connection Preface
-const H2_EDGE_MAX_HEADER_LIST: u32 = 8192;     // Bounded by http::HeaderMap.raw_buf capacity (RFC 9113 Section 6.5.2)
-const H2_EDGE_MIN_REPLENISH:   i64 = 16384;
+const MAX_H2_EDGE_SLOTS:          i64 = 4096;
+const H2_EDGE_MAX_STREAMS:        u32 = 128;
+const H2_EDGE_WIRE_IN_CAP:        i64 = 16393;  // 9-byte header + 16384-byte default MAX_FRAME_SIZE
+const H2_EDGE_WIRE_OUT_CAP:       i64 = 147456; // 144 KiB outbound framing buffer (HEADERS + CONTINUATION + DATA)
+const H2_EDGE_EV_DATA_CAP:        i64 = 16384;  // Max single DATA frame payload per RFC 9113 Section 4.2 default
+const H2_EDGE_PREFACE_LEN:        i64 = 24;       // RFC 9113 Section 3.4: HTTP/2 Connection Preface
+const H2_EDGE_MAX_HEADER_LIST:    u32 = 65535;    // Bounded by http::OverflowArena u16 offsets (RFC 9113 Section 6.5.2)
+const H2_EDGE_MAX_HEADER_ENTRIES: i64 = 512;      // Max decoded header entries queued per request/trailer event
+const H2_EDGE_MIN_REPLENISH:      i64 = 16384;
 
 // ---- Public Streaming Event & Session Handle Types -----------------------
 
@@ -46,6 +47,16 @@ struct H2EdgeEvent {
     error_code: u32             = 0,
 }
 
+// Zero-copy streaming event carrying a `http::HeaderView` backed by the session's reusable staging buffers.
+struct H2EdgeEventView {
+    kind:       H2EdgeEventKind  = H2EdgeEventKind.None,
+    stream_id:  u32              = 0,
+    headers:    http::HeaderView = http::HeaderView { .. },
+    data:       const u8[:]      = "",
+    end_stream: bool             = false,
+    error_code: u32              = 0,
+}
+
 struct H2EdgeSession {
     slot_idx:   i64 = -1,
     generation: u64 = 0,
@@ -57,6 +68,13 @@ struct H2EdgeDataChunk {
     in_use:   bool        = false,
     next_idx: i64         = -1,
     buf:      u8[..16384] = [],
+}
+
+struct H2EdgeHdrBuf {
+    in_use:   bool                     = false,
+    next_idx: i64                      = -1,
+    entries:  http::HeaderEntry[..512] = [],
+    raw:      u8[..65536]              = [],
 }
 
 struct H2EdgeEventNode {
@@ -71,32 +89,34 @@ struct H2EdgeEventNode {
 }
 
 struct H2EdgeSlot {
-    in_use:                        bool         = false,
-    generation:                    u64          = 0,
-    preface_done:                  bool         = false,
-    conn_failed:                   bool         = false,
-    hpack_enc_pending_size_update: bool         = false,
-    hpack_enc_pending_min_size:    u64          = rfc::HPACK_DEFAULT_MAX_DYN_SIZE,
-    has_peer_max_header_list_size: bool         = false,
-    peer_max_concurrent_streams:   u32          = 128,
-    peer_max_header_list_size:     u32          = 0,
-    queued_control_acks:           u32          = 0,
-    refused_cont_stream_id:        u32          = 0,
-    refused_cont_frames_cnt:       u32          = 0,
-    refused_cont_start_ms:         u64          = 0,
-    hdr_stream_id:                 u32          = 0,
-    hdr_end_stream:                bool         = false,
-    hdr_is_trailer:                bool         = false,
-    ev_head:                       i64          = -1,
-    ev_tail:                       i64          = -1,
-    conn:                          Connection   = Connection { .. },
-    hpack_enc:                     DynamicTable = DynamicTable { .. },
-    stream_unclaimed_id:           u32[128]     = [0; 128],
-    stream_unclaimed_rx:           i64[128]     = [0; 128],
-    wire_in:                       u8[..16393]  = [],
-    wire_out:                      u8[..147456] = [],
-    header_accum:                  u8[..65536]  = [],
-    ev_data_buf:                   u8[..16384]  = [],
+    in_use:                        bool                     = false,
+    generation:                    u64                      = 0,
+    preface_done:                  bool                     = false,
+    conn_failed:                   bool                     = false,
+    hpack_enc_pending_size_update: bool                     = false,
+    hpack_enc_pending_min_size:    u64                      = rfc::HPACK_DEFAULT_MAX_DYN_SIZE,
+    has_peer_max_header_list_size: bool                     = false,
+    peer_max_concurrent_streams:   u32                      = 128,
+    peer_max_header_list_size:     u32                      = 0,
+    queued_control_acks:           u32                      = 0,
+    refused_cont_stream_id:        u32                      = 0,
+    refused_cont_frames_cnt:       u32                      = 0,
+    refused_cont_start_ms:         u64                      = 0,
+    hdr_stream_id:                 u32                      = 0,
+    hdr_end_stream:                bool                     = false,
+    hdr_is_trailer:                bool                     = false,
+    ev_head:                       i64                      = -1,
+    ev_tail:                       i64                      = -1,
+    conn:                          Connection               = Connection { .. },
+    hpack_enc:                     DynamicTable             = DynamicTable { .. },
+    stream_unclaimed_id:           u32[128]                 = [0; 128],
+    stream_unclaimed_rx:           i64[128]                 = [0; 128],
+    wire_in:                       u8[..16393]              = [],
+    wire_out:                      u8[..147456]             = [],
+    header_accum:                  u8[..65536]              = [],
+    ev_hdr_entries:                http::HeaderEntry[..512] = [],
+    ev_hdr_raw:                    u8[..65536]              = [],
+    ev_data_buf:                   u8[..16384]              = [],
 }
 
 var g_h2_edge_slots:         H2EdgeSlot[>..]      = [];
@@ -104,8 +124,7 @@ var g_h2_edge_active_count:  i64                  = 0;
 var g_h2_edge_next_gen:      u64                  = 0;
 var g_h2_edge_events:        H2EdgeEventNode[>..] = [];
 var g_h2_edge_free_event:    i64                  = -1;
-var g_h2_edge_headers:       http::HeaderMap[>..] = [];
-var g_h2_edge_hdr_next_free: i64[>..]             = [];
+var g_h2_edge_hdr_bufs:      H2EdgeHdrBuf[>..]    = [];
 var g_h2_edge_free_hdr:      i64                  = -1;
 var g_h2_edge_data_chunks:   H2EdgeDataChunk[>..] = [];
 var g_h2_edge_free_chunk:    i64                  = -1;
@@ -124,24 +143,30 @@ fn lookup_live_edge_slot_idx(sess: const H2EdgeSession&) -> i64 {
     return sess.slot_idx;
 }
 
-fn alloc_edge_header_map() -> i64 {
+fn alloc_edge_hdr_buf() -> i64 {
     if g_h2_edge_free_hdr >= 0 {
         let idx = g_h2_edge_free_hdr;
-        g_h2_edge_free_hdr = g_h2_edge_hdr_next_free[idx];
-        g_h2_edge_hdr_next_free[idx] = -1;
-        g_h2_edge_headers[idx].clear();
+        let hb .= g_h2_edge_hdr_bufs[idx];
+        g_h2_edge_free_hdr = hb.next_idx;
+        hb.next_idx = -1;
+        hb.in_use = true;
+        hb.entries.clear();
+        hb.raw.clear();
         return idx;
     }
-    let idx = g_h2_edge_headers.len;
-    g_h2_edge_headers.push(http::HeaderMap { .. });
-    g_h2_edge_hdr_next_free.push(-1);
+    let idx = g_h2_edge_hdr_bufs.len;
+    g_h2_edge_hdr_bufs.push(H2EdgeHdrBuf { in_use: true, .. });
     return idx;
 }
 
-fn free_edge_header_map(h_idx: i64) {
-    guard h_idx >= 0 && h_idx < g_h2_edge_headers.len else { return; }
-    g_h2_edge_headers[h_idx].clear();
-    g_h2_edge_hdr_next_free[h_idx] = g_h2_edge_free_hdr;
+fn free_edge_hdr_buf(h_idx: i64) {
+    guard h_idx >= 0 && h_idx < g_h2_edge_hdr_bufs.len else { return; }
+    let hb .= g_h2_edge_hdr_bufs[h_idx];
+    guard hb.in_use else { return; }
+    hb.entries.clear();
+    hb.raw.clear();
+    hb.in_use = false;
+    hb.next_idx = g_h2_edge_free_hdr;
     g_h2_edge_free_hdr = h_idx;
 }
 
@@ -192,7 +217,7 @@ fn free_edge_event_node(ev_idx: i64) {
     guard ev_idx >= 0 && ev_idx < g_h2_edge_events.len else { return; }
     let node .= g_h2_edge_events[ev_idx];
     if node.header_slot >= 0 {
-        free_edge_header_map(node.header_slot);
+        free_edge_hdr_buf(node.header_slot);
     }
     if node.chunk_idx >= 0 {
         free_edge_data_chunk(node.chunk_idx);
@@ -225,7 +250,7 @@ fn enqueue_edge_event(
     if payload.len > 0 {
         chunk_idx = alloc_edge_data_chunk(payload);
         guard chunk_idx >= 0 else {
-            free_edge_header_map(header_slot);
+            free_edge_hdr_buf(header_slot);
             return false;
         }
     }
@@ -381,48 +406,82 @@ inline fn is_forbidden_h2_field(raw_name: const u8[:]) -> bool {
         || raw_name.eq_ascii_fold("te");
 }
 
-fn copy_decoded_headers_checked(decoded: const http::HeaderMap&, out: http::HeaderMap&) -> bool {
-    for &e in decoded.entries {
-        let n = http::entry_name(decoded, e);
-        let v = http::entry_value(decoded, e);
-        guard out.append_header(n, v) else { return false; }
-        if http::is_sensitive(e) && out.entries.len > 0 {
-            let last_idx = core::sub_sat_i64(out.entries.len, 1);
-            out.entries[last_idx].flags |= http::HEADER_FLAG_SENSITIVE;
+fn append_edge_hdr_buf_entry(
+    out_hb:      H2EdgeHdrBuf&,
+    name:        const u8[:],
+    val:         const u8[:],
+    extra_flags: u8 = 0,
+) -> bool {
+    let trimmed = val.trim_lws();
+    let needed = core::add_sat_i64(name.len, trimmed.len);
+    guard out_hb.entries.len < H2_EDGE_MAX_HEADER_ENTRIES &&
+          core::add_sat_i64(out_hb.raw.len, needed) <= http::MAX_OVERFLOW_RAW_BYTES else {
+        return false;
+    }
+    let nb = out_hb.raw.len as u16;
+    out_hb.raw.append(name);
+    let ne = out_hb.raw.len as u16;
+    out_hb.raw.append(trimmed);
+    let ve = out_hb.raw.len as u16;
+    let ent, _, _ = http::make_header_entry(
+        name, trimmed, nb, ne, ne, ve, http::HEADER_SRC_STACK, extra_flags,
+    );
+    out_hb.entries.push(ent);
+    return true;
+}
+
+fn copy_decoded_headers_to_hdr_buf(
+    decoded:       const http::HeaderMap&,
+    decoded_arena: const http::OverflowArena&,
+    out_hb:        H2EdgeHdrBuf&,
+) -> bool {
+    let total = http::header_count_spill(decoded, decoded_arena);
+    for i in total {
+        let e, ok_e = http::header_entry_at_spill(decoded, decoded_arena, i);
+        guard ok_e else { return false; }
+        let n = http::entry_name_spill(decoded, decoded_arena, e);
+        let v = http::entry_value_spill(decoded, decoded_arena, e);
+        guard append_edge_hdr_buf_entry(out_hb, n, v, e.flags & http::HEADER_FLAG_SENSITIVE) else {
+            return false;
         }
     }
     return true;
 }
 
-// Builds an event `HeaderMap` containing validated HTTP/2 request pseudo-headers followed by regular headers.
+// Builds a pooled `H2EdgeHdrBuf` containing validated HTTP/2 request pseudo-headers followed by regular headers.
 //
 // Example:
 //   pseudo = PseudoHeaders { method: "GET", path: "/", .. }, decoded = HeaderMap { .. }
-//   returns: out has ":method" = "GET", ":path" = "/", true
-fn build_request_event_header_map(
-    pseudo:  const PseudoHeaders&,
-    decoded: const http::HeaderMap&,
-    out:     http::HeaderMap&,
+//   returns: out_hb has ":method" = "GET", ":path" = "/", true
+fn build_request_event_hdr_buf(
+    pseudo:        const PseudoHeaders&,
+    decoded:       const http::HeaderMap&,
+    decoded_arena: const http::OverflowArena&,
+    out_hb:        H2EdgeHdrBuf&,
 ) -> bool {
-    out.clear();
+    out_hb.entries.clear();
+    out_hb.raw.clear();
     var committed = false;
-    defer if !committed { out.clear(); };
+    defer if !committed {
+        out_hb.entries.clear();
+        out_hb.raw.clear();
+    };
     if pseudo.has_method {
-        guard out.append_header(":method", pseudo.method[..]) else { return false; }
+        guard append_edge_hdr_buf_entry(out_hb, ":method", pseudo.method[..]) else { return false; }
     }
     if pseudo.has_protocol {
-        guard out.append_header(":protocol", pseudo.protocol[..]) else { return false; }
+        guard append_edge_hdr_buf_entry(out_hb, ":protocol", pseudo.protocol[..]) else { return false; }
     }
     if pseudo.has_scheme {
-        guard out.append_header(":scheme", pseudo.scheme[..]) else { return false; }
+        guard append_edge_hdr_buf_entry(out_hb, ":scheme", pseudo.scheme[..]) else { return false; }
     }
     if pseudo.has_authority {
-        guard out.append_header(":authority", pseudo.authority[..]) else { return false; }
+        guard append_edge_hdr_buf_entry(out_hb, ":authority", pseudo.authority[..]) else { return false; }
     }
     if pseudo.has_path {
-        guard out.append_header(":path", pseudo.path[..]) else { return false; }
+        guard append_edge_hdr_buf_entry(out_hb, ":path", pseudo.path[..]) else { return false; }
     }
-    guard copy_decoded_headers_checked(decoded, out) else { return false; }
+    guard copy_decoded_headers_to_hdr_buf(decoded, decoded_arena, out_hb) else { return false; }
     committed = true;
     return true;
 }
@@ -433,12 +492,14 @@ fn finalize_edge_header_block(slot: H2EdgeSlot&) -> bool {
     let end_stream = slot.hdr_end_stream;
     var pseudo = PseudoHeaders { is_trailer: is_trailer, .. };
     var decoded = http::HeaderMap { .. };
+    var decoded_arena = http::OverflowArena { .. };
     // RFC 9113 Section 4.3: Field Section Compression and Decompression - Keep HPACK table state synchronized.
-    let dec_err = decode_hpack_to_map(
+    let dec_err = decode_hpack_to_map_spill(
         slot.conn.hpack_dec,
         slot.header_accum[..],
         pseudo,
         decoded,
+        decoded_arena,
         slot.conn.max_header_list_size,
         true,
     );
@@ -453,8 +514,11 @@ fn finalize_edge_header_block(slot: H2EdgeSlot&) -> bool {
     }
 
     if is_trailer {
-        let h_slot = alloc_edge_header_map();
-        http::copy_headers(decoded, g_h2_edge_headers[h_slot]);
+        let h_slot = alloc_edge_hdr_buf();
+        guard copy_decoded_headers_to_hdr_buf(decoded, decoded_arena, g_h2_edge_hdr_bufs[h_slot]) else {
+            free_edge_hdr_buf(h_slot);
+            return reject_edge_stream(slot, sid, rfc::H2_ERR_ENHANCE_YOUR_CALM);
+        }
         return enqueue_edge_event(slot, H2EdgeEventKind.RequestEnd, sid, h_slot, "", true, 0);
     }
 
@@ -472,9 +536,9 @@ fn finalize_edge_header_block(slot: H2EdgeSlot&) -> bool {
         slot.conn.streams[s_idx].declared_content_length = pseudo.content_length_val;
     }
 
-    let h_slot = alloc_edge_header_map();
-    guard build_request_event_header_map(pseudo, decoded, g_h2_edge_headers[h_slot]) else {
-        free_edge_header_map(h_slot);
+    let h_slot = alloc_edge_hdr_buf();
+    guard build_request_event_hdr_buf(pseudo, decoded, decoded_arena, g_h2_edge_hdr_bufs[h_slot]) else {
+        free_edge_hdr_buf(h_slot);
         return reject_edge_stream(slot, sid, rfc::H2_ERR_ENHANCE_YOUR_CALM);
     }
     return enqueue_edge_event(slot, H2EdgeEventKind.RequestHead, sid, h_slot, "", end_stream, 0);
@@ -677,11 +741,13 @@ fn ingest_edge_goaway_frame(slot: H2EdgeSlot&, payload: const u8[:]) -> bool {
 fn finish_refused_hpack_sync(slot: H2EdgeSlot&, stream_id: u32) -> bool {
     var tmp_pseudo = PseudoHeaders { .. };
     var tmp_hdrs = http::HeaderMap { .. };
-    let dec_err = decode_hpack_to_map(
+    var tmp_arena = http::OverflowArena { .. };
+    let dec_err = decode_hpack_to_map_spill(
         slot.conn.hpack_dec,
         slot.header_accum[..],
         tmp_pseudo,
         tmp_hdrs,
+        tmp_arena,
         slot.conn.max_header_list_size,
         false,
     );
@@ -975,18 +1041,20 @@ fn process_direct_chunk_frame(
 
 // ---- Outbound HPACK Response & Header Fragmentation Helpers --------------
 
-fn encode_single_edge_resp_header(
-    dt:         DynamicTable&,
-    headers:    const http::HeaderMap&,
-    e:          const http::HeaderEntry&,
-    lower_name: u8[..256]&,
-    out:        u8[>..]&,
+fn encode_single_edge_resp_header_slices(
+    dt:            DynamicTable&,
+    headers:       const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    e:             const http::HeaderEntry&,
+    lower_name:    u8[..256]&,
+    out:           u8[>..]&,
 ) -> bool {
-    let raw_name = http::entry_name(headers, e);
-    let val = http::entry_value(headers, e);
-    if (raw_name.len > 0 && raw_name[0] == ':') ||
-       is_forbidden_h2_field(raw_name) ||
-       http::is_token_in_connection_header_map(headers, raw_name) {
+    let raw_name = http::resolve_entry_name_buf(headers.raw_buf[..], spill_raw, e);
+    let val = http::resolve_entry_value_buf(headers.raw_buf[..], spill_raw, e);
+    let in_conn = http::entries_have_connection_token(headers.entries[..], headers.raw_buf[..], spill_raw, raw_name) ||
+        http::entries_have_connection_token(spill_entries, headers.raw_buf[..], spill_raw, raw_name);
+    if (raw_name.len > 0 && raw_name[0] == ':') || is_forbidden_h2_field(raw_name) || in_conn {
         return true;
     }
     guard raw_name.len > 0 && raw_name.len <= lower_name.cap else { return false; }
@@ -1001,17 +1069,38 @@ fn encode_single_edge_resp_header(
     return encode_hpack_field(dt, out, lower_name[..], val, idx_mode, true);
 }
 
+fn encode_edge_resp_entries_slices(
+    dt:            DynamicTable&,
+    entries:       const http::HeaderEntry[:],
+    headers:       const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    lower_name:    u8[..256]&,
+    out:           u8[>..]&,
+) -> bool {
+    for &e in entries {
+        guard encode_single_edge_resp_header_slices(
+            dt, headers, spill_entries, spill_raw, e, lower_name, out,
+        ) else {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Encodes HTTP/2 response `:status` and filtered headers into `out` using dynamic HPACK compression.
 //
 // Example:
 //   status_code = 200, headers = {"content-type": "text/plain"}
 //   returns: out holds HPACK bytes with ":status: 200", ok = true
-fn encode_edge_response_hpack(
+fn encode_edge_response_hpack_slices(
     dt:                DynamicTable&,
     pending_sz_update: bool&,
     pending_min_sz:    u64&,
     status_code:       i32,
     headers:           const http::HeaderMap&,
+    spill_entries:     const http::HeaderEntry[:],
+    spill_raw:         const u8[:],
     out:               u8[>..]&,
 ) -> bool {
     let saved_dt = dt;
@@ -1043,8 +1132,15 @@ fn encode_edge_response_hpack(
     }
 
     var lower_name: u8[..256] = [];
-    for &e in headers.entries {
-        guard encode_single_edge_resp_header(dt, headers, e, lower_name, out) else {
+    guard encode_edge_resp_entries_slices(
+        dt, headers.entries[..], headers, spill_entries, spill_raw, lower_name, out,
+    ) else {
+        return false;
+    }
+    if spill_entries.len > 0 {
+        guard encode_edge_resp_entries_slices(
+            dt, spill_entries, headers, spill_entries, spill_raw, lower_name, out,
+        ) else {
             return false;
         }
     }
@@ -1185,10 +1281,12 @@ fn h2_edge_feed(sess: H2EdgeSession&, wire_chunk: const u8[:]) -> i64, bool {
     return pos, true;
 }
 
-// Pops the next decoded request, stream, or protocol event into `out_ev`.
-// Any `out_ev.data` slice remains valid until the next `h2_edge_poll_event` or `h2_edge_close` on `sess`.
-fn h2_edge_poll_event(sess: H2EdgeSession&, out_ev: H2EdgeEvent&) -> bool {
-    out_ev = H2EdgeEvent { .. };
+fn pop_edge_event_head(
+    sess:         const H2EdgeSession&,
+    out_slot_idx: i64&,
+    out_ev_idx:   i64&,
+    out_node:     H2EdgeEventNode&,
+) -> bool {
     let idx = lookup_live_edge_slot_idx(sess);
     guard idx >= 0 else { return false; }
     let slot .= g_h2_edge_slots[idx];
@@ -1200,38 +1298,156 @@ fn h2_edge_poll_event(sess: H2EdgeSession&, out_ev: H2EdgeEvent&) -> bool {
     if slot.ev_head < 0 {
         slot.ev_tail = -1;
     }
+    out_slot_idx = idx;
+    out_ev_idx = ev_idx;
+    out_node = node;
+    return true;
+}
 
+inline fn stage_edge_event_data(
+    slot:     H2EdgeSlot&,
+    node:     const H2EdgeEventNode&,
+    out_data: const u8[:]&,
+) -> bool {
+    guard node.chunk_idx >= 0 else {
+        out_data = "";
+        return true;
+    }
+    let src = g_h2_edge_data_chunks[node.chunk_idx].buf[..];
+    guard slot.ev_data_buf.try_set(src) else { return false; }
+    out_data = slot.ev_data_buf[..];
+    return true;
+}
+
+fn copy_hdr_buf_to_legacy_map(hb: const H2EdgeHdrBuf&, out_headers: http::HeaderMap&) -> bool {
+    guard hb.raw.len <= 8192 && hb.entries.len <= 128 else { return false; }
+    for &e in hb.entries {
+        let nb: i64 = e.name_begin;
+        let ne: i64 = e.name_end;
+        let vb: i64 = e.values_begin;
+        let ve: i64 = e.values_end;
+        guard ne <= hb.raw.len && ve <= hb.raw.len else { return false; }
+        guard out_headers.append_header(hb.raw[nb..ne], hb.raw[vb..ve]) else { return false; }
+        if http::is_sensitive(e) && out_headers.entries.len > 0 {
+            let last_idx = core::sub_sat_i64(out_headers.entries.len, 1);
+            out_headers.entries[last_idx].flags |= http::HEADER_FLAG_SENSITIVE;
+        }
+    }
+    return true;
+}
+
+// Pops the next event into `out_ev` when headers fit `HeaderMap` (<= 8192 B / 128 entries).
+// Returns `false` and clears `out_ev` if headers exceed stack limits (use `_spill` or `_view`).
+// Any `out_ev.data` slice remains valid until the next poll, feed, or close on `sess`.
+fn h2_edge_poll_event(sess: H2EdgeSession&, out_ev: H2EdgeEvent&) -> bool {
+    out_ev = H2EdgeEvent { .. };
+    var slot_idx: i64 = -1;
+    var ev_idx:   i64 = -1;
+    var node = H2EdgeEventNode { .. };
+    guard pop_edge_event_head(sess, slot_idx, ev_idx, node) else { return false; }
+    defer free_edge_event_node(ev_idx);
+
+    var committed = false;
+    defer if !committed { out_ev = H2EdgeEvent { .. }; };
+
+    let slot .= g_h2_edge_slots[slot_idx];
     out_ev.kind = node.kind;
     out_ev.stream_id = node.stream_id;
     out_ev.end_stream = node.end_stream;
     out_ev.error_code = node.error_code;
     if node.header_slot >= 0 {
-        http::copy_headers(g_h2_edge_headers[node.header_slot], out_ev.headers);
-    }
-    if node.chunk_idx >= 0 {
-        let src = g_h2_edge_data_chunks[node.chunk_idx].buf[..];
-        guard slot.ev_data_buf.try_set(src) else {
-            free_edge_event_node(ev_idx);
-            out_ev = H2EdgeEvent { .. };
+        guard copy_hdr_buf_to_legacy_map(g_h2_edge_hdr_bufs[node.header_slot], out_ev.headers) else {
             return false;
         }
-        out_ev.data = slot.ev_data_buf[..];
     }
-
-    free_edge_event_node(ev_idx);
+    guard stage_edge_event_data(slot, node, out_ev.data) else { return false; }
+    committed = true;
     return true;
 }
 
-// Computes the RFC 7541 Section 4.1 uncompressed header list size for outbound response headers.
-fn calc_edge_resp_header_list_size(headers: const http::HeaderMap&) -> u64 {
-    // ":status" (7) + 3-digit code (3) + HPACK_ENTRY_OVERHEAD (32)
-    var total: u64 = 42;
-    for &e in headers.entries {
-        let raw_name = http::entry_name(headers, e);
-        let val = http::entry_value(headers, e);
-        if (raw_name.len > 0 && raw_name[0] == ':') ||
-           is_forbidden_h2_field(raw_name) ||
-           http::is_token_in_connection_header_map(headers, raw_name) {
+// Pops the next event into `out_ev` + `out_arena`, spilling headers up to 64 KiB / 512 entries when needed.
+fn h2_edge_poll_event_spill(
+    sess:      H2EdgeSession&,
+    out_ev:    H2EdgeEvent&,
+    out_arena: http::OverflowArena&,
+) -> bool {
+    out_ev = H2EdgeEvent { .. };
+    http::reset_overflow_arena(out_arena);
+    var slot_idx: i64 = -1;
+    var ev_idx:   i64 = -1;
+    var node = H2EdgeEventNode { .. };
+    guard pop_edge_event_head(sess, slot_idx, ev_idx, node) else { return false; }
+    defer free_edge_event_node(ev_idx);
+
+    var committed = false;
+    defer if !committed {
+        out_ev = H2EdgeEvent { .. };
+        http::reset_overflow_arena(out_arena);
+    };
+
+    let slot .= g_h2_edge_slots[slot_idx];
+    out_ev.kind = node.kind;
+    out_ev.stream_id = node.stream_id;
+    out_ev.end_stream = node.end_stream;
+    out_ev.error_code = node.error_code;
+    if node.header_slot >= 0 {
+        let hb .= g_h2_edge_hdr_bufs[node.header_slot];
+        let hv = http::HeaderView { entries: hb.entries[..], raw: hb.raw[..] };
+        guard http::header_view_copy_to_spill(hv, out_ev.headers, out_arena) else { return false; }
+    }
+    guard stage_edge_event_data(slot, node, out_ev.data) else { return false; }
+    committed = true;
+    return true;
+}
+
+// Pops the next event into `out_ev` with a zero-copy `http::HeaderView` into slot staging.
+// Both `out_ev.headers` and `out_ev.data` remain valid until the next poll, feed, or close.
+fn h2_edge_poll_event_view(sess: H2EdgeSession&, out_ev: H2EdgeEventView&) -> bool {
+    out_ev = H2EdgeEventView { .. };
+    var slot_idx: i64 = -1;
+    var ev_idx:   i64 = -1;
+    var node = H2EdgeEventNode { .. };
+    guard pop_edge_event_head(sess, slot_idx, ev_idx, node) else { return false; }
+    defer free_edge_event_node(ev_idx);
+
+    var committed = false;
+    defer if !committed { out_ev = H2EdgeEventView { .. }; };
+
+    let slot .= g_h2_edge_slots[slot_idx];
+    slot.ev_hdr_entries.clear();
+    slot.ev_hdr_raw.clear();
+    out_ev.kind = node.kind;
+    out_ev.stream_id = node.stream_id;
+    out_ev.end_stream = node.end_stream;
+    out_ev.error_code = node.error_code;
+    if node.header_slot >= 0 {
+        let hb .= g_h2_edge_hdr_bufs[node.header_slot];
+        guard slot.ev_hdr_entries.try_append(hb.entries[..]) && slot.ev_hdr_raw.try_append(hb.raw[..]) else {
+            return false;
+        }
+        out_ev.headers = http::HeaderView { entries: slot.ev_hdr_entries[..], raw: slot.ev_hdr_raw[..] };
+    }
+    guard stage_edge_event_data(slot, node, out_ev.data) else { return false; }
+    committed = true;
+    return true;
+}
+
+fn sum_edge_resp_entries_size(
+    entries:       const http::HeaderEntry[:],
+    headers:       const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+) -> u64 {
+    var total: u64 = 0;
+    for &e in entries {
+        let raw_name = http::resolve_entry_name_buf(headers.raw_buf[..], spill_raw, e);
+        let val = http::resolve_entry_value_buf(headers.raw_buf[..], spill_raw, e);
+        let in_conn = http::entries_have_connection_token(
+            headers.entries[..], headers.raw_buf[..], spill_raw, raw_name,
+        ) || http::entries_have_connection_token(
+            spill_entries, headers.raw_buf[..], spill_raw, raw_name,
+        );
+        if (raw_name.len > 0 && raw_name[0] == ':') || is_forbidden_h2_field(raw_name) || in_conn {
             continue;
         }
         let n_u64 = raw_name.len as u64;
@@ -1242,12 +1458,26 @@ fn calc_edge_resp_header_list_size(headers: const http::HeaderMap&) -> u64 {
     return total;
 }
 
-fn validate_edge_send_headers(
-    slot:        const H2EdgeSlot&,
-    stream_id:   u32,
-    status_code: i32,
-    headers:     const http::HeaderMap&,
-    end_stream:  bool,
+// Computes the RFC 7541 Section 4.1 uncompressed header list size across stack + spill outbound response headers.
+fn calc_edge_resp_header_list_size_slices(
+    headers:       const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+) -> u64 {
+    // ":status" (7) + 3-digit code (3) + HPACK_ENTRY_OVERHEAD (32)
+    let stack_sz = sum_edge_resp_entries_size(headers.entries[..], headers, spill_entries, spill_raw);
+    let spill_sz = sum_edge_resp_entries_size(spill_entries, headers, spill_entries, spill_raw);
+    return core::add_sat_u64(42, core::add_sat_u64(stack_sz, spill_sz));
+}
+
+fn validate_edge_send_headers_slices(
+    slot:          const H2EdgeSlot&,
+    stream_id:     u32,
+    status_code:   i32,
+    headers:       const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    end_stream:    bool,
 ) -> bool {
     guard !slot.conn_failed && stream_id > 0 && (stream_id & 1) == 1 else { return false; }
     guard status_code >= 100 && status_code <= 599 && status_code != 101 else { return false; }
@@ -1258,25 +1488,28 @@ fn validate_edge_send_headers(
     let st = slot.conn.streams[s_idx].state;
     guard st == StreamState.Open || st == StreamState.HalfClosedRemote else { return false; }
     if slot.has_peer_max_header_list_size {
-        let list_sz = calc_edge_resp_header_list_size(headers);
+        let list_sz = calc_edge_resp_header_list_size_slices(headers, spill_entries, spill_raw);
         let max_sz: u64 = slot.peer_max_header_list_size;
         guard list_sz <= max_sz else { return false; }
     }
     return true;
 }
 
-// Encodes and queues HTTP/2 response HEADERS (+ CONTINUATION if exceeding peer max frame size) on `stream_id`.
-fn h2_edge_send_headers(
-    sess:        H2EdgeSession&,
-    stream_id:   u32,
-    status_code: i32,
-    headers:     const http::HeaderMap&,
-    end_stream:  bool,
+fn h2_edge_send_headers_slices(
+    sess:          H2EdgeSession&,
+    stream_id:     u32,
+    status_code:   i32,
+    headers:       const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    end_stream:    bool,
 ) -> bool {
     let idx = lookup_live_edge_slot_idx(sess);
     guard idx >= 0 else { return false; }
     let slot .= g_h2_edge_slots[idx];
-    guard validate_edge_send_headers(slot, stream_id, status_code, headers, end_stream) else {
+    guard validate_edge_send_headers_slices(
+        slot, stream_id, status_code, headers, spill_entries, spill_raw, end_stream,
+    ) else {
         return false;
     }
 
@@ -1291,12 +1524,14 @@ fn h2_edge_send_headers(
     };
 
     g_h2_edge_hpack_scratch.clear();
-    guard encode_edge_response_hpack(
+    guard encode_edge_response_hpack_slices(
         slot.hpack_enc,
         slot.hpack_enc_pending_size_update,
         slot.hpack_enc_pending_min_size,
         status_code,
         headers,
+        spill_entries,
+        spill_raw,
         g_h2_edge_hpack_scratch,
     ) else {
         return false;
@@ -1309,6 +1544,33 @@ fn h2_edge_send_headers(
     }
     committed = true;
     return true;
+}
+
+// Encodes and queues HTTP/2 response HEADERS (+ CONTINUATION if exceeding peer max frame size) on `stream_id`.
+fn h2_edge_send_headers(
+    sess:        H2EdgeSession&,
+    stream_id:   u32,
+    status_code: i32,
+    headers:     const http::HeaderMap&,
+    end_stream:  bool,
+) -> bool {
+    return h2_edge_send_headers_slices(
+        sess, stream_id, status_code, headers, headers.entries[..0], "", end_stream,
+    );
+}
+
+// Encodes and queues up to 64 KiB HTTP/2 response HEADERS + CONTINUATION from `headers` + `arena` on `stream_id`.
+fn h2_edge_send_headers_spill(
+    sess:        H2EdgeSession&,
+    stream_id:   u32,
+    status_code: i32,
+    headers:     const http::HeaderMap&,
+    arena:       const http::OverflowArena&,
+    end_stream:  bool,
+) -> bool {
+    return h2_edge_send_headers_slices(
+        sess, stream_id, status_code, headers, arena.spill_entries[..], arena.spill_raw[..], end_stream,
+    );
 }
 
 fn send_edge_zero_data(slot: H2EdgeSlot&, stream_id: u32, end_stream: bool) -> i64, bool {

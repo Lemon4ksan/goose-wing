@@ -1299,14 +1299,14 @@ fn test_h3_edge_review_regressions() {
     assert(http3::encode_qpack_field(ovf_sec, ":scheme", "https"));
     assert(http3::encode_qpack_field(ovf_sec, ":authority", "h3.example.test"));
     assert(http3::encode_qpack_field(ovf_sec, ":path", "/overflow-target-path-extra"));
-    var pad195: u8[195] = ['z'; 195];
-    for pi in 40 {
+    var pad195: u8[195] = ['e'; 195];
+    for pi in 360 {
         var pn: u8[..16] = "x-ovf-";
         (pi as u32).format_u32_dec(pn);
         if pn.len == 7 {
             assert(pn.try_push('0'));
         }
-        assert(http3::encode_qpack_field(ovf_sec, pn[..], pad195[..], false));
+        assert(http3::encode_qpack_field(ovf_sec, pn[..], pad195[..], true));
     }
     var ovf_wire: u8[>..] = [];
     assert(http3::encode_headers_frame(ovf_wire, ovf_sec[..]));

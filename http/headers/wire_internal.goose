@@ -322,11 +322,7 @@ checkfree fn is_line_whitespace_only(line: const u8[:]) -> bool {
     return true;
 }
 
-checkfree fn reset_overflow_arena(arena: http::OverflowArena&) {
-    arena.spill_raw.clear();
-    arena.spill_entries.clear();
-    arena.spill_url.clear();
-}
+// Maps a `WellKnownHeader` variant to its canonical lowercase wire name.
 
 checkfree fn well_known_header_name(id: http::WellKnownHeader) -> const u8[:] {
     return match id {
@@ -456,52 +452,13 @@ checkfree fn has_no_comma_fold(entry: const http::HeaderEntry&) -> bool {
     return (entry.flags & http::HEADER_FLAG_NO_COMMA_FOLD) != 0;
 }
 
-fn link_header_entry_stack(
-    map:      http::HeaderMap&,
-    wk_id:    http::WellKnownHeader,
-    raw_name: const u8[:],
-    hname:    u32,
-    new_idx:  u8,
-) {
-    if wk_id != http::WellKnownHeader.Unknown {
-        let slot = http::well_known_to_slot(wk_id);
-        let existing = map.inline_slots[slot];
-        if existing == 0xFF {
-            map.inline_slots[slot] = new_idx;
-            return;
-        }
-
-        var cur = existing;
-        while map.entries[cur as i64].next_idx != 0xFF {
-            cur = map.entries[cur as i64].next_idx;
-        }
-
-        map.entries[cur as i64].next_idx = new_idx;
-        return;
-    }
-
-    for prev_i in map.entries.len {
-        let pe .= map.entries[prev_i];
-        guard pe.name_hash == hname else { continue; }
-        let prev_name = map.raw_buf[pe.name_begin..pe.name_end];
-        guard prev_name.eq_ascii_fold(raw_name) else { continue; }
-
-        var cur = prev_i as u8;
-        while map.entries[cur as i64].next_idx != 0xFF {
-            cur = map.entries[cur as i64].next_idx;
-        }
-        map.entries[cur as i64].next_idx = new_idx;
-        break;
-    }
-}
-
 fn link_header_entry(
-    map:      http::HeaderMap&,
-    wk_id:    http::WellKnownHeader,
-    raw_name: const u8[:],
-    hname:    u32,
-    new_idx:  u8,
-    arena:    const http::OverflowArena& = http::EMPTY_OVERFLOW_ARENA,
+    map:       http::HeaderMap&,
+    wk_id:     http::WellKnownHeader,
+    raw_name:  const u8[:],
+    hname:     u32,
+    new_idx:   u8,
+    spill_raw: const u8[:] = "",
 ) {
     if wk_id != http::WellKnownHeader.Unknown {
         let slot = http::well_known_to_slot(wk_id);
@@ -523,7 +480,7 @@ fn link_header_entry(
     for prev_i in map.entries.len {
         let pe .= map.entries[prev_i];
         guard pe.name_hash == hname else { continue; }
-        let prev_name = http::resolve_entry_name(pe, map, arena);
+        let prev_name = http::resolve_entry_name_buf(map.raw_buf[..], spill_raw, pe);
         guard prev_name.eq_ascii_fold(raw_name) else { continue; }
 
         var cur = prev_i as u8;

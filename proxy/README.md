@@ -40,11 +40,15 @@ struct Config {
 }
 struct ReverseProxy { ... }
 fn is_forwarded_metadata_header(name: const u8[:]) -> bool
-fn filter_and_forward_headers(in_headers: const wing::HeaderMap&, out_headers: wing::HeaderMap&, client_ip: const u8[:], proto: const u8[:], upstream_host: const u8[:], config: const Config&) -> bool
+fn filter_and_forward_headers(in_headers: const wing::HeaderMap&, out_headers: wing::HeaderMap&, client_ip: const u8[:], proto: const u8[:], upstream_host: const u8[:], config: const Config&, method: const u8[:] = "GET") -> bool
+fn filter_and_forward_headers_spill(in_headers: const wing::HeaderMap&, in_arena: const wing::OverflowArena&, out_headers: wing::HeaderMap&, out_arena: wing::OverflowArena&, client_ip: const u8[:], proto: const u8[:], upstream_host: const u8[:], config: const Config&, method: const u8[:] = "GET") -> bool
 fn serialize_upstream_request<B>(method: const u8[:], uri: const u8[:], headers: const wing::HeaderMap&, body: const u8[:], out: B&, http_version: const u8[:] = "HTTP/1.1") -> bool
+fn serialize_upstream_request_spill<B>(method: const u8[:], uri: const u8[:], headers: const http::HeaderMap&, arena: const http::OverflowArena&, body: const u8[:], out: B&, http_version: const u8[:] = "HTTP/1.1") -> bool
 fn new_reverse_proxy(policy: LbPolicy = LbPolicy.RoundRobin) -> ReverseProxy
 fn prepare_proxy_request<B>(rp: ReverseProxy&, method: const u8[:], uri: const u8[:], in_headers: const wing::HeaderMap&, client_ip: const u8[:], proto: const u8[:], body: const u8[:], out_wire: B&) -> i32, bool
 fn prepare_proxy_request_at<B>(rp: ReverseProxy&, method: const u8[:], uri: const u8[:], in_headers: const wing::HeaderMap&, client_ip: const u8[:], proto: const u8[:], body: const u8[:], out_wire: B&, now_ns: u64) -> i32, bool
+fn prepare_proxy_head_with_key_at<B>(rp: ReverseProxy&, method: const u8[:], uri: const u8[:], in_headers: const http::HeaderMap&, client_ip: const u8[:], proto: const u8[:], hash_key: const u8[:], out_head: B&, now_ns: u64) -> i32, bool
+fn prepare_proxy_head_with_key_at_spill<B>(rp: ReverseProxy&, method: const u8[:], uri: const u8[:], in_headers: const http::HeaderMap&, in_arena: const http::OverflowArena&, client_ip: const u8[:], proto: const u8[:], hash_key: const u8[:], out_head: B&, now_ns: u64) -> i32, bool
 fn finish_proxy_request(rp: ReverseProxy&, target_idx: i32, success: bool)
 fn complete_upstream_exchange(rp: ReverseProxy&, target_idx: i32, status_code: i32, transport_ok: bool)
 fn abort_proxy_request(rp: ReverseProxy&, target_idx: i32)

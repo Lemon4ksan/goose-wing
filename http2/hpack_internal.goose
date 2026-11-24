@@ -269,16 +269,25 @@ fn validate_content_length_pseudo(pseudo: http2::PseudoHeaders&, val: const u8[:
     return rfc::H2_ERR_NO_ERROR;
 }
 
-fn validate_h2_host_header(
-    pseudo:      const http2::PseudoHeaders&,
-    out_headers: const http::HeaderMap&,
-    val:         const u8[:],
+enum HpackSpillMode {
+    StackOnly,
+    AllowSpill,
+}
+
+fn validate_h2_host_header_slices(
+    pseudo:        const http2::PseudoHeaders&,
+    out_headers:   const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    val:           const u8[:],
 ) -> u32 {
     guard val.len > 0 else { return rfc::H2_ERR_PROTOCOL_ERROR; }
     for b in val {
         guard !is_forbidden_authority_byte(b) else { return rfc::H2_ERR_PROTOCOL_ERROR; }
     }
-    guard !http::has_header(out_headers, "host") else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+    guard !http::has_header_slices(out_headers, spill_entries, spill_raw, "host") else {
+        return rfc::H2_ERR_PROTOCOL_ERROR;
+    }
     if pseudo.has_authority {
         guard pseudo.authority[..].eq_ascii_fold(val) else {
             return rfc::H2_ERR_PROTOCOL_ERROR;
@@ -312,11 +321,13 @@ inline fn validate_h2_te_header(pseudo: const http2::PseudoHeaders&, val: const 
     return rfc::H2_ERR_NO_ERROR;
 }
 
-fn validate_regular_header_to_map(
-    pseudo:      http2::PseudoHeaders&,
-    out_headers: const http::HeaderMap&,
-    name:        const u8[:],
-    val:         const u8[:],
+fn validate_regular_header_slices(
+    pseudo:        http2::PseudoHeaders&,
+    out_headers:   const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    name:          const u8[:],
+    val:           const u8[:],
 ) -> u32 {
     if pseudo.is_trailer {
         guard !is_forbidden_h2_trailer(name) else { return rfc::H2_ERR_PROTOCOL_ERROR; }
@@ -325,7 +336,9 @@ fn validate_regular_header_to_map(
 
     let err_reg: u32 = match name.len {
         2 => if name == "te" { validate_h2_te_header(pseudo, val) } else { rfc::H2_ERR_NO_ERROR },
-        4 => if name == "host" { validate_h2_host_header(pseudo, out_headers, val) } else { rfc::H2_ERR_NO_ERROR },
+        4 => if name == "host" {
+            validate_h2_host_header_slices(pseudo, out_headers, spill_entries, spill_raw, val)
+        } else { rfc::H2_ERR_NO_ERROR },
         14 => if name == "content-length" { validate_content_length_pseudo(pseudo, val) } else { rfc::H2_ERR_NO_ERROR },
         _ => rfc::H2_ERR_NO_ERROR,
     };
@@ -354,28 +367,51 @@ enum CookieJoinStatus {
 }
 
 // RFC 9113 Section 8.2.3: Compressing the Cookie Header Field - Concatenates extra cookie fields with "; ".
-fn join_existing_cookie(
-    out_headers: http::HeaderMap&,
-    name:        const u8[:],
-    val:         const u8[:],
+fn join_existing_cookie_impl<C>(
+    out_headers:  http::HeaderMap&,
+    out_arena:    http::OverflowArena&,
+    spill_mode:   HpackSpillMode,
+    cookie_buf:   C&,
+    name:         const u8[:],
+    val:          const u8[:],
+    max_list_len: u32,
 ) -> CookieJoinStatus {
-    guard name.eq_ascii_fold("cookie") && http::has_header(out_headers, "cookie") else {
+    let spill_entries = if spill_mode == HpackSpillMode.AllowSpill {
+        out_arena.spill_entries[..]
+    } else {
+        out_headers.entries[..0]
+    };
+    let spill_raw = if spill_mode == HpackSpillMode.AllowSpill { out_arena.spill_raw[..] } else { "" };
+    guard name.eq_ascii_fold("cookie") &&
+          http::has_header_slices(out_headers, spill_entries, spill_raw, "cookie") else {
         return CookieJoinStatus.NotCookie;
     }
-    let prev = http::get_header(out_headers, "cookie");
-    var combined: u8[..8192] = [];
-    guard combined.try_append(prev) && combined.try_append("; ") && combined.try_append(val) else {
-        return CookieJoinStatus.Overflow;
-    }
-    if http::insert_header(out_headers, "cookie", combined[..]) {
-        return CookieJoinStatus.Joined;
-    }
-    return CookieJoinStatus.Overflow;
+    let prev = http::get_header_slices(out_headers, spill_entries, spill_raw, "cookie");
+    let total_len = core::add_sat_i64(core::add_sat_i64(prev.len, 2), val.len);
+    let max_bytes: i64 = if spill_mode == HpackSpillMode.AllowSpill {
+        min(max_list_len as i64, http::MAX_OVERFLOW_RAW_BYTES)
+    } else {
+        min(max_list_len as i64, 8192)
+    };
+    guard total_len <= max_bytes else { return CookieJoinStatus.Overflow; }
+    cookie_buf.clear();
+    cookie_buf.append(prev);
+    cookie_buf.append("; ");
+    cookie_buf.append(val);
+    let ok = if spill_mode == HpackSpillMode.AllowSpill {
+        http::set_or_replace_spill(out_headers, out_arena, "cookie", cookie_buf[..])
+    } else {
+        http::insert_header(out_headers, "cookie", cookie_buf[..])
+    };
+    return if ok { CookieJoinStatus.Joined } else { CookieJoinStatus.Overflow };
 }
 
-fn append_decoded_header_to_map(
+fn append_decoded_header_impl<C>(
     out_pseudo:           http2::PseudoHeaders&,
     out_headers:          http::HeaderMap&,
+    out_arena:            http::OverflowArena&,
+    spill_mode:           HpackSpillMode,
+    cookie_buf:           C&,
     name:                 const u8[:],
     val:                  const u8[:],
     max_header_list_size: u32,
@@ -395,11 +431,15 @@ fn append_decoded_header_to_map(
         }
         return http2::validate_and_record_pseudo_header(out_pseudo, name, val, validate_http2_rules);
     }
-    return http2::validate_header_ordering_and_rules(
+    return http2::validate_header_ordering_impl(
         out_pseudo,
         out_headers,
+        out_arena,
+        spill_mode,
+        cookie_buf,
         name,
         val,
+        max_header_list_size,
         validate_http2_rules,
         origin,
     );
@@ -440,12 +480,12 @@ fn decode_hpack_table_size_update(
     return next_off, rfc::H2_ERR_NO_ERROR;
 }
 
-// Decodes a single HPACK field using caller-supplied scratch buffers into `out_pseudo` and `out_headers`.
+// Decodes a single HPACK field using caller scratch into `out_pseudo`, `out_headers`, and optional `out_arena`.
 //
 // Example:
 //   src = [0x82], offset = 0, name_buf = [], val_buf = []
 //   returns: next_offset = 1, error_code = ERR_NO_ERROR, out_pseudo.method = "GET"
-fn decode_hpack_field_step_with_scratch(
+fn decode_hpack_field_step_impl<B, C>(
     dt:                   http2::DynamicTable&,
     src:                  const u8[:],
     offset:               u64,
@@ -453,10 +493,13 @@ fn decode_hpack_field_step_with_scratch(
     update_count:         u32&,
     out_pseudo:           http2::PseudoHeaders&,
     out_headers:          http::HeaderMap&,
+    out_arena:            http::OverflowArena&,
+    spill_mode:           HpackSpillMode,
     max_header_list_size: u32,
     validate_http2_rules: bool,
     name_buf:             u8[..256]&,
-    val_buf:              u8[..8192]&,
+    val_buf:              B&,
+    cookie_buf:           C&,
 ) -> u64, u32 {
     let b = src[offset];
     if (b & 0xE0) != 0x20 {
@@ -476,9 +519,12 @@ fn decode_hpack_field_step_with_scratch(
         guard ok_get else { return offset, rfc::H2_ERR_COMPRESSION_ERROR; }
 
         let origin = hpack_indexed_origin(idx);
-        let err = append_decoded_header_to_map(
+        let err = append_decoded_header_impl(
             out_pseudo,
             out_headers,
+            out_arena,
+            spill_mode,
+            cookie_buf,
             name_slice,
             val_slice,
             max_header_list_size,
@@ -504,9 +550,12 @@ fn decode_hpack_field_step_with_scratch(
         guard err_dec == rfc::H2_ERR_NO_ERROR else { return offset, err_dec; }
 
         http2::insert_header(dt, name_slice, val_buf[..], false);
-        let err = append_decoded_header_to_map(
+        let err = append_decoded_header_impl(
             out_pseudo,
             out_headers,
+            out_arena,
+            spill_mode,
+            cookie_buf,
             name_slice,
             val_buf[..],
             max_header_list_size,
@@ -535,9 +584,12 @@ fn decode_hpack_field_step_with_scratch(
     );
     guard err_dec == rfc::H2_ERR_NO_ERROR else { return offset, err_dec; }
 
-    let err = append_decoded_header_to_map(
+    let err = append_decoded_header_impl(
         out_pseudo,
         out_headers,
+        out_arena,
+        spill_mode,
+        cookie_buf,
         name_slice,
         val_buf[..],
         max_header_list_size,
@@ -545,6 +597,44 @@ fn decode_hpack_field_step_with_scratch(
         origin,
     );
     return val_next_off, err;
+}
+
+// Decodes a single HPACK field using caller-supplied stack scratch buffers into `out_pseudo` and `out_headers`.
+//
+// Example:
+//   src = [0x82], offset = 0, name_buf = [], val_buf = []
+//   returns: next_offset = 1, error_code = ERR_NO_ERROR, out_pseudo.method = "GET"
+fn decode_hpack_field_step_with_scratch(
+    dt:                   http2::DynamicTable&,
+    src:                  const u8[:],
+    offset:               u64,
+    updates_allowed:      bool&,
+    update_count:         u32&,
+    out_pseudo:           http2::PseudoHeaders&,
+    out_headers:          http::HeaderMap&,
+    max_header_list_size: u32,
+    validate_http2_rules: bool,
+    name_buf:             u8[..256]&,
+    val_buf:              u8[..8192]&,
+) -> u64, u32 {
+    var unused_arena = http::OverflowArena { .. };
+    var ck: u8[..8192] = [];
+    return decode_hpack_field_step_impl(
+        dt,
+        src,
+        offset,
+        updates_allowed,
+        update_count,
+        out_pseudo,
+        out_headers,
+        unused_arena,
+        HpackSpillMode.StackOnly,
+        max_header_list_size,
+        validate_http2_rules,
+        name_buf,
+        val_buf,
+        ck,
+    );
 }
 
 inline fn is_valid_connect_port(port_slice: const u8[:]) -> bool {

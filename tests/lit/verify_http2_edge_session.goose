@@ -859,7 +859,7 @@ fn test_h2_edge_round1_regressions() {
     let init_h, init_p, ok_init = wire::next_frame(r_init);
     assert(ok_init && init_h.frame_type == rfc::H2_FRAME_SETTINGS && init_p.len == 24);
     assert(core::read_be_u16(init_p, 18) == rfc::H2_SETTING_MAX_HEADER_LIST_SIZE);
-    assert(core::read_be_u32(init_p, 20) == 8192);
+    assert(core::read_be_u32(init_p, 20) == 65535);
 
     var w1: u8[>..] = [];
     w1.append(rfc::H2_CLIENT_PREFACE[..]);

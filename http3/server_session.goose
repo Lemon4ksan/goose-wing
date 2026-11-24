@@ -24,7 +24,8 @@ const H3_EDGE_HDR_SECTION_CAP:           u64 = 65536;
 const H3_EDGE_CTRL_BUF_CAP:              u64 = 1024;
 const H3_EDGE_QENC_BUF_CAP:              u64 = 4096;
 const H3_EDGE_QDEC_BUF_CAP:              u64 = 1024;
-const H3_EDGE_COOKIE_BUF_CAP:            u64 = 8192;
+const H3_EDGE_COOKIE_BUF_CAP:            u64 = 65535;
+const H3_EDGE_MAX_HEADER_ENTRIES:        i64 = 512;
 const H3_EDGE_MAX_RETAINED_STREAMS:      i64 = 128;
 const H3_EDGE_MAX_UNI_PENDING:           i64 = 16;
 const H3_EDGE_MAX_IGNORED_UNI:           i64 = 1024;
@@ -57,6 +58,21 @@ struct H3EdgeEvent {
     data:       const u8[:]     = "",
     end_stream: bool            = false,
     error_code: u64             = 0,
+}
+
+struct H3EdgeEventView {
+    kind:       H3EdgeEventKind  = H3EdgeEventKind.None,
+    stream_id:  u64              = 0,
+    headers:    http::HeaderView = http::HeaderView { .. },
+    data:       const u8[:]      = "",
+    end_stream: bool             = false,
+    error_code: u64              = 0,
+}
+
+struct H3EdgeHdrBuf {
+    in_use:  bool                     = false,
+    entries: http::HeaderEntry[..512] = [],
+    raw:     u8[..65536]              = [],
 }
 
 struct H3EdgeSession {
@@ -157,40 +173,42 @@ struct H3EdgeStreamSlot {
 }
 
 struct H3EdgeSlot {
-    active:                 bool                    = false,
-    generation:             u64                     = 0,
-    conn_failed:            bool                    = false,
-    has_peer_ctrl:          bool                    = false,
-    peer_ctrl_stream_id:    u64                     = 0,
-    has_peer_qenc:          bool                    = false,
-    peer_qenc_stream_id:    u64                     = 0,
-    has_peer_qdec:          bool                    = false,
-    peer_qdec_stream_id:    u64                     = 0,
-    peer_settings_received: bool                    = false,
-    peer_settings:          fingerprint::H3Settings = fingerprint::H3Settings { .. },
-    local_settings:         fingerprint::H3Settings = fingerprint::H3Settings { .. },
-    peer_goaway_seen:       bool                    = false,
-    peer_goaway_id:         u64                     = 0,
-    has_max_push_id:        bool                    = false,
-    max_push_id:            u64                     = 0,
-    ctrl_stage:             H3EdgeCtrlStage         = H3EdgeCtrlStage.ReadHeader,
-    ctrl_hdr_buf:           u8[..16]                = [],
-    ctrl_frame_type:        u64                     = 0,
-    ctrl_remaining:         u64                     = 0,
-    ctrl_payload_buf:       u8[..1024]              = [],
-    ctrl_empty_streak:      u32                     = 0,
-    qenc_rx_buf:            u8[..4096]              = [],
-    qdec_rx_buf:            u8[..1024]              = [],
-    uni_pending:            H3EdgeUniPending[..16]  = [],
-    ignored_uni_head:       i64                     = -1,
-    ignored_uni_count:      i64                     = 0,
-    qpack_dec_table:        QpackTable              = QpackTable { .. },
-    qpack_enc_table:        QpackTable              = QpackTable { .. },
-    stream_head:            i64                     = -1,
-    stream_count:           i64                     = 0,
-    ev_head:                i64                     = -1,
-    ev_tail:                i64                     = -1,
-    ev_data_buf:            u8[..16384]             = [],
+    active:                 bool                     = false,
+    generation:             u64                      = 0,
+    conn_failed:            bool                     = false,
+    has_peer_ctrl:          bool                     = false,
+    peer_ctrl_stream_id:    u64                      = 0,
+    has_peer_qenc:          bool                     = false,
+    peer_qenc_stream_id:    u64                      = 0,
+    has_peer_qdec:          bool                     = false,
+    peer_qdec_stream_id:    u64                      = 0,
+    peer_settings_received: bool                     = false,
+    peer_settings:          fingerprint::H3Settings  = fingerprint::H3Settings { .. },
+    local_settings:         fingerprint::H3Settings  = fingerprint::H3Settings { .. },
+    peer_goaway_seen:       bool                     = false,
+    peer_goaway_id:         u64                      = 0,
+    has_max_push_id:        bool                     = false,
+    max_push_id:            u64                      = 0,
+    ctrl_stage:             H3EdgeCtrlStage          = H3EdgeCtrlStage.ReadHeader,
+    ctrl_hdr_buf:           u8[..16]                 = [],
+    ctrl_frame_type:        u64                      = 0,
+    ctrl_remaining:         u64                      = 0,
+    ctrl_payload_buf:       u8[..1024]               = [],
+    ctrl_empty_streak:      u32                      = 0,
+    qenc_rx_buf:            u8[..4096]               = [],
+    qdec_rx_buf:            u8[..1024]               = [],
+    uni_pending:            H3EdgeUniPending[..16]   = [],
+    ignored_uni_head:       i64                      = -1,
+    ignored_uni_count:      i64                      = 0,
+    qpack_dec_table:        QpackTable               = QpackTable { .. },
+    qpack_enc_table:        QpackTable               = QpackTable { .. },
+    stream_head:            i64                      = -1,
+    stream_count:           i64                      = 0,
+    ev_head:                i64                      = -1,
+    ev_tail:                i64                      = -1,
+    ev_data_buf:            u8[..16384]              = [],
+    ev_hdr_entries:         http::HeaderEntry[..512] = [],
+    ev_hdr_raw:             u8[..65536]              = [],
 }
 
 var g_h3_edge_slots:      H3EdgeSlot[>..] = [];
@@ -203,8 +221,8 @@ var g_h3_edge_free_streams: i64[>..]              = [];
 var g_h3_edge_events:      H3EdgeQueuedEvent[>..] = [];
 var g_h3_edge_free_events: i64[>..]               = [];
 
-var g_h3_edge_headers:      http::HeaderMap[>..] = [];
-var g_h3_edge_free_headers: i64[>..]             = [];
+var g_h3_edge_hdr_bufs:  H3EdgeHdrBuf[>..] = [];
+var g_h3_edge_free_hdrs: i64[>..]          = [];
 
 var g_h3_edge_chunks:      H3EdgeChunk[>..] = [];
 var g_h3_edge_free_chunks: i64[>..]         = [];
@@ -216,6 +234,7 @@ var g_h3_edge_ignored_uni:      H3EdgeIgnoredUni[>..] = [];
 var g_h3_edge_free_ignored_uni: i64[>..]              = [];
 
 var g_h3_edge_replay_scratch: u8[..16384] = [];
+var g_h3_edge_cookie_scratch: u8[>..]     = [];
 var g_h3_resp_qpack_scratch:  u8[>..]     = [];
 
 fn next_h3_edge_generation() -> u64 {
@@ -301,23 +320,28 @@ fn free_h3_hdr_accum(idx: i64) {
     g_h3_edge_free_hdr_accums.push(idx);
 }
 
-fn alloc_h3_header_map(src: const http::HeaderMap&) -> i64 {
-    let idx, has_free = pop_free_index(g_h3_edge_free_headers);
+fn alloc_h3_hdr_buf() -> i64 {
+    let idx, has_free = pop_free_index(g_h3_edge_free_hdrs);
     if has_free {
-        g_h3_edge_headers[idx] = src;
+        let slot .= g_h3_edge_hdr_bufs[idx];
+        slot.in_use = true;
+        slot.entries.clear();
+        slot.raw.clear();
         return idx;
     }
-    let new_idx = g_h3_edge_headers.len;
-    g_h3_edge_headers.push(src);
+    let new_idx = g_h3_edge_hdr_bufs.len;
+    g_h3_edge_hdr_bufs.push(H3EdgeHdrBuf { in_use: true });
     return new_idx;
 }
 
-fn free_h3_header_map(idx: i64) {
-    if idx < 0 || idx >= g_h3_edge_headers.len {
+fn free_h3_hdr_buf(idx: i64) {
+    if idx < 0 || idx >= g_h3_edge_hdr_bufs.len || !g_h3_edge_hdr_bufs[idx].in_use {
         return;
     }
-    g_h3_edge_headers[idx] = http::HeaderMap { .. };
-    g_h3_edge_free_headers.push(idx);
+    g_h3_edge_hdr_bufs[idx].in_use = false;
+    g_h3_edge_hdr_bufs[idx].entries.clear();
+    g_h3_edge_hdr_bufs[idx].raw.clear();
+    g_h3_edge_free_hdrs.push(idx);
 }
 
 fn alloc_h3_event_node() -> i64 {
@@ -337,7 +361,7 @@ fn free_h3_event_node(idx: i64) {
     }
     let ev .= g_h3_edge_events[idx];
     if ev.hdr_idx >= 0 {
-        free_h3_header_map(ev.hdr_idx);
+        free_h3_hdr_buf(ev.hdr_idx);
     }
     if ev.chunk_idx >= 0 {
         free_h3_chunk(ev.chunk_idx);
@@ -405,7 +429,7 @@ fn cleanup_h3_stream_resources(slot_idx: i64, st_idx: i64) {
     st.blocked_has_fin = false;
     st.blocked_on_qpack = false;
     if st.deferred_trailers_idx >= 0 {
-        free_h3_header_map(st.deferred_trailers_idx);
+        free_h3_hdr_buf(st.deferred_trailers_idx);
         st.deferred_trailers_idx = -1;
     }
     st.hdr_buf.clear();
@@ -476,6 +500,8 @@ fn reset_h3_edge_slot(slot_idx: i64, gen: u64) {
     slot.ev_head = -1;
     slot.ev_tail = -1;
     slot.ev_data_buf.clear();
+    slot.ev_hdr_entries.clear();
+    slot.ev_hdr_raw.clear();
 }
 
 fn free_h3_stream_slot(st_idx: i64) {
@@ -490,7 +516,7 @@ fn free_h3_stream_slot(st_idx: i64) {
         free_h3_chunk_chain(st.blocked_head);
     }
     if st.deferred_trailers_idx >= 0 {
-        free_h3_header_map(st.deferred_trailers_idx);
+        free_h3_hdr_buf(st.deferred_trailers_idx);
     }
     g_h3_edge_streams[st_idx] = H3EdgeStreamSlot { .. };
     g_h3_edge_free_streams.push(st_idx);
@@ -619,6 +645,8 @@ fn h3_edge_close(sess: H3EdgeSession&) {
     slot.qdec_rx_buf.clear();
     slot.ctrl_payload_buf.clear();
     slot.ev_data_buf.clear();
+    slot.ev_hdr_entries.clear();
+    slot.ev_hdr_raw.clear();
     slot.active = false;
     slot.generation = 0;
     g_h3_edge_free_slots.push(slot_idx);
@@ -1138,33 +1166,56 @@ fn validate_h3_request_pseudo(slot: const H3EdgeSlot&, pseudo: const PseudoHeade
     return true;
 }
 
-fn append_header_with_sensitivity(
-    out_hdrs:     http::HeaderMap&,
+fn append_h3_hdr_buf_entry(
+    hdr_buf:      H3EdgeHdrBuf&,
     name:         const u8[:],
     val:          const u8[:],
     is_sensitive: bool,
 ) -> bool {
-    guard http::append_header(out_hdrs, name, val) else { return false; };
-    if is_sensitive && out_hdrs.entries.len > 0 {
-        let last_idx = core::sub_sat_i64(out_hdrs.entries.len, 1);
-        out_hdrs.entries[last_idx].flags = out_hdrs.entries[last_idx].flags | http::HEADER_FLAG_SENSITIVE;
-    }
+    guard hdr_buf.entries.len < H3_EDGE_MAX_HEADER_ENTRIES else { return false; };
+    let trimmed = val.trim_lws();
+    let needed = core::add_sat_i64(name.len, trimmed.len);
+    let next_raw = core::add_sat_i64(hdr_buf.raw.len, needed);
+    guard next_raw <= (H3_EDGE_COOKIE_BUF_CAP as i64) else { return false; };
+    let saved_len = hdr_buf.raw.len;
+    guard hdr_buf.raw.try_append(name) else { return false; };
+    let n_end = hdr_buf.raw.len;
+    guard hdr_buf.raw.try_append(trimmed) else {
+        hdr_buf.raw.resize(saved_len);
+        return false;
+    };
+    let v_end = hdr_buf.raw.len;
+    let flags: u8 = if is_sensitive { http::HEADER_FLAG_SENSITIVE } else { 0 };
+    let ent, _wk, _h = http::make_header_entry(
+        name,
+        trimmed,
+        saved_len as u16,
+        n_end as u16,
+        n_end as u16,
+        v_end as u16,
+        http::HEADER_SRC_STACK,
+        flags,
+    );
+    guard hdr_buf.entries.try_push(ent) else {
+        hdr_buf.raw.resize(saved_len);
+        return false;
+    };
     return true;
 }
 
-fn append_pseudo_headers_to_map(pseudo: const PseudoHeaders&, out_hdrs: http::HeaderMap&) -> bool {
-    guard http::append_header(out_hdrs, ":method", pseudo.method[..]) else { return false; };
+fn append_pseudo_headers_to_buf(pseudo: const PseudoHeaders&, out_buf: H3EdgeHdrBuf&) -> bool {
+    guard append_h3_hdr_buf_entry(out_buf, ":method", pseudo.method[..], false) else { return false; };
     if pseudo.has_scheme {
-        guard http::append_header(out_hdrs, ":scheme", pseudo.scheme[..]) else { return false; };
+        guard append_h3_hdr_buf_entry(out_buf, ":scheme", pseudo.scheme[..], false) else { return false; };
     }
     if pseudo.has_authority {
-        guard http::append_header(out_hdrs, ":authority", pseudo.authority[..]) else { return false; };
+        guard append_h3_hdr_buf_entry(out_buf, ":authority", pseudo.authority[..], false) else { return false; };
     }
     if pseudo.has_path {
-        guard http::append_header(out_hdrs, ":path", pseudo.path[..]) else { return false; };
+        guard append_h3_hdr_buf_entry(out_buf, ":path", pseudo.path[..], false) else { return false; };
     }
     if pseudo.has_protocol {
-        guard http::append_header(out_hdrs, ":protocol", pseudo.protocol[..]) else { return false; };
+        guard append_h3_hdr_buf_entry(out_buf, ":protocol", pseudo.protocol[..], false) else { return false; };
     }
     return true;
 }
@@ -1214,8 +1265,11 @@ fn validate_edge_req_field(
     return validate_edge_req_host_or_cl(name, val, pseudo, st_idx, has_host);
 }
 
-fn coalesce_edge_cookie(val: const u8[:], cookie_buf: u8[..8192]&, has_cookie: bool&) -> bool {
+fn coalesce_edge_cookie(val: const u8[:], cookie_buf: u8[>..]&, has_cookie: bool&) -> bool {
     // RFC 9114 Section 4.2.1: Field Compression - Coalesce split Cookie header fields with "; ".
+    let sep_len: i64 = if has_cookie { 2 } else { 0 };
+    let next_len = core::add_sat_i64(cookie_buf.len, core::add_sat_i64(sep_len, val.len));
+    guard (next_len as u64) <= H3_EDGE_COOKIE_BUF_CAP else { return false; };
     if has_cookie {
         guard cookie_buf.try_append("; ") else { return false; };
     }
@@ -1225,20 +1279,23 @@ fn coalesce_edge_cookie(val: const u8[:], cookie_buf: u8[..8192]&, has_cookie: b
 }
 
 fn build_edge_request_entries(
-    raw_hdrs: const http::HeaderMap&,
-    pseudo:   const PseudoHeaders&,
-    st_idx:   i64,
-    out_hdrs: http::HeaderMap&,
-    has_host: bool&,
+    raw_hdrs:  const http::HeaderMap&,
+    raw_arena: const http::OverflowArena&,
+    pseudo:    const PseudoHeaders&,
+    st_idx:    i64,
+    out_buf:   H3EdgeHdrBuf&,
+    has_host:  bool&,
 ) -> u64 {
-    var cookie_buf: u8[..8192] = [];
+    g_h3_edge_cookie_scratch.clear();
     var has_cookie = false;
     var cookie_sensitive = false;
 
-    for i in 0..raw_hdrs.entries.len {
-        let ent .= raw_hdrs.entries[i];
-        let name = http::entry_name(raw_hdrs, ent);
-        let val = http::entry_value(raw_hdrs, ent);
+    let total = http::header_count_spill(raw_hdrs, raw_arena);
+    for i in 0..total {
+        let ent, ok = http::header_entry_at_spill(raw_hdrs, raw_arena, i);
+        guard ok else { return rfc::H3_ERR_MESSAGE_ERROR; };
+        let name = http::entry_name_spill(raw_hdrs, raw_arena, ent);
+        let val = http::entry_value_spill(raw_hdrs, raw_arena, ent);
         let is_sens = http::is_sensitive(ent);
         guard validate_edge_req_field(name, val, pseudo, st_idx, has_host) else {
             return rfc::H3_ERR_MESSAGE_ERROR;
@@ -1247,15 +1304,22 @@ fn build_edge_request_entries(
             if is_sens {
                 cookie_sensitive = true;
             }
-            guard coalesce_edge_cookie(val, cookie_buf, has_cookie) else { return rfc::H3_ERR_EXCESSIVE_LOAD; };
+            guard coalesce_edge_cookie(val, g_h3_edge_cookie_scratch, has_cookie) else {
+                return rfc::H3_ERR_EXCESSIVE_LOAD;
+            };
             continue;
         }
-        guard append_header_with_sensitivity(out_hdrs, name, val, is_sens) else {
+        guard append_h3_hdr_buf_entry(out_buf, name, val, is_sens) else {
             return rfc::H3_ERR_EXCESSIVE_LOAD;
         };
     }
     if has_cookie {
-        guard append_header_with_sensitivity(out_hdrs, "cookie", cookie_buf[..], cookie_sensitive) else {
+        guard append_h3_hdr_buf_entry(
+            out_buf,
+            "cookie",
+            g_h3_edge_cookie_scratch[..],
+            cookie_sensitive,
+        ) else {
             return rfc::H3_ERR_EXCESSIVE_LOAD;
         };
     }
@@ -1263,20 +1327,28 @@ fn build_edge_request_entries(
 }
 
 fn validate_and_build_edge_request_headers(
-    slot:     const H3EdgeSlot&,
-    pseudo:   const PseudoHeaders&,
-    raw_hdrs: const http::HeaderMap&,
-    st_idx:   i64,
-    out_hdrs: http::HeaderMap&,
+    slot:      const H3EdgeSlot&,
+    pseudo:    const PseudoHeaders&,
+    raw_hdrs:  const http::HeaderMap&,
+    raw_arena: const http::OverflowArena&,
+    st_idx:    i64,
+    out_buf:   H3EdgeHdrBuf&,
 ) -> u64 {
     guard validate_h3_request_pseudo(slot, pseudo) else {
         return rfc::H3_ERR_MESSAGE_ERROR;
     }
-    guard append_pseudo_headers_to_map(pseudo, out_hdrs) else {
+    guard append_pseudo_headers_to_buf(pseudo, out_buf) else {
         return rfc::H3_ERR_EXCESSIVE_LOAD;
     }
     var has_host = false;
-    let entry_err = build_edge_request_entries(raw_hdrs, pseudo, st_idx, out_hdrs, has_host);
+    let entry_err = build_edge_request_entries(
+        raw_hdrs,
+        raw_arena,
+        pseudo,
+        st_idx,
+        out_buf,
+        has_host,
+    );
     if entry_err != rfc::H3_ERR_NO_ERROR {
         return entry_err;
     }
@@ -1290,19 +1362,22 @@ fn validate_and_build_edge_request_headers(
 }
 
 fn validate_and_build_edge_trailers(
-    pseudo:   const PseudoHeaders&,
-    raw_hdrs: const http::HeaderMap&,
-    out_hdrs: http::HeaderMap&,
+    pseudo:    const PseudoHeaders&,
+    raw_hdrs:  const http::HeaderMap&,
+    raw_arena: const http::OverflowArena&,
+    out_buf:   H3EdgeHdrBuf&,
 ) -> u64 {
     if pseudo.has_method || pseudo.has_scheme || pseudo.has_authority
         || pseudo.has_path || pseudo.has_protocol || pseudo.has_status
     {
         return rfc::H3_ERR_MESSAGE_ERROR;
     }
-    for i in 0..raw_hdrs.entries.len {
-        let ent .= raw_hdrs.entries[i];
-        let name = http::entry_name(raw_hdrs, ent);
-        let val = http::entry_value(raw_hdrs, ent);
+    let total = http::header_count_spill(raw_hdrs, raw_arena);
+    for i in 0..total {
+        let ent, ok = http::header_entry_at_spill(raw_hdrs, raw_arena, i);
+        guard ok else { return rfc::H3_ERR_MESSAGE_ERROR; };
+        let name = http::entry_name_spill(raw_hdrs, raw_arena, ent);
+        let val = http::entry_value_spill(raw_hdrs, raw_arena, ent);
         if name.len == 0 || name[0] == ':' || !http::is_valid_header_name_h2(name) {
             return rfc::H3_ERR_MESSAGE_ERROR;
         }
@@ -1312,7 +1387,7 @@ fn validate_and_build_edge_trailers(
         if name == "te" && val != "trailers" {
             return rfc::H3_ERR_MESSAGE_ERROR;
         }
-        guard append_header_with_sensitivity(out_hdrs, name, val, http::is_sensitive(ent)) else {
+        guard append_h3_hdr_buf_entry(out_buf, name, val, http::is_sensitive(ent)) else {
             return rfc::H3_ERR_EXCESSIVE_LOAD;
         };
     }
@@ -1324,22 +1399,31 @@ fn deliver_edge_request_head(
     st_idx:     i64,
     pseudo:     const PseudoHeaders&,
     raw_hdrs:   const http::HeaderMap&,
+    raw_arena:  const http::OverflowArena&,
     at_msg_end: H3EdgeEndFlag,
 ) {
     let slot .= g_h3_edge_slots[slot_idx];
     let st .= g_h3_edge_streams[st_idx];
-    var built = http::HeaderMap { .. };
-    let build_err = validate_and_build_edge_request_headers(slot, pseudo, raw_hdrs, st_idx, built);
+    let h_idx = alloc_h3_hdr_buf();
+    let build_err = validate_and_build_edge_request_headers(
+        slot,
+        pseudo,
+        raw_hdrs,
+        raw_arena,
+        st_idx,
+        g_h3_edge_hdr_bufs[h_idx],
+    );
     if build_err != rfc::H3_ERR_NO_ERROR {
+        free_h3_hdr_buf(h_idx);
         emit_h3_stream_reset(slot_idx, st_idx, build_err);
         return;
     }
     let end_now = at_msg_end == H3EdgeEndFlag.Fin;
     if end_now && st.has_content_length && st.expected_content_length != 0 {
+        free_h3_hdr_buf(h_idx);
         emit_h3_stream_reset(slot_idx, st_idx, rfc::H3_ERR_MESSAGE_ERROR);
         return;
     }
-    let h_idx = alloc_h3_header_map(built);
     enqueue_h3_event(
         slot_idx,
         H3EdgeEventKind.RequestHead,
@@ -1360,22 +1444,29 @@ fn deliver_edge_trailers(
     st_idx:     i64,
     pseudo:     const PseudoHeaders&,
     raw_hdrs:   const http::HeaderMap&,
+    raw_arena:  const http::OverflowArena&,
     at_msg_end: H3EdgeEndFlag,
 ) {
     let st .= g_h3_edge_streams[st_idx];
-    var built = http::HeaderMap { .. };
-    let tr_err = validate_and_build_edge_trailers(pseudo, raw_hdrs, built);
+    let h_idx = alloc_h3_hdr_buf();
+    let tr_err = validate_and_build_edge_trailers(
+        pseudo,
+        raw_hdrs,
+        raw_arena,
+        g_h3_edge_hdr_bufs[h_idx],
+    );
     if tr_err != rfc::H3_ERR_NO_ERROR {
+        free_h3_hdr_buf(h_idx);
         emit_h3_stream_reset(slot_idx, st_idx, tr_err);
         return;
     }
     // RFC 9114 Section 4.1: HTTP Message Framing - No DATA may follow trailers, so Content-Length is final now.
     if st.has_content_length && st.body_bytes_received != st.expected_content_length {
+        free_h3_hdr_buf(h_idx);
         emit_h3_stream_reset(slot_idx, st_idx, rfc::H3_ERR_MESSAGE_ERROR);
         return;
     }
     st.msg_phase = H3EdgeMsgPhase.ExpectEofAfterTrailers;
-    let h_idx = alloc_h3_header_map(built);
     if at_msg_end == H3EdgeEndFlag.Fin {
         enqueue_h3_event(slot_idx, H3EdgeEventKind.RequestEnd, st.stream_id, h_idx, -1, true, 0);
         st.finished = true;
@@ -1401,12 +1492,14 @@ fn decode_and_deliver_headers_section(
     let st .= g_h3_edge_streams[st_idx];
     var pseudo = PseudoHeaders { is_trailer: role == H3EdgeSectionRole.Trailers, .. };
     var raw_hdrs = http::HeaderMap { .. };
-    let qerr = decode_or_track_blocked_qpack_to_map(
+    var raw_arena = http::OverflowArena { .. };
+    let qerr = decode_or_track_blocked_qpack_to_map_spill(
         slot.qpack_dec_table,
         st.stream_id,
         section,
         pseudo,
         raw_hdrs,
+        raw_arena,
         slot.local_settings.max_field_section_size,
     );
     if qerr == QpackError.StreamBlocked {
@@ -1424,10 +1517,10 @@ fn decode_and_deliver_headers_section(
         return false, emit_h3_protocol_error(slot_idx, st.stream_id, rfc::H3_ERR_QPACK_DECOMPRESSION_FAILED);
     }
     if role == H3EdgeSectionRole.Request {
-        deliver_edge_request_head(slot_idx, st_idx, pseudo, raw_hdrs, at_msg_end);
+        deliver_edge_request_head(slot_idx, st_idx, pseudo, raw_hdrs, raw_arena, at_msg_end);
         return false, true;
     }
-    deliver_edge_trailers(slot_idx, st_idx, pseudo, raw_hdrs, at_msg_end);
+    deliver_edge_trailers(slot_idx, st_idx, pseudo, raw_hdrs, raw_arena, at_msg_end);
     return false, true;
 }
 
@@ -2214,16 +2307,14 @@ fn h3_edge_reset_stream(sess: H3EdgeSession&, stream_id: u64) {
     }
 }
 
-// Polls the next queued HTTP/3 server event, returning false when empty.
-fn h3_edge_poll_event(sess: H3EdgeSession&, out_ev: H3EdgeEvent&) -> bool {
-    out_ev = H3EdgeEvent { .. };
+fn pop_h3_event_for_poll(sess: H3EdgeSession&) -> i64, i64, bool {
     let slot_idx, ok = resolve_h3_edge_slot(sess);
     if !ok {
-        return false;
+        return -1, -1, false;
     }
     let slot .= g_h3_edge_slots[slot_idx];
     if slot.ev_head < 0 {
-        return false;
+        return -1, -1, false;
     }
     let ev_idx = slot.ev_head;
     let ev .= g_h3_edge_events[ev_idx];
@@ -2231,7 +2322,48 @@ fn h3_edge_poll_event(sess: H3EdgeSession&, out_ev: H3EdgeEvent&) -> bool {
     if slot.ev_head < 0 {
         slot.ev_tail = -1;
     }
+    return slot_idx, ev_idx, true;
+}
 
+fn stage_h3_event_data(slot: H3EdgeSlot&, ev: const H3EdgeQueuedEvent&) -> const u8[:] {
+    slot.ev_data_buf.clear();
+    if ev.chunk_idx < 0 {
+        return "";
+    }
+    guard slot.ev_data_buf.try_append(g_h3_edge_chunks[ev.chunk_idx].buf[..]) else {
+        slot.ev_data_buf.clear();
+        return "";
+    };
+    return slot.ev_data_buf[..];
+}
+
+fn copy_header_view_to_stack_map(hv: const http::HeaderView&, out_map: http::HeaderMap&) -> bool {
+    out_map = http::HeaderMap { .. };
+    for i in 0..hv.entries.len {
+        let ent .= hv.entries[i];
+        let name = http::header_view_name(hv, ent);
+        let val = http::header_view_value(hv, ent);
+        guard http::append_header(out_map, name, val) else {
+            out_map = http::HeaderMap { .. };
+            return false;
+        };
+        if http::is_sensitive(ent) && out_map.entries.len > 0 {
+            let last_idx = core::sub_sat_i64(out_map.entries.len, 1);
+            out_map.entries[last_idx].flags = out_map.entries[last_idx].flags | http::HEADER_FLAG_SENSITIVE;
+        }
+    }
+    return true;
+}
+
+// Polls the next queued HTTP/3 server event, returning false when empty or exceeding 8 KiB headers.
+fn h3_edge_poll_event(sess: H3EdgeSession&, out_ev: H3EdgeEvent&) -> bool {
+    out_ev = H3EdgeEvent { .. };
+    let slot_idx, ev_idx, ok = pop_h3_event_for_poll(sess);
+    if !ok {
+        return false;
+    }
+    let slot .= g_h3_edge_slots[slot_idx];
+    let ev .= g_h3_edge_events[ev_idx];
     out_ev = H3EdgeEvent {
         kind:       ev.kind,
         stream_id:  ev.stream_id,
@@ -2239,13 +2371,87 @@ fn h3_edge_poll_event(sess: H3EdgeSession&, out_ev: H3EdgeEvent&) -> bool {
         error_code: ev.error_code,
     };
     if ev.hdr_idx >= 0 {
-        out_ev.headers = g_h3_edge_headers[ev.hdr_idx];
+        let hb .= g_h3_edge_hdr_bufs[ev.hdr_idx];
+        let hv = http::HeaderView { entries: hb.entries[..], raw: hb.raw[..] };
+        if !copy_header_view_to_stack_map(hv, out_ev.headers) {
+            out_ev = H3EdgeEvent { .. };
+            free_h3_event_node(ev_idx);
+            return false;
+        }
     }
-    slot.ev_data_buf.clear();
-    if ev.chunk_idx >= 0 {
-        let _ = slot.ev_data_buf.try_append(g_h3_edge_chunks[ev.chunk_idx].buf[..]);
-        out_ev.data = slot.ev_data_buf[..];
+    out_ev.data = stage_h3_event_data(slot, ev);
+    free_h3_event_node(ev_idx);
+    return true;
+}
+
+// Polls the next queued HTTP/3 server event with 64 KiB `OverflowArena` header spill support.
+fn h3_edge_poll_event_spill(
+    sess:      H3EdgeSession&,
+    out_ev:    H3EdgeEvent&,
+    out_arena: http::OverflowArena&,
+) -> bool {
+    out_ev = H3EdgeEvent { .. };
+    http::reset_overflow_arena(out_arena);
+    let slot_idx, ev_idx, ok = pop_h3_event_for_poll(sess);
+    if !ok {
+        return false;
     }
+    let slot .= g_h3_edge_slots[slot_idx];
+    let ev .= g_h3_edge_events[ev_idx];
+    out_ev = H3EdgeEvent {
+        kind:       ev.kind,
+        stream_id:  ev.stream_id,
+        end_stream: ev.end_stream,
+        error_code: ev.error_code,
+    };
+    if ev.hdr_idx >= 0 {
+        let hb .= g_h3_edge_hdr_bufs[ev.hdr_idx];
+        let hv = http::HeaderView { entries: hb.entries[..], raw: hb.raw[..] };
+        if !http::header_view_copy_to_spill(hv, out_ev.headers, out_arena) {
+            out_ev = H3EdgeEvent { .. };
+            http::reset_overflow_arena(out_arena);
+            free_h3_event_node(ev_idx);
+            return false;
+        }
+    }
+    out_ev.data = stage_h3_event_data(slot, ev);
+    free_h3_event_node(ev_idx);
+    return true;
+}
+
+// Polls the next queued HTTP/3 server event into a zero-HeaderMap-copy `H3EdgeEventView`.
+fn h3_edge_poll_event_view(sess: H3EdgeSession&, out_ev: H3EdgeEventView&) -> bool {
+    out_ev = H3EdgeEventView { .. };
+    let slot_idx, ev_idx, ok = pop_h3_event_for_poll(sess);
+    if !ok {
+        return false;
+    }
+    let slot .= g_h3_edge_slots[slot_idx];
+    let ev .= g_h3_edge_events[ev_idx];
+    slot.ev_hdr_entries.clear();
+    slot.ev_hdr_raw.clear();
+    var hdr_view = http::HeaderView { .. };
+    if ev.hdr_idx >= 0 {
+        let hb .= g_h3_edge_hdr_bufs[ev.hdr_idx];
+        guard slot.ev_hdr_entries.try_append(hb.entries[..]) && slot.ev_hdr_raw.try_append(hb.raw[..]) else {
+            slot.ev_hdr_entries.clear();
+            slot.ev_hdr_raw.clear();
+            free_h3_event_node(ev_idx);
+            return false;
+        };
+        hdr_view = http::HeaderView {
+            entries: slot.ev_hdr_entries[..],
+            raw:     slot.ev_hdr_raw[..],
+        };
+    }
+    out_ev = H3EdgeEventView {
+        kind:       ev.kind,
+        stream_id:  ev.stream_id,
+        headers:    hdr_view,
+        data:       stage_h3_event_data(slot, ev),
+        end_stream: ev.end_stream,
+        error_code: ev.error_code,
+    };
     free_h3_event_node(ev_idx);
     return true;
 }
@@ -2284,17 +2490,16 @@ fn encode_edge_resp_header_entry(
     return encode_qpack_field(out_qpack, lower_name[..], val, true);
 }
 
-// Encodes an HTTP/3 response HEADERS frame using QPACK static/literal compression.
-fn h3_edge_encode_response_headers(
-    sess:        H3EdgeSession&,
-    status_code: i32,
-    headers:     const http::HeaderMap&,
-    out_wire:    u8[>..]&,
+fn h3_edge_encode_response_headers_slices(
+    sess:          H3EdgeSession&,
+    status_code:   i32,
+    headers:       const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    out_wire:      u8[>..]&,
 ) -> bool {
     let slot_idx, ok = resolve_h3_edge_slot(sess);
-    if !ok {
-        return false;
-    }
+    guard ok else { return false; };
     let slot .= g_h3_edge_slots[slot_idx];
     // RFC 9114 Section 4.3.2: Response Pseudo-Header Fields - Reject status outside 100..599 and forbid 101.
     if slot.conn_failed
@@ -2304,16 +2509,11 @@ fn h3_edge_encode_response_headers(
     {
         return false;
     }
-
     let saved_len = out_wire.len;
     var committed = false;
-    defer if !committed {
-        out_wire.resize(saved_len);
-    };
-
+    defer if !committed { out_wire.resize(saved_len); };
     var status_buf: u8[..8] = [];
     (status_code as u32).format_u32_dec(status_buf);
-
     g_h3_resp_qpack_scratch.clear();
     // RFC 9204 Section 4.5: Field Line Representations - Static-only field section prefix (RIC=0, DeltaBase=0).
     g_h3_resp_qpack_scratch.push(0x00);
@@ -2321,25 +2521,63 @@ fn h3_edge_encode_response_headers(
     guard encode_qpack_field(g_h3_resp_qpack_scratch, ":status", status_buf[..], true) else {
         return false;
     };
-
     var field_section_size = core::add_sat_u64(H3_EDGE_STATUS_FIELD_OVERHEAD, status_buf.len as u64);
     if slot.peer_settings_received && field_section_size > slot.peer_settings.max_field_section_size {
         return false;
     }
-    for i in 0..headers.entries.len {
-        let ent .= headers.entries[i];
-        let name = http::entry_name(headers, ent);
-        let val = http::entry_value(headers, ent);
+    let total = core::add_sat_i64(headers.entries.len, spill_entries.len);
+    for i in 0..total {
+        let ent = if i < headers.entries.len {
+            headers.entries[i]
+        } else {
+            spill_entries[core::sub_sat_i64(i, headers.entries.len)]
+        };
+        let name = http::resolve_entry_name_buf(headers.raw_buf[..], spill_raw, ent);
+        let val = http::resolve_entry_value_buf(headers.raw_buf[..], spill_raw, ent);
         guard encode_edge_resp_header_entry(slot, name, val, field_section_size, g_h3_resp_qpack_scratch) else {
             return false;
         };
     }
-
     guard encode_headers_frame(out_wire, g_h3_resp_qpack_scratch[..]) else {
         return false;
     };
     committed = true;
     return true;
+}
+
+// Encodes an HTTP/3 response HEADERS frame using QPACK static/literal compression.
+fn h3_edge_encode_response_headers(
+    sess:        H3EdgeSession&,
+    status_code: i32,
+    headers:     const http::HeaderMap&,
+    out_wire:    u8[>..]&,
+) -> bool {
+    return h3_edge_encode_response_headers_slices(
+        sess,
+        status_code,
+        headers,
+        headers.entries[..0],
+        "",
+        out_wire,
+    );
+}
+
+// Encodes an HTTP/3 response HEADERS frame supporting up to 64 KiB `OverflowArena` headers.
+fn h3_edge_encode_response_headers_spill(
+    sess:        H3EdgeSession&,
+    status_code: i32,
+    headers:     const http::HeaderMap&,
+    arena:       const http::OverflowArena&,
+    out_wire:    u8[>..]&,
+) -> bool {
+    return h3_edge_encode_response_headers_slices(
+        sess,
+        status_code,
+        headers,
+        arena.spill_entries[..],
+        arena.spill_raw[..],
+        out_wire,
+    );
 }
 
 // Encodes an HTTP/3 DATA frame of arbitrary length (including > 4 KiB payloads).

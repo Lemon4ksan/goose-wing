@@ -191,7 +191,7 @@ fn parse_single_overflow_header_line(
 
     if map.entries.len < 128 {
         let new_idx = map.entries.len as u8;
-        link_header_entry(map, wk_id, raw_name, hname, new_idx, arena);
+        link_header_entry(map, wk_id, raw_name, hname, new_idx, arena.spill_raw[..]);
         map.entries.push(new_entry);
         map.header_contains_comma.push(contains_comma);
     } else {
@@ -415,33 +415,31 @@ checkfree inline fn skip_single_preamble_empty_line(raw: const u8[:]) -> i64 {
     return 0;
 }
 
-checkfree fn resolve_entry_value(
-    entry: const http::HeaderEntry&,
-    map:   const http::HeaderMap&,
-    arena: const http::OverflowArena&,
-) -> const u8[:] {
-    let b: i64 = entry.values_begin;
-    let e: i64 = entry.values_end;
-    if entry.reserved == http::HEADER_SRC_ARENA {
-        guard b >= 0 && b <= e && e <= arena.spill_raw.len else { return ""; }
-        return arena.spill_raw[b..e];
+fn connection_val_has_token(val: const u8[:], target_name: const u8[:]) -> bool {
+    var tok = core::make_byte_tokenizer(val, ',');
+    while true {
+        let raw_tok, ok = core::token_next(tok);
+        guard ok else { break; }
+        let token = raw_tok.trim_lws();
+        if token.len > 0 && token.eq_ascii_fold(target_name) {
+            return true;
+        }
     }
-    guard b >= 0 && b <= e && e <= map.raw_buf.len else { return ""; }
-    return map.raw_buf[b..e];
+    return false;
 }
 
 fn find_entry_in_entries(
-    entries: const http::HeaderEntry[:],
-    name:    const u8[:],
-    hname:   u32,
-    map:     const http::HeaderMap&,
-    arena:   const http::OverflowArena&,
+    entries:   const http::HeaderEntry[:],
+    stack_raw: const u8[:],
+    spill_raw: const u8[:],
+    name:      const u8[:],
+    hname:     u32,
 ) -> const u8[:] {
     for &entry in entries {
         if entry.name_hash == hname {
-            let entry_name = http::resolve_entry_name(entry, map, arena);
+            let entry_name = http::resolve_entry_name_buf(stack_raw, spill_raw, entry);
             if entry_name.eq_ascii_fold(name) {
-                return resolve_entry_value(entry, map, arena);
+                return http::resolve_entry_value_buf(stack_raw, spill_raw, entry);
             }
         }
     }
@@ -522,7 +520,10 @@ checkfree inline fn needs_header_byte_sanitization(s: const u8[:]) -> bool {
     return false;
 }
 
-fn rebuild_inline_slots_and_chains(map: http::HeaderMap&) {
+fn rebuild_inline_slots_and_chains(
+    map:       http::HeaderMap&,
+    spill_raw: const u8[:] = "",
+) {
     for i in 64 {
         map.inline_slots[i] = 0xFF;
     }
@@ -547,11 +548,11 @@ fn rebuild_inline_slots_and_chains(map: http::HeaderMap&) {
             continue;
         }
         let hname = map.entries[i].name_hash;
-        let name_i = http::entry_name(map, map.entries[i]);
+        let name_i = http::resolve_entry_name_buf(map.raw_buf[..], spill_raw, map.entries[i]);
         guard name_i.len > 0 else { continue; }
         for prev_i in i {
             guard map.entries[prev_i].name_hash == hname else { continue; }
-            let name_p = http::entry_name(map, map.entries[prev_i]);
+            let name_p = http::resolve_entry_name_buf(map.raw_buf[..], spill_raw, map.entries[prev_i]);
             let match_name = name_p.len > 0 && name_p.eq_ascii_fold(name_i);
             guard match_name else { continue; }
             var cur = prev_i as u8;

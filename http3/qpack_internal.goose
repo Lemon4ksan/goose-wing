@@ -374,9 +374,16 @@ fn emit_qpack_pseudo_field(
     return http3::QpackError.MessageError;
 }
 
+enum QpackSpillMode {
+    StackOnly,
+    AllowSpill,
+}
+
 fn emit_qpack_field_to_map(
     out_pseudo:  http3::PseudoHeaders&,
     out_headers: http::HeaderMap&,
+    out_arena:   http::OverflowArena&,
+    spill_mode:  QpackSpillMode,
     budget_left: u64&,
     name:        const u8[:],
     val:         const u8[:],
@@ -404,7 +411,18 @@ fn emit_qpack_field_to_map(
         }
     }
     if name == "host" {
-        guard !http::has_header(out_headers, "host") && is_valid_authority_or_host(val) else {
+        let spill_entries = if spill_mode == QpackSpillMode.AllowSpill {
+            out_arena.spill_entries[..]
+        } else {
+            out_headers.entries[..0]
+        };
+        let spill_raw = if spill_mode == QpackSpillMode.AllowSpill {
+            out_arena.spill_raw[..]
+        } else {
+            ""
+        };
+        guard !http::has_header_slices(out_headers, spill_entries, spill_raw, "host") &&
+              is_valid_authority_or_host(val) else {
             return http3::QpackError.MessageError;
         }
         if out_pseudo.has_authority && !out_pseudo.authority[..].eq_ascii_fold(val) {
@@ -424,6 +442,13 @@ fn emit_qpack_field_to_map(
         out_pseudo.content_length = cl;
     }
 
+    let sens_flag: u8 = if never_index { http::HEADER_FLAG_SENSITIVE } else { 0 };
+    if spill_mode == QpackSpillMode.AllowSpill {
+        guard http::append_header_spill(out_headers, out_arena, name, val, sens_flag) else {
+            return http3::QpackError.HeaderListTooLarge;
+        }
+        return http3::QpackError.None;
+    }
     guard http::append_header(out_headers, name, val) else {
         return http3::QpackError.HeaderListTooLarge;
     }
@@ -434,13 +459,13 @@ fn emit_qpack_field_to_map(
     return http3::QpackError.None;
 }
 
-// Decodes a single QPACK field line directly into `out_headers` (RFC 9204 §4.5.2–4.5.6).
+// Decodes a single QPACK field line directly into `out_headers` and optional `out_arena` (RFC 9204 §4.5.2–4.5.6).
 // Advances `idx` past the decoded field line.
 //
 // Example:
 //   src = [0xD1], idx = 0 (static index 17: ":method: GET")
 //   returns: QpackError.None, idx = 1, out_pseudo.method = "GET"
-fn decode_qpack_field_line_to_map(
+fn decode_qpack_field_line_to_map<B>(
     tbl:              const http3::QpackTable&,
     src:              const u8[:],
     idx:              u64&,
@@ -449,6 +474,9 @@ fn decode_qpack_field_line_to_map(
     budget:           u64&,
     out_pseudo:       http3::PseudoHeaders&,
     out_headers:      http::HeaderMap&,
+    out_arena:        http::OverflowArena&,
+    spill_mode:       QpackSpillMode,
+    val_buf:          B&,
     max_dyn_abs_used: u64&,
     used_any_dyn:     bool&,
 ) -> http3::QpackError {
@@ -466,7 +494,9 @@ fn decode_qpack_field_line_to_map(
         if is_static {
             let s_ent, s_ok = http3::get_qpack_static_field(tbl_idx);
             guard s_ok else { return http3::QpackError.DecompressionFailed; }
-            let err = emit_qpack_field_to_map(out_pseudo, out_headers, budget, s_ent.name, s_ent.val, false);
+            let err = emit_qpack_field_to_map(
+                out_pseudo, out_headers, out_arena, spill_mode, budget, s_ent.name, s_ent.val, false,
+            );
             guard err == http3::QpackError.None else { return err; }
         } else {
             guard base > tbl_idx else { return http3::QpackError.DecompressionFailed; }
@@ -474,7 +504,9 @@ fn decode_qpack_field_line_to_map(
             guard abs_idx < ric else { return http3::QpackError.DecompressionFailed; }
             let n, v, ok_l = http3::qpack_lookup_absolute(tbl, abs_idx);
             guard ok_l else { return http3::QpackError.DecompressionFailed; }
-            let err = emit_qpack_field_to_map(out_pseudo, out_headers, budget, n, v, false);
+            let err = emit_qpack_field_to_map(
+                out_pseudo, out_headers, out_arena, spill_mode, budget, n, v, false,
+            );
             guard err == http3::QpackError.None else { return err; }
             record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
         }
@@ -491,7 +523,9 @@ fn decode_qpack_field_line_to_map(
         guard abs_idx < ric else { return http3::QpackError.DecompressionFailed; }
         let n, v, ok_l = http3::qpack_lookup_absolute(tbl, abs_idx);
         guard ok_l else { return http3::QpackError.DecompressionFailed; }
-        let err = emit_qpack_field_to_map(out_pseudo, out_headers, budget, n, v, false);
+        let err = emit_qpack_field_to_map(
+            out_pseudo, out_headers, out_arena, spill_mode, budget, n, v, false,
+        );
         guard err == http3::QpackError.None else { return err; }
         record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
         idx = next_off;
@@ -505,14 +539,16 @@ fn decode_qpack_field_line_to_map(
         let name_idx, val_start, ok_idx = http3::qpack_decode_int(src, idx, 4);
         guard ok_idx else { return http3::QpackError.DecompressionFailed; }
 
-        var v: u8[..4096] = [];
-        let next_off, ok_val = http3::decode_qpack_string(src, val_start, 7, v);
-        guard ok_val else { return http3::QpackError.DecompressionFailed; }
+        val_buf.clear();
+        let next_off, ok_val = http3::decode_qpack_string(src, val_start, 7, val_buf);
+        guard ok_val && val_buf.len <= 65536 else { return http3::QpackError.DecompressionFailed; }
 
         if is_static {
             let s_ent, s_ok = http3::get_qpack_static_field(name_idx);
             guard s_ok else { return http3::QpackError.DecompressionFailed; }
-            let err = emit_qpack_field_to_map(out_pseudo, out_headers, budget, s_ent.name, v[..], is_never_index);
+            let err = emit_qpack_field_to_map(
+                out_pseudo, out_headers, out_arena, spill_mode, budget, s_ent.name, val_buf[..], is_never_index,
+            );
             guard err == http3::QpackError.None else { return err; }
         } else {
             guard base > name_idx else { return http3::QpackError.DecompressionFailed; }
@@ -520,7 +556,9 @@ fn decode_qpack_field_line_to_map(
             guard abs_idx < ric else { return http3::QpackError.DecompressionFailed; }
             let d_name, ok_dn = qpack_lookup_name_absolute(tbl, abs_idx);
             guard ok_dn else { return http3::QpackError.DecompressionFailed; }
-            let err = emit_qpack_field_to_map(out_pseudo, out_headers, budget, d_name, v[..], is_never_index);
+            let err = emit_qpack_field_to_map(
+                out_pseudo, out_headers, out_arena, spill_mode, budget, d_name, val_buf[..], is_never_index,
+            );
             guard err == http3::QpackError.None else { return err; }
             record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
         }
@@ -541,11 +579,13 @@ fn decode_qpack_field_line_to_map(
         guard ok_dn else { return http3::QpackError.DecompressionFailed; }
         record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
 
-        var v: u8[..4096] = [];
-        let next_off, ok_val = http3::decode_qpack_string(src, val_start, 7, v);
-        guard ok_val else { return http3::QpackError.DecompressionFailed; }
+        val_buf.clear();
+        let next_off, ok_val = http3::decode_qpack_string(src, val_start, 7, val_buf);
+        guard ok_val && val_buf.len <= 65536 else { return http3::QpackError.DecompressionFailed; }
 
-        let err = emit_qpack_field_to_map(out_pseudo, out_headers, budget, n, v[..], is_never_index);
+        let err = emit_qpack_field_to_map(
+            out_pseudo, out_headers, out_arena, spill_mode, budget, n, val_buf[..], is_never_index,
+        );
         guard err == http3::QpackError.None else { return err; }
         idx = next_off;
         committed = true;
@@ -558,11 +598,13 @@ fn decode_qpack_field_line_to_map(
         let val_start, ok_name = http3::decode_qpack_string(src, idx, 3, n);
         guard ok_name else { return http3::QpackError.DecompressionFailed; }
 
-        var v: u8[..4096] = [];
-        let next_off, ok_val = http3::decode_qpack_string(src, val_start, 7, v);
-        guard ok_val else { return http3::QpackError.DecompressionFailed; }
+        val_buf.clear();
+        let next_off, ok_val = http3::decode_qpack_string(src, val_start, 7, val_buf);
+        guard ok_val && val_buf.len <= 65536 else { return http3::QpackError.DecompressionFailed; }
 
-        let err = emit_qpack_field_to_map(out_pseudo, out_headers, budget, n[..], v[..], is_never_index);
+        let err = emit_qpack_field_to_map(
+            out_pseudo, out_headers, out_arena, spill_mode, budget, n[..], val_buf[..], is_never_index,
+        );
         guard err == http3::QpackError.None else { return err; }
         idx = next_off;
         committed = true;
