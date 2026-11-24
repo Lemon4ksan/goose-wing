@@ -208,6 +208,30 @@ fn qpack_can_block_stream(tbl: const QpackTable&) -> bool {
         tbl.blocked_streams.len < tbl.blocked_streams.cap;
 }
 
+fn qpack_alloc_blocked_entry(
+    tbl:             const QpackTable&,
+    stream_id:       u64,
+    ric:             u64,
+    is_push_promise: bool = false,
+    push_id:         u64  = 0,
+) -> h3_internal::BlockedStreamEntry, bool {
+    if !qpack_is_stream_blocked(tbl, stream_id) {
+        guard qpack_can_block_stream(tbl) else {
+            return h3_internal::BlockedStreamEntry { .. }, false;
+        }
+    }
+    guard tbl.blocked_streams.len < tbl.blocked_streams.cap else {
+        return h3_internal::BlockedStreamEntry { .. }, false;
+    }
+    return h3_internal::BlockedStreamEntry {
+        stream_id:        stream_id,
+        req_insert_count: ric,
+        is_push_promise:  is_push_promise,
+        push_id:          push_id,
+        ..
+    }, true;
+}
+
 // Records a blocked field section waiting for TotalNumberOfInserts to reach req_insert_count (RFC 9204 Section 2.1.2).
 fn qpack_block_stream(
     tbl:             QpackTable&,
@@ -217,18 +241,15 @@ fn qpack_block_stream(
     is_push_promise: bool = false,
     push_id:         u64  = 0,
 ) -> bool {
-    if !qpack_is_stream_blocked(tbl, stream_id) {
-        guard qpack_can_block_stream(tbl) else { return false; }
-    }
-    guard tbl.blocked_streams.len < tbl.blocked_streams.cap else { return false; }
-    var entry = h3_internal::BlockedStreamEntry {
-        stream_id:        stream_id,
-        req_insert_count: ric,
-        is_push_promise:  is_push_promise,
-        push_id:          push_id,
-        ..
-    };
-    guard entry.encoded_data.try_set(data) else { return false; }
+    var entry, ok = qpack_alloc_blocked_entry(tbl, stream_id, ric, is_push_promise, push_id);
+    guard ok && entry.encoded_data.try_set(data) else { return false; }
+    return tbl.blocked_streams.try_push(entry);
+}
+
+// Records a blocked stream ID and required insert count without buffering field bytes.
+fn qpack_track_blocked_stream(tbl: QpackTable&, stream_id: u64, ric: u64) -> bool {
+    let entry, ok = qpack_alloc_blocked_entry(tbl, stream_id, ric, false, 0);
+    guard ok else { return false; }
     return tbl.blocked_streams.try_push(entry);
 }
 
@@ -510,6 +531,18 @@ fn decode_qpack_to_map(
     return QpackError.None;
 }
 
+// Decodes and validates the Required Insert Count prefix from an encoded QPACK field section.
+//
+// Example:
+//   src = [0x00, 0x00, 0xD1], tbl.insert_count = 0
+//   returns: ric = 0, QpackError.None
+fn decode_qpack_section_ric(tbl: const QpackTable&, src: const u8[:]) -> u64, QpackError {
+    guard src.len >= 2 else { return 0, QpackError.DecompressionFailed; }
+    let enc_ric, _, ok_ric = qpack_decode_int(src, 0, 8);
+    guard ok_ric else { return 0, QpackError.DecompressionFailed; }
+    return decode_ric(enc_ric, tbl.insert_count, tbl.max_capacity_bytes);
+}
+
 // Decodes an Encoded Field Section directly into `out_pseudo` and `out_headers`,
 // or records the stream as blocked if RIC exceeds `insert_count` (RFC 9204 Section 2.1.2).
 //
@@ -524,18 +557,38 @@ fn decode_or_block_qpack_to_map(
     out_headers:       http::HeaderMap&,
     max_field_section: u64 = 16384,
 ) -> QpackError {
-    guard src.len >= 2 else { return QpackError.DecompressionFailed; }
-    let enc_ric, _, ok_ric = qpack_decode_int(src, 0, 8);
-    guard ok_ric else { return QpackError.DecompressionFailed; }
-    let ric, ric_err = decode_ric(enc_ric, tbl.insert_count, tbl.max_capacity_bytes);
+    let ric, ric_err = decode_qpack_section_ric(tbl, src);
     guard ric_err == QpackError.None else { return ric_err; }
 
-    let already_blocked = qpack_is_stream_blocked(tbl, stream_id);
-    if already_blocked || ric > tbl.insert_count {
-        if !already_blocked && !qpack_can_block_stream(tbl) {
+    if qpack_is_stream_blocked(tbl, stream_id) || ric > tbl.insert_count {
+        guard qpack_block_stream(tbl, stream_id, ric, src) else {
             return QpackError.BlockedStreamsExhausted;
         }
-        guard qpack_block_stream(tbl, stream_id, ric, src) else {
+        return QpackError.StreamBlocked;
+    }
+
+    return decode_qpack_to_map(tbl, src, out_pseudo, out_headers, max_field_section);
+}
+
+// Decodes an Encoded Field Section directly into `out_pseudo` and `out_headers`,
+// or tracks blocked stream RIC without copying `src` into the 4096-byte slot buffer.
+//
+// Example:
+//   src = [0x02, 0x00, ...], stream_id = 0, tbl.insert_count = 0
+//   returns: QpackError.StreamBlocked (even when src.len > 4096)
+fn decode_or_track_blocked_qpack_to_map(
+    tbl:               QpackTable&,
+    stream_id:         u64,
+    src:               const u8[:],
+    out_pseudo:        PseudoHeaders&,
+    out_headers:       http::HeaderMap&,
+    max_field_section: u64 = 16384,
+) -> QpackError {
+    let ric, ric_err = decode_qpack_section_ric(tbl, src);
+    guard ric_err == QpackError.None else { return ric_err; }
+
+    if qpack_is_stream_blocked(tbl, stream_id) || ric > tbl.insert_count {
+        guard qpack_track_blocked_stream(tbl, stream_id, ric) else {
             return QpackError.BlockedStreamsExhausted;
         }
         return QpackError.StreamBlocked;

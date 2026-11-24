@@ -16,25 +16,26 @@ import http3.types;
 import quic.packet;
 import rfc.h3_quic;
 
-const H3_EDGE_DATA_CHUNK_CAP:          u64 = 16384;
-const H3_EDGE_HDR_SECTION_CAP:         u64 = 65536;
-const H3_EDGE_CTRL_BUF_CAP:            u64 = 1024;
-const H3_EDGE_QENC_BUF_CAP:            u64 = 4096;
-const H3_EDGE_QDEC_BUF_CAP:            u64 = 1024;
-const H3_EDGE_COOKIE_BUF_CAP:          u64 = 8192;
-const H3_EDGE_MAX_RETAINED_STREAMS:    i64 = 128;
-const H3_EDGE_MAX_UNI_PENDING:         i64 = 16;
-const H3_EDGE_MAX_IGNORED_UNI:         i64 = 32;
-const H3_EDGE_QPACK_DEFAULT_CAP:       u64 = 4096;
-const H3_EDGE_QPACK_DEFAULT_BLOCKED:   u32 = 16;
-const H3_EDGE_FIELD_OVERHEAD:          u64 = 32;
-const H3_EDGE_STATUS_FIELD_OVERHEAD:   u64 = 39;
-const H3_EDGE_STATUS_MIN:              i32 = 100;
-const H3_EDGE_STATUS_MAX:              i32 = 599;
-const QUIC_STREAM_TYPE_MASK:           u64 = 0x03;
-const QUIC_CLIENT_BIDI_TYPE:           u64 = 0x00;
-const QUIC_CLIENT_UNI_TYPE:            u64 = 0x02;
-const H3_EDGE_VARINT_MAX_HEADER_BYTES: i64 = 16;
+const H3_EDGE_DATA_CHUNK_CAP:            u64 = 16384;
+const H3_EDGE_HDR_SECTION_CAP:           u64 = 65536;
+const H3_EDGE_CTRL_BUF_CAP:              u64 = 1024;
+const H3_EDGE_QENC_BUF_CAP:              u64 = 4096;
+const H3_EDGE_QDEC_BUF_CAP:              u64 = 1024;
+const H3_EDGE_COOKIE_BUF_CAP:            u64 = 8192;
+const H3_EDGE_MAX_RETAINED_STREAMS:      i64 = 128;
+const H3_EDGE_MAX_UNI_PENDING:           i64 = 16;
+const H3_EDGE_MAX_IGNORED_UNI:           i64 = 1024;
+const H3_EDGE_QPACK_DEFAULT_CAP:         u64 = 4096;
+const H3_EDGE_QPACK_DEFAULT_BLOCKED:     u32 = 16;
+const H3_EDGE_FIELD_OVERHEAD:            u64 = 32;
+const H3_EDGE_STATUS_FIELD_OVERHEAD:     u64 = 39;
+const H3_EDGE_STATUS_MIN:                i32 = 100;
+const H3_EDGE_STATUS_SWITCHING_PROTOCOL: i32 = 101;
+const H3_EDGE_STATUS_MAX:                i32 = 599;
+const QUIC_STREAM_TYPE_MASK:             u64 = 0x03;
+const QUIC_CLIENT_BIDI_TYPE:             u64 = 0x00;
+const QUIC_CLIENT_UNI_TYPE:              u64 = 0x02;
+const H3_EDGE_VARINT_MAX_HEADER_BYTES:   i64 = 16;
 
 enum H3EdgeEventKind {
     None,
@@ -101,6 +102,12 @@ struct H3EdgeUniPending {
     buf:       u8[..16] = [],
 }
 
+struct H3EdgeIgnoredUni {
+    in_use:    bool = false,
+    next_idx:  i64  = -1,
+    stream_id: u64  = 0,
+}
+
 struct H3EdgeChunk {
     in_use:     bool        = false,
     next_chunk: i64         = -1,
@@ -142,6 +149,7 @@ struct H3EdgeStreamSlot {
     blocked_has_fin:         bool            = false,
     blocked_head:            i64             = -1,
     blocked_tail:            i64             = -1,
+    deferred_trailers_idx:   i64             = -1,
     errored:                 bool            = false,
     finished:                bool            = false,
 }
@@ -173,7 +181,8 @@ struct H3EdgeSlot {
     qenc_rx_buf:            u8[..4096]              = [],
     qdec_rx_buf:            u8[..1024]              = [],
     uni_pending:            H3EdgeUniPending[..16]  = [],
-    ignored_uni_streams:    u64[..32]               = [],
+    ignored_uni_head:       i64                     = -1,
+    ignored_uni_count:      i64                     = 0,
     qpack_dec_table:        QpackTable              = QpackTable { .. },
     qpack_enc_table:        QpackTable              = QpackTable { .. },
     stream_head:            i64                     = -1,
@@ -201,6 +210,9 @@ var g_h3_edge_free_chunks: i64[>..]         = [];
 
 var g_h3_edge_hdr_accums:      H3EdgeHdrAccum[>..] = [];
 var g_h3_edge_free_hdr_accums: i64[>..]            = [];
+
+var g_h3_edge_ignored_uni:      H3EdgeIgnoredUni[>..] = [];
+var g_h3_edge_free_ignored_uni: i64[>..]              = [];
 
 var g_h3_edge_replay_scratch: u8[..16384] = [];
 var g_h3_resp_qpack_scratch:  u8[>..]     = [];
@@ -393,6 +405,10 @@ fn emit_h3_stream_reset(slot_idx: i64, st_idx: i64, error_code: u64) {
     free_h3_chunk_chain(st.blocked_head);
     st.blocked_head = -1;
     st.blocked_tail = -1;
+    if st.deferred_trailers_idx >= 0 {
+        free_h3_header_map(st.deferred_trailers_idx);
+        st.deferred_trailers_idx = -1;
+    }
     enqueue_h3_event(
         slot_idx,
         H3EdgeEventKind.StreamReset,
@@ -432,16 +448,18 @@ fn reset_h3_edge_slot(slot_idx: i64, gen: u64) {
     slot.qenc_rx_buf.clear();
     slot.qdec_rx_buf.clear();
     slot.uni_pending.clear();
-    slot.ignored_uni_streams.clear();
+    slot.ignored_uni_head = -1;
+    slot.ignored_uni_count = 0;
+    // RFC 9204 Section 3.2.1: Dynamic Table Capacity - Initial decoder capacity MUST be 0 until instructed.
     slot.qpack_dec_table = new_qpack_table(
         H3_EDGE_QPACK_DEFAULT_CAP,
         H3_EDGE_QPACK_DEFAULT_BLOCKED,
-        H3_EDGE_QPACK_DEFAULT_CAP,
+        0,
     );
     slot.qpack_enc_table = new_qpack_table(
         H3_EDGE_QPACK_DEFAULT_CAP,
         H3_EDGE_QPACK_DEFAULT_BLOCKED,
-        H3_EDGE_QPACK_DEFAULT_CAP,
+        0,
     );
     slot.stream_head = -1;
     slot.stream_count = 0;
@@ -460,6 +478,9 @@ fn free_h3_stream_slot(st_idx: i64) {
     }
     if st.blocked_head >= 0 {
         free_h3_chunk_chain(st.blocked_head);
+    }
+    if st.deferred_trailers_idx >= 0 {
+        free_h3_header_map(st.deferred_trailers_idx);
     }
     g_h3_edge_streams[st_idx] = H3EdgeStreamSlot { .. };
     g_h3_edge_free_streams.push(st_idx);
@@ -542,6 +563,18 @@ fn h3_edge_open() -> H3EdgeSession {
     return H3EdgeSession { slot_idx: idx, generation: gen };
 }
 
+fn clear_ignored_uni_streams(slot: H3EdgeSlot&) {
+    var curr = slot.ignored_uni_head;
+    while curr >= 0 {
+        let next_node = g_h3_edge_ignored_uni[curr].next_idx;
+        g_h3_edge_ignored_uni[curr] = H3EdgeIgnoredUni { .. };
+        g_h3_edge_free_ignored_uni.push(curr);
+        curr = next_node;
+    }
+    slot.ignored_uni_head = -1;
+    slot.ignored_uni_count = 0;
+}
+
 // Closes an HTTP/3 edge session and reclaims its state idempotently.
 fn h3_edge_close(sess: H3EdgeSession&) {
     let slot_idx, ok = resolve_h3_edge_slot(sess);
@@ -563,6 +596,7 @@ fn h3_edge_close(sess: H3EdgeSession&) {
         free_h3_event_node(ev);
         ev = next_ev;
     }
+    clear_ignored_uni_streams(slot);
     slot.stream_head = -1;
     slot.stream_count = 0;
     slot.ev_head = -1;
@@ -579,24 +613,65 @@ fn h3_edge_close(sess: H3EdgeSession&) {
 }
 
 fn is_ignored_uni_stream(slot: const H3EdgeSlot&, stream_id: u64) -> bool {
-    for i in 0..slot.ignored_uni_streams.len {
-        if slot.ignored_uni_streams[i] == stream_id {
+    var curr = slot.ignored_uni_head;
+    while curr >= 0 {
+        if g_h3_edge_ignored_uni[curr].stream_id == stream_id {
             return true;
         }
+        curr = g_h3_edge_ignored_uni[curr].next_idx;
     }
     return false;
 }
 
+fn add_ignored_uni_stream(slot: H3EdgeSlot&, stream_id: u64) {
+    if slot.ignored_uni_count >= H3_EDGE_MAX_IGNORED_UNI && slot.ignored_uni_head >= 0 {
+        let drop_idx = slot.ignored_uni_head;
+        slot.ignored_uni_head = g_h3_edge_ignored_uni[drop_idx].next_idx;
+        g_h3_edge_ignored_uni[drop_idx] = H3EdgeIgnoredUni { .. };
+        g_h3_edge_free_ignored_uni.push(drop_idx);
+        slot.ignored_uni_count = core::sub_sat_i64(slot.ignored_uni_count, 1);
+    }
+    let free_idx, has_free = pop_free_index(g_h3_edge_free_ignored_uni);
+    var node_idx: i64 = -1;
+    if has_free {
+        node_idx = free_idx;
+        g_h3_edge_ignored_uni[node_idx] = H3EdgeIgnoredUni {
+            in_use:    true,
+            next_idx:  slot.ignored_uni_head,
+            stream_id: stream_id,
+        };
+    } else {
+        node_idx = g_h3_edge_ignored_uni.len;
+        g_h3_edge_ignored_uni.push(
+            H3EdgeIgnoredUni {
+                in_use:    true,
+                next_idx:  slot.ignored_uni_head,
+                stream_id: stream_id,
+            },
+        );
+    }
+    slot.ignored_uni_head = node_idx;
+    slot.ignored_uni_count = core::add_sat_i64(slot.ignored_uni_count, 1);
+}
+
 fn remove_ignored_uni_stream(slot: H3EdgeSlot&, stream_id: u64) {
-    let last_idx = core::sub_sat_i64(slot.ignored_uni_streams.len, 1);
-    for i in 0..slot.ignored_uni_streams.len {
-        if slot.ignored_uni_streams[i] == stream_id {
-            if i != last_idx {
-                slot.ignored_uni_streams[i] = slot.ignored_uni_streams[last_idx];
+    var prev: i64 = -1;
+    var curr = slot.ignored_uni_head;
+    while curr >= 0 {
+        let next_node = g_h3_edge_ignored_uni[curr].next_idx;
+        if g_h3_edge_ignored_uni[curr].stream_id == stream_id {
+            if prev < 0 {
+                slot.ignored_uni_head = next_node;
+            } else {
+                g_h3_edge_ignored_uni[prev].next_idx = next_node;
             }
-            slot.ignored_uni_streams.pop();
+            g_h3_edge_ignored_uni[curr] = H3EdgeIgnoredUni { .. };
+            g_h3_edge_free_ignored_uni.push(curr);
+            slot.ignored_uni_count = core::sub_sat_i64(slot.ignored_uni_count, 1);
             return;
         }
+        prev = curr;
+        curr = next_node;
     }
 }
 
@@ -974,13 +1049,29 @@ fn feed_h3_control_bytes(slot_idx: i64, data: const u8[:]) -> bool {
     return true;
 }
 
-fn validate_h3_connect_pseudo(pseudo: const PseudoHeaders&) -> bool {
+fn is_valid_token_tchar(s: const u8[:]) -> bool {
+    if s.len == 0 {
+        return false;
+    }
+    for b in s {
+        if !core::is_tchar(b) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn validate_h3_connect_pseudo(slot: const H3EdgeSlot&, pseudo: const PseudoHeaders&) -> bool {
     if pseudo.has_protocol {
-        // RFC 9114 Section 4.4: The CONNECT Method - Extended CONNECT requires :scheme, :path, :authority.
+        // RFC 9114 Section 4.4: The CONNECT Method - Extended CONNECT requires enable_connect_protocol and token :protocol.
+        if slot.local_settings.enable_connect_protocol == 0 {
+            return false;
+        }
         if !pseudo.has_scheme || !pseudo.has_path || !pseudo.has_authority {
             return false;
         }
-        return h3_internal::is_valid_uri_scheme(pseudo.scheme[..])
+        return is_valid_token_tchar(pseudo.protocol[..])
+            && h3_internal::is_valid_uri_scheme(pseudo.scheme[..])
             && h3_internal::is_valid_h3_path_bytes(pseudo.path[..])
             && h3_internal::is_valid_authority_or_host(pseudo.authority[..]);
     }
@@ -990,7 +1081,7 @@ fn validate_h3_connect_pseudo(pseudo: const PseudoHeaders&) -> bool {
     return h3_internal::is_valid_authority_or_host(pseudo.authority[..]);
 }
 
-fn validate_h3_request_pseudo(pseudo: const PseudoHeaders&) -> bool {
+fn validate_h3_request_pseudo(slot: const H3EdgeSlot&, pseudo: const PseudoHeaders&) -> bool {
     // RFC 9114 Section 4.3.1: Request Pseudo-Header Fields - Requests forbid :status.
     let method = pseudo.method[..];
     if pseudo.has_status || !pseudo.has_method || method.len == 0 {
@@ -1000,7 +1091,7 @@ fn validate_h3_request_pseudo(pseudo: const PseudoHeaders&) -> bool {
         return false;
     }
     if method == "CONNECT" {
-        return validate_h3_connect_pseudo(pseudo);
+        return validate_h3_connect_pseudo(slot, pseudo);
     }
     let scheme = pseudo.scheme[..];
     let path = pseudo.path[..];
@@ -1016,6 +1107,20 @@ fn validate_h3_request_pseudo(pseudo: const PseudoHeaders&) -> bool {
     if pseudo.has_authority {
         let auth = pseudo.authority[..];
         return auth.len > 0 && h3_internal::is_valid_authority_or_host(auth);
+    }
+    return true;
+}
+
+fn append_header_with_sensitivity(
+    out_hdrs:     http::HeaderMap&,
+    name:         const u8[:],
+    val:          const u8[:],
+    is_sensitive: bool,
+) -> bool {
+    guard http::append_header(out_hdrs, name, val) else { return false; };
+    if is_sensitive && out_hdrs.entries.len > 0 {
+        let last_idx = core::sub_sat_i64(out_hdrs.entries.len, 1);
+        out_hdrs.entries[last_idx].flags = out_hdrs.entries[last_idx].flags | http::HEADER_FLAG_SENSITIVE;
     }
     return true;
 }
@@ -1092,70 +1197,99 @@ fn coalesce_edge_cookie(val: const u8[:], cookie_buf: u8[..8192]&, has_cookie: b
     return true;
 }
 
-fn validate_and_build_edge_request_headers(
-    pseudo:   const PseudoHeaders&,
+fn build_edge_request_entries(
     raw_hdrs: const http::HeaderMap&,
+    pseudo:   const PseudoHeaders&,
     st_idx:   i64,
     out_hdrs: http::HeaderMap&,
-) -> bool {
-    guard validate_h3_request_pseudo(pseudo) && append_pseudo_headers_to_map(pseudo, out_hdrs) else {
-        return false;
-    }
-    var has_host = false;
+    has_host: bool&,
+) -> u64 {
     var cookie_buf: u8[..8192] = [];
     var has_cookie = false;
+    var cookie_sensitive = false;
 
     for i in 0..raw_hdrs.entries.len {
         let ent .= raw_hdrs.entries[i];
         let name = http::entry_name(raw_hdrs, ent);
         let val = http::entry_value(raw_hdrs, ent);
+        let is_sens = http::is_sensitive(ent);
         guard validate_edge_req_field(name, val, pseudo, st_idx, has_host) else {
-            return false;
+            return rfc::H3_ERR_MESSAGE_ERROR;
         };
         if name == "cookie" {
-            guard coalesce_edge_cookie(val, cookie_buf, has_cookie) else { return false; };
+            if is_sens {
+                cookie_sensitive = true;
+            }
+            guard coalesce_edge_cookie(val, cookie_buf, has_cookie) else { return rfc::H3_ERR_EXCESSIVE_LOAD; };
             continue;
         }
-        guard http::append_header(out_hdrs, name, val) else { return false; };
+        guard append_header_with_sensitivity(out_hdrs, name, val, is_sens) else {
+            return rfc::H3_ERR_EXCESSIVE_LOAD;
+        };
+    }
+    if has_cookie {
+        guard append_header_with_sensitivity(out_hdrs, "cookie", cookie_buf[..], cookie_sensitive) else {
+            return rfc::H3_ERR_EXCESSIVE_LOAD;
+        };
+    }
+    return rfc::H3_ERR_NO_ERROR;
+}
+
+fn validate_and_build_edge_request_headers(
+    slot:     const H3EdgeSlot&,
+    pseudo:   const PseudoHeaders&,
+    raw_hdrs: const http::HeaderMap&,
+    st_idx:   i64,
+    out_hdrs: http::HeaderMap&,
+) -> u64 {
+    guard validate_h3_request_pseudo(slot, pseudo) else {
+        return rfc::H3_ERR_MESSAGE_ERROR;
+    }
+    guard append_pseudo_headers_to_map(pseudo, out_hdrs) else {
+        return rfc::H3_ERR_EXCESSIVE_LOAD;
+    }
+    var has_host = false;
+    let entry_err = build_edge_request_entries(raw_hdrs, pseudo, st_idx, out_hdrs, has_host);
+    if entry_err != rfc::H3_ERR_NO_ERROR {
+        return entry_err;
     }
     let method = pseudo.method[..];
     let scheme = pseudo.scheme[..];
     let needs_auth = scheme.eq_ascii_fold("http") || scheme.eq_ascii_fold("https");
     if !pseudo.has_authority && !has_host && method != "CONNECT" && needs_auth {
-        return false;
+        return rfc::H3_ERR_MESSAGE_ERROR;
     }
-    if has_cookie {
-        guard http::append_header(out_hdrs, "cookie", cookie_buf[..]) else { return false; };
-    }
-    return true;
+    return rfc::H3_ERR_NO_ERROR;
 }
 
 fn validate_and_build_edge_trailers(
     pseudo:   const PseudoHeaders&,
     raw_hdrs: const http::HeaderMap&,
     out_hdrs: http::HeaderMap&,
-) -> bool {
+) -> u64 {
     if pseudo.has_method || pseudo.has_scheme || pseudo.has_authority
         || pseudo.has_path || pseudo.has_protocol || pseudo.has_status
     {
-        return false;
+        return rfc::H3_ERR_MESSAGE_ERROR;
     }
     for i in 0..raw_hdrs.entries.len {
         let ent .= raw_hdrs.entries[i];
         let name = http::entry_name(raw_hdrs, ent);
         let val = http::entry_value(raw_hdrs, ent);
         if name.len == 0 || name[0] == ':' || !http::is_valid_header_name_h2(name) {
-            return false;
+            return rfc::H3_ERR_MESSAGE_ERROR;
         }
         if h3_internal::has_ctl_chars(val) || h3_internal::is_forbidden_connection_header(name, val) {
-            return false;
+            return rfc::H3_ERR_MESSAGE_ERROR;
         }
         if name == "te" && val != "trailers" {
-            return false;
+            return rfc::H3_ERR_MESSAGE_ERROR;
         }
-        guard http::append_header(out_hdrs, name, val) else { return false; };
+        guard append_header_with_sensitivity(out_hdrs, name, val, http::is_sensitive(ent)) else {
+            return rfc::H3_ERR_EXCESSIVE_LOAD;
+        };
     }
-    return true;
+    return rfc::H3_ERR_NO_ERROR;
 }
 
 fn deliver_edge_request_head(
@@ -1165,10 +1299,12 @@ fn deliver_edge_request_head(
     raw_hdrs:   const http::HeaderMap&,
     at_msg_end: H3EdgeEndFlag,
 ) {
+    let slot .= g_h3_edge_slots[slot_idx];
     let st .= g_h3_edge_streams[st_idx];
     var built = http::HeaderMap { .. };
-    if !validate_and_build_edge_request_headers(pseudo, raw_hdrs, st_idx, built) {
-        emit_h3_stream_reset(slot_idx, st_idx, rfc::H3_ERR_MESSAGE_ERROR);
+    let build_err = validate_and_build_edge_request_headers(slot, pseudo, raw_hdrs, st_idx, built);
+    if build_err != rfc::H3_ERR_NO_ERROR {
+        emit_h3_stream_reset(slot_idx, st_idx, build_err);
         return;
     }
     let end_now = at_msg_end == H3EdgeEndFlag.Fin;
@@ -1201,21 +1337,24 @@ fn deliver_edge_trailers(
 ) {
     let st .= g_h3_edge_streams[st_idx];
     var built = http::HeaderMap { .. };
-    if !validate_and_build_edge_trailers(pseudo, raw_hdrs, built) {
+    let tr_err = validate_and_build_edge_trailers(pseudo, raw_hdrs, built);
+    if tr_err != rfc::H3_ERR_NO_ERROR {
+        emit_h3_stream_reset(slot_idx, st_idx, tr_err);
+        return;
+    }
+    // RFC 9114 Section 4.1: HTTP Message Framing - No DATA may follow trailers, so Content-Length is final now.
+    if st.has_content_length && st.body_bytes_received != st.expected_content_length {
         emit_h3_stream_reset(slot_idx, st_idx, rfc::H3_ERR_MESSAGE_ERROR);
         return;
     }
     st.msg_phase = H3EdgeMsgPhase.ExpectEofAfterTrailers;
-    let end_now = at_msg_end == H3EdgeEndFlag.Fin;
-    if end_now && st.has_content_length && st.body_bytes_received != st.expected_content_length {
-        emit_h3_stream_reset(slot_idx, st_idx, rfc::H3_ERR_MESSAGE_ERROR);
+    let h_idx = alloc_h3_header_map(built);
+    if at_msg_end == H3EdgeEndFlag.Fin {
+        enqueue_h3_event(slot_idx, H3EdgeEventKind.RequestEnd, st.stream_id, h_idx, -1, true, 0);
+        st.finished = true;
         return;
     }
-    let h_idx = alloc_h3_header_map(built);
-    enqueue_h3_event(slot_idx, H3EdgeEventKind.RequestEnd, st.stream_id, h_idx, -1, end_now, 0);
-    if end_now {
-        st.finished = true;
-    }
+    st.deferred_trailers_idx = h_idx;
 }
 
 // Decodes a QPACK field section into `out_ev` request or trailer headers, blocking if dynamic
@@ -1235,7 +1374,7 @@ fn decode_and_deliver_headers_section(
     let st .= g_h3_edge_streams[st_idx];
     var pseudo = PseudoHeaders { is_trailer: role == H3EdgeSectionRole.Trailers, .. };
     var raw_hdrs = http::HeaderMap { .. };
-    let qerr = decode_or_block_qpack_to_map(
+    let qerr = decode_or_track_blocked_qpack_to_map(
         slot.qpack_dec_table,
         st.stream_id,
         section,
@@ -1470,6 +1609,10 @@ fn handle_bidi_fin(slot_idx: i64, st_idx: i64) -> bool {
     if !st.finished {
         if st.msg_phase == H3EdgeMsgPhase.ReadingBody {
             enqueue_h3_event(slot_idx, H3EdgeEventKind.RequestEnd, st.stream_id, -1, -1, true, 0);
+        } else if st.msg_phase == H3EdgeMsgPhase.ExpectEofAfterTrailers {
+            let tr_idx = st.deferred_trailers_idx;
+            st.deferred_trailers_idx = -1;
+            enqueue_h3_event(slot_idx, H3EdgeEventKind.RequestEnd, st.stream_id, tr_idx, -1, true, 0);
         }
         st.finished = true;
     }
@@ -1910,10 +2053,8 @@ fn assign_uni_stream_type(
         return false, true;
     }
     // RFC 9114 Section 6.2: Unidirectional Streams - Unknown/GREASE uni stream types are ignored.
-    if end_flag == H3EdgeEndFlag.Open && slot.ignored_uni_streams.len < H3_EDGE_MAX_IGNORED_UNI {
-        guard slot.ignored_uni_streams.try_push(stream_id) else {
-            return false, emit_h3_protocol_error(slot_idx, stream_id, rfc::H3_ERR_INTERNAL);
-        };
+    if end_flag == H3EdgeEndFlag.Open {
+        add_ignored_uni_stream(slot, stream_id);
     }
     return true, true;
 }
@@ -1994,11 +2135,11 @@ fn h3_edge_feed_bidi_stream(
     }
     let st_idx, _ = find_or_create_h3_stream(slot_idx, stream_id);
     let st .= g_h3_edge_streams[st_idx];
-    if st.finished && data.len > 0 {
-        return emit_h3_protocol_error(slot_idx, stream_id, rfc::H3_ERR_FRAME_UNEXPECTED);
-    }
     if st.errored {
         return true;
+    }
+    if st.finished && data.len > 0 {
+        return emit_h3_protocol_error(slot_idx, stream_id, rfc::H3_ERR_FRAME_UNEXPECTED);
     }
     let end_flag = if fin { H3EdgeEndFlag.Fin } else { H3EdgeEndFlag.Open };
     return feed_bidi_stream_bytes(slot_idx, st_idx, data, end_flag);
@@ -2085,7 +2226,12 @@ fn h3_edge_encode_response_headers(
         return false;
     }
     let slot .= g_h3_edge_slots[slot_idx];
-    if slot.conn_failed || status_code < H3_EDGE_STATUS_MIN || status_code > H3_EDGE_STATUS_MAX {
+    // RFC 9114 Section 4.3.2: Response Pseudo-Header Fields - Reject status outside 100..599 and forbid 101.
+    if slot.conn_failed
+        || status_code < H3_EDGE_STATUS_MIN
+        || status_code > H3_EDGE_STATUS_MAX
+        || status_code == H3_EDGE_STATUS_SWITCHING_PROTOCOL
+    {
         return false;
     }
 
@@ -2107,6 +2253,9 @@ fn h3_edge_encode_response_headers(
     };
 
     var field_section_size = core::add_sat_u64(H3_EDGE_STATUS_FIELD_OVERHEAD, status_buf.len as u64);
+    if slot.peer_settings_received && field_section_size > slot.peer_settings.max_field_section_size {
+        return false;
+    }
     for i in 0..headers.entries.len {
         let ent .= headers.entries[i];
         let name = http::entry_name(headers, ent);

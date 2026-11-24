@@ -903,6 +903,10 @@ fn test_h3_edge_conformance_and_security() {
         assert(http3::h3_edge_poll_event(sess, ev));
         assert(ev.kind == http3::H3EdgeEventKind.StreamReset && ev.stream_id == sid);
         assert(ev.error_code == rfc::H3_ERR_MESSAGE_ERROR);
+        // Trailing chunks arriving on an already-reset stream MUST NOT fail the connection.
+        assert(http3::h3_edge_feed_bidi_stream(sess, sid, "trailing-data-after-reset", false));
+        assert(http3::h3_edge_feed_bidi_stream(sess, sid, "", true));
+        assert(!http3::h3_edge_poll_event(sess, ev));
     }
 
     // Valid sibling stream 12 after rejected streams still works, plus 20 KiB DATA split bytewise across frame header
@@ -1105,6 +1109,213 @@ fn test_h3_edge_conformance_and_security() {
     // CHECK: H3_EDGE_CONFORMANCE_AND_SECURITY: OK
 }
 
+fn test_h3_edge_review_regressions() {
+    var pev = http3::H3EdgeEvent { .. };
+    let default_settings = fingerprint::H3Settings { .. };
+
+    // R1: QPACK-blocked HEADERS section > 4096 bytes unblocked by later encoder instructions
+    var s_big_blk = http3::h3_edge_open();
+    defer http3::h3_edge_close(s_big_blk);
+    var big_sec: u8[>..] = [0x02, 0x00];
+    assert(http3::encode_qpack_field(big_sec, ":method", "GET"));
+    assert(http3::encode_qpack_field(big_sec, ":scheme", "https"));
+    assert(http3::encode_qpack_field(big_sec, ":authority", "h3.example.test"));
+    assert(http3::encode_qpack_field(big_sec, ":path", "/big-blocked"));
+    big_sec.push(0x80); // dynamic abs_idx 0
+    var hval180: u8[180] = ['v'; 180];
+    for hi in 24 {
+        var hname: u8[..16] = "x-pad-";
+        (hi as u32).format_u32_dec(hname);
+        assert(http3::encode_qpack_field(big_sec, hname[..], hval180[..], false));
+    }
+    assert(big_sec.len > 4096);
+    var big_wire: u8[>..] = [];
+    assert(http3::encode_headers_frame(big_wire, big_sec[..]));
+    assert(http3::h3_edge_feed_bidi_stream(s_big_blk, 0, big_wire[..], true));
+    assert(!http3::h3_edge_poll_event(s_big_blk, pev));
+
+    var qenc_big: u8[..128] = [];
+    assert(quic::encode_varint(rfc::H3_STREAM_QPACK_ENCODER, qenc_big));
+    var tmp_tbl = http3::new_qpack_table(4096, 16, 0);
+    assert(http3::encode_qpack_set_capacity(tmp_tbl, 4096, qenc_big));
+    let _, ok_ins = http3::encode_qpack_dynamic_insert(tmp_tbl, "x-dyn", "big-ok", qenc_big, false);
+    assert(ok_ins);
+    assert(http3::h3_edge_feed_uni_stream(s_big_blk, 6, qenc_big[..], false));
+    assert(http3::h3_edge_poll_event(s_big_blk, pev));
+    assert(pev.kind == http3::H3EdgeEventKind.RequestHead && pev.end_stream);
+    assert(http::get_header(pev.headers, "x-dyn") == "big-ok");
+
+    // R2: QPACK Insert rejected when sent BEFORE Set Dynamic Table Capacity (initial cap = 0)
+    var s_qcap0 = http3::h3_edge_open();
+    defer http3::h3_edge_close(s_qcap0);
+    var qenc_no_cap: u8[..64] = [];
+    assert(quic::encode_varint(rfc::H3_STREAM_QPACK_ENCODER, qenc_no_cap));
+    qenc_no_cap.push(0x41);
+    qenc_no_cap.push('k');
+    qenc_no_cap.push(0x01);
+    qenc_no_cap.push('v');
+    assert(!http3::h3_edge_feed_uni_stream(s_qcap0, 6, qenc_no_cap[..], false));
+    assert(http3::h3_edge_poll_event(s_qcap0, pev));
+    assert(pev.kind == http3::H3EdgeEventKind.ProtocolError);
+    assert(pev.error_code == rfc::H3_ERR_QPACK_ENCODER_STREAM_ERROR);
+
+    // R3: Trailers with fin=false defer RequestEnd until fin=true; CL mismatch resets immediately
+    var s_tr = http3::h3_edge_open();
+    defer http3::h3_edge_close(s_tr);
+    var tr_req: u8[>..] = [];
+    encode_cli_qpack_req("POST", "/tr", "h3.example.test", "", "", "5", tr_req);
+    assert(http3::h3_edge_encode_data_frame("hello", tr_req));
+    assert(http3::h3_edge_feed_bidi_stream(s_tr, 0, tr_req[..], false));
+    assert(http3::h3_edge_poll_event(s_tr, pev) && pev.kind == http3::H3EdgeEventKind.RequestHead);
+    assert(http3::h3_edge_poll_event(s_tr, pev) && pev.kind == http3::H3EdgeEventKind.RequestData);
+    var tr_sec: u8[..64] = [0x00, 0x00];
+    assert(http3::encode_qpack_field(tr_sec, "x-checksum", "crc-ok"));
+    var tr_frame: u8[>..] = [];
+    assert(http3::encode_headers_frame(tr_frame, tr_sec[..]));
+    assert(http3::h3_edge_feed_bidi_stream(s_tr, 0, tr_frame[..], false));
+    assert(!http3::h3_edge_poll_event(s_tr, pev));
+    assert(http3::h3_edge_feed_bidi_stream(s_tr, 0, "", true));
+    assert(http3::h3_edge_poll_event(s_tr, pev));
+    assert(pev.kind == http3::H3EdgeEventKind.RequestEnd && pev.end_stream);
+    assert(http::get_header(pev.headers, "x-checksum") == "crc-ok");
+
+    var tr_cl_bad: u8[>..] = [];
+    encode_cli_qpack_req("POST", "/tr-bad", "h3.example.test", "", "", "10", tr_cl_bad);
+    assert(http3::h3_edge_encode_data_frame("hi", tr_cl_bad));
+    assert(http3::encode_headers_frame(tr_cl_bad, tr_sec[..]));
+    assert(http3::h3_edge_feed_bidi_stream(s_tr, 4, tr_cl_bad[..], false));
+    var saw_tr_bad_end = false;
+    var saw_tr_bad_rst = false;
+    while http3::h3_edge_poll_event(s_tr, pev) {
+        if pev.kind == http3::H3EdgeEventKind.RequestEnd { saw_tr_bad_end = true; }
+        if pev.kind == http3::H3EdgeEventKind.StreamReset {
+            assert(pev.error_code == rfc::H3_ERR_MESSAGE_ERROR);
+            saw_tr_bad_rst = true;
+        }
+    }
+    assert(!saw_tr_bad_end && saw_tr_bad_rst);
+
+    // R4: > 32 concurrent unknown/GREASE uni streams across multiple chunks
+    var s_grease = http3::h3_edge_open();
+    defer http3::h3_edge_close(s_grease);
+    var grease_open: u8[..16] = [];
+    assert(quic::encode_varint(0x4021, grease_open));
+    grease_open.append("hdr");
+    for gi in 40 {
+        let sid = ((gi * 4) + 2) as u64;
+        assert(http3::h3_edge_feed_uni_stream(s_grease, sid, grease_open[..], false));
+    }
+    let push_bait: u8[4] = [0x01, 0x00, 0x01, 0x02];
+    for gi in 40 {
+        let sid = ((gi * 4) + 2) as u64;
+        assert(http3::h3_edge_feed_uni_stream(s_grease, sid, push_bait[..], false));
+        assert(http3::h3_edge_feed_uni_stream(s_grease, sid, "", true));
+    }
+    assert(!http3::h3_edge_poll_event(s_grease, pev));
+
+    // R5: Response status 101 forbidden and max_field_section_size checked on empty headers
+    var s_resp = http3::h3_edge_open();
+    defer http3::h3_edge_close(s_resp);
+    var resp_guard: u8[>..] = [];
+    resp_guard.append("KEPT");
+    let empty_hdrs = http::HeaderMap { .. };
+    assert(!http3::h3_edge_encode_response_headers(s_resp, 101, empty_hdrs, resp_guard));
+    assert(resp_guard[..] == "KEPT");
+
+    var small_set = fingerprint::H3Settings { max_field_section_size: 20, .. };
+    var ctrl_small: u8[..64] = [];
+    assert(quic::encode_varint(rfc::H3_STREAM_CONTROL, ctrl_small));
+    assert(http3::encode_settings_frame(ctrl_small, small_set));
+    assert(http3::h3_edge_feed_uni_stream(s_resp, 2, ctrl_small[..], false));
+    assert(!http3::h3_edge_encode_response_headers(s_resp, 200, empty_hdrs, resp_guard));
+    assert(resp_guard[..] == "KEPT");
+
+    // R6: Extended CONNECT (:protocol token syntax + enable_connect_protocol) and sensitivity/overflow
+    var s_conn = http3::h3_edge_open();
+    defer http3::h3_edge_close(s_conn);
+    var ext_ok_sec: u8[..128] = [0x00, 0x00];
+    assert(http3::encode_qpack_field(ext_ok_sec, ":method", "CONNECT"));
+    assert(http3::encode_qpack_field(ext_ok_sec, ":scheme", "https"));
+    assert(http3::encode_qpack_field(ext_ok_sec, ":authority", "h3.example.test"));
+    assert(http3::encode_qpack_field(ext_ok_sec, ":path", "/ws"));
+    assert(http3::encode_qpack_field(ext_ok_sec, ":protocol", "websocket"));
+    var ext_ok_wire: u8[>..] = [];
+    assert(http3::encode_headers_frame(ext_ok_wire, ext_ok_sec[..]));
+    assert(http3::h3_edge_feed_bidi_stream(s_conn, 0, ext_ok_wire[..], false));
+    assert(http3::h3_edge_poll_event(s_conn, pev) && pev.kind == http3::H3EdgeEventKind.RequestHead);
+    assert(http::get_header(pev.headers, ":protocol") == "websocket");
+
+    var ext_bad_sec: u8[..128] = [0x00, 0x00];
+    assert(http3::encode_qpack_field(ext_bad_sec, ":method", "CONNECT"));
+    assert(http3::encode_qpack_field(ext_bad_sec, ":scheme", "https"));
+    assert(http3::encode_qpack_field(ext_bad_sec, ":authority", "h3.example.test"));
+    assert(http3::encode_qpack_field(ext_bad_sec, ":path", "/ws"));
+    assert(http3::encode_qpack_field(ext_bad_sec, ":protocol", "bad proto"));
+    var ext_bad_wire: u8[>..] = [];
+    assert(http3::encode_headers_frame(ext_bad_wire, ext_bad_sec[..]));
+    assert(http3::h3_edge_feed_bidi_stream(s_conn, 4, ext_bad_wire[..], true));
+    assert(http3::h3_edge_poll_event(s_conn, pev));
+    assert(pev.kind == http3::H3EdgeEventKind.StreamReset && pev.error_code == rfc::H3_ERR_MESSAGE_ERROR);
+
+    http3::g_h3_edge_slots[s_conn.slot_idx].local_settings.enable_connect_protocol = 0;
+    assert(http3::h3_edge_feed_bidi_stream(s_conn, 8, ext_ok_wire[..], false));
+    assert(http3::h3_edge_poll_event(s_conn, pev));
+    assert(pev.kind == http3::H3EdgeEventKind.StreamReset && pev.error_code == rfc::H3_ERR_MESSAGE_ERROR);
+
+    // R7: HEADER_FLAG_SENSITIVE preservation and HeaderMap overflow -> H3_ERR_EXCESSIVE_LOAD
+    var sens_sec: u8[..128] = [0x00, 0x00];
+    assert(http3::encode_qpack_field(sens_sec, ":method", "GET"));
+    assert(http3::encode_qpack_field(sens_sec, ":scheme", "https"));
+    assert(http3::encode_qpack_field(sens_sec, ":authority", "h3.example.test"));
+    assert(http3::encode_qpack_field(sens_sec, ":path", "/sens"));
+    let lit_sens_key: u8[13] = [0x35, 'x', '-', 'k', 'e', 'y', 0x06, 's', 'e', 'c', 'r', 'e', 't'];
+    assert(sens_sec.try_append(lit_sens_key[..]));
+    let lit_sens_ck: u8[11] = [0x36, 'c', 'o', 'o', 'k', 'i', 'e', 0x03, 'a', '=', '1'];
+    assert(sens_sec.try_append(lit_sens_ck[..]));
+    var sens_wire: u8[>..] = [];
+    assert(http3::encode_headers_frame(sens_wire, sens_sec[..]));
+    assert(http3::h3_edge_feed_bidi_stream(s_conn, 12, sens_wire[..], true));
+    assert(http3::h3_edge_poll_event(s_conn, pev) && pev.kind == http3::H3EdgeEventKind.RequestHead);
+    var saw_sens_key = false;
+    var saw_sens_ck = false;
+    for idx_e in pev.headers.entries.len {
+        let ent .= pev.headers.entries[idx_e];
+        let nm = http::entry_name(pev.headers, ent);
+        if nm == "x-key" {
+            assert(http::is_sensitive(ent));
+            saw_sens_key = true;
+        }
+        if nm == "cookie" {
+            assert(http::is_sensitive(ent));
+            saw_sens_ck = true;
+        }
+    }
+    assert(saw_sens_key && saw_sens_ck);
+
+    var ovf_sec: u8[>..] = [0x00, 0x00];
+    assert(http3::encode_qpack_field(ovf_sec, ":method", "GET"));
+    assert(http3::encode_qpack_field(ovf_sec, ":scheme", "https"));
+    assert(http3::encode_qpack_field(ovf_sec, ":authority", "h3.example.test"));
+    assert(http3::encode_qpack_field(ovf_sec, ":path", "/overflow-target-path-extra"));
+    var pad195: u8[195] = ['z'; 195];
+    for pi in 40 {
+        var pn: u8[..16] = "x-ovf-";
+        (pi as u32).format_u32_dec(pn);
+        if pn.len == 7 {
+            assert(pn.try_push('0'));
+        }
+        assert(http3::encode_qpack_field(ovf_sec, pn[..], pad195[..], false));
+    }
+    var ovf_wire: u8[>..] = [];
+    assert(http3::encode_headers_frame(ovf_wire, ovf_sec[..]));
+    assert(http3::h3_edge_feed_bidi_stream(s_conn, 16, ovf_wire[..], true));
+    assert(http3::h3_edge_poll_event(s_conn, pev));
+    assert(pev.kind == http3::H3EdgeEventKind.StreamReset && pev.error_code == rfc::H3_ERR_EXCESSIVE_LOAD);
+
+    print("H3_EDGE_REGRESSIONS: OK\n");
+    // CHECK: H3_EDGE_REGRESSIONS: OK
+}
+
 thread_fn h3_edge_worker(arg: i64) {
     let _ = arg;
     var sess = http3::h3_edge_open();
@@ -1126,6 +1337,7 @@ thread_fn h3_edge_worker(arg: i64) {
 fn main() {
     test_live_h3_loopback_e2e();
     test_h3_edge_conformance_and_security();
+    test_h3_edge_review_regressions();
     let t1 = thread_spawn(h3_edge_worker, 1);
     let t2 = thread_spawn(h3_edge_worker, 2);
     assert(thread_wait(t1) && thread_wait(t2));
