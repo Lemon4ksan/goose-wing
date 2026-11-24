@@ -1467,6 +1467,41 @@ fn test_h3_edge_final_fix_regressions() {
     assert(http3::h3_edge_poll_event(sess, pev));
     assert(pev.kind == http3::H3EdgeEventKind.ProtocolError && pev.error_code == rfc::H3_ERR_CLOSED_CRITICAL_STREAM);
 
+    // 5. Wrapping non-zero session generation, oversized SETTINGS -> EXCESSIVE_LOAD,
+    //    and non-client-bidi PRIORITY_UPDATE element ID -> ID_ERROR.
+    let saved_gen = http3::g_h3_edge_next_gen;
+    http3::g_h3_edge_next_gen = (0xFFFFFFFFFFFFFFFF as u64);
+    var gen_a = http3::h3_edge_open();
+    var gen_b = http3::h3_edge_open();
+    assert(gen_a.generation == (0xFFFFFFFFFFFFFFFF as u64));
+    assert(gen_b.generation == 1);
+    http3::h3_edge_close(gen_a);
+    http3::h3_edge_close(gen_b);
+    http3::g_h3_edge_next_gen = saved_gen;
+
+    var s_big = http3::h3_edge_open();
+    defer http3::h3_edge_close(s_big);
+    var big_set: u8[..300] = [0x00, 0x04, 0x41, 0x04]; // ctrl stream + SETTINGS len=260 (> 256)
+    for _ in 260 { big_set.push(0); }
+    assert(!http3::h3_edge_feed_uni_stream(s_big, 2, big_set[..], false));
+    assert(http3::h3_edge_poll_event(s_big, pev));
+    assert(pev.kind == http3::H3EdgeEventKind.ProtocolError && pev.error_code == rfc::H3_ERR_EXCESSIVE_LOAD);
+
+    var s_pu = http3::h3_edge_open();
+    defer http3::h3_edge_close(s_pu);
+    assert(http3::h3_edge_feed_uni_stream(s_pu, 2, ctrl_set[..], false));
+    // PRIORITY_UPDATE_REQUEST (0xF0700 -> 4-byte varint 0xC0 0x0F 0x07 0x00), len=4, elem_id=1 ("u=1")
+    var bad_pu: u8[..32] = [];
+    assert(quic::encode_varint(rfc::H3_FRAME_PRIORITY_UPDATE_REQUEST, bad_pu));
+    assert(quic::encode_varint(4, bad_pu));
+    bad_pu.push(1);
+    bad_pu.push('u');
+    bad_pu.push('=');
+    bad_pu.push('1');
+    assert(!http3::h3_edge_feed_uni_stream(s_pu, 2, bad_pu[..], false));
+    assert(http3::h3_edge_poll_event(s_pu, pev));
+    assert(pev.kind == http3::H3EdgeEventKind.ProtocolError && pev.error_code == rfc::H3_ERR_ID_ERROR);
+
     print("H3_EDGE_FINAL_FIXES: OK\n");
     // CHECK: H3_EDGE_FINAL_FIXES: OK
 }

@@ -1928,6 +1928,140 @@ fn test_stop_sending_halts_tx_and_emits_reset_stream() {
     print("CHECK_QUIC_STOP_SENDING_OK\n");
 }
 
+fn verify_quic_ack_and_padding_guards(ep: quic::QuicServerEndpoint&, conn_id: u64, cs_idx: i64) {
+    let cs .= quic::g_quic_srv_conns[cs_idx];
+    // 1. Coalesced Initial + ACK-only Handshake (!hs_ack_el) pads datagram >= 1200B
+    cs.tx_hs_crypto.clear();
+    cs.tx_hs_crypto_sent = 0;
+    cs.needs_ack_hs = true;
+    assert(cs.conn.handshake_space.recv_ranges.try_push(quic::AckInterval {
+        smallest: 0,
+        largest:  0,
+    }));
+    cs.conn.bytes_received = 1200;
+    cs.conn.bytes_sent = 0;
+    cs.peer_max_udp_payload = 1280;
+    var dg: u8[..1500] = [];
+    assert(quic::try_build_conn_datagram(cs_idx, 1000000000, dg));
+    assert(dg.len >= 1200 && !cs.needs_ack_initial && !cs.needs_ack_hs);
+
+    // 2. Preserve needs_ack_initial / needs_ack_hs when encoded ACK exceeds max_plain
+    var k: u64 = 2;
+    while k <= 20 {
+        assert(cs.conn.initial_space.recv_ranges.try_push(quic::AckInterval {
+            smallest: k,
+            largest:  k,
+        }));
+        assert(cs.conn.handshake_space.recv_ranges.try_push(quic::AckInterval {
+            smallest: k,
+            largest:  k,
+        }));
+        k += 2;
+    }
+    let hdr_ov = core::add_sat_u64(
+        28,
+        core::add_sat_u64(cs.conn.dcid.len as u64, cs.conn.scid.len as u64),
+    );
+    var small_pkt: u8[..1500] = [];
+    var dummy_el = false;
+    cs.needs_ack_initial = true;
+    assert(!quic::emit_crypto_space_packet(
+        cs, true, core::add_sat_u64(hdr_ov, 17), 1000, small_pkt, 0, dummy_el,
+    ));
+    assert(small_pkt.len == 0 && cs.needs_ack_initial);
+    cs.needs_ack_hs = true;
+    assert(!quic::emit_crypto_space_packet(
+        cs, false, core::add_sat_u64(hdr_ov - 1, 17), 1000, small_pkt, 0, dummy_el,
+    ));
+    assert(small_pkt.len == 0 && cs.needs_ack_hs);
+
+    // 3. try_emit_app_packet enforces plain.len <= max_plain and preserves needs_ack_app
+    cs.conn.tx_app_space = cs.conn.tx_initial_space;
+    cs.conn.state = quic::QuicConnState.Established;
+    var a: u64 = 2;
+    while a <= 20 {
+        assert(cs.conn.app_space.recv_ranges.try_push(quic::AckInterval {
+            smallest: a,
+            largest:  a,
+        }));
+        a += 2;
+    }
+    cs.needs_ack_app = true;
+    small_pkt.clear();
+    let app_budget = core::add_sat_u64(19, core::add_sat_u64(cs.conn.dcid.len as u64, 9));
+    assert(!quic::try_emit_app_packet(cs, cs_idx, app_budget, 1000, small_pkt, dummy_el));
+    assert(small_pkt.len == 0 && cs.needs_ack_app);
+    let _ = ep;
+    let _ = conn_id;
+}
+
+fn test_quic_ack_padding_max_plain_and_aa_pto() {
+    let srv_fd = net::udp_open_dual("::", 0, 0);
+    assert(srv_fd > 0);
+    let srv_port = net::tcp_getsockname_port(srv_fd);
+    assert(srv_port > 0);
+    var cert_der: u8[..4096] = [];
+    build_rsa_leaf_cert_der("fix7.example.test", "fix7.example.test", cert_der);
+    var cert_pem: u8[>..] = [];
+    append_pem_block("CERTIFICATE", cert_der[..], cert_pem);
+    var key_pem: u8[>..] = [];
+    build_rsa_pkcs8_pem(key_pem);
+
+    var ep = quic::quic_server_open("\x02h3", 8, 30000);
+    defer quic::quic_server_close(ep);
+
+    var cli = TestQuicClient { .. };
+    let odcid: u8[8] = [0x91; 8];
+    let scid:  u8[8] = [0x92; 8];
+    init_test_client(
+        cli, "127.0.0.1", "127.0.0.1", srv_port,
+        "fix7.example.test", cert_pem[..], odcid[..], scid[..],
+    );
+    client_send_initial_flight(cli, 1000, true);
+    assert(drain_udp_into_server(srv_fd, ep, 1000000000) == 1);
+    var ev = quic::QuicServerEvent { .. };
+    assert(quic::quic_server_poll_event(ep, ev));
+    assert(ev.kind == quic::QuicServerEventKind.NeedSniCredentials);
+    assert(quic::quic_server_set_credentials_pem(ep, ev.conn_id, cert_pem[..], key_pem[..]));
+    let cs_idx = find_srv_conn_slot_idx(ev.conn_id);
+    assert(cs_idx >= 0);
+
+    verify_quic_ack_and_padding_guards(ep, ev.conn_id, cs_idx);
+
+    // Remaining AA budget below oversized lost CRYPTO chunk avoids pto_count spin
+    let cs .= quic::g_quic_srv_conns[cs_idx];
+    cs.conn.validated_address = false;
+    cs.conn.state = quic::QuicConnState.Handshake;
+    cs.conn.bytes_received = 1200;
+    cs.conn.bytes_sent = 3400; // rem_budget = 200 (>= 128, < 900B retx chunk)
+    cs.pto_count = 0;
+    cs.sent_chunks.clear();
+    assert(cs.sent_chunks.try_push(quic::QuicSentChunk {
+        active:     true,
+        in_flight:  false,
+        retransmit: true,
+        space:      quic::PnSpaceId.Handshake,
+        kind:       quic::QuicSentChunkKind.CryptoHandshake,
+        length:     900,
+        ..
+    }));
+    for step in 5 {
+        quic::quic_server_on_timeout(ep, ((step + 5) as u64) * 1000000000);
+    }
+    assert(cs.pto_count == 0);
+    assert(quic::eval_conn_pto(cs, 5000000).mode == quic::PtoTimerMode.AntiAmplification);
+
+    cs.sent_chunks[0].in_flight = true;
+    cs.sent_chunks[0].retransmit = false;
+    cs.ping_probe_pending = false;
+    quic::schedule_pto_probe_in_space(cs, quic::PnSpaceId.Handshake);
+    assert(!cs.sent_chunks[0].retransmit && cs.ping_probe_pending);
+
+    net::tcp_close(cli.fd);
+    net::tcp_close(srv_fd);
+    print("CHECK_QUIC_ACK_PAD_AA_PTO_OK\n");
+}
+
 fn main() {
     assert(net::tcp_init());
     test_anti_amplification_and_undersized_initial();
@@ -1941,6 +2075,7 @@ fn main() {
     test_sent_chunks_capacity_and_no_drop();
     test_persistent_max_streams_beyond_128();
     test_stop_sending_halts_tx_and_emits_reset_stream();
+    test_quic_ack_padding_max_plain_and_aa_pto();
 }
 
 // CHECK: CHECK_QUIC_AA_OK
@@ -1954,3 +2089,4 @@ fn main() {
 // CHECK: CHECK_QUIC_FIX6_SENT_CHUNKS_OK
 // CHECK: CHECK_QUIC_MAX_STREAMS_135_OK
 // CHECK: CHECK_QUIC_STOP_SENDING_OK
+// CHECK: CHECK_QUIC_ACK_PAD_AA_PTO_OK

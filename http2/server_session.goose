@@ -76,6 +76,7 @@ struct H2EdgeSlot {
     preface_done:                  bool         = false,
     conn_failed:                   bool         = false,
     hpack_enc_pending_size_update: bool         = false,
+    hpack_enc_pending_min_size:    u64          = rfc::HPACK_DEFAULT_MAX_DYN_SIZE,
     has_peer_max_header_list_size: bool         = false,
     peer_max_concurrent_streams:   u32          = 128,
     peer_max_header_list_size:     u32          = 0,
@@ -522,6 +523,9 @@ fn apply_single_edge_setting(slot: H2EdgeSlot&, param_id: u16, val: u32) -> u32 
 
     if param_id == rfc::H2_SETTING_HEADER_TABLE_SIZE {
         let cap = min(val as u64, slot.hpack_enc.max_allowed_size);
+        if !slot.hpack_enc_pending_size_update || cap < slot.hpack_enc_pending_min_size {
+            slot.hpack_enc_pending_min_size = cap;
+        }
         slot.hpack_enc.current_max_size = cap;
         evict_until(slot.hpack_enc, cap);
         slot.hpack_enc_pending_size_update = true;
@@ -544,6 +548,11 @@ fn apply_single_edge_setting(slot: H2EdgeSlot&, param_id: u16, val: u32) -> u32 
         return rfc::H2_ERR_NO_ERROR;
     }
     if param_id == rfc::H2_SETTING_NO_RFC7540_PRIORITIES {
+        let no_prio = (val == 1);
+        if slot.conn.peer_no_rfc7540_set && no_prio != slot.conn.no_rfc7540_priorities {
+            return rfc::H2_ERR_PROTOCOL_ERROR;
+        }
+        slot.conn.no_rfc7540_priorities = no_prio;
         slot.conn.peer_no_rfc7540_set = true;
     }
     return rfc::H2_ERR_NO_ERROR;
@@ -563,6 +572,7 @@ fn ingest_edge_settings_frame(slot: H2EdgeSlot&, hdr: const FrameHeader&, payloa
         }
         i = core::add_sat_i64(i, 6);
     }
+    slot.conn.peer_no_rfc7540_set = true;
     // RFC 9113 Section 6.5.3: Settings Synchronization - Acknowledge peer SETTINGS with an empty ACK frame.
     guard append_edge_frame(slot.wire_out, rfc::H2_FRAME_SETTINGS, rfc::H2_FLAG_ACK, 0, "") else {
         return fail_edge_connection(slot, rfc::H2_ERR_INTERNAL_ERROR);
@@ -763,6 +773,25 @@ fn handle_edge_ingress_error(
     return fail_edge_connection(slot, ing_err);
 }
 
+fn ingest_edge_priority_update_frame(slot: H2EdgeSlot&, payload: const u8[:]) -> bool {
+    let psid, prio, pu_err = parse_priority_update_payload(payload, true);
+    if pu_err == rfc::H2_ERR_FRAME_SIZE_ERROR || psid == 0 {
+        let err_code = if pu_err == rfc::H2_ERR_FRAME_SIZE_ERROR {
+            pu_err
+        } else {
+            rfc::H2_ERR_PROTOCOL_ERROR
+        };
+        return fail_edge_connection(slot, err_code);
+    }
+    if pu_err == rfc::H2_ERR_NO_ERROR {
+        let ap_err = apply_priority_update(slot.conn, psid, prio);
+        if ap_err != rfc::H2_ERR_NO_ERROR {
+            return fail_edge_connection(slot, ap_err);
+        }
+    }
+    return true;
+}
+
 fn dispatch_edge_control_frame(
     slot:    H2EdgeSlot&,
     hdr:     const FrameHeader&,
@@ -781,11 +810,7 @@ fn dispatch_edge_control_frame(
     }
     if hdr.frame_type == rfc::H2_FRAME_GOAWAY { return ingest_edge_goaway_frame(slot, payload); }
     if hdr.frame_type == rfc::H2_FRAME_PRIORITY_UPDATE {
-        let psid, prio, pu_err = parse_priority_update_payload(payload, true);
-        if pu_err == rfc::H2_ERR_NO_ERROR {
-            let _ = apply_priority_update(slot.conn, psid, prio);
-        }
-        return true;
+        return ingest_edge_priority_update_frame(slot, payload);
     }
     return true;
 }
@@ -984,23 +1009,30 @@ fn encode_single_edge_resp_header(
 fn encode_edge_response_hpack(
     dt:                DynamicTable&,
     pending_sz_update: bool&,
+    pending_min_sz:    u64&,
     status_code:       i32,
     headers:           const http::HeaderMap&,
     out:               u8[>..]&,
 ) -> bool {
     let saved_dt = dt;
     let saved_pending = pending_sz_update;
+    let saved_min = pending_min_sz;
     let mark = out.len;
     var committed = false;
     defer if !committed {
         dt = saved_dt;
         pending_sz_update = saved_pending;
+        pending_min_sz = saved_min;
         out.resize(mark);
     };
 
     if pending_sz_update {
+        if pending_min_sz < dt.current_max_size {
+            guard hpack_encode_int(out, pending_min_sz, 5, 0x20) else { return false; }
+        }
         guard hpack_encode_int(out, dt.current_max_size, 5, 0x20) else { return false; }
         pending_sz_update = false;
+        pending_min_sz = dt.current_max_size;
     }
 
     var st_buf: u8[..8] = [];
@@ -1250,15 +1282,22 @@ fn h2_edge_send_headers(
 
     let saved_enc = slot.hpack_enc;
     let saved_pend = slot.hpack_enc_pending_size_update;
+    let saved_min = slot.hpack_enc_pending_min_size;
     var committed = false;
     defer if !committed {
         slot.hpack_enc = saved_enc;
         slot.hpack_enc_pending_size_update = saved_pend;
+        slot.hpack_enc_pending_min_size = saved_min;
     };
 
     g_h2_edge_hpack_scratch.clear();
     guard encode_edge_response_hpack(
-        slot.hpack_enc, slot.hpack_enc_pending_size_update, status_code, headers, g_h2_edge_hpack_scratch,
+        slot.hpack_enc,
+        slot.hpack_enc_pending_size_update,
+        slot.hpack_enc_pending_min_size,
+        status_code,
+        headers,
+        g_h2_edge_hpack_scratch,
     ) else {
         return false;
     }
@@ -1356,6 +1395,8 @@ fn h2_edge_reset_stream(sess: H2EdgeSession&, stream_id: u32, error_code: u32) -
     guard idx >= 0 else { return false; }
     let slot .= g_h2_edge_slots[idx];
     guard !slot.conn_failed && stream_id > 0 && (stream_id & 1) == 1 else { return false; }
+    let _, found = find_stream_idx(slot.conn, stream_id);
+    guard found || h2_internal::is_closed_stream_id(slot.conn, stream_id) else { return false; }
     guard emit_edge_rst_stream(slot, stream_id, error_code) else { return false; }
     reset_stream(slot.conn, stream_id);
     return true;

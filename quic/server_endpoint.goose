@@ -1714,13 +1714,35 @@ fn has_crypto_space_tx_work(cslot: const QuicSrvConnSlot&, is_initial: bool) -> 
     return retx_idx, has_probe, has_work;
 }
 
-fn encode_crypto_space_ack(cslot: QuicSrvConnSlot&, is_initial: bool, plain: u8[..1500]&) {
+fn encode_crypto_space_ack(
+    cslot:      QuicSrvConnSlot&,
+    is_initial: bool,
+    max_plain:  u64,
+    plain:      u8[..1500]&,
+) {
+    let mark = plain.len;
     if is_initial && cslot.needs_ack_initial && cslot.conn.initial_space.recv_ranges.len > 0 {
         let ack, ok_a = build_ack_frame(cslot.conn.initial_space.recv_ranges, 0);
-        if ok_a && encode_ack_frame(ack, plain) { cslot.needs_ack_initial = false; }
+        if ok_a && encode_ack_frame(ack, plain) && (plain.len as u64) <= max_plain {
+            cslot.needs_ack_initial = false;
+            return;
+        }
+        plain.resize(mark);
     } else if !is_initial && cslot.needs_ack_hs && cslot.conn.handshake_space.recv_ranges.len > 0 {
         let ack, ok_a = build_ack_frame(cslot.conn.handshake_space.recv_ranges, 0);
-        if ok_a && encode_ack_frame(ack, plain) { cslot.needs_ack_hs = false; }
+        if ok_a && encode_ack_frame(ack, plain) && (plain.len as u64) <= max_plain {
+            cslot.needs_ack_hs = false;
+            return;
+        }
+        plain.resize(mark);
+    }
+}
+
+inline fn restore_crypto_needs_ack(cslot: QuicSrvConnSlot&, space_id: PnSpaceId, saved_ack: bool) {
+    if space_id == PnSpaceId.Initial {
+        cslot.needs_ack_initial = saved_ack;
+    } else {
+        cslot.needs_ack_hs = saved_ack;
     }
 }
 
@@ -1770,7 +1792,8 @@ fn seal_crypto_space_packet(
     out_pkt:        u8[..1500]&,
 ) -> bool {
     let total_est = core::add_sat_u64(hdr_overhead, plain.len as u64);
-    if out_ack_el && pad_target_len > total_est && pad_target_len <= budget {
+    let pad_required = out_ack_el || !is_initial;
+    if pad_required && pad_target_len > total_est && pad_target_len <= budget {
         let _ = encode_padding_frame(plain, core::sub_sat_u64(pad_target_len, total_est));
     }
     let space_id = if is_initial { PnSpaceId.Initial } else { PnSpaceId.Handshake };
@@ -1780,6 +1803,28 @@ fn seal_crypto_space_packet(
     guard seal_and_track_packet(cslot, space_id, hdr, plain, out_ack_el, now_us, out_pkt) else { return false; }
     advance_space_tx_pn(cslot, space_id);
     return true;
+}
+
+fn populate_crypto_space_frames(
+    cslot:      QuicSrvConnSlot&,
+    is_initial: bool,
+    retx_idx:   i64,
+    has_probe:  bool,
+    pn:         u64,
+    max_plain:  u64,
+    plain:      u8[..1500]&,
+    out_ack_el: bool&,
+) {
+    encode_crypto_space_ack(cslot, is_initial, max_plain, plain);
+    if retx_idx >= 0 {
+        try_emit_crypto_retx_frame(cslot, is_initial, retx_idx, pn, max_plain, plain, out_ack_el);
+    } else {
+        try_emit_crypto_new_frame(cslot, is_initial, pn, max_plain, plain, out_ack_el);
+    }
+    if has_probe && (plain.len as u64) < max_plain && encode_ping_frame(plain) {
+        cslot.ping_probe_pending = false;
+        out_ack_el = true;
+    }
 }
 
 fn emit_crypto_space_packet(
@@ -1801,22 +1846,24 @@ fn emit_crypto_space_packet(
     guard budget > core::add_sat_u64(hdr_overhead, 16) else { return false; }
     let max_plain = core::sub_sat_u64(budget, hdr_overhead);
 
-    var plain: u8[..1500] = [];
-    encode_crypto_space_ack(cslot, is_initial, plain);
+    let ack_space = if is_initial { PnSpaceId.Initial } else { PnSpaceId.Handshake };
+    let saved_ack = if is_initial { cslot.needs_ack_initial } else { cslot.needs_ack_hs };
     let pn = if is_initial { cslot.next_tx_pn_init } else { cslot.next_tx_pn_hs };
-    if retx_idx >= 0 {
-        try_emit_crypto_retx_frame(cslot, is_initial, retx_idx, pn, max_plain, plain, out_ack_el);
-    } else {
-        try_emit_crypto_new_frame(cslot, is_initial, pn, max_plain, plain, out_ack_el);
-    }
-    if has_probe && (plain.len as u64) < max_plain && encode_ping_frame(plain) {
-        cslot.ping_probe_pending = false;
-        out_ack_el = true;
-    }
-    guard plain.len > 0 && (plain.len as u64) <= max_plain else { return false; }
-    return seal_crypto_space_packet(
-        cslot, is_initial, pn, hdr_overhead, pad_target_len, budget, now_us, plain, out_ack_el, out_pkt,
+    var plain: u8[..1500] = [];
+    populate_crypto_space_frames(
+        cslot, is_initial, retx_idx, has_probe, pn, max_plain, plain, out_ack_el,
     );
+    guard plain.len > 0 && (plain.len as u64) <= max_plain else {
+        restore_crypto_needs_ack(cslot, ack_space, saved_ack);
+        return false;
+    }
+    if !seal_crypto_space_packet(
+        cslot, is_initial, pn, hdr_overhead, pad_target_len, budget, now_us, plain, out_ack_el, out_pkt,
+    ) {
+        restore_crypto_needs_ack(cslot, ack_space, saved_ack);
+        return false;
+    }
+    return true;
 }
 
 fn commit_tracked_ctrl_frame(
@@ -1888,6 +1935,17 @@ fn encode_app_window_frames(
     try_emit_max_streams_kind(cslot, pn, false, plain, max_plain, ack_el);
 }
 
+inline fn encode_app_ack_frame(cslot: QuicSrvConnSlot&, max_plain: u64, plain: u8[..1500]&) {
+    guard cslot.needs_ack_app && cslot.conn.app_space.recv_ranges.len > 0 else { return; }
+    let mark = plain.len;
+    let ack, ok_a = build_ack_frame(cslot.conn.app_space.recv_ranges, 0);
+    if ok_a && encode_ack_frame(ack, plain) && (plain.len as u64) <= max_plain {
+        cslot.needs_ack_app = false;
+    } else {
+        plain.resize(mark);
+    }
+}
+
 fn encode_app_control_frames(
     cslot:     QuicSrvConnSlot&,
     pn:        u64,
@@ -1895,10 +1953,7 @@ fn encode_app_control_frames(
     max_plain: u64,
     ack_el:    bool&,
 ) {
-    if cslot.needs_ack_app && cslot.conn.app_space.recv_ranges.len > 0 {
-        let ack, ok_a = build_ack_frame(cslot.conn.app_space.recv_ranges, 0);
-        if ok_a && encode_ack_frame(ack, plain) { cslot.needs_ack_app = false; }
-    }
+    encode_app_ack_frame(cslot, max_plain, plain);
     if cslot.handshake_done_queued && (plain.len as u64) < max_plain && has_sent_chunk_room(cslot, 1) {
         let mark = plain.len;
         if encode_handshake_done_frame(plain)
@@ -2335,6 +2390,10 @@ fn try_emit_app_packet(
     let max_plain = core::sub_sat_u64(budget, hdr_overhead);
 
     let pn = cslot.next_tx_pn_app;
+    let saved_needs_ack_app = cslot.needs_ack_app;
+    var committed = false;
+    defer if !committed { cslot.needs_ack_app = saved_needs_ack_app; };
+
     var plain: u8[..1500] = [];
     encode_app_control_frames(cslot, pn, plain, max_plain, out_ack_el);
     encode_app_stream_resets(cslot, c_idx, pn, plain, max_plain, out_ack_el);
@@ -2354,7 +2413,7 @@ fn try_emit_app_packet(
             out_ack_el = true;
         }
     }
-    guard plain.len > 0 else { return false; }
+    guard plain.len > 0 && (plain.len as u64) <= max_plain else { return false; }
 
     var hdr = QuicHeader { header_type: QuicHeaderType.OneRtt, packet_number: pn, .. };
     guard hdr.dcid.try_set(cslot.conn.dcid[..]) else { return false; }
@@ -2362,12 +2421,14 @@ fn try_emit_app_packet(
         return false;
     }
     cslot.next_tx_pn_app = core::add_sat_u64(cslot.next_tx_pn_app, 1);
+    committed = true;
     return true;
 }
 
 fn calc_initial_pad_target(cslot: const QuicSrvConnSlot&, rem_budget: u64) -> u64 {
+    let has_hs_ack = cslot.needs_ack_hs && cslot.conn.handshake_space.recv_ranges.len > 0;
     let has_hs_to_coalesce = cslot.conn.tx_handshake_space.keys_installed && (
-        cslot.needs_ack_hs || cslot.tx_hs_crypto_sent < (cslot.tx_hs_crypto.len as u64)
+        has_hs_ack || cslot.tx_hs_crypto_sent < (cslot.tx_hs_crypto.len as u64)
         || find_pending_retransmit_chunk(cslot, PnSpaceId.Handshake) >= 0
         || (cslot.ping_probe_pending && cslot.ping_probe_space == PnSpaceId.Handshake)
     );
@@ -2432,13 +2493,42 @@ fn try_build_conn_datagram(c_idx: i64, now_ns: u64, out_pkt: u8[..1500]&) -> boo
 
 // ---- Timer & Idle Timeout Helpers ------------------------------------------
 
+inline fn calc_crypto_chunk_aa_need(
+    cslot:     const QuicSrvConnSlot&,
+    space_id:  PnSpaceId,
+    chunk_len: u64,
+) -> u64 {
+    let base_ov: u64 = if space_id == PnSpaceId.Initial { 28 } else { 27 };
+    let cid_len = core::add_sat_u64(cslot.conn.dcid.len as u64, cslot.conn.scid.len as u64);
+    let hdr_ov = core::add_sat_u64(base_ov, cid_len);
+    return core::add_sat_u64(hdr_ov, core::add_sat_u64(8, chunk_len));
+}
+
+inline fn calc_pto_min_aa_bytes(cslot: const QuicSrvConnSlot&) -> u64 {
+    var has_retx = false;
+    var min_need: u64 = 0;
+    let init_idx = find_pending_retransmit_chunk(cslot, PnSpaceId.Initial);
+    if init_idx >= 0 {
+        has_retx = true;
+        min_need = calc_crypto_chunk_aa_need(cslot, PnSpaceId.Initial, cslot.sent_chunks[init_idx].length);
+    }
+    let hs_idx = find_pending_retransmit_chunk(cslot, PnSpaceId.Handshake);
+    if hs_idx >= 0 {
+        let hs_need = calc_crypto_chunk_aa_need(cslot, PnSpaceId.Handshake, cslot.sent_chunks[hs_idx].length);
+        min_need = if has_retx { min(min_need, hs_need) } else { hs_need };
+        has_retx = true;
+    }
+    return if has_retx { max(128, min_need) } else { 128 };
+}
+
 inline fn eval_conn_pto(cslot: const QuicSrvConnSlot&, now_us: u64) -> PtoTimerDecision {
     let spaces: PnSpaceState[3] = [
         cslot.conn.initial_space,
         cslot.conn.handshake_space,
         cslot.conn.app_space,
     ];
-    let aa_limited = !cslot.conn.validated_address && !can_send(cslot.conn, 128);
+    let aa_need = if cslot.conn.validated_address { 128 } else { calc_pto_min_aa_bytes(cslot) };
+    let aa_limited = !cslot.conn.validated_address && !can_send(cslot.conn, aa_need);
     let ctx = PtoContext {
         is_server:                      true,
         is_amplification_limited:       aa_limited,
@@ -2457,11 +2547,23 @@ inline fn calc_conn_idle_deadline_ns(cslot: const QuicSrvConnSlot&) -> u64 {
     return core::add_sat_u64(cslot.last_activity_ns, eff_idle_ns);
 }
 
+inline fn chunk_fits_aa_probe(
+    cslot:    const QuicSrvConnSlot&,
+    space_id: PnSpaceId,
+    ch:       const QuicSentChunk&,
+) -> bool {
+    if cslot.conn.validated_address || space_id == PnSpaceId.ApplicationData {
+        return true;
+    }
+    return can_send(cslot.conn, calc_crypto_chunk_aa_need(cslot, space_id, ch.length));
+}
+
 fn schedule_pto_probe_in_space(cslot: QuicSrvConnSlot&, space_id: PnSpaceId) {
     var marked: u32 = 0;
     for i in cslot.sent_chunks.len {
         let ch .= cslot.sent_chunks[i];
         if ch.active && ch.space == space_id && ch.in_flight && !ch.retransmit {
+            guard chunk_fits_aa_probe(cslot, space_id, ch) else { continue; }
             ch.retransmit = true;
             marked = core::add_sat_u32(marked, 1);
             if marked >= 2 { return; }

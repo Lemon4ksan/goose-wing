@@ -141,7 +141,6 @@ struct H3EdgeStreamSlot {
     msg_phase:               H3EdgeMsgPhase  = H3EdgeMsgPhase.ExpectHeaders,
     hdr_buf:                 u8[..16]        = [],
     hdr_accum_idx:           i64             = -1,
-    pending_frame_type:      u64             = 0,
     frame_remaining:         u64             = 0,
     empty_streak:            u32             = 0,
     has_content_length:      bool            = false,
@@ -177,7 +176,6 @@ struct H3EdgeSlot {
     ctrl_stage:             H3EdgeCtrlStage         = H3EdgeCtrlStage.ReadHeader,
     ctrl_hdr_buf:           u8[..16]                = [],
     ctrl_frame_type:        u64                     = 0,
-    ctrl_payload_len:       u64                     = 0,
     ctrl_remaining:         u64                     = 0,
     ctrl_payload_buf:       u8[..1024]              = [],
     ctrl_empty_streak:      u32                     = 0,
@@ -222,7 +220,7 @@ var g_h3_resp_qpack_scratch:  u8[>..]     = [];
 
 fn next_h3_edge_generation() -> u64 {
     let gen = g_h3_edge_next_gen;
-    g_h3_edge_next_gen = core::add_sat_u64(g_h3_edge_next_gen, 1);
+    g_h3_edge_next_gen += 1;
     if g_h3_edge_next_gen == 0 {
         g_h3_edge_next_gen = 1;
     }
@@ -454,7 +452,6 @@ fn reset_h3_edge_slot(slot_idx: i64, gen: u64) {
     slot.ctrl_stage = H3EdgeCtrlStage.ReadHeader;
     slot.ctrl_hdr_buf.clear();
     slot.ctrl_frame_type = 0;
-    slot.ctrl_payload_len = 0;
     slot.ctrl_remaining = 0;
     slot.ctrl_payload_buf.clear();
     slot.ctrl_empty_streak = 0;
@@ -882,6 +879,33 @@ fn read_varint_frame_hdr_step(
     return H3HdrReadState.Ready;
 }
 
+fn apply_h3_priority_update_ctrl(slot_idx: i64, frame_type: u64, payload: const u8[:]) -> bool {
+    let slot .= g_h3_edge_slots[slot_idx];
+    if frame_type == rfc::H3_FRAME_PRIORITY_UPDATE_REQUEST {
+        let elem_id, _, ok_id = quic::decode_varint(payload, 0);
+        if !ok_id {
+            return emit_h3_protocol_error(slot_idx, slot.peer_ctrl_stream_id, rfc::H3_ERR_FRAME_ERROR);
+        }
+        // RFC 9218 Section 7.2: HTTP/3 PRIORITY_UPDATE Frame - Element ID MUST be client bidi stream.
+        if (elem_id & 0x03) != 0 {
+            return emit_h3_protocol_error(slot_idx, slot.peer_ctrl_stream_id, rfc::H3_ERR_ID_ERROR);
+        }
+        let _, _, ok = parse_priority_update_request(payload);
+        if !ok {
+            return emit_h3_protocol_error(slot_idx, slot.peer_ctrl_stream_id, rfc::H3_ERR_GENERAL_PROTOCOL);
+        }
+        return true;
+    }
+    if frame_type == rfc::H3_FRAME_PRIORITY_UPDATE_PUSH {
+        let _, _, ok = parse_priority_update_push(payload);
+        if !ok {
+            return emit_h3_protocol_error(slot_idx, slot.peer_ctrl_stream_id, rfc::H3_ERR_GENERAL_PROTOCOL);
+        }
+        return true;
+    }
+    return true;
+}
+
 fn apply_h3_ctrl_push_or_prio(slot_idx: i64, frame_type: u64, payload: const u8[:]) -> bool {
     let slot .= g_h3_edge_slots[slot_idx];
     if frame_type == rfc::H3_FRAME_CANCEL_PUSH {
@@ -903,21 +927,7 @@ fn apply_h3_ctrl_push_or_prio(slot_idx: i64, frame_type: u64, payload: const u8[
         slot.max_push_id = max_id;
         return true;
     }
-    if frame_type == rfc::H3_FRAME_PRIORITY_UPDATE_REQUEST {
-        let _, _, ok = parse_priority_update_request(payload);
-        if !ok {
-            return emit_h3_protocol_error(slot_idx, slot.peer_ctrl_stream_id, rfc::H3_ERR_FRAME_ERROR);
-        }
-        return true;
-    }
-    if frame_type == rfc::H3_FRAME_PRIORITY_UPDATE_PUSH {
-        let _, _, ok = parse_priority_update_push(payload);
-        if !ok {
-            return emit_h3_protocol_error(slot_idx, slot.peer_ctrl_stream_id, rfc::H3_ERR_FRAME_ERROR);
-        }
-        return true;
-    }
-    return true;
+    return apply_h3_priority_update_ctrl(slot_idx, frame_type, payload);
 }
 
 // Validates and completes one decoded control stream frame on a server session.
@@ -991,10 +1001,9 @@ fn parse_ctrl_frame_header_step(slot_idx: i64, data: const u8[:], pos: i64&) -> 
         return emit_h3_protocol_error(slot_idx, slot.peer_ctrl_stream_id, rfc::H3_ERR_MISSING_SETTINGS);
     }
     if hdr.frame_type == rfc::H3_FRAME_SETTINGS && hdr.payload_len > h3_internal::H3_MAX_SETTINGS_PAYLOAD_SIZE {
-        return emit_h3_protocol_error(slot_idx, slot.peer_ctrl_stream_id, rfc::H3_ERR_FRAME_ERROR);
+        return emit_h3_protocol_error(slot_idx, slot.peer_ctrl_stream_id, rfc::H3_ERR_EXCESSIVE_LOAD);
     }
     slot.ctrl_frame_type = hdr.frame_type;
-    slot.ctrl_payload_len = hdr.payload_len;
     slot.ctrl_remaining = hdr.payload_len;
     slot.ctrl_payload_buf.clear();
     if !is_known_h3_ctrl_frame(hdr.frame_type) {
@@ -1526,7 +1535,6 @@ fn start_bidi_headers_frame(
         return emit_h3_protocol_error(slot_idx, st.stream_id, rfc::H3_ERR_EXCESSIVE_LOAD);
     };
     st.frame_remaining = core::sub_sat_u64(payload_len, avail);
-    st.pending_frame_type = rfc::H3_FRAME_HEADERS;
     st.stage = H3EdgeBidiStage.ReadHeadersPayload;
     pos = data.len;
     return true;
@@ -1565,7 +1573,6 @@ fn parse_bidi_frame_header_step(
             // RFC 9114 Section 4.1: HTTP Message Framing - DATA requires prior HEADERS and precedes trailers.
             return emit_h3_protocol_error(slot_idx, st.stream_id, rfc::H3_ERR_FRAME_UNEXPECTED);
         }
-        st.pending_frame_type = hdr.frame_type;
         st.frame_remaining = hdr.payload_len;
         st.stage = if hdr.payload_len > 0 { H3EdgeBidiStage.ReadDataPayload } else { H3EdgeBidiStage.ReadHeader };
         return true;
@@ -1573,7 +1580,6 @@ fn parse_bidi_frame_header_step(
     if hdr.frame_type == rfc::H3_FRAME_HEADERS {
         return start_bidi_headers_frame(slot_idx, st_idx, hdr.payload_len, data, pos, end_flag);
     }
-    st.pending_frame_type = hdr.frame_type;
     st.frame_remaining = hdr.payload_len;
     st.stage = if hdr.payload_len > 0 { H3EdgeBidiStage.SkipUnknownPayload } else { H3EdgeBidiStage.ReadHeader };
     return true;

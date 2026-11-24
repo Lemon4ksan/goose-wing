@@ -82,9 +82,11 @@ fn run_alpn_loopback_case(
     trust:              const tls::TrustAnchorStore&,
     cli_alpn:           const u8[:],
     require_alpn_match: bool,
+    srv_kind:           tls::TlsBackendKind = tls::TlsBackendKind.PureGoose,
+    cli_kind:           tls::TlsBackendKind = tls::TlsBackendKind.PureGoose,
 ) -> tls::TlsBackendStatus, u8[..255], u8[..255], u8[..64] {
     var srv_cfg = tls::TlsBackendConfig {
-        kind:                  tls::TlsBackendKind.PureGoose,
+        kind:                  srv_kind,
         is_server:             true,
         defer_sni_credentials: true,
         require_alpn_match:    require_alpn_match,
@@ -96,7 +98,7 @@ fn run_alpn_loopback_case(
     defer tls::tls_endpoint_close(srv);
 
     var cli_cfg = tls::TlsBackendConfig {
-        kind:                   tls::TlsBackendKind.PureGoose,
+        kind:                   cli_kind,
         is_server:              false,
         trust_store:            trust,
         use_system_roots:       false,
@@ -244,6 +246,43 @@ fn test_tls_alpn_hardening() {
     let eal_n, eal_st = tls::tls_endpoint_drain_wire(esrv, dal[..]);
     assert(eal_st == tls::TlsBackendStatus.Ok && eal_n == 7);
     assert(dal[0] == rfc::TLS_CONTENT_ALERT && dal[5] == 2 && dal[6] == rfc::TLS_ALERT_NO_APPLICATION_PROTOCOL);
+
+    // 7. TlsBackendKind.Auto routes strict ALPN / in-memory trust cleanly and rejects mismatch
+    let st_auto_ok, s_aok, c_aok, _ = run_alpn_loopback_case(
+        cert_pem[..],
+        key_pem[..],
+        trust,
+        "h2,http/1.1",
+        true,
+        tls::TlsBackendKind.Auto,
+        tls::TlsBackendKind.Auto,
+    );
+    assert(st_auto_ok == tls::TlsBackendStatus.Ok && s_aok[..] == "h2" && c_aok[..] == "h2");
+
+    let st_auto_bad, _, _, auto_al = run_alpn_loopback_case(
+        cert_pem[..],
+        key_pem[..],
+        trust,
+        "foo/1",
+        true,
+        tls::TlsBackendKind.Auto,
+        tls::TlsBackendKind.Auto,
+    );
+    assert(st_auto_bad == tls::TlsBackendStatus.HandshakeError);
+    assert(auto_al.len == 7 && auto_al[0] == rfc::TLS_CONTENT_ALERT);
+    assert(auto_al[5] == 2 && auto_al[6] == rfc::TLS_ALERT_NO_APPLICATION_PROTOCOL);
+
+    // 8. Client omitting ALPN (!has_alpn) completes without ALPN even under require_alpn_match: true
+    let st_no_alpn, s_no, c_no, _ = run_alpn_loopback_case(
+        cert_pem[..],
+        key_pem[..],
+        trust,
+        "",
+        true,
+        tls::TlsBackendKind.Auto,
+        tls::TlsBackendKind.Auto,
+    );
+    assert(st_no_alpn == tls::TlsBackendStatus.Ok && s_no.len == 0 && c_no.len == 0);
 
     print("TLS_ALPN_HARDENING: OK");
     // CHECK: TLS_ALPN_HARDENING: OK
@@ -639,11 +678,28 @@ fn test_h2_edge_security_and_aba() {
     assert(wire::encode_window_update_frame(9, 1500, wu_wire));
     let _, ok_wu = http2::h2_edge_feed(sess, wu_wire[..]);
     assert(ok_wu);
-    let s_c, ok_sc = http2::h2_edge_feed(sess, "");
-    let _ = s_c;
-    assert(ok_sc);
     let s_d, ok_sd = http2::h2_edge_send_data(sess, 9, big_body[1000..], true);
     assert(ok_sd && s_d == 1500);
+
+    dump.clear();
+    let _ = http2::h2_edge_drain_wire(sess, dump);
+    var r9 = wire::new_wire_h2_frame_reader(dump[..]);
+    var data9_bytes:     i64  = 0;
+    var saw_end_stream9: bool = false;
+    while wire::has_next(r9) {
+        let dh9, dp9, ok_r9 = wire::next_frame(r9);
+        assert(ok_r9);
+        if dh9.stream_id == 9 && dh9.frame_type == rfc::H2_FRAME_DATA {
+            data9_bytes += dp9.len;
+            if data9_bytes < 2500 {
+                assert((dh9.flags & rfc::H2_FLAG_END_STREAM) == 0);
+            } else {
+                assert((dh9.flags & rfc::H2_FLAG_END_STREAM) != 0);
+                saw_end_stream9 = true;
+            }
+        }
+    }
+    assert(data9_bytes == 2500 && saw_end_stream9);
 
     // 2. ABA guard on closed session reused by a fresh session
     let stale_sess = sess;
@@ -1096,6 +1152,126 @@ fn test_h2_edge_thread_safety() {
     // CHECK: H2_EDGE_THREAD_SAFETY: OK
 }
 
+fn verify_min_dyn_size_updates_in_headers(sess: http2::H2EdgeSession&, stream_id: u32) {
+    var hdrs = http::HeaderMap { .. };
+    assert(!http2::h2_edge_send_headers(sess, stream_id, 99, hdrs, false));
+    assert(http2::h2_edge_send_headers(sess, stream_id, 200, hdrs, true));
+    var out: u8[>..] = [];
+    let _ = http2::h2_edge_drain_wire(sess, out);
+    var rd = wire::new_wire_h2_frame_reader(out[..]);
+    var saw_hdr = false;
+    while wire::has_next(rd) {
+        let fh, fp, ok = wire::next_frame(rd);
+        assert(ok);
+        if fh.frame_type == rfc::H2_FRAME_HEADERS && fh.stream_id == stream_id {
+            assert((fp[0] & 0xE0) == 0x20);
+            let sz1, off1, ok1 = http2::hpack_decode_int(fp, 0, 5);
+            assert(ok1 && sz1 == 256 && off1 < (fp.len as u64));
+            assert((fp[off1 as i64] & 0xE0) == 0x20);
+            let sz2, _, ok2 = http2::hpack_decode_int(fp, off1, 5);
+            assert(ok2 && sz2 == 1024);
+            var cli_dec = http2::new_dynamic_table(4096);
+            var ps = http2::PseudoHeaders { .. };
+            var rm = http::HeaderMap { .. };
+            assert(http2::decode_hpack_to_map(cli_dec, fp, ps, rm) == rfc::H2_ERR_NO_ERROR);
+            assert(ps.has_status && ps.status == 200 && cli_dec.current_max_size == 1024);
+            saw_hdr = true;
+        }
+    }
+    assert(saw_hdr);
+}
+
+fn test_h2_edge_hpack_min_dyn_size() {
+    var s_hp = http2::h2_edge_open(128, 65535);
+    defer http2::h2_edge_close(s_hp);
+    var w: u8[>..] = [];
+    w.append(rfc::H2_CLIENT_PREFACE[..]);
+    let s_first: wire::WireSetting[2] = [
+        wire::WireSetting { id: rfc::H2_SETTING_HEADER_TABLE_SIZE, val: 256 },
+        wire::WireSetting { id: rfc::H2_SETTING_NO_RFC7540_PRIORITIES, val: 1 },
+    ];
+    assert(wire::encode_settings_frame(s_first[..], w));
+    let s_second: wire::WireSetting[2] = [
+        wire::WireSetting { id: rfc::H2_SETTING_HEADER_TABLE_SIZE, val: 1024 },
+        wire::WireSetting { id: rfc::H2_SETTING_NO_RFC7540_PRIORITIES, val: 1 },
+    ];
+    assert(wire::encode_settings_frame(s_second[..], w));
+    var cdt = http2::new_dynamic_table(4096);
+    var h0 = http::HeaderMap { .. };
+    append_h2_req_headers(w, cdt, 1, "GET", "/min-dyn", h0, true);
+    let _, ok_w = http2::h2_edge_feed(s_hp, w[..]);
+    assert(ok_w);
+    var dump: u8[>..] = [];
+    let _ = http2::h2_edge_drain_wire(s_hp, dump);
+
+    assert(!http2::h2_edge_reset_stream(s_hp, 99, rfc::H2_ERR_CANCEL));
+    dump.clear();
+    assert(http2::h2_edge_drain_wire(s_hp, dump) == 0);
+    verify_min_dyn_size_updates_in_headers(s_hp, 1);
+
+    var w_flip: u8[>..] = [];
+    let s_flip: wire::WireSetting[1] = [
+        wire::WireSetting { id: rfc::H2_SETTING_NO_RFC7540_PRIORITIES, val: 0 },
+    ];
+    assert(wire::encode_settings_frame(s_flip[..], w_flip));
+    let _, ok_flip = http2::h2_edge_feed(s_hp, w_flip[..]);
+    assert(!ok_flip);
+    var ev = http2::H2EdgeEvent { .. };
+    var saw_flip_err = false;
+    while http2::h2_edge_poll_event(s_hp, ev) {
+        if ev.kind == http2::H2EdgeEventKind.ProtocolError &&
+           ev.error_code == rfc::H2_ERR_PROTOCOL_ERROR {
+            saw_flip_err = true;
+        }
+    }
+    assert(saw_flip_err);
+}
+
+fn test_h2_edge_rfc9218_rejects() {
+    var s_late = http2::h2_edge_open(128, 65535);
+    defer http2::h2_edge_close(s_late);
+    var w_late: u8[>..] = [];
+    w_late.append(rfc::H2_CLIENT_PREFACE[..]);
+    let s_empty: wire::WireSetting[1] = [
+        wire::WireSetting { id: rfc::H2_SETTING_ENABLE_PUSH, val: 0 },
+    ];
+    assert(wire::encode_settings_frame(s_empty[..], w_late));
+    let _, ok_l0 = http2::h2_edge_feed(s_late, w_late[..]);
+    assert(ok_l0);
+    w_late.clear();
+    let s_enable_late: wire::WireSetting[1] = [
+        wire::WireSetting { id: rfc::H2_SETTING_NO_RFC7540_PRIORITIES, val: 1 },
+    ];
+    assert(wire::encode_settings_frame(s_enable_late[..], w_late));
+    let _, ok_l1 = http2::h2_edge_feed(s_late, w_late[..]);
+    assert(!ok_l1);
+
+    var s_pu = http2::h2_edge_open(128, 65535);
+    defer http2::h2_edge_close(s_pu);
+    var w_pu: u8[>..] = [];
+    w_pu.append(rfc::H2_CLIENT_PREFACE[..]);
+    let pu_zero: u8[4] = [0, 0, 0, 0];
+    append_h2_frame(w_pu, rfc::H2_FRAME_PRIORITY_UPDATE, 0, 0, pu_zero[..]);
+    let _, ok_pu = http2::h2_edge_feed(s_pu, w_pu[..]);
+    assert(!ok_pu);
+    var ev = http2::H2EdgeEvent { .. };
+    var saw_pu_err = false;
+    while http2::h2_edge_poll_event(s_pu, ev) {
+        if ev.kind == http2::H2EdgeEventKind.ProtocolError &&
+           ev.error_code == rfc::H2_ERR_PROTOCOL_ERROR {
+            saw_pu_err = true;
+        }
+    }
+    assert(saw_pu_err);
+}
+
+fn test_h2_edge_rfc9218_and_hpack_regressions() {
+    test_h2_edge_hpack_min_dyn_size();
+    test_h2_edge_rfc9218_rejects();
+    print("H2_EDGE_RFC9218_AND_HPACK: OK");
+    // CHECK: H2_EDGE_RFC9218_AND_HPACK: OK
+}
+
 fn main() {
     test_tls_alpn_hardening();
     test_h2_edge_preface_multiplex_upload_sse();
@@ -1103,4 +1279,5 @@ fn main() {
     test_h2_edge_round1_regressions();
     test_h2_edge_zero_data_and_chunk_reclaim();
     test_h2_edge_thread_safety();
+    test_h2_edge_rfc9218_and_hpack_regressions();
 }
