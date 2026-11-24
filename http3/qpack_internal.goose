@@ -539,6 +539,7 @@ fn decode_qpack_field_line_to_map<B>(
         let name_idx, val_start, ok_idx = http3::qpack_decode_int(src, idx, 4);
         guard ok_idx else { return http3::QpackError.DecompressionFailed; }
 
+        core::secure_zeroize_slice(val_buf[..]);
         val_buf.clear();
         let next_off, ok_val = http3::decode_qpack_string(src, val_start, 7, val_buf);
         guard ok_val && val_buf.len <= 65536 else { return http3::QpackError.DecompressionFailed; }
@@ -579,6 +580,7 @@ fn decode_qpack_field_line_to_map<B>(
         guard ok_dn else { return http3::QpackError.DecompressionFailed; }
         record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
 
+        core::secure_zeroize_slice(val_buf[..]);
         val_buf.clear();
         let next_off, ok_val = http3::decode_qpack_string(src, val_start, 7, val_buf);
         guard ok_val && val_buf.len <= 65536 else { return http3::QpackError.DecompressionFailed; }
@@ -598,6 +600,7 @@ fn decode_qpack_field_line_to_map<B>(
         let val_start, ok_name = http3::decode_qpack_string(src, idx, 3, n);
         guard ok_name else { return http3::QpackError.DecompressionFailed; }
 
+        core::secure_zeroize_slice(val_buf[..]);
         val_buf.clear();
         let next_off, ok_val = http3::decode_qpack_string(src, val_start, 7, val_buf);
         guard ok_val && val_buf.len <= 65536 else { return http3::QpackError.DecompressionFailed; }

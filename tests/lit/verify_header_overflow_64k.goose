@@ -552,10 +552,29 @@ fn test_http3_64k_spill_and_view() {
     var resp_arena = http::OverflowArena { .. };
     assert(http::append_header_spill(resp_map, resp_arena, "x-h3-big-resp", big_auth[..]));
     assert(http::append_header_spill(resp_map, resp_arena, "x-h3-secret", "top-secret", http::HEADER_FLAG_SENSITIVE));
+    assert(http::append_header_spill(resp_map, resp_arena, "authorization", "bearer-sec", http::HEADER_FLAG_SENSITIVE));
     append_numbered_headers(resp_map, resp_arena, 140, "x-r3-");
     var out_wire: u8[>..] = [];
     assert(http3::h3_edge_encode_response_headers_spill(sess, 200, resp_map, resp_arena, out_wire));
     assert(out_wire.len > 16384);
+
+    // Verify QPACK N=1 encodings for static-name ref (0x70) and literal non-Huffman name (0x30).
+    var qn1_static: u8[..64] = [0x00, 0x00];
+    assert(http3::encode_qpack_field(
+        qn1_static, "authorization", "tok", false, http3::QpackIndexingPolicy.NeverIndex,
+    ));
+    assert((qn1_static[2] & 0xF0) == 0x70);
+    var qn1_raw: u8[..64] = [0x00, 0x00];
+    assert(http3::encode_qpack_field(
+        qn1_raw, "x-raw", "val", false, http3::QpackIndexingPolicy.NeverIndex,
+    ));
+    assert((qn1_raw[2] & 0xF8) == 0x30);
+    var qn1_ps = http3::PseudoHeaders { is_trailer: true, .. };
+    var qn1_map = http::HeaderMap { .. };
+    var qn1_tbl = http3::new_qpack_table(0, 0);
+    assert(http3::decode_or_track_blocked_qpack_to_map(qn1_tbl, 99, qn1_raw[..], qn1_ps, qn1_map, 4096)
+        == http3::QpackError.None);
+    assert(qn1_map.entries.len == 1 && http::is_sensitive(qn1_map.entries[0]));
 
     var rdec_tbl = http3::new_qpack_table(0, 0);
     var rdec_ps = http3::PseudoHeaders { .. };
@@ -578,14 +597,19 @@ fn test_http3_64k_spill_and_view() {
     assert(http::get_header_spill(rdec_map, rdec_arena, "x-h3-big-resp") == big_auth[..]);
     assert(http::get_header_spill(rdec_map, rdec_arena, "x-r3-139") == "val-139");
     var saw_h3_sec = false;
+    var saw_auth_sec = false;
     for ri in 0..http::header_count_spill(rdec_map, rdec_arena) {
         let re, ok_re = http::header_entry_at_spill(rdec_map, rdec_arena, ri);
         if ok_re && http::entry_name_spill(rdec_map, rdec_arena, re) == "x-h3-secret" {
             assert(http::is_sensitive(re) && http::entry_value_spill(rdec_map, rdec_arena, re) == "top-secret");
             saw_h3_sec = true;
         }
+        if ok_re && http::entry_name_spill(rdec_map, rdec_arena, re) == "authorization" {
+            assert(http::is_sensitive(re) && http::entry_value_spill(rdec_map, rdec_arena, re) == "bearer-sec");
+            saw_auth_sec = true;
+        }
     }
-    assert(saw_h3_sec);
+    assert(saw_h3_sec && saw_auth_sec);
 
     print("HTTP3_64K_SPILL_VIEW: OK\n");
     // CHECK: HTTP3_64K_SPILL_VIEW: OK

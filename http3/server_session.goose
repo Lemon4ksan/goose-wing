@@ -316,6 +316,7 @@ fn free_h3_hdr_accum(idx: i64) {
         return;
     }
     g_h3_edge_hdr_accums[idx].in_use = false;
+    core::secure_zeroize_slice(g_h3_edge_hdr_accums[idx].buf[..]);
     g_h3_edge_hdr_accums[idx].buf.clear();
     g_h3_edge_free_hdr_accums.push(idx);
 }

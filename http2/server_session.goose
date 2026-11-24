@@ -502,7 +502,10 @@ fn finalize_edge_header_block(slot: H2EdgeSlot&) -> bool {
     var pseudo = PseudoHeaders { is_trailer: is_trailer, .. };
     var decoded = http::HeaderMap { .. };
     var decoded_arena = http::OverflowArena { .. };
-    defer http::reset_overflow_arena(decoded_arena);
+    defer {
+        http::reset_overflow_arena(decoded_arena);
+        core::secure_zeroize_slice(decoded.raw_buf[..]);
+    };
     // RFC 9113 Section 4.3: Field Section Compression and Decompression - Keep HPACK table state synchronized.
     let dec_err = decode_hpack_to_map_spill(
         slot.conn.hpack_dec,
@@ -755,6 +758,10 @@ fn finish_refused_hpack_sync(slot: H2EdgeSlot&, stream_id: u32) -> bool {
     var tmp_pseudo = PseudoHeaders { .. };
     var tmp_hdrs = http::HeaderMap { .. };
     var tmp_arena = http::OverflowArena { .. };
+    defer {
+        http::reset_overflow_arena(tmp_arena);
+        core::secure_zeroize_slice(tmp_hdrs.raw_buf[..]);
+    };
     let dec_err = decode_hpack_to_map_spill(
         slot.conn.hpack_dec,
         slot.header_accum[..],
@@ -764,6 +771,7 @@ fn finish_refused_hpack_sync(slot: H2EdgeSlot&, stream_id: u32) -> bool {
         slot.conn.max_header_list_size,
         false,
     );
+    core::secure_zeroize_slice(slot.header_accum[..]);
     slot.header_accum.clear();
     slot.refused_cont_stream_id = 0;
     slot.refused_cont_frames_cnt = 0;
