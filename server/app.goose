@@ -107,7 +107,7 @@ fn finish_reply_verdict(res: const http::Response&) -> wire::StageVerdict {
     let code: i32 = if res.status_code >= 100 && res.status_code <= 599 {
         res.status_code
     } else {
-        500
+        rfc::STATUS_INTERNAL_SERVER_ERROR
     };
     return wire::StageVerdict.ShortCircuit { status_code: code as u16 };
 }

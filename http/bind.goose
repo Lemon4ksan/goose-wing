@@ -7,6 +7,7 @@ namespace http;
 import std;
 import json;
 import core;
+import rfc.http;
 import .headers;
 import .json_codec;
 import .problem;
@@ -522,14 +523,14 @@ fn dto::bind_ingest_non_body_field(
 // Computes deterministic HTTP error status for failed `ingest_dto` (`401` -> `400` -> `422`).
 fn resolve_ingest_error_status(vp: const ValidationProblem&, has_auth_err: bool) -> i32 {
     if has_auth_err {
-        return 401;
+        return rfc::STATUS_UNAUTHORIZED;
     }
     for &e in vp.errors {
         if e.code[..] == "invalid_json" {
-            return 400;
+            return rfc::STATUS_BAD_REQUEST;
         }
     }
-    return 422;
+    return rfc::STATUS_UNPROCESSABLE_CONTENT;
 }
 
 // Binds multi-source DTO fields (`Path`, `Query`, `Header`, `Cookie`, `Bearer`, `ClientIp`, and JSON body)

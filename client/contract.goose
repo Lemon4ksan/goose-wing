@@ -155,8 +155,7 @@ fn call_session<Params, Query, ReqBody, ResBody>(
 ) -> ResBody, http::Response, http::Error {
     var req = http::Request { .. };
     guard build_contract_request(spec, c.base_url[..], params, query_dto, body_dto, req) else {
-        let err = http::make_error(400, "invalid_url", "contract request build failed", http::ErrorKind.InvalidUrl);
-        return ResBody { .. }, http::Response { .. }, err;
+        return invalid_contract_url_err<ResBody>();
     }
     let res, err = do(c, req);
     let out_body, out_err = decode_json_or_problem<ResBody>(res, err);
@@ -172,8 +171,7 @@ fn call_session_no_body<Params, Query, ResBody>(
 ) -> ResBody, http::Response, http::Error {
     var req = http::Request { .. };
     guard build_contract_request_head(spec, c.base_url[..], params, query_dto, req) else {
-        let err = http::make_error(400, "invalid_url", "contract request build failed", http::ErrorKind.InvalidUrl);
-        return ResBody { .. }, http::Response { .. }, err;
+        return invalid_contract_url_err<ResBody>();
     }
     let res, err = do(c, req);
     let out_body, out_err = decode_json_or_problem<ResBody>(res, err);
@@ -192,8 +190,7 @@ fn call_secret<Params, Query, ReqBody, ResBody>(
     var req = http::Request { .. };
     defer http::reset_request(req);
     guard build_contract_request_head(spec, c.base_url[..], params, query_dto, req) else {
-        let err = http::make_error(400, "invalid_url", "contract request build failed", http::ErrorKind.InvalidUrl);
-        return ResBody { .. }, http::Response { .. }, err;
+        return invalid_contract_url_err<ResBody>();
     }
     if type_is_non_empty<ReqBody>() {
         let _ = http::json_secret(req, body_dto);
@@ -204,7 +201,10 @@ fn call_secret<Params, Query, ReqBody, ResBody>(
 }
 
 fn invalid_contract_url_err<ResBody>() -> ResBody, http::Response, http::Error {
-    let err = http::make_error(400, "invalid_url", "contract request build failed", http::ErrorKind.InvalidUrl);
+    let err = http::make_error(
+        rfc::STATUS_BAD_REQUEST, "invalid_url", "contract request build failed",
+        http::ErrorKind.InvalidUrl,
+    );
     return ResBody { .. }, http::Response { .. }, err;
 }
 

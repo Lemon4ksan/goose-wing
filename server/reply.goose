@@ -217,12 +217,18 @@ fn write_reply<T>(res: http::Response&, rep: const Reply<T>&) {
         return;
     }
     if rep.headers_overflowed {
-        http::respond_problem(res, 500, "Internal Server Error", "response header capacity exceeded");
+        http::respond_problem(
+            res, rfc::STATUS_INTERNAL_SERVER_ERROR, "Internal Server Error",
+            "response header capacity exceeded",
+        );
         return;
     }
     if rfc::is_redirect_status(rep.status) {
         guard http::respond_redirect(res, rep.location[..], rep.status) else {
-            http::respond_problem(res, 500, "Internal Server Error", "invalid redirect target");
+            http::respond_problem(
+                res, rfc::STATUS_INTERNAL_SERVER_ERROR, "Internal Server Error",
+                "invalid redirect target",
+            );
             return;
         }
     } else if rep.status == rfc::STATUS_NO_CONTENT {
@@ -252,7 +258,10 @@ fn write_out_reply<T>(res: http::Response&, rep: const Reply<EmptyBody>&, out: c
         return;
     }
     if rep.headers_overflowed {
-        http::respond_problem(res, 500, "Internal Server Error", "response header capacity exceeded");
+        http::respond_problem(
+            res, rfc::STATUS_INTERNAL_SERVER_ERROR, "Internal Server Error",
+            "response header capacity exceeded",
+        );
         return;
     }
     if rfc::is_redirect_status(rep.status) ||
