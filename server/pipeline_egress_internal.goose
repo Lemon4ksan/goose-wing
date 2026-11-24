@@ -29,7 +29,7 @@ import .router_l0_internal;
 import .pool;
 import .edge_filter;
 import .cache;
-import .profiler;
+import .prof_hooks;
 import .pipeline;
 
 fn populate_cached_response(cache: const server::HttpRouteCache&, res: http::Response&) -> wire::StageVerdict {
@@ -337,8 +337,8 @@ fn stage_server_cache_lookup(
     guard !has_auth && (req.method[..] == "GET" || req.method[..] == "HEAD") else {
         return wire::StageVerdict.Continue;
     }
-    let _prof = server::prof_enter("stage.cache_lookup");
-    defer server::prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("stage.cache_lookup");
+    defer server_prof::lit_prof_leave(_prof);
     let lookup = cache.cache_lookup(now_ms, handler_id, req.url[..]);
     return match lookup {
         HitFresh => populate_cached_response(cache, res),
@@ -361,8 +361,8 @@ fn stage_server_etag(
     memo: server::ServerCompressAndEtagMemo& = server::ServerCompressAndEtagMemo { .. },
 ) -> wire::StageVerdict {
     guard res.status_code == 200 else { return wire::StageVerdict.Continue; }
-    let _prof = server::prof_enter("stage.etag");
-    defer server::prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("stage.etag");
+    defer server_prof::lit_prof_leave(_prof);
     if http::get_inline(res.headers, http::WellKnownHeader.ETag).len == 0 && res.body.len > 0 {
         populate_missing_response_etag(res, memo);
     }
@@ -431,8 +431,8 @@ fn stage_server_compress(
     }
     let accept_enc = http::get_inline(req.headers, http::WellKnownHeader.AcceptEncoding);
     guard accept_enc.len > 0 else { return wire::StageVerdict.Continue; }
-    let _prof = server::prof_enter("stage.compress");
-    defer server::prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("stage.compress");
+    defer server_prof::lit_prof_leave(_prof);
 
     let allow_zstd = (mask & (server::STAGE_EGRESS_COMPRESS_ZSTD | wire::STAGE_SRV_OUT_COMPRESS_ZSTD)) != 0;
     let allow_br = (mask & (server::STAGE_EGRESS_COMPRESS_BROTLI | wire::STAGE_SRV_OUT_COMPRESS_BR)) != 0;
@@ -461,8 +461,8 @@ fn stage_server_cache_store(
     handler_id: i32         = -1,
     url_key:    const u8[:] = "",
 ) -> wire::StageVerdict {
-    let _prof = server::prof_enter("stage.cache_store");
-    defer server::prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("stage.cache_store");
+    defer server_prof::lit_prof_leave(_prof);
     // RFC 9111 Section 4.1: Calculating Cache Keys with the Vary Header Field - skip unkeyed Vary responses
     if res.status_code == 200 && res.body.len > 0 && !http::has_header(res.headers, rfc::HEADER_VARY) {
         let ctype = http::get_inline(res.headers, http::WellKnownHeader.ContentType);
@@ -495,8 +495,8 @@ fn stage_server_cache_store(
 
 // Stage 5 (Server Egress): Cross-origin isolation and HSTS security headers.
 fn stage_server_security_headers(res: http::Response&) -> wire::StageVerdict {
-    let _prof = server::prof_enter("stage.security_headers");
-    defer server::prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("stage.security_headers");
+    defer server_prof::lit_prof_leave(_prof);
     let existing_vary = http::get_inline(res.headers, http::WellKnownHeader.Vary);
     let existing_hsts = http::get_inline(res.headers, http::WellKnownHeader.StrictTransportSecurity);
     if existing_hsts.len > 0 && core::starts_with(existing_vary, rfc::FETCH_METADATA_VARY_VALUE) {
@@ -536,8 +536,8 @@ fn stage_server_metrics_log(
     mask:   u64,
     now_ns: u64,
 ) -> wire::StageVerdict {
-    let _prof = server::prof_enter("stage.metrics_log");
-    defer server::prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("stage.metrics_log");
+    defer server_prof::lit_prof_leave(_prof);
     let want_metrics = (mask & (server::STAGE_EGRESS_METRICS | wire::STAGE_SRV_OUT_METRICS)) != 0;
     let want_log = (mask & (server::STAGE_EGRESS_ACCESS_LOG | wire::STAGE_SRV_OUT_ACCESS_LOG)) != 0;
     let has_timing = has_custom_header_hash(

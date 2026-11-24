@@ -30,7 +30,7 @@ import .router_l0_internal;
 import .pool;
 import .pipeline;
 import .pipeline_internal;
-import .profiler;
+import .prof_hooks;
 import .h2_mux_types_internal;
 import .h2_mux_frames_internal;
 import .h2_mux_streams_internal;
@@ -389,18 +389,18 @@ fn drain_fast_l0_static_stream<B>(
         if stream.len == 0 {
             return stream, true;
         }
-        let _pf = server::prof_enter("http1.framing");
+        let _pf = server_prof::lit_prof_enter("http1.framing");
         let hdr_end = core::fast_find_crlfcrlf(stream);
-        server::prof_leave(_pf);
+        server_prof::lit_prof_leave(_pf);
         if hdr_end < 0 {
             return stream, is_incomplete_l0_prefix(server, stream);
         }
         var fast_step:  i64  = 0;
         var fast_close: bool = false;
         var sp_idx:     i32  = -1;
-        let _pl0 = server::prof_enter("http1.l0_turn");
+        let _pl0 = server_prof::lit_prof_enter("http1.l0_turn");
         let ok_l0 = try_fast_l0_static_turn(server, stream, hdr_end, now_sec, wire_out, fast_step, fast_close, sp_idx);
-        server::prof_leave(_pl0);
+        server_prof::lit_prof_leave(_pl0);
         guard ok_l0 else {
             return stream, false;
         }
@@ -568,9 +568,9 @@ fn try_prepare_single_pipeline_turn<B>(
 
     let consumed = stream.len;
     if cl_len > 0 {
-        let _pbf = server::prof_enter("http1.body_framing");
+        let _pbf = server_prof::lit_prof_enter("http1.body_framing");
         g_turn_req.body.append(stream[body_start_idx..consumed]);
-        server::prof_leave(_pbf);
+        server_prof::lit_prof_leave(_pbf);
     }
 
     total_consumed = core::add_sat_i64(probe_consumed, consumed);

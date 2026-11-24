@@ -298,12 +298,27 @@ def main() -> int:
 
     build_results: list[tuple[Path, Path, int, str, str, float]] = []
 
+    def _find_prof_hook() -> str | None:
+        candidates = [
+            root_dir.parent / "goose-lit" / "shim" / "prof_hook.h",
+            Path.home() / ".goose" / "pkg" / "github.com" / "Lemon4ksan" / "goose-lit" / "shim" / "prof_hook.h",
+        ]
+        lit_exe = shutil.which("goose-lit")
+        if lit_exe:
+            candidates.append(Path(lit_exe).resolve().parent.parent / "shim" / "prof_hook.h")
+        for cand in candidates:
+            if cand.exists():
+                return str(cand)
+        return None
+
+    prof_hook_path = _find_prof_hook()
+
     def build_test(f: Path) -> tuple[Path, Path, int, str, str, float]:
         exe_path = f.with_suffix(exe_suffix)
         t_start = time.perf_counter()
         extra_args: list[str] = []
-        if f.name == "telemetry_test.goose":
-            extra_args = ["--include", "shim/prof_hook.h"]
+        if f.name == "telemetry_test.goose" and prof_hook_path:
+            extra_args = ["--include", prof_hook_path]
         cmd = [goose, "build", opt_flag, *debug_args, *extra_args, "-o", str(exe_path), str(f)]
         code, out, err = run_command(cmd, cwd=root_dir)
         elapsed = time.perf_counter() - t_start

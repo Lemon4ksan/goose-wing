@@ -6,7 +6,7 @@
 """Multi-core OSS-Fuzz / SanitizerCoverage orchestrator and background daemon.
 
 Supports two execution engines across all 27 protocol, codec, PKI, and crypto targets:
-  - ``sancov`` (default): compiles ``c_fuzz_entry.goose`` + ``libfuzzer_driver.c`` with
+  - ``sancov`` (default): compiles ``c_fuzz_entry.goose`` + ``goose-lit/shim/fuzz_driver.c`` with
     ``-fsanitize-coverage=trace-pc`` for real 64 KB AFL++ edge-transition feedback,
     persistent evolved corpora under ``.lit/cache/fuzz/evolved/<target>/``, constant-RAM
     RSS drift checks, and 50 ms per-input DoS timeout guards.

@@ -5,7 +5,7 @@
 
 """scripts/sancov_runner.py.
 
-Compiles tests/fuzz/c_fuzz_entry.goose and tests/fuzz/libfuzzer_driver.c with
+Compiles tests/fuzz/c_fuzz_entry.goose and goose-lit/shim/fuzz_driver.c with
 SanitizerCoverage (-fsanitize-coverage=trace-pc) or Clang libFuzzer
 (-fsanitize=fuzzer,address,undefined) and runs coverage-guided fuzzing with
 constant-RAM RSS drift and O(n) time-budget enforcement.
@@ -14,6 +14,7 @@ constant-RAM RSS drift and O(n) time-budget enforcement.
 import argparse
 import os
 import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -30,20 +31,35 @@ SHIM_SOURCES = [
     "shim/page_ring.c",
     "shim/page_mem.c",
     "shim/spsc.c",
-    "shim/profiler.c",
     "shim/crypto_fusion.c",
     "shim/tls_backend.c",
 ]
 
 
-def _fuzzer_is_up_to_date(root: Path, exe_out: Path) -> bool:
+def _find_lit_root(root: Path) -> Path:
+    candidates = [
+        root.parent / "goose-lit",
+        Path.home() / ".goose" / "pkg" / "github.com" / "Lemon4ksan" / "goose-lit",
+    ]
+    lit_exe = shutil.which("goose-lit")
+    if lit_exe:
+        candidates.append(Path(lit_exe).resolve().parent.parent)
+    for cand in candidates:
+        if (cand / "shim" / "fuzz_driver.c").exists():
+            return cand
+    raise RuntimeError(
+        "goose-lit repository not found; expected ../goose-lit or ~/.goose/pkg/github.com/Lemon4ksan/goose-lit"
+    )
+
+
+def _fuzzer_is_up_to_date(root: Path, lit_root: Path, exe_out: Path) -> bool:
     if not exe_out.exists():
         return False
     exe_mtime = exe_out.stat().st_mtime
     watch_paths = [
         root / "tests" / "fuzz" / "c_fuzz_entry.goose",
         root / "tests" / "fuzz" / "oss_fuzz.goose",
-        root / "tests" / "fuzz" / "libfuzzer_driver.c",
+        lit_root / "shim" / "fuzz_driver.c",
         *(root / s for s in SHIM_SOURCES),
     ]
     return all(not (p.exists() and p.stat().st_mtime > exe_mtime) for p in watch_paths)
@@ -57,12 +73,13 @@ def build_fuzzer(
     debug_no_bce: bool,
     force: bool = True,
 ) -> Path:
+    lit_root = _find_lit_root(root)
     cache_dir = root / ".lit" / "cache" / "fuzz"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     exe_name = "sancov_fuzzer.exe" if os.name == "nt" else "sancov_fuzzer"
     exe_out = cache_dir / exe_name
-    if not force and _fuzzer_is_up_to_date(root, exe_out):
+    if not force and _fuzzer_is_up_to_date(root, lit_root, exe_out):
         return exe_out
 
     c_out = cache_dir / "c_fuzz_entry.c"
@@ -79,8 +96,8 @@ def build_fuzzer(
         sys.stderr.write(f"goose codegen failed:\n{res.stdout}\n{res.stderr}\n")
         raise RuntimeError("goose codegen failed")
 
-    driver_c = root / "tests" / "fuzz" / "libfuzzer_driver.c"
-    driver_obj = cache_dir / "libfuzzer_driver.o"
+    driver_c = lit_root / "shim" / "fuzz_driver.c"
+    driver_obj = cache_dir / "fuzz_driver.o"
     is_win_gcc = os.name == "nt" and "gcc" in Path(cc).name.lower()
     arch = platform.machine().lower()
     is_x86 = arch in ("x86_64", "amd64", "i386", "i686")
@@ -123,6 +140,10 @@ def build_fuzzer(
     cc_cmd.extend([str(c_out), str(driver_obj)])
     for shim in SHIM_SOURCES:
         cc_cmd.append(str(root / shim))
+    for lit_shim in ("profiler.c", "alloc_count.c", "proc.c"):
+        cand = lit_root / "shim" / lit_shim
+        if cand.exists():
+            cc_cmd.append(str(cand))
 
     if os.name == "nt":
         cc_cmd.extend(["-lws2_32", "-lmswsock", "-lbcrypt"])
@@ -230,12 +251,12 @@ def main() -> int:
         return 1
 
     env = os.environ.copy()
-    env["WING_FUZZ_MAX_RSS_DRIFT_KB"] = str(args.max_rss_drift_kb)
-    env["WING_FUZZ_MAX_INPUT_MS"] = str(args.max_input_ms)
+    env["LIT_FUZZ_MAX_RSS_DRIFT_KB"] = str(args.max_rss_drift_kb)
+    env["LIT_FUZZ_MAX_INPUT_MS"] = str(args.max_input_ms)
     if args.target >= 0:
-        env["WING_FUZZ_TARGET_ID"] = str(args.target)
+        env["LIT_FUZZ_TARGET_ID"] = str(args.target)
     if args.seed is not None:
-        env["WING_FUZZ_SEED"] = str(args.seed)
+        env["LIT_FUZZ_SEED"] = str(args.seed)
 
     if args.libfuzzer:
         run_cmd = [str(exe_out), f"-runs={args.execs}"]

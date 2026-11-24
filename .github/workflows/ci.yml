@@ -81,27 +81,24 @@ jobs:
 
       - name: Verify C formatting with clang-format
         run: |
-          clang-format --style=file:shim/.clang-format --dry-run --Werror \
-            shim/*.c shim/*.h tests/fuzz/libfuzzer_driver.c
+          clang-format --style=file:shim/.clang-format --dry-run --Werror shim/*.c
 
-      - name: Compile all 14 shims and fuzz driver with gcc
+      - name: Compile all 13 shims with gcc
         run: |
           gcc -Wall -Wextra -Werror -c \
             shim/af_xdp.c shim/crypto_fusion.c shim/dpdk.c shim/kqueue.c \
-            shim/page_mem.c shim/page_ring.c shim/profiler.c shim/rio.c \
+            shim/page_mem.c shim/page_ring.c shim/rio.c \
             shim/simd.c shim/smartnic.c shim/spsc.c shim/tcp.c \
-            shim/tls_backend.c shim/uring.c tests/fuzz/libfuzzer_driver.c
-          gcc -Wall -Wextra -Werror -DLIBFUZZER_EXTERNAL_MAIN=1 -c tests/fuzz/libfuzzer_driver.c
+            shim/tls_backend.c shim/uring.c
           rm -f *.o
 
-      - name: Compile all 14 shims and fuzz driver with clang
+      - name: Compile all 13 shims with clang
         run: |
           clang -Wall -Wextra -Werror -c \
             shim/af_xdp.c shim/crypto_fusion.c shim/dpdk.c shim/kqueue.c \
-            shim/page_mem.c shim/page_ring.c shim/profiler.c shim/rio.c \
+            shim/page_mem.c shim/page_ring.c shim/rio.c \
             shim/simd.c shim/smartnic.c shim/spsc.c shim/tcp.c \
-            shim/tls_backend.c shim/uring.c tests/fuzz/libfuzzer_driver.c
-          clang -Wall -Wextra -Werror -DLIBFUZZER_EXTERNAL_MAIN=1 -c tests/fuzz/libfuzzer_driver.c
+            shim/tls_backend.c shim/uring.c
           rm -f *.o
 
   cross-platform:
@@ -227,6 +224,7 @@ jobs:
 
       - name: Enforce constant-RAM RSS drift and O(n) complexity budgets
         run: |
+          git clone https://github.com/Lemon4ksan/goose-lit.git ../goose-lit
           python scripts/sancov_runner.py --cc gcc --execs 2000 --check-complexity --max-rss-drift-kb 1024 --max-input-ms 50
 
   lit-verification:

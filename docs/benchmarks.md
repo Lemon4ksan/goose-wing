@@ -149,7 +149,7 @@ Measured across stripped binaries (`strip -s` for `goose-wing`,
 `-ldflags="-s -w"` for Go 1.27), cold start over 15 launches, 2,000 active
 `/api/v1/items/{id}` requests across 1,000 open keep-alive TCP sockets,
 10,000-slot `SoAConnTable` population, and runtime allocation counting
-(`tests/lit/alloc_count.c` vs Go `runtime.ReadMemStats`) via
+(`goose-lit/shim/alloc_count.c` vs Go `runtime.ReadMemStats`) via
 [bench/scale_footprint_benchmark.goose](../bench/scale_footprint_benchmark.goose)
 and [scripts/bench_footprint.py](../scripts/bench_footprint.py):
 

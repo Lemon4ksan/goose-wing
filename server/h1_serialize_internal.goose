@@ -11,7 +11,7 @@ import http.headers;
 import http.request;
 import http.response;
 import client.internal;
-import .profiler;
+import .prof_hooks;
 import .h1_codec;
 
 // Serializes an HTTP/1.1 response status line (RFC 9112 Section 4).
@@ -88,7 +88,7 @@ fn update_server_cached_date(
     let tick_sec = if now_sec > 0 { now_sec } else { core::now().wall_sec };
     if date.header_str.len == 0 || date.last_sec != tick_sec {
         date.last_sec = tick_sec;
-        date.last_tsc = server::prof_rdtsc();
+        date.last_tsc = server_prof::lit_rdtsc();
         let wall_sec = if now_sec >= 1577836800 { now_sec } else { core::now().wall_sec };
         date.header_str.clear();
         date.header_str.append("Date: ");

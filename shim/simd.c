@@ -1933,3 +1933,30 @@ int64_t wing_simd_deflate_l1_chunk(wing_bytes_ro src, int64_t chunk_start, int64
 #endif
     return -2;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#define WING_WEAK __attribute__((weak))
+#else
+#define WING_WEAK
+#endif
+
+WING_WEAK int64_t lit_prof_enter(wing_bytes_ro name) {
+    (void)name;
+    return -1;
+}
+
+WING_WEAK void lit_prof_leave(int64_t span_tok) { (void)span_tok; }
+
+WING_WEAK uint64_t lit_rdtsc(void) {
+#if defined(_MSC_VER)
+    return (uint64_t)__rdtsc();
+#elif defined(__x86_64__) || defined(__i386__)
+    return (uint64_t)__rdtsc();
+#elif defined(__aarch64__)
+    uint64_t v = 0;
+    __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(v));
+    return v;
+#else
+    return 0;
+#endif
+}

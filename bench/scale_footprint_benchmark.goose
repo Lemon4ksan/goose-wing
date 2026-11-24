@@ -5,13 +5,7 @@
 // 10,000-Slot SoAConnTable Scaling & Zero-Heap Allocation Proof
 import std;
 import wing from "..";
-
-extern fn alloc_reset() = "wing_alloc_reset";
-extern fn alloc_events() -> u64 = "wing_alloc_events";
-extern fn alloc_bytes() -> u64 = "wing_alloc_bytes";
-extern fn alloc_frees() -> u64 = "wing_alloc_frees";
-extern fn alloc_mark(probe: u8[>..]&) -> u64 = "wing_alloc_mark";
-extern fn alloc_growth(probe: u8[>..]&, mark: u64) -> i64 = "wing_alloc_growth";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 var g_scale_app: server::HttpServer = server::HttpServer { .. };
 
@@ -120,8 +114,8 @@ fn run_zero_alloc_proof(iters: i64) {
         assert(res.status_code == 200);
     }
 
-    alloc_reset();
-    let mark = alloc_mark(probe);
+    lit::alloc_reset();
+    let mark = lit::alloc_mark(probe);
 
     for i in iters {
         let ok_p, _ = server::parse_http1_wire_request(raw_http, req);
@@ -134,10 +128,10 @@ fn run_zero_alloc_proof(iters: i64) {
         assert(res.status_code == 200);
     }
 
-    let growth = alloc_growth(probe, mark);
-    let events = alloc_events();
-    let bytes = alloc_bytes();
-    let frees = alloc_frees();
+    let growth = lit::alloc_growth(probe, mark);
+    let events = lit::alloc_events();
+    let bytes = lit::alloc_bytes();
+    let frees = lit::alloc_frees();
     assert(events == 0 && bytes == 0 && growth == 0);
     print(
         "ZERO_ALLOC_PROOF iters=", iters,

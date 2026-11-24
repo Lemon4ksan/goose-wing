@@ -5,10 +5,11 @@
 // Measures serialized RDTSC clock cycles, p50/p99 tail latency, and three-channel
 // Goose memory watermarks across HTTP/1.1 framing and L7 pipeline stages.
 //
-// RUN: goose build --include shim/prof_hook.h -o %t.exe %s
+// RUN: goose build --include %prof_hook -o %t.exe %s
 // RUN: %t.exe
 import std;
 import wing from "..";
+import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 fn wire_req_plaintext() -> const u8[:] {
     return "GET /plaintext HTTP/1.1\r\nHost: localhost:8080\r\nUser-Agent: goose-client/1.0\r\nAccept: */*\r\nConnection: keep-alive\r\n\r\n";
@@ -79,14 +80,14 @@ fn setup_full_pipeline_server() -> server::HttpServer {
 }
 
 fn main() {
-    var suite = server::new_bench_suite("Goose-Wing L7 Server Stage Profiling Suite", 25);
+    var suite = lit::new_bench_suite("Goose-Wing L7 Server Stage Profiling Suite", 25);
 
-    suite.bench("L0_Plaintext_GET") { b =>
+    lit::bench(suite, "L0_Plaintext_GET") { b =>
         var server = setup_l0_server();
         let req_wire = wire_req_plaintext();
         var resp_wire: u8[..2048] = [];
-        b.set_bytes(req_wire.len);
-        b.reset_timer();
+        lit::bench_set_bytes(b, req_wire.len);
+        lit::bench_reset_timer(b);
         for _ in b.n {
             let _, _, _, _ = server::handle_connection_wire_pipelined_stream(
                 server, "127.0.0.1", req_wire, 1000000000, resp_wire,
@@ -94,13 +95,13 @@ fn main() {
         }
     };
 
-    suite.bench("L0_Plaintext_GET_Memoized") { b =>
+    lit::bench(suite, "L0_Plaintext_GET_Memoized") { b =>
         var server = setup_l0_server();
         server::set_header_memoization(server, true);
         let req_wire = wire_req_plaintext();
         var resp_wire: u8[..2048] = [];
-        b.set_bytes(req_wire.len);
-        b.reset_timer();
+        lit::bench_set_bytes(b, req_wire.len);
+        lit::bench_reset_timer(b);
         for _ in b.n {
             let _, _, _, _ = server::handle_connection_wire_pipelined_stream(
                 server, "127.0.0.1", req_wire, 1000000000, resp_wire,
@@ -109,7 +110,7 @@ fn main() {
         server::set_header_memoization(server, false);
     };
 
-    suite.bench("Dynamic_Route_JSON_Serialize") { b =>
+    lit::bench(suite, "Dynamic_Route_JSON_Serialize") { b =>
         var server = setup_full_pipeline_server();
         server.pipeline.enable_rate_limiter = false;
         server.pipeline.enable_csrf_guard = false;
@@ -117,8 +118,8 @@ fn main() {
         server.pipeline.enable_slowloris_timer = false;
         let req_wire = wire_req_api();
         var resp_wire: u8[..2048] = [];
-        b.set_bytes(req_wire.len);
-        b.reset_timer();
+        lit::bench_set_bytes(b, req_wire.len);
+        lit::bench_reset_timer(b);
         for _ in b.n {
             server::cache_invalidate(server.pipeline.route_cache);
             let _, _, _, _ = server::handle_connection_wire_pipelined_stream(
@@ -127,15 +128,15 @@ fn main() {
         }
     };
 
-    suite.bench("Full_Pipeline_Auth_Cache_Hit") { b =>
+    lit::bench(suite, "Full_Pipeline_Auth_Cache_Hit") { b =>
         var server = setup_full_pipeline_server();
         let req_wire = wire_req_api();
         var resp_wire: u8[..2048] = [];
         let _, _, _, _ = server::handle_connection_wire_pipelined_stream(
             server, "127.0.0.1", req_wire, 1000000000, resp_wire,
         );
-        b.set_bytes(req_wire.len);
-        b.reset_timer();
+        lit::bench_set_bytes(b, req_wire.len);
+        lit::bench_reset_timer(b);
         for _ in b.n {
             let _, _, _, _ = server::handle_connection_wire_pipelined_stream(
                 server, "127.0.0.1", req_wire, 1000000000, resp_wire,
@@ -143,12 +144,12 @@ fn main() {
         }
     };
 
-    suite.bench("Full_Pipeline_Auth_Cache_Miss") { b =>
+    lit::bench(suite, "Full_Pipeline_Auth_Cache_Miss") { b =>
         var server = setup_full_pipeline_server();
         let req_wire = wire_req_api();
         var resp_wire: u8[..2048] = [];
-        b.set_bytes(req_wire.len);
-        b.reset_timer();
+        lit::bench_set_bytes(b, req_wire.len);
+        lit::bench_reset_timer(b);
         for _ in b.n {
             server::cache_invalidate(server.pipeline.route_cache);
             let _, _, _, _ = server::handle_connection_wire_pipelined_stream(
@@ -157,12 +158,12 @@ fn main() {
         }
     };
 
-    suite.bench("Full_Pipeline_Gzip_Compress") { b =>
+    lit::bench(suite, "Full_Pipeline_Gzip_Compress") { b =>
         var server = setup_full_pipeline_server();
         let req_wire = wire_req_gzip();
         var resp_wire: u8[..2048] = [];
-        b.set_bytes(req_wire.len);
-        b.reset_timer();
+        lit::bench_set_bytes(b, req_wire.len);
+        lit::bench_reset_timer(b);
         for _ in b.n {
             let _, _, _, _ = server::handle_connection_wire_pipelined_stream(
                 server, "127.0.0.1", req_wire, 1000000000, resp_wire,
@@ -170,7 +171,7 @@ fn main() {
         }
     };
 
-    suite.bench("HTTP1_Pipelined_16x") { b =>
+    lit::bench(suite, "HTTP1_Pipelined_16x") { b =>
         var server = setup_l0_server();
         let single_req = wire_req_plaintext();
         var batch_wire: u8[..4096] = [];
@@ -178,9 +179,9 @@ fn main() {
             batch_wire.append(single_req);
         }
         var resp_wire: u8[..8192] = [];
-        b.set_bytes(batch_wire.len);
-        b.report_metric(16.0, "reqs/op");
-        b.reset_timer();
+        lit::bench_set_bytes(b, batch_wire.len);
+        lit::bench_report_metric(b, 16.0, "reqs/op");
+        lit::bench_reset_timer(b);
         for _ in b.n {
             let _, _, _, _ = server::handle_connection_wire_pipelined_stream(
                 server, "127.0.0.1", batch_wire[..], 1000000000, resp_wire,
@@ -188,7 +189,7 @@ fn main() {
         }
     };
 
-    suite.bench("HTTP1_Pipelined_16x_Memoized") { b =>
+    lit::bench(suite, "HTTP1_Pipelined_16x_Memoized") { b =>
         var server = setup_l0_server();
         server::set_header_memoization(server, true);
         let single_req = wire_req_plaintext();
@@ -197,9 +198,9 @@ fn main() {
             batch_wire.append(single_req);
         }
         var resp_wire: u8[..8192] = [];
-        b.set_bytes(batch_wire.len);
-        b.report_metric(16.0, "reqs/op");
-        b.reset_timer();
+        lit::bench_set_bytes(b, batch_wire.len);
+        lit::bench_report_metric(b, 16.0, "reqs/op");
+        lit::bench_reset_timer(b);
         for _ in b.n {
             let _, _, _, _ = server::handle_connection_wire_pipelined_stream(
                 server, "127.0.0.1", batch_wire[..], 1000000000, resp_wire,
@@ -208,7 +209,7 @@ fn main() {
         server::set_header_memoization(server, false);
     };
 
-    suite.bench("Live_TCP_Roundtrip") { b =>
+    lit::bench(suite, "Live_TCP_Roundtrip") { b =>
         var server = setup_l0_server();
         let req_wire = wire_req_plaintext();
         let listener = net::tcp_listen("127.0.0.1", 0, 16);
@@ -233,35 +234,35 @@ fn main() {
         var srv_buf:   u8[..2048] = [];
         var cli_buf:   u8[..2048] = [];
         var resp_wire: u8[..2048] = [];
-        b.set_bytes(req_wire.len);
-        b.reset_timer();
+        lit::bench_set_bytes(b, req_wire.len);
+        lit::bench_reset_timer(b);
 
         for _ in b.n {
             let _ = net::tcp_send(client, req_wire);
 
             srv_buf.clear();
-            let tok_r = server::prof_enter("net.tcp_recv");
+            let tok_r = lit::prof_enter("net.tcp_recv");
             let recvd = net::tcp_recv(server_conn, srv_buf, 2048, 2000);
-            server::prof_leave(tok_r);
+            lit::prof_leave(tok_r);
 
             resp_wire.clear();
             let _, _, _, _ = server::handle_connection_wire_pipelined_stream(
                 server, "127.0.0.1", srv_buf[..max(recvd as i64, 0)], 1000000000, resp_wire,
             );
 
-            let tok_s = server::prof_enter("net.tcp_send");
+            let tok_s = lit::prof_enter("net.tcp_send");
             let _ = net::tcp_send(server_conn, resp_wire[..]);
-            server::prof_leave(tok_s);
+            lit::prof_leave(tok_s);
 
             cli_buf.clear();
             let _ = net::tcp_recv(client, cli_buf, 2048, 2000);
         }
 
-        b.stop_timer();
+        lit::bench_stop_timer(b);
         net::tcp_close(client);
         net::tcp_close(server_conn);
         net::tcp_close(listener);
     };
 
-    suite.finish_suite();
+    lit::finish_bench_suite(suite);
 }

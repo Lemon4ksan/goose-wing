@@ -105,7 +105,16 @@ def build_binaries(root: Path, tmp_dir: Path) -> tuple[Path, Path, Path]:
     if strip_bin:
         subprocess.run([strip_bin, "-s", str(goose_exe)], check=False)
 
-    hook_hdr = root / "tests" / "lit" / "alloc_hook.h"
+    lit_candidates = [
+        root.parent / "goose-lit" / "shim" / "alloc_hook.h",
+        Path.home() / ".goose" / "pkg" / "github.com" / "Lemon4ksan" / "goose-lit" / "shim" / "alloc_hook.h",
+    ]
+    lit_exe = shutil.which("goose-lit")
+    if lit_exe:
+        lit_candidates.append(Path(lit_exe).resolve().parent.parent / "shim" / "alloc_hook.h")
+    hook_hdr = next((p for p in lit_candidates if p.exists()), None)
+    if hook_hdr is None:
+        raise RuntimeError("goose-lit/shim/alloc_hook.h not found")
     proc_alloc = subprocess.run(
         [
             "goose",

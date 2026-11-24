@@ -30,7 +30,7 @@ import .router_l0_internal;
 import .pool;
 import .pipeline;
 import .pipeline_internal;
-import .profiler;
+import .prof_hooks;
 import .h2_mux_types_internal;
 import .h2_mux_frames_internal;
 import .h2_mux_streams_internal;
@@ -228,9 +228,9 @@ fn try_prepare_single_h1_wire_turn(
         return false;
     }
     if cl_len > 0 {
-        let _pbf = server::prof_enter("http1.body_framing");
+        let _pbf = server_prof::lit_prof_enter("http1.body_framing");
         g_turn_req.body.append(raw_stream[body_start_idx..total_consumed]);
-        server::prof_leave(_pbf);
+        server_prof::lit_prof_leave(_pbf);
     }
     return true;
 }

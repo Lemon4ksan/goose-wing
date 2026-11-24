@@ -54,7 +54,6 @@ SHIM_SOURCES = [
     "shim/page_ring.c",
     "shim/page_mem.c",
     "shim/spsc.c",
-    "shim/profiler.c",
     "shim/tls_backend.c",
 ]
 

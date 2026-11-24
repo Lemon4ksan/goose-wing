@@ -29,7 +29,7 @@ import .router_l0_internal;
 import .pool;
 import .edge_filter;
 import .cache;
-import .profiler;
+import .prof_hooks;
 import .pipeline;
 
 inline fn is_valid_forwarded_quoted_body(inner: const u8[:]) -> bool {
@@ -175,8 +175,8 @@ fn stage_server_ratelimit_subject<Limiter>(
     res:     http::Response&,
 ) -> wire::StageVerdict {
     guard enabled && subject.len > 0 else { return wire::StageVerdict.Continue; }
-    let _prof = server::prof_enter("stage.ratelimit_subject");
-    defer server::prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("stage.ratelimit_subject");
+    defer server_prof::lit_prof_leave(_prof);
     var composite_key: u8[..128] = [];
     composite_key.append("sub:");
     composite_key.append(subject[..min(subject.len, 96)]);
@@ -244,8 +244,8 @@ fn stage_server_slowloris(
     res:     http::Response&,
 ) -> wire::StageVerdict {
     guard enabled else { return wire::StageVerdict.Continue; }
-    let _prof = server::prof_enter("stage.slowloris");
-    defer server::prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("stage.slowloris");
+    defer server_prof::lit_prof_leave(_prof);
     guard check_connection_tick(timer, now_ns) else {
         res.status_code = 408; // Request Timeout
         return wire::StageVerdict.Abort { err_code: 408 };
@@ -256,8 +256,8 @@ fn stage_server_slowloris(
 
 // Stage 1 (Server Ingress): RFC 9110 §10.1.1 `Expect: 100-continue` validation.
 fn stage_server_expect_100(req: const http::Request&, res: http::Response&) -> wire::StageVerdict {
-    let _prof = server::prof_enter("stage.expect_100");
-    defer server::prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("stage.expect_100");
+    defer server_prof::lit_prof_leave(_prof);
     guard server::validate_pipeline_expect_header(req) else {
         res.status_code = 417; // Expectation Failed
         return wire::StageVerdict.ShortCircuit { status_code: 417 };
@@ -272,8 +272,8 @@ fn stage_server_edge_filter(
     res:    http::Response&,
 ) -> wire::StageVerdict {
     guard filter.enabled && filter.rules.len > 0 else { return wire::StageVerdict.Continue; }
-    let _prof = server::prof_enter("stage.edge_filter");
-    defer server::prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("stage.edge_filter");
+    defer server_prof::lit_prof_leave(_prof);
     let verdict = server::evaluate_edge_filter(filter, req.method[..], req.url[..], req.headers);
     return match verdict {
         Pass => wire::StageVerdict.Continue,
@@ -301,8 +301,8 @@ fn stage_server_ratelimit_ip<Limiter>(
     res:     http::Response&,
 ) -> wire::StageVerdict {
     guard enabled else { return wire::StageVerdict.Continue; }
-    let _prof = server::prof_enter("stage.ratelimit_ip");
-    defer server::prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("stage.ratelimit_ip");
+    defer server_prof::lit_prof_leave(_prof);
     let rl_decision = limiter.check_rate_limit(peer_ip, 1, now_ns);
     security::apply_rate_limit_headers(res, limiter.quota, rl_decision);
     guard rl_decision.is_allowed() else {
@@ -319,8 +319,8 @@ fn stage_server_route_match<Router>(
     out_match: server::RouteMatchResult&,
     res:       http::Response&,
 ) -> wire::StageVerdict {
-    let _prof = server::prof_enter("stage.route_match");
-    defer server::prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("stage.route_match");
+    defer server_prof::lit_prof_leave(_prof);
     out_match = router.match_route(req.method[..], req.url[..], ext.params, ext.canon_url);
     return match out_match {
         NotFound => {
@@ -349,8 +349,8 @@ fn stage_server_ratelimit_route<Limiter>(
     res:        http::Response&,
 ) -> wire::StageVerdict {
     guard enabled else { return wire::StageVerdict.Continue; }
-    let _prof = server::prof_enter("stage.ratelimit_route");
-    defer server::prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("stage.ratelimit_route");
+    defer server_prof::lit_prof_leave(_prof);
     var composite_key: u8[..128] = [];
     composite_key.append(peer_ip[..min(peer_ip.len, 48)]);
     composite_key.push(':');
@@ -371,8 +371,8 @@ fn stage_server_cors(
     res:         http::Response&,
 ) -> wire::StageVerdict {
     guard enabled else { return wire::StageVerdict.Continue; }
-    let _prof = server::prof_enter("stage.cors");
-    defer server::prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("stage.cors");
+    defer server_prof::lit_prof_leave(_prof);
     let cors_res = security::evaluate_cors(cors_policy, req, res);
     if cors_res == security::CorsResult.AllowedPreflight {
         return wire::StageVerdict.ShortCircuit { status_code: res.status_code as u16 };
@@ -402,8 +402,8 @@ fn stage_server_csrf(
     target_scheme: security::CsrfTargetScheme = security::CsrfTargetScheme.Https,
 ) -> wire::StageVerdict {
     guard enabled else { return wire::StageVerdict.Continue; }
-    let _prof = server::prof_enter("stage.csrf");
-    defer server::prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("stage.csrf");
+    defer server_prof::lit_prof_leave(_prof);
     let csrf_res = security::evaluate_request_csrf(csrf_guard, req, target_host, false, target_scheme);
     security::apply_isolation_headers(res);
     return match csrf_res {
@@ -425,8 +425,8 @@ fn stage_server_auth_cookie<Jar>(
     if req.presence_mask != 0 && (req.presence_mask & http::HDR_PRESENCE_COOKIE) == 0 {
         return wire::StageVerdict.Continue;
     }
-    let _prof = server::prof_enter("stage.auth_cookie");
-    defer server::prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("stage.auth_cookie");
+    defer server_prof::lit_prof_leave(_prof);
     let now_sec = if now_ns > 0 { div_euclid(now_ns, 1000000000) as i64 } else { core::now().wall_sec };
     for &e in req.headers.entries {
         guard http::entry_name(req.headers, e).eq_ascii_fold(rfc::HEADER_COOKIE) else { continue; }
@@ -460,8 +460,8 @@ fn stage_server_auth_jwt(
         res.status_code = 503;
         return wire::StageVerdict.ShortCircuit { status_code: 503 };
     }
-    let _prof = server::prof_enter("stage.auth_jwt");
-    defer server::prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("stage.auth_jwt");
+    defer server_prof::lit_prof_leave(_prof);
     let auth_val = http::header(req, rfc::HEADER_AUTHORIZATION);
     let token = extract_bearer_token(auth_val);
     guard token.len > 0 else {

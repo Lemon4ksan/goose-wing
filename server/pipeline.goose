@@ -12,7 +12,6 @@ import .router;
 import .pool;
 import .edge_filter;
 import .cache;
-import .profiler;
 import http.digest_fields;
 import http.signatures;
 import http.security_txt;

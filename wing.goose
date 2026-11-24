@@ -325,6 +325,7 @@ type ClientConfig = client::Config;
 type SessionConfig = client::Config;
 
 import server.internal;
+import server.prof_hooks;
 import server.router_internal;
 import server.router_l0_internal;
 import server.router;
@@ -357,7 +358,6 @@ import server.h2_mux_types_internal;
 import server.h2_mux_frames_internal;
 import server.h2_mux_streams_internal;
 import server.soa_timer;
-import server.profiler;
 
 // Top-level server facade struct/enum aliases (preserve UFCS without wrapper functions).
 type HttpServer = server::HttpServer;

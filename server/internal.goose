@@ -18,7 +18,6 @@ import .cork;
 import .edge_filter;
 import .h1_codec;
 import .h1_codec_internal;
-import .profiler;
 import .sni;
 import .soa_timer;
 import .stream_consumer;
@@ -205,67 +204,6 @@ fn has_non_empty_header_value(headers: const http::HeaderMap&, req_name: const u
         }
     }
     return false;
-}
-
-extern fn wing_bench_begin_suite(suite_name: const u8[:], default_target_ns: i64) = "wing_bench_begin_suite";
-
-extern fn wing_bench_should_run(bench_name: const u8[:]) -> i32 = "wing_bench_should_run";
-
-extern fn wing_bench_begin_pass(
-    bench_name: const u8[:], pass_idx: i32, target_ns: i64,
-) -> i64 = "wing_bench_begin_pass";
-
-extern fn wing_bench_end_pass(pass_idx: i32, cur_n: i64, target_ns: i64) -> i64 = "wing_bench_end_pass";
-
-extern fn wing_bench_reset_timer() = "wing_bench_reset_timer";
-
-extern fn wing_bench_stop_timer() = "wing_bench_stop_timer";
-
-extern fn wing_bench_start_timer() = "wing_bench_start_timer";
-
-extern fn wing_bench_set_bytes(n_bytes: i64) = "wing_bench_set_bytes";
-
-extern fn wing_bench_mark_has_sub() = "wing_bench_mark_has_sub";
-
-extern fn wing_bench_consume_has_sub() -> i32 = "wing_bench_consume_has_sub";
-
-extern fn wing_bench_report_metric(val: f64, unit: const u8[:]) = "wing_bench_report_metric";
-
-extern fn wing_bench_commit(bench_name: const u8[:], final_n: i64, bytes_per_op: i64) = "wing_bench_commit";
-
-extern fn wing_bench_print_report() = "wing_bench_print_report";
-
-struct BenchPostPassSchedule {
-    steady_state_n: i64 = 1,
-    watermark_n:    i64 = 1,
-}
-
-inline fn execute_bench_passes<F: fn(server::Bench&)>(b: server::Bench&) {
-    var cur_n: i64 = 1;
-    while true {
-        let _ = wing_bench_begin_pass(b.name[..], 0, b.target_ns);
-        b.n = cur_n;
-        b.pass_kind = 0;
-        F(b);
-        let res_n = wing_bench_end_pass(0, cur_n, b.target_ns);
-        if res_n > 0 {
-            cur_n = res_n;
-            break;
-        }
-        cur_n = core::sub_sat_i64(0, res_n);
-    }
-
-    let schedule = BenchPostPassSchedule { steady_state_n: cur_n, watermark_n: 1 };
-    const for <N, A> in fields<BenchPostPassSchedule> {
-        let pass_idx: i32 = if N == "steady_state_n" { 1 } else { 2 };
-        let pass_n = schedule.A;
-        let _ = wing_bench_begin_pass(b.name[..], pass_idx, b.target_ns);
-        b.n = pass_n;
-        b.pass_kind = pass_idx;
-        F(b);
-        let _ = wing_bench_end_pass(pass_idx, pass_n, b.target_ns);
-    }
-    wing_bench_commit(b.name[..], cur_n, b.bytes_per_op);
 }
 
 inline fn is_valid_sni_pattern(p_norm: const u8[:]) -> bool {

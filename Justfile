@@ -7,8 +7,8 @@ default:
     @just --list
 
 # Typecheck core libraries, examples, and all test suites
-check:
-    python tools/test_runner.py --check-only
+check target=".":
+    goose-lit check "{{ target }}"
 
 # Run test suites matching a pattern (defaults to all tests) via goose-lit
 test pattern="tests":
@@ -18,13 +18,17 @@ test pattern="tests":
 lit pattern="tests":
     goose-lit "{{ pattern }}"
 
-# Enforce hardware complexity gate on a file
+# Collect real source-to-source branch coverage (.gcrap-cov and LCOV)
+cov target="." tests_path="tests":
+    goose-lit cov "{{ target }}" --tests "{{ tests_path }}" --lcov .lit/cache/cov/merged.info
+
+# Enforce unified quality gate on a file (format, check, G-CRAP, optional LIT test)
 gate target max_gcrap="25":
-    python scripts/verify_wing_gate.py "{{ target }}" --max-gcrap {{ max_gcrap }}
+    goose-lit verify "{{ target }}" --max-gcrap {{ max_gcrap }}
 
 # Verify G-CRAP regression ratchet against baseline
 ratchet:
-    python scripts/ratchet.py
+    goose-lit crap . --baseline .lit/baseline --delta 5.0
 
 # Run static G-CRAP complexity radar
 crap target="." threshold="25.0":
@@ -78,37 +82,41 @@ autobahn *args:
 bench scenario="pipelined" duration="5":
     python tools/bench-vs-uwebsockets/run_cli.py --scenario {{ scenario }} --duration {{ duration }}
 
-# Run stage profiler and benchmark CLI
+# Run native stage profiler and benchmark CLI via goose-lit
 profile *args:
-    python tools/profile.py {{ args }}
+    goose-lit profile {{ args }}
 
-# Format all C shims and fuzz driver with clang-format
+# Run native stateful protocol fuzzer via goose-lit
+fuzz *args:
+    goose-lit fuzz {{ args }}
+
+# Format all C shims with clang-format
 [unix]
 c-fmt:
-    clang-format --style=file:shim/.clang-format -i shim/*.c shim/*.h tests/fuzz/libfuzzer_driver.c
+    clang-format --style=file:shim/.clang-format -i shim/*.c
 
 [windows]
 c-fmt:
-    Get-ChildItem shim\*.c, shim\*.h, tests\fuzz\libfuzzer_driver.c | ForEach-Object { clang-format --style=file:shim/.clang-format -i $_.FullName }
+    Get-ChildItem shim\*.c | ForEach-Object { clang-format --style=file:shim/.clang-format -i $_.FullName }
 
-# Verify C shim and fuzz driver formatting without modifying files
+# Verify C shim formatting without modifying files
 [unix]
 c-fmt-check:
-    clang-format --style=file:shim/.clang-format --dry-run --Werror shim/*.c shim/*.h tests/fuzz/libfuzzer_driver.c
+    clang-format --style=file:shim/.clang-format --dry-run --Werror shim/*.c
 
 [windows]
 c-fmt-check:
-    Get-ChildItem shim\*.c, shim\*.h, tests\fuzz\libfuzzer_driver.c | ForEach-Object { clang-format --style=file:shim/.clang-format --dry-run --Werror $_.FullName; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+    Get-ChildItem shim\*.c | ForEach-Object { clang-format --style=file:shim/.clang-format --dry-run --Werror $_.FullName; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
 
 # Compile C acceleration shims with strict warning flags
 [unix]
 shims:
-    gcc -Wall -Wextra -Werror -c shim/rio.c shim/uring.c shim/kqueue.c shim/simd.c shim/tcp.c shim/af_xdp.c shim/dpdk.c shim/smartnic.c shim/profiler.c shim/tls_backend.c
+    gcc -Wall -Wextra -Werror -c shim/rio.c shim/uring.c shim/kqueue.c shim/simd.c shim/tcp.c shim/af_xdp.c shim/dpdk.c shim/smartnic.c shim/tls_backend.c
     rm -f *.o
 
 [windows]
 shims:
-    gcc -Wall -Wextra -Werror -c shim/rio.c shim/uring.c shim/kqueue.c shim/simd.c shim/tcp.c shim/af_xdp.c shim/dpdk.c shim/smartnic.c shim/profiler.c shim/tls_backend.c
+    gcc -Wall -Wextra -Werror -c shim/rio.c shim/uring.c shim/kqueue.c shim/simd.c shim/tcp.c shim/af_xdp.c shim/dpdk.c shim/smartnic.c shim/tls_backend.c
     Remove-Item -Force -ErrorAction SilentlyContinue *.o
 
 # Run Docker-based gRPC end-to-end verification

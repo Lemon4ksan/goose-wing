@@ -15,7 +15,7 @@ import http.headers.perfect_hash;
 import net.tcp;
 import http.request;
 import http.response;
-import .profiler;
+import .prof_hooks;
 import .h1_codec_internal;
 import .h1_serialize_internal;
 import .internal;
@@ -87,8 +87,8 @@ fn parse_http1_request_line<Req>(
     out_req:     Req&,
     target_mode: RequestTargetMode = RequestTargetMode.OriginOnly,
 ) -> bool {
-    let _prof = prof_enter("http1.req_line");
-    defer prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("http1.req_line");
+    defer server_prof::lit_prof_leave(_prof);
     guard req_line.len >= 14 else { return false; }
 
     let w0 = core::read_le_u64(req_line, 0);
@@ -144,8 +144,8 @@ fn parse_http1_headers_stream<Req>(
     presence_tracker: http::HeaderPresenceTracker&,
     base_offset:      i64 = 0,
 ) -> bool {
-    let _prof = prof_enter("http1.headers");
-    defer prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("http1.headers");
+    defer server_prof::lit_prof_leave(_prof);
     if server_internal::try_restore_cached_headers_stream(rest_headers, out_req, presence_tracker) {
         return true;
     }
@@ -203,8 +203,8 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     }
 
     if has_te {
-        let _pbf = prof_enter("http1.body_framing");
-        defer prof_leave(_pbf);
+        let _pbf = server_prof::lit_prof_enter("http1.body_framing");
+        defer server_prof::lit_prof_leave(_pbf);
         guard server_internal::validate_span_te_header(out_req.headers, presence_tracker.te_idx) else {
             server_internal::clear_request_headers_state(out_req);
             return false, 0;
@@ -240,9 +240,9 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     }
 
     if cl_len > 0 {
-        let _pbf = prof_enter("http1.body_framing");
+        let _pbf = server_prof::lit_prof_enter("http1.body_framing");
         out_req.body.append(wire[body_start_idx..total_consumed]);
-        prof_leave(_pbf);
+        server_prof::lit_prof_leave(_pbf);
     }
 
     return true, total_consumed;
@@ -296,9 +296,9 @@ fn parse_http1_wire_request_with_limits<Req>(
     let total_consumed = core::add_sat_i64(body_start_idx, cl_len);
     guard wire.len >= total_consumed else { return H1WireParseStatus.Incomplete, 0; }
     if cl_len > 0 {
-        let _pbf = prof_enter("http1.body_framing");
+        let _pbf = server_prof::lit_prof_enter("http1.body_framing");
         out_req.body.append(wire[body_start_idx..total_consumed]);
-        prof_leave(_pbf);
+        server_prof::lit_prof_leave(_pbf);
     }
     return H1WireParseStatus.Ok, total_consumed;
 }
@@ -473,8 +473,8 @@ fn serialize_http1_response<Res, B>(
     now_sec:       i64                = 0,
     header_policy: ServerHeaderPolicy = ServerHeaderPolicy.Standard,
 ) {
-    let _prof = prof_enter("http1.resp_serialize");
-    defer prof_leave(_prof);
+    let _prof = server_prof::lit_prof_enter("http1.resp_serialize");
+    defer server_prof::lit_prof_leave(_prof);
     let is_empty_status = rfc::is_empty_body_status(res.status_code);
     if !is_empty_status {
         if res.trailers.entries.len > 0 {

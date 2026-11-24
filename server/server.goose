@@ -10,7 +10,6 @@ import core;
 import .router;
 import .pool;
 import .pipeline;
-import .profiler;
 import .h2_mux_types_internal;
 import .h2_mux_frames_internal;
 import .h2_mux_streams_internal;

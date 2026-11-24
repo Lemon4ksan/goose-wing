@@ -36,7 +36,7 @@ RUN mkdir -p /app/.lit/cache/ctgrind && \
         /app/.lit/cache/ctgrind/ctgrind_target.o /app/.lit/cache/ctgrind/ctgrind_harness.o \
         shim/rio.c shim/uring.c shim/kqueue.c shim/simd.c shim/tcp.c \
         shim/af_xdp.c shim/dpdk.c shim/smartnic.c shim/page_ring.c \
-        shim/page_mem.c shim/spsc.c shim/profiler.c shim/tls_backend.c \
+        shim/page_mem.c shim/spsc.c shim/tls_backend.c \
         -lpthread -lm -ldl -o /app/.lit/cache/ctgrind/ctgrind_harness
 
 ENTRYPOINT ["valgrind", "--error-exitcode=42", "--track-origins=yes", "/app/.lit/cache/ctgrind/ctgrind_harness"]

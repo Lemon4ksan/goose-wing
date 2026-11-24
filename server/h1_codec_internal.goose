@@ -15,7 +15,7 @@ import http.headers.internal;
 import http.request;
 import http.response;
 import wire.h1;
-import .profiler;
+import .prof_hooks;
 import .h1_codec;
 import .h1_serialize_internal;
 
@@ -402,9 +402,9 @@ fn parse_http1_request_preamble<Req>(
     let active_wire = wire[req_offset..];
 
     // Find end of headers (\r\n\r\n) via AVX2 / 32-bit fast scanner
-    let _pf = server::prof_enter("http1.framing");
+    let _pf = server_prof::lit_prof_enter("http1.framing");
     let hdr_end = core::fast_find_crlfcrlf(active_wire);
-    server::prof_leave(_pf);
+    server_prof::lit_prof_leave(_pf);
     // RFC 9112 Section 2.1 & uWS #1658: Total header block must not exceed 8192 bytes
     if hdr_end > 8192 || (hdr_end < 0 && active_wire.len > 8192) {
         return "", 0, false;
@@ -453,9 +453,9 @@ fn parse_http1_request_headers_fixed<Req>(
     out_req.trailers.clear();
 
     // RFC 9112 Section 3.2 & uWS #1949: Host header validation
-    let _phv = server::prof_enter("http1.host_val");
+    let _phv = server_prof::lit_prof_enter("http1.host_val");
     let ok_host = validate_request_host_presence(out_req, presence_tracker);
-    server::prof_leave(_phv);
+    server_prof::lit_prof_leave(_phv);
     guard ok_host else {
         clear_request_headers_state(out_req);
         return false;
@@ -774,8 +774,8 @@ fn parse_http1_wire_chunked_body_with_limit<Req>(
     out_req:        Req&,
     eff_body:       i64,
 ) -> server::H1WireParseStatus, i64 {
-    let _pbf = server::prof_enter("http1.body_framing");
-    defer server::prof_leave(_pbf);
+    let _pbf = server_prof::lit_prof_enter("http1.body_framing");
+    defer server_prof::lit_prof_leave(_pbf);
     guard validate_span_te_header(out_req.headers, te_idx) else {
         clear_request_headers_state(out_req);
         return server::H1WireParseStatus.BadRequest, 0;

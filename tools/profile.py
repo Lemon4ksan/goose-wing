@@ -10,20 +10,37 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 
+def _find_lit_root(repo_root: Path) -> Path:
+    candidates = [
+        repo_root.parent / "goose-lit",
+        Path.home() / ".goose" / "pkg" / "github.com" / "Lemon4ksan" / "goose-lit",
+    ]
+    lit_exe = shutil.which("goose-lit")
+    if lit_exe:
+        candidates.append(Path(lit_exe).resolve().parent.parent)
+    for cand in candidates:
+        if (cand / "shim" / "prof_hook.h").exists():
+            return cand
+    raise RuntimeError(
+        "goose-lit repository not found; expected ../goose-lit or ~/.goose/pkg/github.com/Lemon4ksan/goose-lit"
+    )
+
+
 def parse_profiler_output(stdout_text: str) -> dict[str, Any]:
-    """Parses @WING_BENCH and @WING_STAGE TSV records emitted by shim/profiler.c."""
+    """Parses @LIT_BENCH and @LIT_STAGE TSV records emitted by goose-lit profiler."""
     cases: dict[str, dict[str, Any]] = {}
     suite_name = "Goose-Wing Benchmark Suite"
 
     for raw_line in stdout_text.splitlines():
         line = raw_line.strip()
-        if line.startswith("@WING_BENCH\t"):
+        if line.startswith("@LIT_BENCH\t"):
             parts = line.split("\t")
             if len(parts) < 13:
                 continue
@@ -44,7 +61,7 @@ def parse_profiler_output(stdout_text: str) -> dict[str, Any]:
                 "custom_unit": parts[12],
                 "stages": [],
             }
-        elif line.startswith("@WING_STAGE\t"):
+        elif line.startswith("@LIT_STAGE\t"):
             parts = line.split("\t")
             if len(parts) < 13:
                 continue
@@ -84,9 +101,9 @@ def parse_profiler_output(stdout_text: str) -> dict[str, Any]:
 
 
 def print_human_output(stdout_text: str) -> None:
-    """Prints human-readable benchmark tables, filtering out machine @WING_* TSV lines."""
+    """Prints human-readable benchmark tables, filtering out machine @LIT_* TSV lines."""
     for line in stdout_text.splitlines():
-        if line.startswith(("@WING_BENCH\t", "@WING_STAGE\t")):
+        if line.startswith(("@LIT_BENCH\t", "@LIT_STAGE\t")):
             continue
         print(line)
 
@@ -201,13 +218,13 @@ def main() -> int:
     parser.add_argument(
         "--filter",
         default="",
-        help="Substring filter for benchmark case names (WING_BENCH_FILTER)",
+        help="Substring filter for benchmark case names (LIT_BENCH_FILTER)",
     )
     parser.add_argument(
         "--benchtime",
         type=int,
         default=0,
-        help="Override target timing duration per case in milliseconds (WING_BENCH_TARGET_MS)",
+        help="Override target timing duration per case in milliseconds (LIT_BENCH_TARGET_MS)",
     )
     parser.add_argument(
         "--save",
@@ -246,15 +263,16 @@ def main() -> int:
             env["GOOSE_CC"] = str(gcc_wrapper)
 
     if args.filter:
-        env["WING_BENCH_FILTER"] = args.filter
+        env["LIT_BENCH_FILTER"] = args.filter
     if args.benchtime > 0:
-        env["WING_BENCH_TARGET_MS"] = str(args.benchtime)
+        env["LIT_BENCH_TARGET_MS"] = str(args.benchtime)
 
+    lit_root = _find_lit_root(repo_root)
     cmd_build = [
         "goose",
         "build",
         "--include",
-        str((repo_root / "shim" / "prof_hook.h").as_posix()),
+        str((lit_root / "shim" / "prof_hook.h").as_posix()),
         "-o",
         str(exe_path),
         str(target_path),

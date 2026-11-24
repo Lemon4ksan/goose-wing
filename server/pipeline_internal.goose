@@ -29,7 +29,7 @@ import .router_l0_internal;
 import .pool;
 import .edge_filter;
 import .cache;
-import .profiler;
+import .prof_hooks;
 import .pipeline;
 import .pipeline_ingress_internal;
 import .pipeline_egress_internal;
@@ -368,7 +368,7 @@ fn execute_found_route_handler<UserStage>(
         }
     }
 
-    let _prof_h = server::prof_enter("stage.handler");
+    let _prof_h = server_prof::lit_prof_enter("stage.handler");
     out_future = server_internal::new_inline_handler_future(f.handler_id as u16);
     server_internal::poll_future(out_future);
 
@@ -382,7 +382,7 @@ fn execute_found_route_handler<UserStage>(
             }
         },
         Abort _ => {
-            server::prof_leave(_prof_h);
+            server_prof::lit_prof_leave(_prof_h);
             cfg.route_cache.is_updating = false;
             return server::PipelineOutcome.CsrfRejected;
         },
@@ -390,7 +390,7 @@ fn execute_found_route_handler<UserStage>(
     };
 
     if sctx.is_pending {
-        server::prof_leave(_prof_h);
+        server_prof::lit_prof_leave(_prof_h);
         cfg.route_cache.is_updating = false;
         return server::PipelineOutcome.Pending;
     }
@@ -399,7 +399,7 @@ fn execute_found_route_handler<UserStage>(
         res.status_code = 200;
         apply_route_payload(cfg, f.handler_id, res);
     }
-    server::prof_leave(_prof_h);
+    server_prof::lit_prof_leave(_prof_h);
     maybe_store_server_route_cache(cfg, req, now_ns, res, f.handler_id, f.egress_mask);
     return server::PipelineOutcome.Handled;
 }
