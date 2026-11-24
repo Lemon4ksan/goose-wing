@@ -185,10 +185,16 @@ root struct OverflowArena {
 
 let EMPTY_OVERFLOW_ARENA: OverflowArena = OverflowArena { .. };
 
-// Clears all overflow spill buffers while preserving underlying stack allocations for reuse.
-checkfree fn reset_overflow_arena(arena: OverflowArena&) {
+// Clears and zeroizes all overflow spill buffers while preserving capacity for reuse.
+fn reset_overflow_arena(arena: OverflowArena&) {
+    if arena.spill_raw.len > 0 {
+        core::secure_zeroize_slice(arena.spill_raw[..]);
+    }
     arena.spill_raw.clear();
     arena.spill_entries.clear();
+    if arena.spill_url.len > 0 {
+        core::secure_zeroize_slice(arena.spill_url[..]);
+    }
     arena.spill_url.clear();
 }
 
@@ -946,7 +952,9 @@ fn has_header(map: const HeaderMap&, name: const u8[:]) -> bool {
     let wk_id = classify_well_known_header(name);
     if wk_id != WellKnownHeader.Unknown {
         let slot = well_known_to_slot(wk_id);
-        return map.inline_slots[slot] != 0xFF;
+        let idx = map.inline_slots[slot];
+        guard idx != 0xFF && idx < map.entries.len else { return false; }
+        return map.entries[idx as i64].reserved == HEADER_SRC_STACK;
     }
     let hname = hash_header_name(name);
     for &entry in map.entries {
@@ -965,7 +973,7 @@ fn get_header(map: const HeaderMap&, name: const u8[:]) -> const u8[:] {
     if wk_id != WellKnownHeader.Unknown {
         let slot = well_known_to_slot(wk_id);
         let idx = map.inline_slots[slot];
-        if idx != 0xFF {
+        if idx != 0xFF && idx < map.entries.len {
             let entry .= map.entries[idx as i64];
             return entry_value(map, entry);
         }
@@ -1088,10 +1096,14 @@ fn header_view_copy_to_spill(
         reset_overflow_arena(out_arena);
     };
     for &entry in v.entries {
-        let name = header_view_name(v, entry);
-        let val = header_view_value(v, entry);
+        let nb: i64 = entry.name_begin;
+        let ne: i64 = entry.name_end;
+        let vb: i64 = entry.values_begin;
+        let ve: i64 = entry.values_end;
+        guard nb >= 0 && nb <= ne && ne <= v.raw.len else { return false; }
+        guard vb >= 0 && vb <= ve && ve <= v.raw.len else { return false; }
         guard append_header_spill(
-            out_map, out_arena, name, val, entry.flags & HEADER_FLAG_SENSITIVE,
+            out_map, out_arena, v.raw[nb..ne], v.raw[vb..ve], entry.flags & HEADER_FLAG_SENSITIVE,
         ) else {
             return false;
         }
@@ -1176,7 +1188,9 @@ checkfree fn get_inline(map: const HeaderMap&, id: WellKnownHeader) -> const u8[
         let entry = map.entries[i];
         let b: i64 = entry.values_begin;
         let e: i64 = entry.values_end;
-        guard b >= 0 && b <= e && e <= map.raw_buf.len else { return ""; }
+        guard entry.reserved == HEADER_SRC_STACK && b >= 0 && b <= e && e <= map.raw_buf.len else {
+            return "";
+        }
         return map.raw_buf[b..e];
     }
     return "";
@@ -1248,7 +1262,7 @@ fn append_validated_header_spill(
     extra_flags: u8,
 ) -> bool {
     let needed = core::add_sat_i64(name.len, trimmed.len);
-    if map.entries.len < 128 && core::add_sat_i64(map.raw_buf.len, needed) <= 8192 {
+    if arena.spill_entries.len == 0 && map.entries.len < 128 && core::add_sat_i64(map.raw_buf.len, needed) <= 8192 {
         append_to_stack_raw(map, arena.spill_raw[..], name, trimmed, extra_flags);
         return true;
     }
@@ -1256,7 +1270,7 @@ fn append_validated_header_spill(
     guard core::add_sat_i64(arena.spill_raw.len, needed) <= MAX_OVERFLOW_RAW_BYTES else {
         return false;
     }
-    let use_stack_entries = map.entries.len < 128;
+    let use_stack_entries = arena.spill_entries.len == 0 && map.entries.len < 128;
     if !use_stack_entries {
         guard arena.spill_entries.len < MAX_OVERFLOW_SPILL_ENTRIES else { return false; }
     }
@@ -1528,10 +1542,49 @@ fn finish_in_place_compaction(
         map.header_contains_comma.pop();
     }
     let target_raw_len = write_raw_pos as i64;
+    if target_raw_len < map.raw_buf.len {
+        core::secure_zeroize_slice(map.raw_buf[target_raw_len..]);
+    }
     while map.raw_buf.len > target_raw_len {
         map.raw_buf.pop();
     }
     http_internal::rebuild_inline_slots_and_chains(map, spill_raw);
+}
+
+fn relocate_arena_entry(entry: HeaderEntry&, src_raw: const u8[:], dst_raw: u8[>..]&) {
+    guard entry.reserved == HEADER_SRC_ARENA else { return; }
+    let nb: i64 = entry.name_begin;
+    let ne: i64 = entry.name_end;
+    let vb: i64 = entry.values_begin;
+    let ve: i64 = entry.values_end;
+    let new_nb = dst_raw.len as u16;
+    if nb >= 0 && nb <= ne && ne <= src_raw.len {
+        dst_raw.append(src_raw[nb..ne]);
+    }
+    let new_ne = dst_raw.len as u16;
+    if vb >= 0 && vb <= ve && ve <= src_raw.len {
+        dst_raw.append(src_raw[vb..ve]);
+    }
+    let new_ve = dst_raw.len as u16;
+    entry.name_begin = new_nb;
+    entry.name_end = new_ne;
+    entry.values_begin = new_ne;
+    entry.values_end = new_ve;
+}
+
+fn compact_arena_spill_raw(map: HeaderMap&, arena: OverflowArena&, kept_map_count: i64) {
+    guard arena.spill_raw.len > 0 else { return; }
+    var tmp_raw: u8[>..] = [];
+    for i in 0..kept_map_count {
+        relocate_arena_entry(map.entries[i], arena.spill_raw[..], tmp_raw);
+    }
+    for si in 0..arena.spill_entries.len {
+        relocate_arena_entry(arena.spill_entries[si], arena.spill_raw[..], tmp_raw);
+    }
+    core::secure_zeroize_slice(arena.spill_raw[..]);
+    arena.spill_raw.clear();
+    arena.spill_raw.append(tmp_raw[..]);
+    core::secure_zeroize_slice(tmp_raw[..]);
 }
 
 fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
@@ -1585,9 +1638,41 @@ fn remove_header_spill(map: HeaderMap&, arena: OverflowArena&, name: const u8[:]
         while arena.spill_entries.len > spill_write {
             arena.spill_entries.pop();
         }
+        compact_arena_spill_raw(map, arena, write_entry_i);
         finish_in_place_compaction(map, write_entry_i, write_raw_pos, arena.spill_raw[..]);
     }
     return found;
+}
+
+fn entry_byte_cost(entry: const HeaderEntry&) -> i64 {
+    let n_len = core::sub_sat_i64(entry.name_end, entry.name_begin);
+    let v_len = core::sub_sat_i64(entry.values_end, entry.values_begin);
+    return core::add_sat_i64(n_len, v_len);
+}
+
+fn accumulate_kept_slice(
+    entries:        const HeaderEntry[:],
+    map:            const HeaderMap&,
+    arena:          const OverflowArena&,
+    target_name:    const u8[:],
+    has_match:      bool&,
+    kept_count:     i64&,
+    kept_stack_raw: i64&,
+    kept_arena_raw: i64&,
+) {
+    for &e in entries {
+        if entry_name_spill(map, arena, e).eq_ascii_fold(target_name) {
+            has_match = true;
+            continue;
+        }
+        kept_count = core::add_sat_i64(kept_count, 1);
+        let cost = entry_byte_cost(e);
+        if e.reserved == HEADER_SRC_ARENA {
+            kept_arena_raw = core::add_sat_i64(kept_arena_raw, cost);
+        } else {
+            kept_stack_raw = core::add_sat_i64(kept_stack_raw, cost);
+        }
+    }
 }
 
 fn set_or_replace_spill(
@@ -1601,10 +1686,29 @@ fn set_or_replace_spill(
     guard valid_name && is_valid_header_value(value) else { return false; }
     let trimmed = value.trim_lws();
     let needed = core::add_sat_i64(name.len, trimmed.len);
-    let can_stack = core::add_sat_i64(map.raw_buf.len, needed) <= 8192;
-    let can_spill = core::add_sat_i64(arena.spill_raw.len, needed) <= MAX_OVERFLOW_RAW_BYTES;
+
+    var has_match = false;
+    var kept_map_cnt:   i64 = 0;
+    var kept_spill_cnt: i64 = 0;
+    var kept_stack_raw: i64 = 0;
+    var kept_arena_raw: i64 = 0;
+    accumulate_kept_slice(
+        map.entries[..], map, arena, name, has_match, kept_map_cnt, kept_stack_raw, kept_arena_raw,
+    );
+    accumulate_kept_slice(
+        arena.spill_entries[..], map, arena, name, has_match, kept_spill_cnt, kept_stack_raw, kept_arena_raw,
+    );
+
+    let post_stack_raw = if has_match { kept_stack_raw } else { map.raw_buf.len };
+    let post_arena_raw = if has_match { kept_arena_raw } else { arena.spill_raw.len };
+    let can_stack = kept_spill_cnt == 0
+        && kept_map_cnt < 128
+        && core::add_sat_i64(post_stack_raw, needed) <= 8192;
+    let can_spill = core::add_sat_i64(post_arena_raw, needed) <= MAX_OVERFLOW_RAW_BYTES
+        && (kept_spill_cnt == 0 && kept_map_cnt < 128 || kept_spill_cnt < MAX_OVERFLOW_SPILL_ENTRIES);
     guard can_stack || can_spill else { return false; }
-    if has_header_spill(map, arena, name) {
+
+    if has_match {
         let _ = remove_header_spill(map, arena, name);
     }
     return append_validated_header_spill(map, arena, name, trimmed, flags);

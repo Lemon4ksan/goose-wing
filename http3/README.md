@@ -67,6 +67,7 @@ enum QpackError {
     ClosedCriticalStream, StreamCreationError, FrameEncodingError,
     MessageError,
 }
+enum QpackIndexingPolicy { Default, NeverIndex }
 
 fn new_qpack_table(max_capacity: u64 = 4096, max_blocked: u32 = 16, initial_capacity: u64 = 4096) -> QpackTable
 fn qpack_set_capacity(tbl: QpackTable&, new_cap: u64) -> bool
@@ -79,7 +80,7 @@ fn decode_or_track_blocked_qpack_to_map(tbl: QpackTable&, stream_id: u64, src: c
 fn decode_or_track_blocked_qpack_to_map_spill(tbl: QpackTable&, stream_id: u64, src: const u8[:], out_pseudo: PseudoHeaders&, out_headers: http::HeaderMap&, out_arena: http::OverflowArena&, max_field_section: u64 = 65535) -> QpackError
 fn decode_qpack_section<F>(tbl: const QpackTable&, src: const u8[:], out_fields: F&, max_field_section: u64 = 16384) -> QpackError
 fn decode_or_block_qpack_section<F>(tbl: QpackTable&, stream_id: u64, src: const u8[:], out_fields: F&, max_field_section: u64 = 16384, is_push_promise: bool = false, push_id: u64 = 0) -> QpackError
-fn encode_qpack_field<B>(out: B&, name: const u8[:], val: const u8[:], use_huffman: bool = true) -> bool
+fn encode_qpack_field<B>(out: B&, name: const u8[:], val: const u8[:], use_huffman: bool = true, indexing: QpackIndexingPolicy = QpackIndexingPolicy.Default) -> bool
 fn encode_qpack_field_dynamic<B1, B2>(tbl: QpackTable&, stream_id: u64, base: u64, name: const u8[:], val: const u8[:], out_section: B1&, out_enc_stream: B2&, max_dyn_abs_used: u64&, used_any_dyn: bool&, use_huffman: bool = true) -> bool
 ```
 

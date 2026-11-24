@@ -164,6 +164,9 @@ fn free_edge_hdr_buf(h_idx: i64) {
     let hb .= g_h2_edge_hdr_bufs[h_idx];
     guard hb.in_use else { return; }
     hb.entries.clear();
+    if hb.raw.len > 0 {
+        core::secure_zeroize_slice(hb.raw[..]);
+    }
     hb.raw.clear();
     hb.in_use = false;
     hb.next_idx = g_h2_edge_free_hdr;
@@ -377,6 +380,9 @@ fn fail_edge_connection(slot: H2EdgeSlot&, error_code: u32) -> bool {
         slot.conn_failed = true;
         slot.conn.continuation_stream_id = 0;
         slot.refused_cont_stream_id = 0;
+        if slot.header_accum.len > 0 {
+            core::secure_zeroize_slice(slot.header_accum[..]);
+        }
         slot.header_accum.clear();
         let _ = emit_edge_goaway(slot, error_code);
         let _ = enqueue_edge_event(
@@ -464,6 +470,9 @@ fn build_request_event_hdr_buf(
     var committed = false;
     defer if !committed {
         out_hb.entries.clear();
+        if out_hb.raw.len > 0 {
+            core::secure_zeroize_slice(out_hb.raw[..]);
+        }
         out_hb.raw.clear();
     };
     if pseudo.has_method {
@@ -493,6 +502,7 @@ fn finalize_edge_header_block(slot: H2EdgeSlot&) -> bool {
     var pseudo = PseudoHeaders { is_trailer: is_trailer, .. };
     var decoded = http::HeaderMap { .. };
     var decoded_arena = http::OverflowArena { .. };
+    defer http::reset_overflow_arena(decoded_arena);
     // RFC 9113 Section 4.3: Field Section Compression and Decompression - Keep HPACK table state synchronized.
     let dec_err = decode_hpack_to_map_spill(
         slot.conn.hpack_dec,
@@ -503,6 +513,9 @@ fn finalize_edge_header_block(slot: H2EdgeSlot&) -> bool {
         slot.conn.max_header_list_size,
         true,
     );
+    if slot.header_accum.len > 0 {
+        core::secure_zeroize_slice(slot.header_accum[..]);
+    }
     slot.header_accum.clear();
     slot.hdr_stream_id = 0;
 
@@ -1243,6 +1256,15 @@ fn h2_edge_close(sess: H2EdgeSession&) {
     guard idx >= 0 else { return; }
     let slot .= g_h2_edge_slots[idx];
     clear_slot_event_queue(slot);
+    if slot.ev_hdr_raw.len > 0 {
+        core::secure_zeroize_slice(slot.ev_hdr_raw[..]);
+    }
+    if slot.ev_data_buf.len > 0 {
+        core::secure_zeroize_slice(slot.ev_data_buf[..]);
+    }
+    if slot.header_accum.len > 0 {
+        core::secure_zeroize_slice(slot.header_accum[..]);
+    }
     slot = H2EdgeSlot { .. };
     g_h2_edge_active_count = core::sub_sat_i64(g_h2_edge_active_count, 1);
 }
@@ -1298,6 +1320,11 @@ fn pop_edge_event_head(
     if slot.ev_head < 0 {
         slot.ev_tail = -1;
     }
+    slot.ev_hdr_entries.clear();
+    if slot.ev_hdr_raw.len > 0 {
+        core::secure_zeroize_slice(slot.ev_hdr_raw[..]);
+    }
+    slot.ev_hdr_raw.clear();
     out_slot_idx = idx;
     out_ev_idx = ev_idx;
     out_node = node;
@@ -1336,11 +1363,23 @@ fn copy_hdr_buf_to_legacy_map(hb: const H2EdgeHdrBuf&, out_headers: http::Header
     return true;
 }
 
+fn can_legacy_poll_head(sess: const H2EdgeSession&) -> bool {
+    let idx = lookup_live_edge_slot_idx(sess);
+    guard idx >= 0 else { return true; }
+    let slot .= g_h2_edge_slots[idx];
+    guard slot.ev_head >= 0 else { return true; }
+    let hs = g_h2_edge_events[slot.ev_head].header_slot;
+    guard hs >= 0 else { return true; }
+    let hb .= g_h2_edge_hdr_bufs[hs];
+    return hb.raw.len <= 8192 && hb.entries.len <= 128;
+}
+
 // Pops the next event into `out_ev` when headers fit `HeaderMap` (<= 8192 B / 128 entries).
-// Returns `false` and clears `out_ev` if headers exceed stack limits (use `_spill` or `_view`).
+// Leaves oversized events queued and returns `false` (use `_spill` or `_view`).
 // Any `out_ev.data` slice remains valid until the next poll, feed, or close on `sess`.
 fn h2_edge_poll_event(sess: H2EdgeSession&, out_ev: H2EdgeEvent&) -> bool {
     out_ev = H2EdgeEvent { .. };
+    guard can_legacy_poll_head(sess) else { return false; }
     var slot_idx: i64 = -1;
     var ev_idx:   i64 = -1;
     var node = H2EdgeEventNode { .. };
@@ -1410,11 +1449,21 @@ fn h2_edge_poll_event_view(sess: H2EdgeSession&, out_ev: H2EdgeEventView&) -> bo
     guard pop_edge_event_head(sess, slot_idx, ev_idx, node) else { return false; }
     defer free_edge_event_node(ev_idx);
 
-    var committed = false;
-    defer if !committed { out_ev = H2EdgeEventView { .. }; };
-
     let slot .= g_h2_edge_slots[slot_idx];
+    var committed = false;
+    defer if !committed {
+        out_ev = H2EdgeEventView { .. };
+        slot.ev_hdr_entries.clear();
+        if slot.ev_hdr_raw.len > 0 {
+            core::secure_zeroize_slice(slot.ev_hdr_raw[..]);
+        }
+        slot.ev_hdr_raw.clear();
+    };
+
     slot.ev_hdr_entries.clear();
+    if slot.ev_hdr_raw.len > 0 {
+        core::secure_zeroize_slice(slot.ev_hdr_raw[..]);
+    }
     slot.ev_hdr_raw.clear();
     out_ev.kind = node.kind;
     out_ev.stream_id = node.stream_id;
@@ -1524,6 +1573,12 @@ fn h2_edge_send_headers_slices(
     };
 
     g_h2_edge_hpack_scratch.clear();
+    defer {
+        if g_h2_edge_hpack_scratch.len > 0 {
+            core::secure_zeroize_slice(g_h2_edge_hpack_scratch[..]);
+        }
+        g_h2_edge_hpack_scratch.clear();
+    };
     guard encode_edge_response_hpack_slices(
         slot.hpack_enc,
         slot.hpack_enc_pending_size_update,

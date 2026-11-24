@@ -112,6 +112,39 @@ fn parse_single_header_line(
     return http::HeaderParseError.None;
 }
 
+fn append_overflow_spill_entry(
+    map:         http::HeaderMap&,
+    arena:       http::OverflowArena&,
+    raw_name:    const u8[:],
+    val_trimmed: const u8[:],
+    entry:       http::HeaderEntry,
+) -> http::HeaderParseError {
+    guard arena.spill_entries.len < http::MAX_OVERFLOW_SPILL_ENTRIES else {
+        map.valid = false;
+        return http::HeaderParseError.CapacityExceeded;
+    }
+    var spill_entry = entry;
+    if spill_entry.reserved != http::HEADER_SRC_ARENA {
+        let needed = core::add_sat_i64(raw_name.len, val_trimmed.len);
+        guard core::add_sat_i64(arena.spill_raw.len, needed) <= http::MAX_OVERFLOW_RAW_BYTES else {
+            map.valid = false;
+            return http::HeaderParseError.CapacityExceeded;
+        }
+        let nb = arena.spill_raw.len as u16;
+        arena.spill_raw.append(raw_name);
+        let ne = arena.spill_raw.len as u16;
+        arena.spill_raw.append(val_trimmed);
+        let ve = arena.spill_raw.len as u16;
+        spill_entry.name_begin = nb;
+        spill_entry.name_end = ne;
+        spill_entry.values_begin = ne;
+        spill_entry.values_end = ve;
+        spill_entry.reserved = http::HEADER_SRC_ARENA;
+    }
+    arena.spill_entries.push(spill_entry);
+    return http::HeaderParseError.None;
+}
+
 // Parses a single wire header line into HeaderMap or OverflowArena.
 //
 // Example:
@@ -189,19 +222,14 @@ fn parse_single_overflow_header_line(
         name_hash: hname,
     };
 
-    if map.entries.len < 128 {
+    if map.entries.len < 128 && arena.spill_entries.len == 0 {
         let new_idx = map.entries.len as u8;
         link_header_entry(map, wk_id, raw_name, hname, new_idx, arena.spill_raw[..]);
         map.entries.push(new_entry);
         map.header_contains_comma.push(contains_comma);
-    } else {
-        guard arena.spill_entries.len < http::MAX_OVERFLOW_SPILL_ENTRIES else {
-            map.valid = false;
-            return http::HeaderParseError.CapacityExceeded;
-        }
-        arena.spill_entries.push(new_entry);
+        return http::HeaderParseError.None;
     }
-    return http::HeaderParseError.None;
+    return append_overflow_spill_entry(map, arena, raw_name, val_trimmed, new_entry);
 }
 
 fn process_header_line(

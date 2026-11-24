@@ -637,6 +637,24 @@ fn validate_regular_field_rules(
     );
 }
 
+fn append_regular_entry_impl(
+    out_headers: http::HeaderMap&,
+    out_arena:   http::OverflowArena&,
+    spill_mode:  h2_internal::HpackSpillMode,
+    name:        const u8[:],
+    val:         const u8[:],
+    extra_flags: u8,
+) -> bool {
+    if spill_mode == h2_internal::HpackSpillMode.AllowSpill {
+        return http::append_validated_header_spill(out_headers, out_arena, name, val, extra_flags);
+    }
+    guard http::append_validated_header(out_headers, name, val) else { return false; }
+    if extra_flags != 0 && out_headers.entries.len > 0 {
+        out_headers.entries[core::sub_sat_i64(out_headers.entries.len, 1)].flags |= extra_flags;
+    }
+    return true;
+}
+
 fn record_validated_regular_field<C>(
     out_pseudo:           PseudoHeaders&,
     out_headers:          http::HeaderMap&,
@@ -647,6 +665,7 @@ fn record_validated_regular_field<C>(
     val:                  const u8[:],
     max_header_list_size: u32,
     validate_http2_rules: bool,
+    extra_flags:          u8 = 0,
 ) -> u32 {
     let saved_has_reg = out_pseudo.has_regular_header;
     let saved_has_cl = out_pseudo.has_content_length;
@@ -666,7 +685,7 @@ fn record_validated_regular_field<C>(
     let is_cookie = if validate_http2_rules { name == "cookie" } else { name.eq_ascii_fold("cookie") };
     if is_cookie {
         let join_st = h2_internal::join_existing_cookie_impl(
-            out_headers, out_arena, spill_mode, cookie_buf, name, val, max_header_list_size,
+            out_headers, out_arena, spill_mode, cookie_buf, name, val, max_header_list_size, extra_flags,
         );
         if join_st == h2_internal::CookieJoinStatus.Overflow {
             return rfc::H2_ERR_ENHANCE_YOUR_CALM;
@@ -677,12 +696,9 @@ fn record_validated_regular_field<C>(
         }
     }
 
-    let ok_app = if spill_mode == h2_internal::HpackSpillMode.AllowSpill {
-        http::append_validated_header_spill(out_headers, out_arena, name, val, 0)
-    } else {
-        http::append_validated_header(out_headers, name, val)
-    };
-    guard ok_app else { return rfc::H2_ERR_ENHANCE_YOUR_CALM; }
+    guard append_regular_entry_impl(out_headers, out_arena, spill_mode, name, val, extra_flags) else {
+        return rfc::H2_ERR_ENHANCE_YOUR_CALM;
+    }
     committed = true;
     return rfc::H2_ERR_NO_ERROR;
 }
@@ -698,6 +714,7 @@ fn validate_header_ordering_impl<C>(
     max_header_list_size: u32,
     validate_http2_rules: bool,
     origin:               FieldOrigin,
+    extra_flags:          u8 = 0,
 ) -> u32 {
     if validate_http2_rules {
         guard h2_internal::validate_h2_field_by_origin(name, val, origin) else {
@@ -725,6 +742,7 @@ fn validate_header_ordering_impl<C>(
         val,
         max_header_list_size,
         validate_http2_rules,
+        extra_flags,
     );
 }
 

@@ -534,6 +534,12 @@ fn decode_qpack_to_map_impl<B>(
     guard prefix_err == QpackError.None else { return prefix_err; }
 
     reset_qpack_map_outputs(out_pseudo, out_headers, out_arena, spill_mode);
+    defer {
+        if val_buf.len > 0 {
+            core::secure_zeroize_slice(val_buf[..]);
+        }
+        val_buf.clear();
+    };
     var committed = false;
     defer if !committed {
         reset_qpack_map_outputs(out_pseudo, out_headers, out_arena, spill_mode);
@@ -697,28 +703,38 @@ fn decode_or_track_blocked_qpack_to_map_spill(
 
 // ---- QPACK Field & Encoder Stream Encoding ---------------------------------
 
+enum QpackIndexingPolicy {
+    Default,
+    NeverIndex,
+}
+
 // Encodes a single field line with optional static index lookup, returning false on buffer overflow.
 fn encode_qpack_field<B>(
     out:         B&,
     name:        const u8[:],
     val:         const u8[:],
-    use_huffman: bool = true,
+    use_huffman: bool                = true,
+    indexing:    QpackIndexingPolicy = QpackIndexingPolicy.Default,
 ) -> bool {
     let start_len = out.len;
     var committed = false;
     defer if !committed { out.resize(start_len); };
 
-    let s_idx, exact_s = find_qpack_static_field(name, val);
-    if exact_s {
-        guard http2::hpack_encode_int(out, s_idx, 6, 0xC0) else { return false; }
-        committed = true;
-        return true;
+    let never_index = indexing == QpackIndexingPolicy.NeverIndex;
+    if !never_index {
+        let s_idx, exact_s = find_qpack_static_field(name, val);
+        if exact_s {
+            guard http2::hpack_encode_int(out, s_idx, 6, 0xC0) else { return false; }
+            committed = true;
+            return true;
+        }
     }
 
     let s_idx_name, _ = find_qpack_static_field(name, "");
     if s_idx_name < rfc::QPACK_STATIC_TABLE_SIZE &&
        name == h3_internal::QPACK_STATIC_TABLE[s_idx_name as i64].name {
-        guard http2::hpack_encode_int(out, s_idx_name, 4, 0x50) &&
+        let name_ref_mask: u8 = if never_index { 0x70 } else { 0x50 };
+        guard http2::hpack_encode_int(out, s_idx_name, 4, name_ref_mask) &&
               http2::encode_hpack_string_literal(out, val, use_huffman) else {
             return false;
         }
@@ -729,7 +745,8 @@ fn encode_qpack_field<B>(
     if use_huffman {
         let huff_len = http2::huff_encoded_byte_len(name);
         if huff_len < (name.len as u64) {
-            guard http2::hpack_encode_int(out, huff_len, 3, 0x28) &&
+            let lit_huff_mask: u8 = if never_index { 0x38 } else { 0x28 };
+            guard http2::hpack_encode_int(out, huff_len, 3, lit_huff_mask) &&
                   http2::huff_encode_bytes(name, out) &&
                   http2::encode_hpack_string_literal(out, val, use_huffman) else {
                 return false;
@@ -738,7 +755,8 @@ fn encode_qpack_field<B>(
             return true;
         }
     }
-    guard http2::hpack_encode_int(out, name.len as u64, 3, 0x20) &&
+    let lit_plain_mask: u8 = if never_index { 0x30 } else { 0x20 };
+    guard http2::hpack_encode_int(out, name.len as u64, 3, lit_plain_mask) &&
           out.try_append(name) &&
           http2::encode_hpack_string_literal(out, val, use_huffman) else {
         return false;

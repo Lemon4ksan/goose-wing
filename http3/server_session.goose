@@ -338,9 +338,13 @@ fn free_h3_hdr_buf(idx: i64) {
     if idx < 0 || idx >= g_h3_edge_hdr_bufs.len || !g_h3_edge_hdr_bufs[idx].in_use {
         return;
     }
-    g_h3_edge_hdr_bufs[idx].in_use = false;
-    g_h3_edge_hdr_bufs[idx].entries.clear();
-    g_h3_edge_hdr_bufs[idx].raw.clear();
+    let hb .= g_h3_edge_hdr_bufs[idx];
+    hb.in_use = false;
+    hb.entries.clear();
+    if hb.raw.len > 0 {
+        core::secure_zeroize_slice(hb.raw[..]);
+    }
+    hb.raw.clear();
     g_h3_edge_free_hdrs.push(idx);
 }
 
@@ -499,8 +503,14 @@ fn reset_h3_edge_slot(slot_idx: i64, gen: u64) {
     slot.stream_count = 0;
     slot.ev_head = -1;
     slot.ev_tail = -1;
+    if slot.ev_data_buf.len > 0 {
+        core::secure_zeroize_slice(slot.ev_data_buf[..]);
+    }
     slot.ev_data_buf.clear();
     slot.ev_hdr_entries.clear();
+    if slot.ev_hdr_raw.len > 0 {
+        core::secure_zeroize_slice(slot.ev_hdr_raw[..]);
+    }
     slot.ev_hdr_raw.clear();
 }
 
@@ -644,8 +654,14 @@ fn h3_edge_close(sess: H3EdgeSession&) {
     slot.qenc_rx_buf.clear();
     slot.qdec_rx_buf.clear();
     slot.ctrl_payload_buf.clear();
+    if slot.ev_data_buf.len > 0 {
+        core::secure_zeroize_slice(slot.ev_data_buf[..]);
+    }
     slot.ev_data_buf.clear();
     slot.ev_hdr_entries.clear();
+    if slot.ev_hdr_raw.len > 0 {
+        core::secure_zeroize_slice(slot.ev_hdr_raw[..]);
+    }
     slot.ev_hdr_raw.clear();
     slot.active = false;
     slot.generation = 0;
@@ -1287,6 +1303,12 @@ fn build_edge_request_entries(
     has_host:  bool&,
 ) -> u64 {
     g_h3_edge_cookie_scratch.clear();
+    defer {
+        if g_h3_edge_cookie_scratch.len > 0 {
+            core::secure_zeroize_slice(g_h3_edge_cookie_scratch[..]);
+        }
+        g_h3_edge_cookie_scratch.clear();
+    };
     var has_cookie = false;
     var cookie_sensitive = false;
 
@@ -1493,6 +1515,12 @@ fn decode_and_deliver_headers_section(
     var pseudo = PseudoHeaders { is_trailer: role == H3EdgeSectionRole.Trailers, .. };
     var raw_hdrs = http::HeaderMap { .. };
     var raw_arena = http::OverflowArena { .. };
+    defer {
+        http::reset_overflow_arena(raw_arena);
+        if raw_hdrs.raw_buf.len > 0 {
+            core::secure_zeroize_slice(raw_hdrs.raw_buf[..]);
+        }
+    };
     let qerr = decode_or_track_blocked_qpack_to_map_spill(
         slot.qpack_dec_table,
         st.stream_id,
@@ -2322,6 +2350,11 @@ fn pop_h3_event_for_poll(sess: H3EdgeSession&) -> i64, i64, bool {
     if slot.ev_head < 0 {
         slot.ev_tail = -1;
     }
+    slot.ev_hdr_entries.clear();
+    if slot.ev_hdr_raw.len > 0 {
+        core::secure_zeroize_slice(slot.ev_hdr_raw[..]);
+    }
+    slot.ev_hdr_raw.clear();
     return slot_idx, ev_idx, true;
 }
 
@@ -2355,9 +2388,21 @@ fn copy_header_view_to_stack_map(hv: const http::HeaderView&, out_map: http::Hea
     return true;
 }
 
-// Polls the next queued HTTP/3 server event, returning false when empty or exceeding 8 KiB headers.
+fn can_legacy_poll_h3_head(sess: const H3EdgeSession&) -> bool {
+    let slot_idx, ok = resolve_h3_edge_slot(sess);
+    guard ok else { return true; }
+    let slot .= g_h3_edge_slots[slot_idx];
+    guard slot.ev_head >= 0 else { return true; }
+    let h_idx = g_h3_edge_events[slot.ev_head].hdr_idx;
+    guard h_idx >= 0 else { return true; }
+    let hb .= g_h3_edge_hdr_bufs[h_idx];
+    return hb.raw.len <= 8192 && hb.entries.len <= 128;
+}
+
+// Polls the next queued HTTP/3 server event, leaving > 8 KiB / > 128-entry events queued and returning false.
 fn h3_edge_poll_event(sess: H3EdgeSession&, out_ev: H3EdgeEvent&) -> bool {
     out_ev = H3EdgeEvent { .. };
+    guard can_legacy_poll_h3_head(sess) else { return false; }
     let slot_idx, ev_idx, ok = pop_h3_event_for_poll(sess);
     if !ok {
         return false;
@@ -2435,6 +2480,9 @@ fn h3_edge_poll_event_view(sess: H3EdgeSession&, out_ev: H3EdgeEventView&) -> bo
         let hb .= g_h3_edge_hdr_bufs[ev.hdr_idx];
         guard slot.ev_hdr_entries.try_append(hb.entries[..]) && slot.ev_hdr_raw.try_append(hb.raw[..]) else {
             slot.ev_hdr_entries.clear();
+            if slot.ev_hdr_raw.len > 0 {
+                core::secure_zeroize_slice(slot.ev_hdr_raw[..]);
+            }
             slot.ev_hdr_raw.clear();
             free_h3_event_node(ev_idx);
             return false;
@@ -2463,12 +2511,21 @@ fn is_forbidden_h3_resp_header(lower_name: const u8[:], val: const u8[:]) -> boo
     return h3_internal::is_forbidden_connection_header(lower_name, val);
 }
 
+inline fn max_h3_resp_section_size(slot: const H3EdgeSlot&) -> u64 {
+    return if slot.peer_settings_received {
+        slot.peer_settings.max_field_section_size
+    } else {
+        http::MAX_OVERFLOW_RAW_BYTES as u64
+    };
+}
+
 fn encode_edge_resp_header_entry(
     slot:               const H3EdgeSlot&,
     name:               const u8[:],
     val:                const u8[:],
     field_section_size: u64&,
     out_qpack:          u8[>..]&,
+    is_sensitive:       bool = false,
 ) -> bool {
     if name.len == 0 || name.len > 256 || name[0] == ':' {
         return false;
@@ -2484,10 +2541,12 @@ fn encode_edge_resp_header_entry(
     let name_val_len = core::add_sat_u64(lower_name.len as u64, val.len as u64);
     let line_cost = core::add_sat_u64(name_val_len, H3_EDGE_FIELD_OVERHEAD);
     field_section_size = core::add_sat_u64(field_section_size, line_cost);
-    if slot.peer_settings_received && field_section_size > slot.peer_settings.max_field_section_size {
+    if field_section_size > max_h3_resp_section_size(slot) {
         return false;
     }
-    return encode_qpack_field(out_qpack, lower_name[..], val, true);
+    let pol = if is_sensitive { QpackIndexingPolicy.NeverIndex } else { QpackIndexingPolicy.Default };
+    guard encode_qpack_field(out_qpack, lower_name[..], val, true, pol) else { return false; };
+    return out_qpack.len <= http::MAX_OVERFLOW_RAW_BYTES;
 }
 
 fn h3_edge_encode_response_headers_slices(
@@ -2502,9 +2561,7 @@ fn h3_edge_encode_response_headers_slices(
     guard ok else { return false; };
     let slot .= g_h3_edge_slots[slot_idx];
     // RFC 9114 Section 4.3.2: Response Pseudo-Header Fields - Reject status outside 100..599 and forbid 101.
-    if slot.conn_failed
-        || status_code < H3_EDGE_STATUS_MIN
-        || status_code > H3_EDGE_STATUS_MAX
+    if slot.conn_failed || status_code < H3_EDGE_STATUS_MIN || status_code > H3_EDGE_STATUS_MAX
         || status_code == H3_EDGE_STATUS_SWITCHING_PROTOCOL
     {
         return false;
@@ -2515,6 +2572,12 @@ fn h3_edge_encode_response_headers_slices(
     var status_buf: u8[..8] = [];
     (status_code as u32).format_u32_dec(status_buf);
     g_h3_resp_qpack_scratch.clear();
+    defer {
+        if g_h3_resp_qpack_scratch.len > 0 {
+            core::secure_zeroize_slice(g_h3_resp_qpack_scratch[..]);
+        }
+        g_h3_resp_qpack_scratch.clear();
+    };
     // RFC 9204 Section 4.5: Field Line Representations - Static-only field section prefix (RIC=0, DeltaBase=0).
     g_h3_resp_qpack_scratch.push(0x00);
     g_h3_resp_qpack_scratch.push(0x00);
@@ -2522,9 +2585,7 @@ fn h3_edge_encode_response_headers_slices(
         return false;
     };
     var field_section_size = core::add_sat_u64(H3_EDGE_STATUS_FIELD_OVERHEAD, status_buf.len as u64);
-    if slot.peer_settings_received && field_section_size > slot.peer_settings.max_field_section_size {
-        return false;
-    }
+    guard field_section_size <= max_h3_resp_section_size(slot) else { return false; };
     let total = core::add_sat_i64(headers.entries.len, spill_entries.len);
     for i in 0..total {
         let ent = if i < headers.entries.len {
@@ -2534,13 +2595,11 @@ fn h3_edge_encode_response_headers_slices(
         };
         let name = http::resolve_entry_name_buf(headers.raw_buf[..], spill_raw, ent);
         let val = http::resolve_entry_value_buf(headers.raw_buf[..], spill_raw, ent);
-        guard encode_edge_resp_header_entry(slot, name, val, field_section_size, g_h3_resp_qpack_scratch) else {
-            return false;
-        };
+        guard encode_edge_resp_header_entry(
+            slot, name, val, field_section_size, g_h3_resp_qpack_scratch, http::is_sensitive(ent),
+        ) else { return false; };
     }
-    guard encode_headers_frame(out_wire, g_h3_resp_qpack_scratch[..]) else {
-        return false;
-    };
+    guard encode_headers_frame(out_wire, g_h3_resp_qpack_scratch[..]) else { return false; };
     committed = true;
     return true;
 }

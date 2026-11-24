@@ -366,6 +366,57 @@ enum CookieJoinStatus {
     Overflow,
 }
 
+fn has_sensitive_header_slices(
+    map:           const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    name:          const u8[:],
+) -> bool {
+    for &e in map.entries {
+        if http::is_sensitive(e) && http::resolve_entry_name_buf(map.raw_buf[..], spill_raw, e).eq_ascii_fold(name) {
+            return true;
+        }
+    }
+    for &e in spill_entries {
+        if http::is_sensitive(e) && http::resolve_entry_name_buf(map.raw_buf[..], spill_raw, e).eq_ascii_fold(name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn mark_cookie_sensitive_flags(map: http::HeaderMap&, flags: u8) {
+    guard flags != 0 else { return; }
+    for i in 0..map.entries.len {
+        if http::entry_name(map, map.entries[i]).eq_ascii_fold("cookie") {
+            map.entries[i].flags |= flags;
+        }
+    }
+}
+
+fn commit_coalesced_cookie_value<C>(
+    out_headers: http::HeaderMap&,
+    out_arena:   http::OverflowArena&,
+    spill_mode:  HpackSpillMode,
+    cookie_buf:  C&,
+    ck_flags:    u8,
+) -> CookieJoinStatus {
+    var ok = false;
+    if spill_mode == HpackSpillMode.AllowSpill {
+        ok = http::set_or_replace_spill(out_headers, out_arena, "cookie", cookie_buf[..], ck_flags);
+    } else {
+        ok = http::insert_header(out_headers, "cookie", cookie_buf[..]);
+        if ok {
+            mark_cookie_sensitive_flags(out_headers, ck_flags);
+        }
+    }
+    if cookie_buf.len > 0 {
+        core::secure_zeroize_slice(cookie_buf[..]);
+    }
+    cookie_buf.clear();
+    return if ok { CookieJoinStatus.Joined } else { CookieJoinStatus.Overflow };
+}
+
 // RFC 9113 Section 8.2.3: Compressing the Cookie Header Field - Concatenates extra cookie fields with "; ".
 fn join_existing_cookie_impl<C>(
     out_headers:  http::HeaderMap&,
@@ -375,6 +426,7 @@ fn join_existing_cookie_impl<C>(
     name:         const u8[:],
     val:          const u8[:],
     max_list_len: u32,
+    extra_flags:  u8 = 0,
 ) -> CookieJoinStatus {
     let spill_entries = if spill_mode == HpackSpillMode.AllowSpill {
         out_arena.spill_entries[..]
@@ -394,16 +446,15 @@ fn join_existing_cookie_impl<C>(
         min(max_list_len as i64, 8192)
     };
     guard total_len <= max_bytes else { return CookieJoinStatus.Overflow; }
+    let keep_sens = (extra_flags & http::HEADER_FLAG_SENSITIVE) != 0 ||
+        has_sensitive_header_slices(out_headers, spill_entries, spill_raw, "cookie");
+    let ck_flags: u8 = if keep_sens { http::HEADER_FLAG_SENSITIVE } else { 0 };
+
     cookie_buf.clear();
     cookie_buf.append(prev);
     cookie_buf.append("; ");
     cookie_buf.append(val);
-    let ok = if spill_mode == HpackSpillMode.AllowSpill {
-        http::set_or_replace_spill(out_headers, out_arena, "cookie", cookie_buf[..])
-    } else {
-        http::insert_header(out_headers, "cookie", cookie_buf[..])
-    };
-    return if ok { CookieJoinStatus.Joined } else { CookieJoinStatus.Overflow };
+    return commit_coalesced_cookie_value(out_headers, out_arena, spill_mode, cookie_buf, ck_flags);
 }
 
 fn append_decoded_header_impl<C>(
@@ -417,6 +468,7 @@ fn append_decoded_header_impl<C>(
     max_header_list_size: u32,
     validate_http2_rules: bool,
     origin:               http2::FieldOrigin = http2::FieldOrigin.Wire,
+    extra_flags:          u8                 = 0,
 ) -> u32 {
     let field_size = core::add_sat_u64(core::add_sat_u64(name.len as u64, val.len as u64), 32);
     let next_wireframe = core::add_sat_u64(out_pseudo.wireframe_size, field_size);
@@ -442,6 +494,7 @@ fn append_decoded_header_impl<C>(
         max_header_list_size,
         validate_http2_rules,
         origin,
+        extra_flags,
     );
 }
 
@@ -478,6 +531,63 @@ fn decode_hpack_table_size_update(
         dt.pending_size_update_req = false;
     }
     return next_off, rfc::H2_ERR_NO_ERROR;
+}
+
+// Decodes HPACK Literal without Indexing (0000xxxx) or Never Indexed (0001xxxx) (RFC 7541 Section 6.2.2/6.2.3).
+//
+// Example:
+//   src = [0x10, 0x01, 'k', 0x01, 'v'], offset = 0
+//   returns: next_offset = 5, error_code = ERR_NO_ERROR (HEADER_FLAG_SENSITIVE set)
+fn decode_hpack_literal_unindexed<B, C>(
+    dt:                   const http2::DynamicTable&,
+    src:                  const u8[:],
+    offset:               u64,
+    first_byte:           u8,
+    out_pseudo:           http2::PseudoHeaders&,
+    out_headers:          http::HeaderMap&,
+    out_arena:            http::OverflowArena&,
+    spill_mode:           HpackSpillMode,
+    max_header_list_size: u32,
+    validate_http2_rules: bool,
+    name_buf:             u8[..256]&,
+    val_buf:              B&,
+    cookie_buf:           C&,
+) -> u64, u32 {
+    name_buf.clear();
+    if val_buf.len > 0 {
+        core::secure_zeroize_slice(val_buf[..]);
+    }
+    val_buf.clear();
+    defer {
+        if val_buf.len > 0 {
+            core::secure_zeroize_slice(val_buf[..]);
+        }
+        val_buf.clear();
+    };
+    let val_next_off, name_slice, origin, err_dec = http2::decode_literal_field_slices(
+        dt,
+        src,
+        offset,
+        4,
+        name_buf,
+        val_buf,
+    );
+    guard err_dec == rfc::H2_ERR_NO_ERROR else { return offset, err_dec; }
+    let extra_flags: u8 = if (first_byte & 0x10) != 0 { http::HEADER_FLAG_SENSITIVE } else { 0 };
+    let err = append_decoded_header_impl(
+        out_pseudo,
+        out_headers,
+        out_arena,
+        spill_mode,
+        cookie_buf,
+        name_slice,
+        val_buf[..],
+        max_header_list_size,
+        validate_http2_rules,
+        origin,
+        extra_flags,
+    );
+    return val_next_off, err;
 }
 
 // Decodes a single HPACK field using caller scratch into `out_pseudo`, `out_headers`, and optional `out_arena`.
@@ -572,31 +682,21 @@ fn decode_hpack_field_step_impl<B, C>(
 
     // 4. Literal Header without Indexing (0000xxxx) or Never Indexed (0001xxxx)
     updates_allowed = false;
-    name_buf.clear();
-    val_buf.clear();
-    let val_next_off, name_slice, origin, err_dec = http2::decode_literal_field_slices(
+    return decode_hpack_literal_unindexed(
         dt,
         src,
         offset,
-        4,
-        name_buf,
-        val_buf,
-    );
-    guard err_dec == rfc::H2_ERR_NO_ERROR else { return offset, err_dec; }
-
-    let err = append_decoded_header_impl(
+        b,
         out_pseudo,
         out_headers,
         out_arena,
         spill_mode,
-        cookie_buf,
-        name_slice,
-        val_buf[..],
         max_header_list_size,
         validate_http2_rules,
-        origin,
+        name_buf,
+        val_buf,
+        cookie_buf,
     );
-    return val_next_off, err;
 }
 
 // Decodes a single HPACK field using caller-supplied stack scratch buffers into `out_pseudo` and `out_headers`.
