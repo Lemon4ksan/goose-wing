@@ -288,13 +288,13 @@ fn stream_h1_write_chunked_sans_io(
     stream: server::ResponseStream&,
     chunk:  const u8[:],
 ) -> i64, server::StreamWriteStatus {
+    let total = chunk.len;
     var offset: i64 = 0;
-    while offset < chunk.len {
+    while offset < total {
         let avail = stream.cork.buffer.cork_available();
         // Reserve up to 12 bytes for `<hex>\r\n` + `\r\n` framing overhead.
         guard avail > 12 else { return offset, server::StreamWriteStatus.WouldBlock; }
-        let max_pay = core::sub_sat_i64(avail, 12);
-        let take = min(core::sub_sat_i64(chunk.len, offset), max_pay);
+        let take = min(core::sub_sat_i64(total, offset), core::sub_sat_i64(avail, 12));
         var chdr: u8[..24] = [];
         (take as u64).format_u64_hex(chdr, false);
         chdr.append("\r\n");
@@ -363,42 +363,36 @@ fn stream_write_http1(stream: server::ResponseStream&, chunk: const u8[:]) -> i6
     (sub.len as u64).format_u64_hex(chdr, false);
     chdr.append("\r\n");
     let frame_len = core::add_sat_i64(core::add_sat_i64(chdr.len, sub.len), 2);
-    if frame_len <= stream.cork.buffer.cork_available() {
-        let _ = stream.cork.buffer.cork_write(chdr[..]);
-        let _ = stream.cork.buffer.cork_write(sub);
-        let _ = stream.cork.buffer.cork_write("\r\n");
-        stream.body_bytes_sent = core::add_sat_u64(stream.body_bytes_sent, sub.len as u64);
-        stream.frames_emitted = core::add_sat_u64(stream.frames_emitted, 1);
-        return chunk.len, server::StreamWriteStatus.Ok;
+    if frame_len > stream.cork.buffer.cork_available() {
+        let fl_st = server::stream_flush(stream);
+        guard fl_st == server::StreamWriteStatus.Ok else { return offset, fl_st; }
+        if frame_len >= core::CORK_BUFFER_CAP {
+            let n_dir, st_dir = stream_h1_write_chunked_direct(stream, chdr[..], sub);
+            return core::add_sat_i64(offset, n_dir), st_dir;
+        }
     }
-    let fl_st = server::stream_flush(stream);
-    guard fl_st == server::StreamWriteStatus.Ok else { return offset, fl_st; }
-    if frame_len < core::CORK_BUFFER_CAP {
-        let _ = stream.cork.buffer.cork_write(chdr[..]);
-        let _ = stream.cork.buffer.cork_write(sub);
-        let _ = stream.cork.buffer.cork_write("\r\n");
-        stream.body_bytes_sent = core::add_sat_u64(stream.body_bytes_sent, sub.len as u64);
-        stream.frames_emitted = core::add_sat_u64(stream.frames_emitted, 1);
-        return chunk.len, server::StreamWriteStatus.Ok;
-    }
-    let n_dir, st_dir = stream_h1_write_chunked_direct(stream, chdr[..], sub);
-    return core::add_sat_i64(offset, n_dir), st_dir;
+    let _ = stream.cork.buffer.cork_write(chdr[..]);
+    let _ = stream.cork.buffer.cork_write(sub);
+    let _ = stream.cork.buffer.cork_write("\r\n");
+    stream.body_bytes_sent = core::add_sat_u64(stream.body_bytes_sent, sub.len as u64);
+    stream.frames_emitted = core::add_sat_u64(stream.frames_emitted, 1);
+    return chunk.len, server::StreamWriteStatus.Ok;
 }
 
 // ---- HTTP/2 Streaming Body Writer (Two-Level Flow Control) -----------------
 
 fn stream_write_http2(stream: server::ResponseStream&, chunk: const u8[:]) -> i64, server::StreamWriteStatus {
+    let total = chunk.len;
     var offset: i64 = 0;
     let max_frame = clamp(stream.h2_max_frame_size as i64, 16384, 16777215);
-    while offset < chunk.len {
+    while offset < total {
         let quota = min(max(0, stream.h2_conn_send_window), max(0, stream.h2_stream_send_window));
         if quota <= 0 { return offset, server::StreamWriteStatus.WouldBlock; }
-        let rem = core::sub_sat_i64(chunk.len, offset);
-        var flen = min(min(rem, max_frame), quota);
+        var flen = min(min(total - offset, max_frame), quota);
         if stream.cork.sock_fd <= 0 {
             let avail = stream.cork.buffer.cork_available();
             if avail <= rfc::H2_FRAME_HEADER_LEN { return offset, server::StreamWriteStatus.WouldBlock; }
-            flen = min(flen, core::sub_sat_i64(avail, rfc::H2_FRAME_HEADER_LEN));
+            flen = min(flen, avail - rfc::H2_FRAME_HEADER_LEN);
         }
         let fhdr = http2::FrameHeader {
             length:     flen as u32,
@@ -408,15 +402,15 @@ fn stream_write_http2(stream: server::ResponseStream&, chunk: const u8[:]) -> i6
         };
         var raw_hdr: u8[9] = [0; 9];
         http2::encode_frame_header(fhdr, raw_hdr);
-        let end_off = core::add_sat_i64(offset, flen);
+        let end_off = offset + flen;
         let st = stream_emit_wire_parts(stream, raw_hdr[..], chunk[offset..end_off]);
         guard st == server::StreamWriteStatus.Ok else { return offset, st; }
         // RFC 9113 Section 6.9.1: Atomically deduct connection and stream send windows.
-        stream.h2_conn_send_window = core::sub_sat_i64(stream.h2_conn_send_window, flen);
-        stream.h2_stream_send_window = core::sub_sat_i64(stream.h2_stream_send_window, flen);
+        stream.h2_conn_send_window -= flen;
+        stream.h2_stream_send_window -= flen;
         offset = end_off;
-        stream.body_bytes_sent = core::add_sat_u64(stream.body_bytes_sent, flen as u64);
-        stream.frames_emitted = core::add_sat_u64(stream.frames_emitted, 1);
+        stream.body_bytes_sent += flen as u64;
+        stream.frames_emitted += 1;
     }
     return offset, server::StreamWriteStatus.Ok;
 }
@@ -424,25 +418,25 @@ fn stream_write_http2(stream: server::ResponseStream&, chunk: const u8[:]) -> i6
 // ---- HTTP/3 Streaming Body Writer (QUIC Flow Control) ----------------------
 
 fn stream_write_http3(stream: server::ResponseStream&, chunk: const u8[:]) -> i64, server::StreamWriteStatus {
+    let total = chunk.len;
     var offset: i64 = 0;
-    while offset < chunk.len {
+    while offset < total {
         let conn_cr = quic::remaining_conn_credit(stream.quic_flow);
         let strm_cr = quic::remaining_stream_credit(stream.quic_stream);
         let credit = min(min(conn_cr, strm_cr), 0x7FFFFFFF) as i64;
         if credit <= 0 { return offset, server::StreamWriteStatus.WouldBlock; }
-        let rem = core::sub_sat_i64(chunk.len, offset);
-        var flen = min(rem, credit);
+        var flen = min(total - offset, credit);
         if stream.cork.sock_fd <= 0 {
             let avail = stream.cork.buffer.cork_available();
             // Reserve up to 10 bytes for H3_FRAME_DATA type + length VarInts.
             if avail <= 10 { return offset, server::StreamWriteStatus.WouldBlock; }
-            flen = min(flen, core::sub_sat_i64(avail, 10));
+            flen = min(flen, avail - 10);
         }
         var h3_hdr: u8[..16] = [];
         guard http3::encode_frame_header(h3_hdr, rfc::H3_FRAME_DATA, flen as u64) else {
             return offset, server::StreamWriteStatus.Error;
         }
-        let end_off = core::add_sat_i64(offset, flen);
+        let end_off = offset + flen;
         let st = stream_emit_wire_parts(stream, h3_hdr[..], chunk[offset..end_off]);
         guard st == server::StreamWriteStatus.Ok else { return offset, st; }
         guard quic::record_send(
@@ -451,15 +445,14 @@ fn stream_write_http3(stream: server::ResponseStream&, chunk: const u8[:]) -> i6
             return offset, server::StreamWriteStatus.Error;
         }
         offset = end_off;
-        stream.body_bytes_sent = core::add_sat_u64(stream.body_bytes_sent, flen as u64);
-        stream.frames_emitted = core::add_sat_u64(stream.frames_emitted, 1);
+        stream.body_bytes_sent += flen as u64;
+        stream.frames_emitted += 1;
     }
     return offset, server::StreamWriteStatus.Ok;
 }
 
 inline fn calc_window_threshold(window_size: u64, pct: u32) -> u64 {
-    let scaled, _ = core::div_rem_u64(core::mul_sat_u64(window_size, pct), 100);
-    return max(scaled, 1);
+    return max(core::mul_sat_u64(window_size, pct) / 100, 1);
 }
 
 fn replenish_single_window(

@@ -270,18 +270,17 @@ fn execute_server_unary<
 }
 
 inline fn is_valid_h2_settings_frame(hdr: const wire::WireFrameHeader&) -> bool {
-    let pay_u64: u64 = hdr.length;
-    let is_mult6 = core::mul_sat_u64(div_u64(pay_u64, 6), 6) == pay_u64;
     guard hdr.stream_id == 0 else { return false; }
     if (hdr.flags & rfc::H2_FLAG_ACK) != 0 {
-        return pay_u64 == 0;
+        return hdr.length == 0;
     }
-    return is_mult6;
+    return (hdr.length % 6) == 0;
 }
 
 inline fn validate_h2_settings_payload(payload: const u8[:]) -> bool {
     var off: i64 = 0;
-    while core::add_sat_i64(off, 6) <= payload.len {
+    let total = payload.len;
+    while core::add_sat_i64(off, 6) <= total {
         let s = wire::WireSetting {
             id:  core::read_be_u16(payload, off),
             val: core::read_be_u32(payload, core::add_sat_i64(off, 2)),
@@ -289,7 +288,7 @@ inline fn validate_h2_settings_payload(payload: const u8[:]) -> bool {
         guard wire::is_valid_wire_setting(s) else { return false; }
         off = core::add_sat_i64(off, 6);
     }
-    return off == payload.len;
+    return off == total;
 }
 
 inline fn slice_h2_data_payload(payload: const u8[:], flags: u8) -> const u8[:], bool {

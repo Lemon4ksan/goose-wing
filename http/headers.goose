@@ -109,46 +109,30 @@ struct HeaderBloomFilter {
 }
 
 checkfree fn clear(bf: HeaderBloomFilter&) {
-    bf.bits[0] = 0;
-    bf.bits[1] = 0;
-    bf.bits[2] = 0;
-    bf.bits[3] = 0;
+    bf.bits = [0; 4];
 }
 
-checkfree inline fn is_empty(bf: const HeaderBloomFilter&) -> bool {
-    return bf.bits[0] == 0 && bf.bits[1] == 0 && bf.bits[2] == 0 && bf.bits[3] == 0;
+checkfree fn is_empty(bf: const HeaderBloomFilter&) -> bool {
+    return (bf.bits[0] | bf.bits[1] | bf.bits[2] | bf.bits[3]) == 0;
 }
 
 checkfree fn add_header(bf: HeaderBloomFilter&, key: const u8[:]) {
     guard key.len >= 2 else { return; }
     let h = http_internal::bloom_hash(key);
-    let p0 = (h & 0xFF) as i64;
-    let p1 = ((h >> 8) & 0xFF) as i64;
-    let p2 = ((h >> 16) & 0xFF) as i64;
-    let p3 = ((h >> 24) & 0xFF) as i64;
-
-    bf.bits[(p0 >> 6) & 3] |= (1 as u64) << (p0 & 63);
-    bf.bits[(p1 >> 6) & 3] |= (1 as u64) << (p1 & 63);
-    bf.bits[(p2 >> 6) & 3] |= (1 as u64) << (p2 & 63);
-    bf.bits[(p3 >> 6) & 3] |= (1 as u64) << (p3 & 63);
+    for i in 4 {
+        let p = ((h >> ((i * 8) as u32)) & 0xFF) as i64;
+        bf.bits[(p >> 6) & 3] |= (1 as u64) << (p & 63);
+    }
 }
 
 checkfree fn might_have_header(bf: const HeaderBloomFilter&, key: const u8[:]) -> bool {
     guard key.len >= 2 else { return true; }
     let h = http_internal::bloom_hash(key);
-    let p0 = (h & 0xFF) as i64;
-    let p1 = ((h >> 8) & 0xFF) as i64;
-    let p2 = ((h >> 16) & 0xFF) as i64;
-    let p3 = ((h >> 24) & 0xFF) as i64;
-
-    let b0 = (bf.bits[(p0 >> 6) & 3] & ((1 as u64) << (p0 & 63))) != 0;
-    guard b0 else { return false; }
-    let b1 = (bf.bits[(p1 >> 6) & 3] & ((1 as u64) << (p1 & 63))) != 0;
-    guard b1 else { return false; }
-    let b2 = (bf.bits[(p2 >> 6) & 3] & ((1 as u64) << (p2 & 63))) != 0;
-    guard b2 else { return false; }
-    let b3 = (bf.bits[(p3 >> 6) & 3] & ((1 as u64) << (p3 & 63))) != 0;
-    return b3;
+    for i in 4 {
+        let p = ((h >> ((i * 8) as u32)) & 0xFF) as i64;
+        guard (bf.bits[(p >> 6) & 3] & ((1 as u64) << (p & 63))) != 0 else { return false; }
+    }
+    return true;
 }
 
 // ---- header bitmask flags & persistence constants --------------------------
@@ -325,72 +309,22 @@ enum WellKnownHeader {
 }
 
 checkfree fn well_known_to_slot(id: WellKnownHeader) -> i64 {
-    return match id {
-        Host => 0,
-        ContentType => 1,
-        ContentLength => 2,
-        ContentDisposition => 3,
-        ContentEncoding => 4,
-        ContentLanguage => 5,
-        ContentLocation => 6,
-        ContentRange => 7,
-        Accept => 8,
-        AcceptCharset => 9,
-        AcceptEncoding => 10,
-        AcceptLanguage => 11,
-        AcceptRanges => 12,
-        Authorization => 13,
-        ProxyAuthorization => 14,
-        WwwAuthenticate => 15,
-        ProxyAuthenticate => 16,
-        Cookie => 17,
-        SetCookie => 18,
-        SetCookie2 => 19,
-        ClearSiteData => 20,
-        CacheControl => 21,
-        Age => 22,
-        Expires => 23,
-        Date => 24,
-        ETag => 25,
-        IfMatch => 26,
-        IfNoneMatch => 27,
-        IfModifiedSince => 28,
-        IfUnmodifiedSince => 29,
-        IfRange => 30,
-        LastModified => 31,
-        Location => 32,
-        Range => 33,
-        Vary => 34,
-        Via => 35,
-        Connection => 36,
-        KeepAlive => 37,
-        TransferEncoding => 38,
-        TE => 39,
-        Trailer => 40,
-        Upgrade => 41,
-        UserAgent => 42,
-        Server => 43,
-        Referer => 44,
-        OriginHeader => 45,
-        StrictTransportSecurity => 46,
-        ContentSecurityPolicy => 47,
-        XContentTypeOptions => 48,
-        XFrameOptions => 49,
-        XWebkitCsp => 50,
-        AccessControlAllowOrigin => 51,
-        AccessControlAllowCredentials => 52,
-        AccessControlAllowHeaders => 53,
-        AccessControlAllowMethods => 54,
-        AccessControlExposeHeaders => 55,
-        AccessControlMaxAge => 56,
-        AccessControlRequestHeaders => 57,
-        AccessControlRequestMethod => 58,
-        AltSvc => 59,
-        RetryAfter => 60,
-        Priority => 61,
-        Expect => 62,
-        _ => 63,
-    };
+    var idx: i64 = 0;
+    const for <N, V> in variants<WellKnownHeader> {
+        let v: WellKnownHeader = default<V>();
+        if id == v { return idx; }
+        idx += 1;
+    }
+    return 63;
+}
+
+checkfree fn slot_to_well_known(slot: i64) -> WellKnownHeader {
+    var idx: i64 = 0;
+    const for <N, V> in variants<WellKnownHeader> {
+        if slot == idx { return default<V>(); }
+        idx += 1;
+    }
+    return WellKnownHeader.Unknown;
 }
 
 const WELL_KNOWN_HEADER_NAMES: const u8[:][63] = [
@@ -413,40 +347,6 @@ const WELL_KNOWN_HEADER_NAMES: const u8[:][63] = [
     "alt-svc", "retry-after", "priority", "expect",
 ];
 
-const WELL_KNOWN_HEADER_IDS: WellKnownHeader[63] = [
-    WellKnownHeader.Host, WellKnownHeader.ContentType, WellKnownHeader.ContentLength,
-    WellKnownHeader.ContentDisposition, WellKnownHeader.ContentEncoding,
-    WellKnownHeader.ContentLanguage, WellKnownHeader.ContentLocation,
-    WellKnownHeader.ContentRange, WellKnownHeader.Accept,
-    WellKnownHeader.AcceptCharset, WellKnownHeader.AcceptEncoding,
-    WellKnownHeader.AcceptLanguage, WellKnownHeader.AcceptRanges,
-    WellKnownHeader.Authorization, WellKnownHeader.ProxyAuthorization,
-    WellKnownHeader.WwwAuthenticate, WellKnownHeader.ProxyAuthenticate,
-    WellKnownHeader.Cookie, WellKnownHeader.SetCookie, WellKnownHeader.SetCookie2,
-    WellKnownHeader.ClearSiteData, WellKnownHeader.CacheControl,
-    WellKnownHeader.Age, WellKnownHeader.Expires, WellKnownHeader.Date,
-    WellKnownHeader.ETag, WellKnownHeader.IfMatch, WellKnownHeader.IfNoneMatch,
-    WellKnownHeader.IfModifiedSince, WellKnownHeader.IfUnmodifiedSince,
-    WellKnownHeader.IfRange, WellKnownHeader.LastModified,
-    WellKnownHeader.Location, WellKnownHeader.Range, WellKnownHeader.Vary,
-    WellKnownHeader.Via, WellKnownHeader.Connection, WellKnownHeader.KeepAlive,
-    WellKnownHeader.TransferEncoding, WellKnownHeader.TE, WellKnownHeader.Trailer,
-    WellKnownHeader.Upgrade, WellKnownHeader.UserAgent, WellKnownHeader.Server,
-    WellKnownHeader.Referer, WellKnownHeader.OriginHeader,
-    WellKnownHeader.StrictTransportSecurity, WellKnownHeader.ContentSecurityPolicy,
-    WellKnownHeader.XContentTypeOptions, WellKnownHeader.XFrameOptions,
-    WellKnownHeader.XWebkitCsp, WellKnownHeader.AccessControlAllowOrigin,
-    WellKnownHeader.AccessControlAllowCredentials,
-    WellKnownHeader.AccessControlAllowHeaders,
-    WellKnownHeader.AccessControlAllowMethods,
-    WellKnownHeader.AccessControlExposeHeaders,
-    WellKnownHeader.AccessControlMaxAge,
-    WellKnownHeader.AccessControlRequestHeaders,
-    WellKnownHeader.AccessControlRequestMethod,
-    WellKnownHeader.AltSvc, WellKnownHeader.RetryAfter,
-    WellKnownHeader.Priority, WellKnownHeader.Expect,
-];
-
 fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
     let len = name.len;
     guard len >= 2 && len <= 32 && is_valid_header_name(name) else { return WellKnownHeader.Unknown; }
@@ -454,7 +354,7 @@ fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
     for i in 63 {
         let cand = WELL_KNOWN_HEADER_NAMES[i];
         if cand.len == len && cand[0] == b0 && name.eq_ascii_fold(cand) {
-            return WELL_KNOWN_HEADER_IDS[i];
+            return slot_to_well_known(i);
         }
     }
     return WellKnownHeader.Unknown;
@@ -524,16 +424,11 @@ checkfree fn reset_for_keep_alive(map: HeaderMap&) {
     if map.entries.len > 0 && map.entries.len < 32 {
         for &e in map.entries {
             if e.well_known_id < 64 {
-                let slot: i64 = e.well_known_id;
-                if slot >= 0 && slot < 64 {
-                    map.inline_slots[slot] = 0xFF;
-                }
+                map.inline_slots[(e.well_known_id & 63) as i64] = 0xFF;
             }
         }
     } else if map.entries.len >= 32 {
-        for i in 64 {
-            map.inline_slots[i] = 0xFF;
-        }
+        map.inline_slots = [0xFF; 64];
     }
     map.raw_buf.clear();
     map.entries.clear();
@@ -557,80 +452,52 @@ fn handle_obs_fold_arena(
     arena:                OverflowArena&,
     in_spill:             bool,
 ) -> HeaderParseError {
-    let orig_name = if in_spill {
-        entry_name_spill(map, arena, arena.spill_entries[arena.spill_entries.len - 1])
+    var entry = if in_spill {
+        arena.spill_entries[arena.spill_entries.len - 1]
     } else {
-        entry_name_spill(map, arena, map.entries[map.entries.len - 1])
+        map.entries[map.entries.len - 1]
     };
-    let orig_val = if in_spill {
-        entry_value_spill(map, arena, arena.spill_entries[arena.spill_entries.len - 1])
-    } else {
-        entry_value_spill(map, arena, map.entries[map.entries.len - 1])
-    };
-    let migrate_name = if in_spill {
-        arena.spill_entries[arena.spill_entries.len - 1].reserved != HEADER_SRC_ARENA
-    } else {
-        map.entries[map.entries.len - 1].reserved != HEADER_SRC_ARENA
-    };
-    let name_bytes = if migrate_name { orig_name.len } else { 0 };
-    let needed = name_bytes + orig_val.len + 1 + trimmed_continuation.len;
+    let orig_name = entry_name_spill(map, arena, entry);
+    let orig_val = entry_value_spill(map, arena, entry);
+    let migrate_name = entry.reserved != HEADER_SRC_ARENA;
+    let needed = (if migrate_name { orig_name.len } else { 0 }) + orig_val.len + 1 + trimmed_continuation.len;
     guard (arena.spill_raw.len + needed) <= 65535 else {
         map.valid = false;
         return HeaderParseError.CapacityExceeded;
     }
 
     let saved_spill_len = arena.spill_raw.len;
-    var n_begin: u16 = 0;
-    var n_end:   u16 = 0;
     if migrate_name {
-        n_begin = arena.spill_raw.len as u16;
+        entry.name_begin = arena.spill_raw.len as u16;
         arena.spill_raw.append(orig_name);
-        n_end = arena.spill_raw.len as u16;
+        entry.name_end = arena.spill_raw.len as u16;
     }
 
-    let new_begin = arena.spill_raw.len as u16;
+    entry.values_begin = arena.spill_raw.len as u16;
     arena.spill_raw.append(orig_val);
     arena.spill_raw.push(' ');
     arena.spill_raw.append(trimmed_continuation);
-    let new_end = arena.spill_raw.len as u16;
+    entry.values_end = arena.spill_raw.len as u16;
 
-    let prev_wk: u8 = if in_spill {
-        arena.spill_entries[arena.spill_entries.len - 1].well_known_id
-    } else {
-        map.entries[map.entries.len - 1].well_known_id
-    };
-    guard http_internal::validate_folded_framing(arena.spill_raw[..], new_begin, new_end, prev_wk) else {
+    guard http_internal::validate_folded_framing(
+        arena.spill_raw[..], entry.values_begin, entry.values_end, entry.well_known_id,
+    ) else {
         arena.spill_raw.resize(saved_spill_len);
         map.valid = false;
         return HeaderParseError.InvalidContentLength;
     }
 
-    if migrate_name {
-        if in_spill {
-            arena.spill_entries[arena.spill_entries.len - 1].name_begin = n_begin;
-            arena.spill_entries[arena.spill_entries.len - 1].name_end = n_end;
-        } else {
-            map.entries[map.entries.len - 1].name_begin = n_begin;
-            map.entries[map.entries.len - 1].name_end = n_end;
-        }
-    }
-
     let cont_has_comma = trimmed_continuation.contains_byte(',');
+    entry.reserved = HEADER_SRC_ARENA;
+    if cont_has_comma {
+        entry.flags |= HEADER_FLAG_CONTAINS_COMMA;
+    }
     if in_spill {
-        let s_idx = arena.spill_entries.len - 1;
-        arena.spill_entries[s_idx].values_begin = new_begin;
-        arena.spill_entries[s_idx].values_end = new_end;
-        arena.spill_entries[s_idx].reserved = HEADER_SRC_ARENA;
-        if cont_has_comma {
-            arena.spill_entries[s_idx].flags |= HEADER_FLAG_CONTAINS_COMMA;
-        }
+        arena.spill_entries[arena.spill_entries.len - 1] = entry;
     } else {
         let m_idx = map.entries.len - 1;
-        map.entries[m_idx].values_begin = new_begin;
-        map.entries[m_idx].values_end = new_end;
-        map.entries[m_idx].reserved = HEADER_SRC_ARENA;
+        map.entries[m_idx] = entry;
         if cont_has_comma {
-            map.entries[m_idx].flags |= HEADER_FLAG_CONTAINS_COMMA;
             map.header_contains_comma[m_idx] = true;
         }
     }
@@ -786,9 +653,10 @@ fn parse_response_headers_with_mode(
         return HeaderParseError.EmbeddedNull;
     }
 
+    let total = raw_input.len;
     var line_end: i64 = 0;
-    while line_end < raw_input.len && raw_input[line_end] != '\r' && raw_input[line_end] != '\n' {
-        line_end = core::add_sat_i64(line_end, 1);
+    while line_end < total && raw_input[line_end] != '\r' && raw_input[line_end] != '\n' {
+        line_end += 1;
     }
 
     var major: i32 = 0;
@@ -856,13 +724,8 @@ fn parse_response_headers_with_overflow(
     }
 
     var header_start = line_end;
-    if header_start < raw_input.len && raw_input[header_start] == '\r' {
-        guard header_start + 1 < raw_input.len && raw_input[header_start + 1] == '\n' else {
-            return HeaderParseError.MalformedStatusLine;
-        }
-        header_start += 2;
-    } else if header_start < raw_input.len && raw_input[header_start] == '\n' {
-        header_start++;
+    guard advance_crlf(raw_input, header_start, line_end) else {
+        return HeaderParseError.MalformedStatusLine;
     }
 
     let err = parse_headers_with_overflow(raw_input[header_start..], map, arena, allow_obs_fold);
@@ -881,12 +744,8 @@ fn parse_response_headers_with_overflow(
 fn parse_request_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold: bool = false) -> HeaderParseError {
     reset_for_keep_alive(map);
     map.valid = false;
-    guard raw_input.len > 0 else {
-        return HeaderParseError.EmptyInput;
-    }
-    if http_internal::has_embedded_nulls(raw_input) {
-        return HeaderParseError.EmbeddedNull;
-    }
+    guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
+    if http_internal::has_embedded_nulls(raw_input) { return HeaderParseError.EmbeddedNull; }
 
     var line_end = http_internal::skip_single_preamble_empty_line(raw_input);
     while line_end < raw_input.len && raw_input[line_end] != '\r' && raw_input[line_end] != '\n' {
@@ -894,13 +753,8 @@ fn parse_request_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold
     }
 
     var header_start = line_end;
-    if header_start < raw_input.len && raw_input[header_start] == '\r' {
-        guard header_start + 1 < raw_input.len && raw_input[header_start + 1] == '\n' else {
-            return HeaderParseError.MalformedStatusLine;
-        }
-        header_start += 2;
-    } else if header_start < raw_input.len && raw_input[header_start] == '\n' {
-        header_start++;
+    guard advance_crlf(raw_input, header_start, line_end) else {
+        return HeaderParseError.MalformedStatusLine;
     }
 
     return http_internal::parse_headers_body_validated(
@@ -922,12 +776,8 @@ fn parse_request_headers_with_overflow(
     reset_for_keep_alive(map);
     reset_overflow_arena(arena);
     map.valid = false;
-    guard raw_input.len > 0 else {
-        return HeaderParseError.EmptyInput;
-    }
-    if http_internal::has_embedded_nulls(raw_input) {
-        return HeaderParseError.EmbeddedNull;
-    }
+    guard raw_input.len > 0 else { return HeaderParseError.EmptyInput; }
+    if http_internal::has_embedded_nulls(raw_input) { return HeaderParseError.EmbeddedNull; }
 
     var line_end = http_internal::skip_single_preamble_empty_line(raw_input);
     while line_end < raw_input.len && raw_input[line_end] != '\r' && raw_input[line_end] != '\n' {
@@ -935,13 +785,8 @@ fn parse_request_headers_with_overflow(
     }
 
     var header_start = line_end;
-    if header_start < raw_input.len && raw_input[header_start] == '\r' {
-        guard header_start + 1 < raw_input.len && raw_input[header_start + 1] == '\n' else {
-            return HeaderParseError.MalformedStatusLine;
-        }
-        header_start += 2;
-    } else if header_start < raw_input.len && raw_input[header_start] == '\n' {
-        header_start++;
+    guard advance_crlf(raw_input, header_start, line_end) else {
+        return HeaderParseError.MalformedStatusLine;
     }
 
     return parse_headers_with_overflow(raw_input[header_start..], map, arena, allow_obs_fold);
@@ -1197,7 +1042,7 @@ checkfree fn get_inline(map: const HeaderMap&, id: WellKnownHeader) -> const u8[
     return "";
 }
 
-inline fn make_header_entry(
+fn make_header_entry(
     name:        const u8[:],
     trimmed:     const u8[:],
     n_begin:     u16,
@@ -1282,9 +1127,7 @@ fn append_validated_header_spill(
     var committed = false;
     defer if !committed {
         map.entries.resize(saved_map_entries);
-        while map.header_contains_comma.len > saved_map_entries {
-            map.header_contains_comma.pop();
-        }
+        map.header_contains_comma.resize(saved_map_entries);
         arena.spill_raw.resize(saved_spill_raw);
         arena.spill_entries.resize(saved_spill_entries);
     };
@@ -1428,11 +1271,8 @@ fn shift_raw_buf_left(map: HeaderMap&, from_offset: u16, delta: u16) {
         map.raw_buf[pos - d] = map.raw_buf[pos];
         pos += 1;
     }
-    var popped: i64 = 0;
-    while popped < d && map.raw_buf.len > 0 {
-        map.raw_buf.pop();
-        popped += 1;
-    }
+    let target_len = max(total - d, 0);
+    map.raw_buf.resize(target_len);
     for i in map.entries.len {
         if map.entries[i].reserved == HEADER_SRC_STACK {
             if map.entries[i].name_begin >= from_offset {
@@ -1536,19 +1376,13 @@ fn finish_in_place_compaction(
     write_raw_pos: u16,
     spill_raw:     const u8[:] = "",
 ) {
-    while map.entries.len > write_entry_i {
-        map.entries.pop();
-    }
-    while map.header_contains_comma.len > write_entry_i {
-        map.header_contains_comma.pop();
-    }
+    map.entries.resize(write_entry_i);
+    map.header_contains_comma.resize(write_entry_i);
     let target_raw_len = write_raw_pos as i64;
     if target_raw_len < map.raw_buf.len {
         core::secure_zeroize_slice(map.raw_buf[target_raw_len..]);
     }
-    while map.raw_buf.len > target_raw_len {
-        map.raw_buf.pop();
-    }
+    map.raw_buf.resize(target_raw_len);
     http_internal::rebuild_inline_slots_and_chains(map, spill_raw);
 }
 
@@ -1633,12 +1467,10 @@ fn remove_header_spill(map: HeaderMap&, arena: OverflowArena&, name: const u8[:]
             continue;
         }
         arena.spill_entries[spill_write] = se;
-        spill_write = core::add_sat_i64(spill_write, 1);
+        spill_write += 1;
     }
     if found {
-        while arena.spill_entries.len > spill_write {
-            arena.spill_entries.pop();
-        }
+        arena.spill_entries.resize(spill_write);
         compact_arena_spill_raw(map, arena, write_entry_i);
         finish_in_place_compaction(map, write_entry_i, write_raw_pos, arena.spill_raw[..]);
     }
@@ -1666,12 +1498,12 @@ fn accumulate_kept_slice(
             has_match = true;
             continue;
         }
-        kept_count = core::add_sat_i64(kept_count, 1);
+        kept_count += 1;
         let cost = entry_byte_cost(e);
         if e.reserved == HEADER_SRC_ARENA {
-            kept_arena_raw = core::add_sat_i64(kept_arena_raw, cost);
+            kept_arena_raw += cost;
         } else {
-            kept_stack_raw = core::add_sat_i64(kept_stack_raw, cost);
+            kept_stack_raw += cost;
         }
     }
 }
@@ -1722,16 +1554,7 @@ fn remove_header_by_name(map: HeaderMap&, target_name: const u8[:]) -> bool {
 
 fn copy_headers(src: const HeaderMap&, dst: HeaderMap&) {
     dst.reset_for_keep_alive();
-    for &e in src.entries {
-        let name = entry_name(src, e);
-        let val = entry_value(src, e);
-        if name.len > 0 {
-            let ok = dst.append_header(name, val);
-            if ok && (e.flags & HEADER_FLAG_SENSITIVE) != 0 && dst.entries.len > 0 {
-                dst.entries[dst.entries.len - 1].flags |= HEADER_FLAG_SENSITIVE;
-            }
-        }
-    }
+    append_all_headers(src, dst);
 }
 
 fn append_all_headers(src: const HeaderMap&, dst: HeaderMap&) {
@@ -1788,13 +1611,13 @@ fn append_combined_from_entries<B>(
         guard resolve_entry_name_buf(stack_raw, spill_raw, entry).eq_ascii_fold(name) else { continue; }
         found = true;
         if !first {
-            guard core::add_sat_i64(out.len, 2) <= max_out_len else { out.clear(); return false; }
+            guard out.len + 2 <= max_out_len else { out.clear(); return false; }
             out.push(sep_ch);
             out.push(' ');
         }
         first = false;
         let val = resolve_entry_value_buf(stack_raw, spill_raw, entry);
-        guard core::add_sat_i64(out.len, val.len) <= max_out_len else { out.clear(); return false; }
+        guard out.len + val.len <= max_out_len else { out.clear(); return false; }
         out.append(val);
     }
     return true;

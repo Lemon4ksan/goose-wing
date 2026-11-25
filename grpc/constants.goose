@@ -34,76 +34,38 @@ enum StatusCode {
     Unauthenticated,
 }
 
-// Converts a StatusCode to its standard string representation.
-fn status_name(code: StatusCode) -> const u8[:] {
-    return match code {
-        Ok => "OK",
-        Cancelled => "CANCELLED",
-        Unknown => "UNKNOWN",
-        InvalidArgument => "INVALID_ARGUMENT",
-        DeadlineExceeded => "DEADLINE_EXCEEDED",
-        NotFound => "NOT_FOUND",
-        AlreadyExists => "ALREADY_EXISTS",
-        PermissionDenied => "PERMISSION_DENIED",
-        ResourceExhausted => "RESOURCE_EXHAUSTED",
-        FailedPrecondition => "FAILED_PRECONDITION",
-        Aborted => "ABORTED",
-        OutOfRange => "OUT_OF_RANGE",
-        Unimplemented => "UNIMPLEMENTED",
-        Internal => "INTERNAL",
-        Unavailable => "UNAVAILABLE",
-        DataLoss => "DATA_LOSS",
-        Unauthenticated => "UNAUTHENTICATED",
-        _ => "UNKNOWN",
-    };
-}
+const GRPC_STATUS_NAMES: const u8[:][17] = [
+    "OK", "CANCELLED", "UNKNOWN", "INVALID_ARGUMENT", "DEADLINE_EXCEEDED",
+    "NOT_FOUND", "ALREADY_EXISTS", "PERMISSION_DENIED", "RESOURCE_EXHAUSTED",
+    "FAILED_PRECONDITION", "ABORTED", "OUT_OF_RANGE", "UNIMPLEMENTED",
+    "INTERNAL", "UNAVAILABLE", "DATA_LOSS", "UNAUTHENTICATED",
+];
 
 // Converts a StatusCode enum value to its integer code (0..16).
-fn status_to_code(code: StatusCode) -> u32 {
-    return match code {
-        Ok => 0,
-        Cancelled => 1,
-        Unknown => 2,
-        InvalidArgument => 3,
-        DeadlineExceeded => 4,
-        NotFound => 5,
-        AlreadyExists => 6,
-        PermissionDenied => 7,
-        ResourceExhausted => 8,
-        FailedPrecondition => 9,
-        Aborted => 10,
-        OutOfRange => 11,
-        Unimplemented => 12,
-        Internal => 13,
-        Unavailable => 14,
-        DataLoss => 15,
-        Unauthenticated => 16,
-        _ => 2,
-    };
+checkfree fn status_to_code(code: StatusCode) -> u32 {
+    var idx: u32 = 0;
+    const for <N, V> in variants<StatusCode> {
+        let v: StatusCode = default<V>();
+        if code == v { return idx; }
+        idx += 1;
+    }
+    return 2;
+}
+
+// Converts a StatusCode to its standard string representation.
+checkfree fn status_name(code: StatusCode) -> const u8[:] {
+    let idx = status_to_code(code) as i64;
+    return if idx < 17 { GRPC_STATUS_NAMES[idx] } else { "UNKNOWN" };
 }
 
 // Converts an integer code to its StatusCode enum value.
-fn status_from_code(code: u32) -> StatusCode {
-    return match code {
-        0 => StatusCode.Ok,
-        1 => StatusCode.Cancelled,
-        2 => StatusCode.Unknown,
-        3 => StatusCode.InvalidArgument,
-        4 => StatusCode.DeadlineExceeded,
-        5 => StatusCode.NotFound,
-        6 => StatusCode.AlreadyExists,
-        7 => StatusCode.PermissionDenied,
-        8 => StatusCode.ResourceExhausted,
-        9 => StatusCode.FailedPrecondition,
-        10 => StatusCode.Aborted,
-        11 => StatusCode.OutOfRange,
-        12 => StatusCode.Unimplemented,
-        13 => StatusCode.Internal,
-        14 => StatusCode.Unavailable,
-        15 => StatusCode.DataLoss,
-        16 => StatusCode.Unauthenticated,
-        _ => StatusCode.Unknown,
-    };
+checkfree fn status_from_code(code: u32) -> StatusCode {
+    var idx: u32 = 0;
+    const for <N, V> in variants<StatusCode> {
+        if code == idx { return default<V>(); }
+        idx += 1;
+    }
+    return StatusCode.Unknown;
 }
 
 // Maps standard HTTP status codes to canonical gRPC status codes when grpc-status is missing.

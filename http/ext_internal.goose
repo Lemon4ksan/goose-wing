@@ -114,28 +114,24 @@ inline fn is_upper_hex_digit(b: u8) -> bool {
 //   returns: true, out_proto = "h3/1"
 fn decode_altsvc_proto_id(proto_token: const u8[:], out_proto: u8[..16]&) -> bool {
     out_proto.clear();
-    guard proto_token.len > 0 else { return false; }
+    let total = proto_token.len;
+    guard total > 0 else { return false; }
     var committed = false;
     defer if !committed { out_proto.clear(); };
 
     var i: i64 = 0;
-    while i < proto_token.len {
+    while i < total {
         let b = proto_token[i];
         if b == '%' {
-            let hex_end = core::add_sat_i64(i, 3);
-            guard hex_end <= proto_token.len else { return false; }
-            let hex_pair = proto_token[core::add_sat_i64(i, 1)..hex_end];
-            guard is_upper_hex_digit(hex_pair[0]) && is_upper_hex_digit(hex_pair[1]) else {
-                return false;
-            }
+            guard i + 3 <= total else { return false; }
+            let hex_pair = proto_token[i + 1..i + 3];
+            guard is_upper_hex_digit(hex_pair[0]) && is_upper_hex_digit(hex_pair[1]) else { return false; }
             let dec, ok_hex = hex_pair.parse_u8_hex();
-            guard ok_hex && core::is_ascii_printable(dec) && out_proto.try_push(dec) else {
-                return false;
-            }
-            i = hex_end;
+            guard ok_hex && core::is_ascii_printable(dec) && out_proto.try_push(dec) else { return false; }
+            i += 3;
         } else {
             guard core::is_tchar(b) && out_proto.try_push(b) else { return false; }
-            i = core::add_sat_i64(i, 1);
+            i += 1;
         }
     }
     committed = out_proto.len > 0;
@@ -148,17 +144,16 @@ fn decode_altsvc_proto_id(proto_token: const u8[:], out_proto: u8[..16]&) -> boo
 //   s = "\"alt.example.com:443\"; ma=60"
 //   returns: 21
 fn scan_altsvc_quoted_end(s: const u8[:]) -> i64 {
-    guard s.len >= 2 && s[0] == '"' else { return -1; }
+    let total = s.len;
+    guard total >= 2 && s[0] == '"' else { return -1; }
     var idx: i64 = 1;
-    while idx < s.len {
+    while idx < total {
         let b = s[idx];
         if b == '\\' {
             idx = core::add_sat_i64(idx, 2);
             continue;
         }
-        if b == '"' {
-            return core::add_sat_i64(idx, 1);
-        }
+        if b == '"' { return core::add_sat_i64(idx, 1); }
         idx = core::add_sat_i64(idx, 1);
     }
     return -1;
@@ -400,45 +395,37 @@ fn compute_casper_key(set: const http::CasperSet&, path: const u8[:], etag: cons
 
 // Looks up `key` in sorted `set.keys`; returns `(insert_idx, found)`.
 fn find_casper_key_slot(set: const http::CasperSet&, key: u64) -> i64, bool {
-    var lo: u64 = 0;
-    var hi: u64 = set.keys.len as u64;
+    var lo: i64 = 0;
+    var hi = set.keys.len;
     while lo < hi {
-        let mid = core::add_sat_u64(lo, core::sub_sat_u64(hi, lo) >> 1);
-        let cur = set.keys[mid as i64];
-        if cur == key {
-            return mid as i64, true;
-        }
-        if cur < key {
-            lo = core::add_sat_u64(mid, 1);
-        } else {
-            hi = mid;
-        }
+        let mid = lo + ((hi - lo) >> 1);
+        let cur = set.keys[mid];
+        if cur == key { return mid, true; }
+        if cur < key { lo = mid + 1; } else { hi = mid; }
     }
-    return lo as i64, false;
+    return lo, false;
 }
 
-inline fn append_casper_bit<B>(out: B&, cur_byte: u64&, bit_pos: u64&, bit: u64) -> bool {
+fn append_casper_bit<B>(out: B&, cur_byte: u64&, bit_pos: u64&, bit: u64) -> bool {
     cur_byte = ((cur_byte << 1) | (bit & 1)) & 0xFF;
-    bit_pos = core::add_sat_u64(bit_pos, 1);
+    bit_pos += 1;
     if bit_pos == 8 {
-        let b_val: u8 = if cur_byte == 0 { 0 } else { (cur_byte & 0xFF) as u8 };
-        guard out.try_push(b_val) else { return false; }
+        guard out.try_push((cur_byte & 0xFF) as u8) else { return false; }
         cur_byte = 0;
         bit_pos = 0;
     }
     return true;
 }
 
-inline fn read_casper_bit(raw: const u8[:], byte_idx: i64&, bit_pos: u64&) -> u64, bool {
-    guard byte_idx < raw.len else { return 0, false; }
-    let shift = core::sub_sat_u64(7, bit_pos);
-    let bit = (raw[byte_idx] as u64 >> shift) & 1;
-    bit_pos = core::add_sat_u64(bit_pos, 1);
+fn read_casper_bit(raw: const u8[:], byte_idx: i64&, bit_pos: u64&) -> i32 {
+    guard byte_idx < raw.len else { return -1; }
+    let bit = ((raw[byte_idx] as u64) >> ((7 - bit_pos) & 7)) & 1;
+    bit_pos += 1;
     if bit_pos == 8 {
         bit_pos = 0;
-        byte_idx = core::add_sat_i64(byte_idx, 1);
+        byte_idx += 1;
     }
-    return bit, true;
+    return bit as i32;
 }
 
 // Decodes a single Golomb-Rice delta step from `raw` at `(byte_idx, bit_pos)`.
@@ -446,7 +433,7 @@ inline fn read_casper_bit(raw: const u8[:], byte_idx: i64&, bit_pos: u64&) -> u6
 // Example:
 //   raw = [0x40], rem_bits = 6, byte_idx = 0, bit_pos = 0
 //   returns: delta = 16, has_val = true, valid = true, byte_idx = 0, bit_pos = 7
-inline fn decode_casper_golomb_step(
+fn decode_casper_golomb_step(
     raw:      const u8[:],
     rem_bits: u64,
     byte_idx: i64&,
@@ -454,32 +441,26 @@ inline fn decode_casper_golomb_step(
 ) -> u64, bool, bool {
     var q: u64 = 0;
     var got_zero = false;
-    while byte_idx < raw.len {
-        let b, ok_b = read_casper_bit(raw, byte_idx, bit_pos);
-        guard ok_b else { break; }
+    let total = raw.len;
+    while byte_idx < total {
+        let b = read_casper_bit(raw, byte_idx, bit_pos);
+        guard b >= 0 else { break; }
         if b == 0 {
             got_zero = true;
             break;
         }
-        q = core::add_sat_u64(q, 1);
+        q += 1;
         guard q <= 512 else { return 0, false, false; }
     }
     guard got_zero else { return 0, false, true; }
-    var r:     u64 = 0;
-    var r_idx: u64 = rem_bits;
-    while r_idx > 0 {
-        r_idx = core::sub_sat_u64(r_idx, 1);
-        let rb, ok_r = read_casper_bit(raw, byte_idx, bit_pos);
-        guard ok_r else { return 0, false, true; }
-        r = core::add_sat_u64(core::add_sat_u64(r, r), rb);
+    var r: u64 = 0;
+    let r_count = min(rem_bits, 63) as i64;
+    for _ in r_count {
+        let rb = read_casper_bit(raw, byte_idx, bit_pos);
+        guard rb >= 0 else { return 0, false, true; }
+        r = (r << 1) | (rb as u64);
     }
-    var q_scaled: u64 = q;
-    var s_idx:    u64 = rem_bits;
-    while s_idx > 0 {
-        s_idx = core::sub_sat_u64(s_idx, 1);
-        q_scaled = core::add_sat_u64(q_scaled, q_scaled);
-    }
-    return core::add_sat_u64(q_scaled, r), true, true;
+    return (q << (rem_bits & 63)) + r, true, true;
 }
 
 // ---- http/targeted_cache.goose internal helpers ----
@@ -498,39 +479,27 @@ inline fn clamp_targeted_delta_seconds(v: i64) -> i32 {
 }
 
 fn apply_targeted_sf_int_entry(k: const u8[:], e: const http::SfDictEntry&, cc: http::CacheControl&) -> bool, bool {
+    let is_int_key = k == "max-age" || k == "s-maxage"
+        || k == "stale-while-revalidate" || k == "stale-if-error";
+    guard is_int_key else { return false, true; }
+    guard !e.is_inner_list && e.item.kind == http::SfType.Integer && e.item.int_val >= 0 else {
+        return true, false;
+    }
+    let val = clamp_targeted_delta_seconds(e.item.int_val);
     if k == "max-age" {
-        guard !e.is_inner_list && e.item.kind == http::SfType.Integer && e.item.int_val >= 0 else {
-            return true, false;
-        }
-        cc.max_age = clamp_targeted_delta_seconds(e.item.int_val);
-        cc.flags = cc.flags | http::CC_HAS_MAX_AGE;
-        return true, true;
+        cc.max_age = val;
+        cc.flags |= http::CC_HAS_MAX_AGE;
+    } else if k == "s-maxage" {
+        cc.s_maxage = val;
+        cc.flags |= http::CC_HAS_S_MAXAGE;
+    } else if k == "stale-while-revalidate" {
+        cc.stale_while_revalidate = val;
+        cc.flags |= http::CC_STALE_WHILE_REVALIDATE;
+    } else {
+        cc.stale_if_error = val;
+        cc.flags |= http::CC_STALE_IF_ERROR;
     }
-    if k == "s-maxage" {
-        guard !e.is_inner_list && e.item.kind == http::SfType.Integer && e.item.int_val >= 0 else {
-            return true, false;
-        }
-        cc.s_maxage = clamp_targeted_delta_seconds(e.item.int_val);
-        cc.flags = cc.flags | http::CC_HAS_S_MAXAGE;
-        return true, true;
-    }
-    if k == "stale-while-revalidate" {
-        guard !e.is_inner_list && e.item.kind == http::SfType.Integer && e.item.int_val >= 0 else {
-            return true, false;
-        }
-        cc.stale_while_revalidate = clamp_targeted_delta_seconds(e.item.int_val);
-        cc.flags = cc.flags | http::CC_STALE_WHILE_REVALIDATE;
-        return true, true;
-    }
-    if k == "stale-if-error" {
-        guard !e.is_inner_list && e.item.kind == http::SfType.Integer && e.item.int_val >= 0 else {
-            return true, false;
-        }
-        cc.stale_if_error = clamp_targeted_delta_seconds(e.item.int_val);
-        cc.flags = cc.flags | http::CC_STALE_IF_ERROR;
-        return true, true;
-    }
-    return false, true;
+    return true, true;
 }
 
 fn targeted_bool_flag_for_key(k: const u8[:]) -> u32 {

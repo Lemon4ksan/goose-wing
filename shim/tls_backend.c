@@ -46,6 +46,7 @@
 #define WING_TLS_KIND_SCHANNEL 2
 #define WING_TLS_KIND_SECURE_TRANSPORT 3
 #define WING_TLS_KIND_AUTO 4
+#define WING_TLS_KIND_SYSTEM_ONLY 5
 
 #define WING_TLS_MIN_TLS13 0
 #define WING_TLS_MIN_TLS12 1
@@ -53,6 +54,7 @@
 #define WING_TLS_FLAG_INSECURE_SKIP_VERIFY 1
 #define WING_TLS_FLAG_NO_SYSTEM_ROOTS 2
 #define WING_TLS_FLAG_NO_SESSION_TICKETS 4
+#define WING_TLS_FLAG_REQUIRE_ALPN_MATCH 8
 
 #define WING_TLS_ST_OK 0
 #define WING_TLS_ST_WANT_READ 1
@@ -170,6 +172,7 @@ static void tls_buf_free(tls_buf_t *b) {
 #define OSSL_FILETYPE_PEM 1
 #define OSSL_BIO_CTRL_PENDING 10
 #define OSSL_TLSEXT_ERR_OK 0
+#define OSSL_TLSEXT_ERR_ALERT_FATAL 2
 #define OSSL_TLSEXT_ERR_NOACK 3
 #define OSSL_SSL_OP_NO_TICKET 0x00004000ULL
 
@@ -771,6 +774,7 @@ typedef struct {
     int insecure_skip_verify;
     int use_system_roots;
     int no_session_tickets;
+    int require_alpn_match;
     int min_version;
     int established;
     int closed;
@@ -912,7 +916,7 @@ static int ossl_alpn_select_cb(void *ssl, const unsigned char **out, unsigned ch
         }
         si += slen;
     }
-    return OSSL_TLSEXT_ERR_NOACK;
+    return ep->require_alpn_match ? OSSL_TLSEXT_ERR_ALERT_FATAL : OSSL_TLSEXT_ERR_NOACK;
 }
 
 static void ossl_keylog_cb(const void *ssl, const char *line) {
@@ -1588,6 +1592,7 @@ static int64_t st_read_app(wing_tls_ep_t *ep, wing_tls_rw dst, int32_t *out_st) 
 
 int32_t wing_tls_backend_available(int32_t kind) {
     if (kind == WING_TLS_KIND_PURE || kind == WING_TLS_KIND_AUTO) return 1;
+    if (kind == WING_TLS_KIND_SYSTEM_ONLY) return ossl_probe() || schannel_probe() || secure_transport_probe();
     if (kind == WING_TLS_KIND_OPENSSL) return ossl_probe();
     if (kind == WING_TLS_KIND_SCHANNEL) return schannel_probe();
     if (kind == WING_TLS_KIND_SECURE_TRANSPORT) return secure_transport_probe();
@@ -1629,7 +1634,7 @@ int64_t wing_tls_backend_open(int32_t kind, int32_t is_server, int32_t insecure_
                               int32_t *out_active_kind) {
     int resolved = kind;
     int has_pem_files = (ca_file.len > 0) || (cert_pem_file.len > 0) || (key_pem_file.len > 0);
-    if (kind == WING_TLS_KIND_AUTO) {
+    if (kind == WING_TLS_KIND_AUTO || kind == WING_TLS_KIND_SYSTEM_ONLY) {
         if (ossl_probe())
             resolved = WING_TLS_KIND_OPENSSL;
         else if (!is_server && !has_pem_files && schannel_probe())
@@ -1666,6 +1671,7 @@ int64_t wing_tls_backend_open(int32_t kind, int32_t is_server, int32_t insecure_
     ep->insecure_skip_verify = (insecure_skip_verify & WING_TLS_FLAG_INSECURE_SKIP_VERIFY) != 0 ? 1 : 0;
     ep->use_system_roots = (insecure_skip_verify & WING_TLS_FLAG_NO_SYSTEM_ROOTS) == 0 ? 1 : 0;
     ep->no_session_tickets = (insecure_skip_verify & WING_TLS_FLAG_NO_SESSION_TICKETS) != 0 ? 1 : 0;
+    ep->require_alpn_match = (insecure_skip_verify & WING_TLS_FLAG_REQUIRE_ALPN_MATCH) != 0 ? 1 : 0;
     ep->min_version = (min_version == WING_TLS_MIN_TLS12) ? WING_TLS_MIN_TLS12 : WING_TLS_MIN_TLS13;
     if (!copy_cstr_ro(ep->sni, sizeof(ep->sni), server_name)) {
         wing_tls_ep_destroy(ep);

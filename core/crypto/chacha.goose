@@ -375,7 +375,7 @@ fn xchacha20_poly1305_open<B>(
     secure_zeroize_64(ot_block);
 
     let computed_tag = poly1305_aead_mac(otk, aad, ciphertext);
-    guard ct_eq_tag16(computed_tag, tag) else {
+    guard ct_declassify_u8(ct_eq_tag16_bit(computed_tag, tag)) == 1 else {
         secure_zeroize_32(subkey);
         secure_zeroize_32(otk);
         return false;
@@ -529,7 +529,7 @@ fn chacha20_poly1305_open<B>(
     secure_zeroize_64(ot_block);
 
     let computed_tag = poly1305_aead_mac(otk, aad, ciphertext);
-    guard ct_eq_tag16(computed_tag, tag) else {
+    guard ct_declassify_u8(ct_eq_tag16_bit(computed_tag, tag)) == 1 else {
         secure_zeroize_32(otk);
         return false;
     }

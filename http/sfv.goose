@@ -207,24 +207,21 @@ fn sf_decode_display_string<B>(raw: const u8[:], out: B&) -> bool {
     defer if !committed { out.clear(); };
     var state: i64 = 0;
     var i:     i64 = 0;
-    while i < raw.len {
-        let b = raw[i];
-        var dec_b: u8  = 0;
-        var step:  i64 = 1;
-        if b == '%' {
-            let i1 = core::add_sat_i64(i, 1);
-            let i2 = core::add_sat_i64(i, 2);
-            guard i2 < raw.len else { return false; }
-            let pct_b, hex_ok = http_internal::sf_decode_pct_hex(raw[i1], raw[i2]);
-            guard hex_ok else { return false; }
-            dec_b = pct_b;
+    let total = raw.len;
+    while i < total {
+        var dec_b = raw[i];
+        var step: i64 = 1;
+        if dec_b == '%' {
+            guard i + 2 < total else { return false; }
+            let pct = http_internal::sf_decode_pct_hex(raw[i + 1], raw[i + 2]);
+            guard pct >= 0 else { return false; }
+            dec_b = pct as u8;
             step = 3;
         } else {
-            guard b >= 0x20 && b <= 0x7E && b != '%' && b != '"' else { return false; }
-            dec_b = b;
+            guard dec_b >= 0x20 && dec_b <= 0x7E && dec_b != '"' else { return false; }
         }
         guard http_internal::sf_step_utf8_dfa(dec_b, state) && out.try_push(dec_b) else { return false; }
-        i = core::add_sat_i64(i, step);
+        i += step;
     }
     guard state == 0 else { return false; }
     committed = true;

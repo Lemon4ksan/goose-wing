@@ -38,8 +38,7 @@ struct GcraDecision {
 // Configures GCRA quota from sustained requests per second and burst capacity.
 fn new_gcra_config(rate_per_sec: u64, burst_capacity: u64) -> GcraConfig {
     let r = max(rate_per_sec, 1);
-    let t_raw = security_internal::fast_div_u64(1000000000, r);
-    let t_ns = max(t_raw, 1);
+    let t_ns = max(1000000000 / r, 1);
     let tau_ns = core::mul_sat_u64(t_ns, burst_capacity);
     let win_ns = core::add_sat_u64(tau_ns, t_ns);
 

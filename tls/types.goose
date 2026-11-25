@@ -574,6 +574,7 @@ enum TlsBackendKind {
     SystemSchannel,
     SystemSecureTransport,
     Auto,
+    SystemOnly,
 }
 
 enum TlsMinVersion {

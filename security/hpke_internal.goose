@@ -80,8 +80,7 @@ fn dhkem_x25519_encap(
 ) -> bool {
     var dh = core::x25519_scalarmult(ephemeral_sk, pkR);
     defer core::secure_zeroize_32(dh);
-    var zero: u8[32] = [0; 32];
-    guard !core::ct_eq_bytes(dh[..], zero[..]) else {
+    guard core::ct_declassify_u8(core::ct_is_zero_bit(dh[..])) == 0 else {
         core::secure_zeroize_32(out_enc);
         return false;
     }
@@ -103,8 +102,7 @@ fn dhkem_x25519_decap(
 ) -> bool {
     var dh = core::x25519_scalarmult(skR, enc);
     defer core::secure_zeroize_32(dh);
-    var zero: u8[32] = [0; 32];
-    guard !core::ct_eq_bytes(dh[..], zero[..]) else {
+    guard core::ct_declassify_u8(core::ct_is_zero_bit(dh[..])) == 0 else {
         return false;
     }
     let kem_suite_id: u8[5] = [0x4B, 0x45, 0x4D, 0x00, 0x20];

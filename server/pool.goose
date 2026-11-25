@@ -68,19 +68,6 @@ struct ExtensionsPool {
     slots: RequestExtensions[..16] = [RequestExtensions { .. }; 16],
 }
 
-fn reset_slot_jwt_claims(claims: auth::JwtClaims&) {
-    claims.iss.clear();
-    claims.sub.clear();
-    claims.aud.clear();
-    claims.audiences.clear();
-    claims.jti.clear();
-    claims.exp = -1;
-    claims.nbf = -1;
-    claims.iat = -1;
-    claims.custom_claims.clear();
-    claims.raw_payload.clear();
-}
-
 inline fn is_jwt_claims_dirty(slot: const RequestExtensions&) -> bool {
     return (slot.populated_entries & ENTRY_SECURITY) != 0
         || slot.jwt_claims.raw_payload.len > 0
@@ -105,7 +92,7 @@ fn clear_extension_slot_fields(slot: RequestExtensions&) {
     slot.auth_subject.clear();
     slot.auth_scopes = 0;
     if is_jwt_claims_dirty(slot) {
-        reset_slot_jwt_claims(slot.jwt_claims);
+        slot.jwt_claims = auth::JwtClaims { .. };
     }
     slot.start_time_ns = 0;
     slot.effective_pso = 0;

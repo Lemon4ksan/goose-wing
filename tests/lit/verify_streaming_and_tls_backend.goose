@@ -769,6 +769,39 @@ fn test_pluggable_tls_backends() {
     let st_strict_rejected = st_strict_st == tls::TlsBackendStatus.Unavailable;
     tls::tls_endpoint_close(st_strict_ep);
 
+    // SystemOnly must never silently fall back to PureGoose when Pure-only features are requested.
+    var sys_pq_cfg = tls::TlsBackendConfig {
+        kind:             tls::TlsBackendKind.SystemOnly,
+        enable_pq_hybrid: true,
+        ..
+    };
+    var sys_pq_ep, sys_pq_st = tls::tls_endpoint_open(sys_pq_cfg);
+    let sys_pq_rejected = sys_pq_st == tls::TlsBackendStatus.Unavailable;
+    tls::tls_endpoint_close(sys_pq_ep);
+
+    let sys_avail = tls::tls_backend_available(tls::TlsBackendKind.SystemOnly);
+    var sys_open_ok = !sys_avail;
+    if sys_avail {
+        var sys_cfg = tls::TlsBackendConfig {
+            kind:                 tls::TlsBackendKind.SystemOnly,
+            min_version:          tls::TlsMinVersion.Tls12,
+            is_server:            false,
+            insecure_skip_verify: true,
+            ..
+        };
+        assert(sys_cfg.server_name.try_set("localhost"));
+        var sys_ep, sys_st = tls::tls_endpoint_open(sys_cfg);
+        assert(sys_st == tls::TlsBackendStatus.Ok);
+        assert(sys_ep.active_kind != tls::TlsBackendKind.PureGoose);
+        let _ = tls::tls_endpoint_step_handshake(sys_ep);
+        var sysh: u8[2048] = [0; 2048];
+        let sn, _ = tls::tls_endpoint_drain_wire(sys_ep, sysh[..]);
+        sys_open_ok = (sn > 40) && (sysh[0] == 0x16) && (sysh[1] == 0x03);
+        tls::tls_endpoint_close(sys_ep);
+    }
+    let bad_ak, bad_ak_ok = tls::endpoint_transport_active_kind(-1);
+    assert(!bad_ak_ok && bad_ak == tls::TlsBackendKind.PureGoose);
+
     // Schannel with explicit TlsMinVersion.Tls12 fallback on Windows
     var sch12_ok = !sch_avail;
     if sch_avail {
@@ -791,8 +824,9 @@ fn test_pluggable_tls_backends() {
     }
 
     print("native_schannel_ok=", sch_ok && sch12_ok, " native_openssl_clean=", ossl_clean,
-        " st_strict_reject=", st_strict_rejected, " auto_ok=", auto_ok);
-    // CHECK: native_schannel_ok=true native_openssl_clean=true st_strict_reject=true auto_ok=true
+        " st_strict_reject=", st_strict_rejected, " sys_only_ok=", sys_pq_rejected && sys_open_ok,
+        " auto_ok=", auto_ok);
+    // CHECK: native_schannel_ok=true native_openssl_clean=true st_strict_reject=true sys_only_ok=true auto_ok=true
 }
 
 // ---- 6. Non-Blocking TlsStream, Pre-Connect TCP Options & mTLS Fail-Closed --

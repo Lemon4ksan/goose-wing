@@ -18,27 +18,16 @@ import .internal;
 
 // ---- Connect Protocol Internal Helpers ----------------------------------
 
-fn connect_status_name(code: grpc::StatusCode) -> const u8[:] {
-    return match code {
-        Ok => "ok",
-        Cancelled => "canceled",
-        Unknown => "unknown",
-        InvalidArgument => "invalid_argument",
-        DeadlineExceeded => "deadline_exceeded",
-        NotFound => "not_found",
-        AlreadyExists => "already_exists",
-        PermissionDenied => "permission_denied",
-        ResourceExhausted => "resource_exhausted",
-        FailedPrecondition => "failed_precondition",
-        Aborted => "aborted",
-        OutOfRange => "out_of_range",
-        Unimplemented => "unimplemented",
-        Internal => "internal",
-        Unavailable => "unavailable",
-        DataLoss => "data_loss",
-        Unauthenticated => "unauthenticated",
-        _ => "unknown",
-    };
+const CONNECT_STATUS_NAMES: const u8[:][17] = [
+    "ok", "canceled", "unknown", "invalid_argument", "deadline_exceeded",
+    "not_found", "already_exists", "permission_denied", "resource_exhausted",
+    "failed_precondition", "aborted", "out_of_range", "unimplemented",
+    "internal", "unavailable", "data_loss", "unauthenticated",
+];
+
+checkfree fn connect_status_name(code: grpc::StatusCode) -> const u8[:] {
+    let idx = grpc::status_to_code(code) as i64;
+    return if idx < 17 { CONNECT_STATUS_NAMES[idx] } else { "unknown" };
 }
 
 // Parses a Connect Protocol snake_case error code string into a grpc::StatusCode.
@@ -50,13 +39,10 @@ fn parse_connect_status_code(name: const u8[:]) -> grpc::StatusCode, bool {
     if name == "canceled" || name == "cancelled" {
         return grpc::StatusCode.Cancelled, true;
     }
-    var i: u32 = 1;
-    while i <= 16 {
-        let candidate = grpc::status_from_code(i);
-        if name == connect_status_name(candidate) {
-            return candidate, true;
+    for i in 1..17 {
+        if name == CONNECT_STATUS_NAMES[i] {
+            return grpc::status_from_code(i as u32), true;
         }
-        i = core::add_sat_u32(i, 1);
     }
     return grpc::StatusCode.Unknown, false;
 }

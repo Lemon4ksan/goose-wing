@@ -2259,7 +2259,7 @@ http/sfv_sig_internal.goose 489 http_internal::sf_parse_inner_list_items 0.11 0 
 http/sfv_sig_internal.goose 522 http_internal::sf_parse_dict_entry_value 1.02 0 0.82
 http/sfv_sig_internal.goose 552 http_internal::sf_parse_single_dict_entry 0.00 0 1.00
 http/sfv_sig_internal.goose 569 http_internal::upsert_sf_dict_entry 0.00 0 1.00
-http/sfv_sig_internal.goose 580 http_internal::sf_parse_single_list_entry 10.97 0 0.44
+http/sfv_sig_internal.goose 580 http_internal::sf_parse_single_list_entry 19.00 0 0.44
 http/sfv_wire_internal.goose 12 http_internal::sf_item_to_sfv_bare 0.06 0 0.92
 http/sfv_wire_internal.goose 54 http_internal::parse_sfv_bare_item 0.00 0 1.00
 http/sfv_wire_internal.goose 63 http_internal::upsert_sfv_param 0.07 0 0.80
@@ -7204,7 +7204,7 @@ core/compress/brotli.goose 481 core::decode_brotli_symbol 4.82 0 0.54
 core/compress/brotli.goose 514 core::decode_brotli_tree_symbol 4.54 0 0.74
 core/compress/brotli.goose 555 core::construct_brotli_cl_table 0.05 0 0.93
 core/compress/brotli.goose 600 core::decode_brotli_cl_symbol 0.18 0 0.78
-core/compress/brotli.goose 620 core::build_simple_prefix_code 8.45 0 0.63
+core/compress/brotli.goose 620 core::build_simple_prefix_code 14.60 0 0.63
 core/compress/brotli.goose 685 core::read_code_length_code_lengths 0.00 0 1.00
 core/compress/brotli.goose 716 core::apply_repeat_code_16 0.02 0 0.91
 core/compress/brotli.goose 751 core::apply_repeat_code_17 0.02 0 0.89

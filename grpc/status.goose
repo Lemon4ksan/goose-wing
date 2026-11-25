@@ -90,59 +90,38 @@ fn encode_timeout<B>(timeout_ms: u64, out: B&) {
         let _ = out.try_append("0m");
         return;
     }
-
-    var tmp: u8[..16] = [];
     let max_val: u64 = 99999999;
-    let hours = grpc_internal::div_u64(timeout_ms, 3600000);
-    if hours <= max_val && core::mul_sat_u64(hours, 3600000) == timeout_ms {
-        hours.format_u64_dec(tmp);
-        tmp.push('H');
-        let _ = out.try_append(tmp[..]);
-        return;
+    let qh, rh = core::div_rem_u64(timeout_ms, 3600000);
+    let qm, rm = core::div_rem_u64(timeout_ms, 60000);
+    let qs, rs = core::div_rem_u64(timeout_ms, 1000);
+    let cs, _ = core::div_rem_u64(core::add_sat_u64(timeout_ms, 999), 1000);
+    let cm, _ = core::div_rem_u64(core::add_sat_u64(timeout_ms, 59999), 60000);
+    let ch, _ = core::div_rem_u64(core::add_sat_u64(timeout_ms, 3599999), 3600000);
+    var val:  u64 = 0;
+    var unit: u8  = 'H';
+    if rh == 0 && qh <= max_val {
+        val = qh;
+    } else if rm == 0 && qm <= max_val {
+        val = qm;
+        unit = 'M';
+    } else if rs == 0 && qs <= max_val {
+        val = qs;
+        unit = 'S';
+    } else if timeout_ms <= max_val {
+        val = timeout_ms;
+        unit = 'm';
+    } else if cs <= max_val {
+        val = cs;
+        unit = 'S';
+    } else if cm <= max_val {
+        val = cm;
+        unit = 'M';
+    } else {
+        val = min(ch, max_val);
     }
-
-    let mins = grpc_internal::div_u64(timeout_ms, 60000);
-    if mins <= max_val && core::mul_sat_u64(mins, 60000) == timeout_ms {
-        mins.format_u64_dec(tmp);
-        tmp.push('M');
-        let _ = out.try_append(tmp[..]);
-        return;
-    }
-
-    let secs = grpc_internal::div_u64(timeout_ms, 1000);
-    if secs <= max_val && core::mul_sat_u64(secs, 1000) == timeout_ms {
-        secs.format_u64_dec(tmp);
-        tmp.push('S');
-        let _ = out.try_append(tmp[..]);
-        return;
-    }
-
-    if timeout_ms <= max_val {
-        timeout_ms.format_u64_dec(tmp);
-        tmp.push('m');
-        let _ = out.try_append(tmp[..]);
-        return;
-    }
-
-    let ceil_secs = grpc_internal::div_u64(core::add_sat_u64(timeout_ms, 999), 1000);
-    if ceil_secs <= max_val {
-        ceil_secs.format_u64_dec(tmp);
-        tmp.push('S');
-        let _ = out.try_append(tmp[..]);
-        return;
-    }
-
-    let ceil_mins = grpc_internal::div_u64(core::add_sat_u64(timeout_ms, 59999), 60000);
-    if ceil_mins <= max_val {
-        ceil_mins.format_u64_dec(tmp);
-        tmp.push('M');
-        let _ = out.try_append(tmp[..]);
-        return;
-    }
-
-    let ceil_hours = min(grpc_internal::div_u64(core::add_sat_u64(timeout_ms, 3599999), 3600000), max_val);
-    ceil_hours.format_u64_dec(tmp);
-    tmp.push('H');
+    var tmp: u8[..16] = [];
+    val.format_u64_dec(tmp);
+    tmp.push(unit);
     let _ = out.try_append(tmp[..]);
 }
 

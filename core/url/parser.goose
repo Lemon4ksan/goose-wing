@@ -56,6 +56,14 @@ fn has_forbidden_host_code_point(host_str: const u8[:]) -> bool {
     return find_any(host_str, URL_FORBIDDEN_HOST_SET) >= 0;
 }
 
+fn find_query_and_hash(s: const u8[:]) -> i64, i64 {
+    let first_delim = find_any(s, URL_QUERY_HASH_SET);
+    guard first_delim >= 0 else { return -1, -1; }
+    if s[first_delim] != '?' { return -1, first_delim; }
+    let frag_rel = find_any(s[first_delim + 1..], URL_HASH_SET);
+    return first_delim, if frag_rel >= 0 { first_delim + 1 + frag_rel } else { -1 };
+}
+
 // Parses an opaque path URL (such as mailto:user@example.com).
 //
 // Example:
@@ -72,20 +80,7 @@ fn parse_opaque_path_url(
     out_url.scheme_end = scheme_str.len as i32;
 
     out_url.pathname_start = out_url.href.len as i32;
-    var query_pos: i64 = -1;
-    var hash_pos:  i64 = -1;
-    let first_delim = find_any(remainder, URL_QUERY_HASH_SET);
-    if first_delim >= 0 {
-        if remainder[first_delim] == '?' {
-            query_pos = first_delim;
-            let frag_rel = find_any(remainder[first_delim + 1..], URL_HASH_SET);
-            if frag_rel >= 0 {
-                hash_pos = first_delim + 1 + frag_rel;
-            }
-        } else {
-            hash_pos = first_delim;
-        }
-    }
+    let query_pos, hash_pos = find_query_and_hash(remainder);
 
     let path_end = if query_pos >= 0 { query_pos } else if hash_pos >= 0 { hash_pos } else { remainder.len };
     out_url.href.append(remainder[..path_end]);
@@ -367,7 +362,7 @@ fn parse_url_internal(
     out_url:   Url&,
 ) -> UrlParseError {
     var committed = false;
-    defer if !committed { reset_url_for_parse(out_url); };
+    defer if !committed { out_url = Url { .. }; };
 
     var err = UrlParseError.None;
     if is_url_precleaned(raw_input) {
@@ -384,13 +379,7 @@ fn parse_url_internal(
 }
 
 fn append_userinfo_to_url(out_url: Url&, userinfo: const u8[:]) -> bool {
-    var colon_pos = -1;
-    for scan_idx in userinfo.len {
-        if userinfo[scan_idx] == ':' {
-            colon_pos = scan_idx;
-            break;
-        }
-    }
+    let colon_pos = index_of_byte(userinfo, ':');
 
     let raw_user = if colon_pos >= 0 { userinfo[..colon_pos] } else { userinfo };
     let raw_pass = if colon_pos >= 0 { userinfo[colon_pos + 1..] } else { "" };
@@ -569,10 +558,7 @@ fn parse_port_number(port_str: const u8[:]) -> i32, bool {
 }
 
 fn resolve_bracketed_ipv6_host(view: UrlView&, host_port_slice: const u8[:]) -> UrlParseError {
-    var close_bracket = -1;
-    for scan_idx in host_port_slice.len {
-        if host_port_slice[scan_idx] == ']' { close_bracket = scan_idx; break; }
-    }
+    let close_bracket = index_of_byte(host_port_slice, ']');
     guard close_bracket > 0 else {
         return UrlParseError.InvalidIpv6;
     }
@@ -668,20 +654,7 @@ fn resolve_url_view_authority(view: UrlView&, authority: const u8[:]) -> UrlPars
 }
 
 inline fn split_url_view_path_query_hash(view: UrlView&, rest: const u8[:]) {
-    var q_pos: i64 = -1;
-    var h_pos: i64 = -1;
-    let first_qh = find_any(rest, URL_QUERY_HASH_SET);
-    if first_qh >= 0 {
-        if rest[first_qh] == '?' {
-            q_pos = first_qh;
-            let hash_offset = find_any(rest[first_qh + 1..], URL_HASH_SET);
-            if hash_offset >= 0 {
-                h_pos = first_qh + 1 + hash_offset;
-            }
-        } else {
-            h_pos = first_qh;
-        }
-    }
+    let q_pos, h_pos = find_query_and_hash(rest);
 
     if q_pos >= 0 {
         view.pathname = rest[..q_pos];
@@ -909,13 +882,7 @@ fn extract_host_and_port_canonical<B>(
     }
 
     // Standard host or IPv4 with optional :port
-    var colon_idx = -1;
-    for scan_idx in host_port.len {
-        if host_port[scan_idx] == ':' {
-            colon_idx = scan_idx;
-            break;
-        }
-    }
+    let colon_idx = index_of_byte(host_port, ':');
 
     let host_str = if colon_idx >= 0 { host_port[..colon_idx] } else { host_port };
     guard host_str.len > 0 else {
@@ -959,10 +926,7 @@ fn is_double_dot_segment(seg: const u8[:]) -> bool {
 }
 
 fn is_windows_drive_segment(seg: const u8[:]) -> bool {
-    guard seg.len == 2 else { return false; }
-    let is_letter = (seg[0] >= 'a' && seg[0] <= 'z') || (seg[0] >= 'A' && seg[0] <= 'Z');
-    let is_separator = seg[1] == ':' || seg[1] == '|';
-    return is_letter && is_separator;
+    return seg.len == 2 && is_ascii_alpha(seg[0]) && (seg[1] == ':' || seg[1] == '|');
 }
 
 fn handle_path_segment(
@@ -1068,8 +1032,9 @@ fn collapse_path_with_segments(
     var seg_start = scan_idx;
     var last_was_dot = false;
 
-    while scan_idx <= raw_path.len {
-        let next_idx = core::add_sat_i64(scan_idx, 1);
+    let path_len = raw_path.len;
+    while scan_idx <= path_len {
+        let next_idx = scan_idx + 1;
         if !is_path_delimiter_at(raw_path, scan_idx, is_spec) {
             scan_idx = next_idx;
             continue;
@@ -1084,8 +1049,7 @@ fn collapse_path_with_segments(
         scan_idx = next_idx;
     }
 
-    let last_idx = core::sub_sat_i64(raw_path.len, 1);
-    var has_trailing_slash = last_was_dot || is_path_delimiter_at(raw_path, last_idx, is_spec);
+    var has_trailing_slash = last_was_dot || is_path_delimiter_at(raw_path, path_len - 1, is_spec);
     // WHATWG URL § 4.4: In a file URL, if path has a single Windows drive letter,
     // it must serialize with a trailing slash
     if is_file && seg_starts.len == 1 {
@@ -1125,17 +1089,7 @@ fn collapse_path_directly(out_url: Url&, is_spec: bool, raw_path: const u8[:]) -
 }
 
 fn append_canonical_path_and_query(out_url: Url&, is_spec: bool, path_and_beyond: const u8[:]) -> UrlParseError {
-    var query_pos = -1;
-    var hash_pos = -1;
-    for scan_idx in path_and_beyond.len {
-        let char_byte = path_and_beyond[scan_idx];
-        if char_byte == '?' && query_pos < 0 && hash_pos < 0 {
-            query_pos = scan_idx;
-        } else if char_byte == '#' && hash_pos < 0 {
-            hash_pos = scan_idx;
-            break;
-        }
-    }
+    let query_pos, hash_pos = find_query_and_hash(path_and_beyond);
 
     let path_end = if query_pos >= 0 { query_pos } else if hash_pos >= 0 { hash_pos } else { path_and_beyond.len };
     let raw_path = path_and_beyond[..path_end];

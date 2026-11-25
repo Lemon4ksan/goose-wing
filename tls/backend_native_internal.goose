@@ -18,6 +18,8 @@ const NATIVE_KIND_SECURE_TRANSPORT: i32 = 3;
 
 const NATIVE_KIND_AUTO: i32 = 4;
 
+const NATIVE_KIND_SYSTEM_ONLY: i32 = 5;
+
 const NATIVE_MIN_TLS13: i32 = 0;
 
 const NATIVE_MIN_TLS12: i32 = 1;
@@ -27,6 +29,8 @@ const NATIVE_FLAG_INSECURE_SKIP_VERIFY: i32 = 1;
 const NATIVE_FLAG_NO_SYSTEM_ROOTS: i32 = 2;
 
 const NATIVE_FLAG_NO_SESSION_TICKETS: i32 = 4;
+
+const NATIVE_FLAG_REQUIRE_ALPN_MATCH: i32 = 8;
 
 extern fn native_tls_backend_available(kind: i32) -> i32 = "wing_tls_backend_available";
 
@@ -91,6 +95,7 @@ inline fn kind_to_native_i32(kind: tls::TlsBackendKind) -> i32 {
         SystemSchannel => NATIVE_KIND_SCHANNEL,
         SystemSecureTransport => NATIVE_KIND_SECURE_TRANSPORT,
         Auto => NATIVE_KIND_AUTO,
+        SystemOnly => NATIVE_KIND_SYSTEM_ONLY,
     };
 }
 
@@ -123,7 +128,10 @@ inline fn native_i32_to_status(code: i32) -> tls::TlsBackendStatus {
 
 fn native_backend_rejects_cfg(cfg: const tls::TlsBackendConfig&, is_server: bool) -> bool {
     if is_server {
-        if cfg.defer_sni_credentials || cfg.require_alpn_match { return true; }
+        if cfg.defer_sni_credentials { return true; }
+        if cfg.require_alpn_match && !tls::tls_backend_available(tls::TlsBackendKind.SystemOpenSsl) {
+            return true;
+        }
         if cfg.cert_der.len > 0 && cfg.cert_pem_file.len == 0 { return true; }
         return cfg.require_client_cert && (cfg.ca_file.len == 0 || cfg.insecure_skip_verify);
     }
@@ -137,7 +145,10 @@ fn should_route_to_pure_backend(cfg: const tls::TlsBackendConfig&, is_server: bo
     if cfg.kind == tls::TlsBackendKind.PureGoose { return true; }
     guard cfg.kind == tls::TlsBackendKind.Auto else { return false; }
     if is_server {
-        if cfg.defer_sni_credentials || cfg.require_alpn_match { return true; }
+        if cfg.defer_sni_credentials { return true; }
+        if cfg.require_alpn_match && !tls::tls_backend_available(tls::TlsBackendKind.SystemOpenSsl) {
+            return true;
+        }
         if cfg.cert_der.len > 0 && cfg.cert_pem_file.len == 0 { return true; }
         if cfg.require_client_cert {
             return cfg.ca_file.len == 0 || !tls::tls_backend_available(tls::TlsBackendKind.SystemOpenSsl);
@@ -154,14 +165,27 @@ fn should_route_to_pure_backend(cfg: const tls::TlsBackendConfig&, is_server: bo
     return cfg.ca_file.len > 0 && !tls::tls_backend_available(tls::TlsBackendKind.SystemOpenSsl);
 }
 
-// Packs peer verification, OS root-store, and session-ticket flags for `wing_tls_backend_open`.
+// Packs peer verification, OS root-store, session-ticket, and ALPN-match flags for `wing_tls_backend_open`.
 //
 // Example:
 //   cfg.insecure_skip_verify = false, cfg.use_system_roots = false, cfg.enable_session_tickets = false
 //   returns: 6 (NATIVE_FLAG_NO_SYSTEM_ROOTS | NATIVE_FLAG_NO_SESSION_TICKETS)
 inline fn pack_native_verify_flags(cfg: const tls::TlsBackendConfig&) -> i32 {
-    let skip_bit = if cfg.insecure_skip_verify { NATIVE_FLAG_INSECURE_SKIP_VERIFY } else { 0 };
-    let roots_bit = if !cfg.use_system_roots { NATIVE_FLAG_NO_SYSTEM_ROOTS } else { 0 };
-    let tickets_bit = if !cfg.enable_session_tickets { NATIVE_FLAG_NO_SESSION_TICKETS } else { 0 };
-    return skip_bit | roots_bit | tickets_bit;
+    let conds: bool[4] = [
+        cfg.insecure_skip_verify,
+        !cfg.use_system_roots,
+        !cfg.enable_session_tickets,
+        cfg.require_alpn_match,
+    ];
+    let masks: i32[4] = [
+        NATIVE_FLAG_INSECURE_SKIP_VERIFY,
+        NATIVE_FLAG_NO_SYSTEM_ROOTS,
+        NATIVE_FLAG_NO_SESSION_TICKETS,
+        NATIVE_FLAG_REQUIRE_ALPN_MATCH,
+    ];
+    var flags: i32 = 0;
+    for i in 4 {
+        if conds[i] { flags = flags | masks[i]; }
+    }
+    return flags;
 }

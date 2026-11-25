@@ -171,25 +171,8 @@ inline fn mul_sat_i64(a: i64, b: i64) -> i64 {
 
 // Unsigned 64-bit quotient and remainder returning (0, n) when d == 0.
 fn div_rem_u64(n: u64, d: u64) -> u64, u64 {
-    guard d > 0 && n >= d else { return 0, n; }
-    var cur_d = d;
-    var cur_q: u64 = 1;
-    let half_n = n >> 1;
-    while cur_d <= half_n {
-        cur_d = add_sat_u64(cur_d, cur_d);
-        cur_q = add_sat_u64(cur_q, cur_q);
-    }
-    var rem_n = n;
-    var quotient: u64 = 0;
-    while cur_q > 0 {
-        if rem_n >= cur_d {
-            rem_n = sub_sat_u64(rem_n, cur_d);
-            quotient = quotient | cur_q;
-        }
-        cur_d = cur_d >> 1;
-        cur_q = cur_q >> 1;
-    }
-    return quotient, rem_n;
+    guard d > 0 else { return 0, n; }
+    return n / d, n % d;
 }
 
 inline fn safe_euclid_divisor(lhs: i64, rhs: i64) -> i64 {

@@ -1078,6 +1078,8 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         // CVE-2009-3555 / CVE-2021-3712: Embedded NUL-byte injection rejection
         sub.assert_false(tls::match_dns_san("example.com\0.evil.com", "example.com"), "reject embedded NUL in SAN pattern");
         sub.assert_false(tls::match_dns_san("example.com", "example.com\0.evil.com"), "reject embedded NUL in host");
+        sub.assert_false(tls::match_dns_san("*.co.uk", "evil.co.uk"), "reject wildcard on public suffix");
+        sub.assert_false(tls::match_dns_san("*.github.io", "evil.github.io"), "reject wildcard on private PSL suffix");
         sub.assert_false(tls::match_uri_san("http://example.com\0.evil.com", "example.com"), "reject embedded NUL in URI SAN host");
         sub.assert_false(tls::match_uri_san("example.com", "example.com\0.evil.com"), "reject embedded NUL in URI request host");
     };

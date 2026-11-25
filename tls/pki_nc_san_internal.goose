@@ -542,6 +542,9 @@ fn x509_match_email_nc_3state(candidate_email: const u8[:], constraint: const u8
     // RFC 5321 Section 4.1.2: Split on the last '@' so quoted local-parts cannot smuggle '@'.
     let cand_local, cand_host_raw, has_cand_at = candidate_email.rsplit_once_byte('@');
     guard has_cand_at && cand_local.len > 0 && cand_host_raw.len > 0 else { return NcMatchResult.Invalid; }
+    if cand_local[0] != '"' && cand_local.contains_byte('@') {
+        return NcMatchResult.Invalid;
+    }
     let cand_host = tls::x509_strip_trailing_dot(cand_host_raw);
     guard x509_validate_dns_candidate(cand_host) else { return NcMatchResult.Invalid; }
 

@@ -476,3 +476,11 @@ recursive fn endpoint_transport_close(fd: i64, slot_id: i64) {
     }
     net::fd_close(fd);
 }
+
+// Returns the active TLS backend serving `slot_id`, or `(PureGoose, false)` if closed/invalid.
+fn endpoint_transport_active_kind(slot_id: i64) -> TlsBackendKind, bool {
+    guard tls_internal::endpoint_slot_is_ready(slot_id) else {
+        return TlsBackendKind.PureGoose, false;
+    }
+    return tls_internal::g_backend_transport_slots[slot_id].ep.active_kind, true;
+}

@@ -32,100 +32,68 @@ enum Weekday {
     Saturday,
 }
 
-let MONTH_NAMES: const u8[:][12] = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
-];
-
-let MONTH_SHORT_NAMES: const u8[:][12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
-let WEEKDAY_NAMES: const u8[:][7] = [
-    "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
-];
-
-let WEEKDAY_SHORT_NAMES: const u8[:][7] = [
-    "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat",
-];
-
 fn month_number(month_val: Month) -> i64 {
-    return match month_val {
-        January => 1,
-        February => 2,
-        March => 3,
-        April => 4,
-        May => 5,
-        June => 6,
-        July => 7,
-        August => 8,
-        September => 9,
-        October => 10,
-        November => 11,
-        December => 12,
-    };
+    var idx: i64 = 1;
+    const for <N, V> in variants<Month> {
+        let v: Month = default<V>();
+        if month_val == v { return idx; }
+        idx += 1;
+    }
+    return 1;
 }
 
 fn month_from_number(month_num: i64) -> Month {
-    let norm = rem_euclid_i64(month_num, 12);
-    return match norm {
-        1 => Month.January,
-        2 => Month.February,
-        3 => Month.March,
-        4 => Month.April,
-        5 => Month.May,
-        6 => Month.June,
-        7 => Month.July,
-        8 => Month.August,
-        9 => Month.September,
-        10 => Month.October,
-        11 => Month.November,
-        0 => Month.December,
-        _ => Month.January,
-    };
+    let target = (rem_euclid_i64(month_num, 12) + 11) % 12;
+    var idx: i64 = 0;
+    const for <N, V> in variants<Month> {
+        if target == idx { return default<V>(); }
+        idx += 1;
+    }
+    return Month.January;
 }
 
 fn month_name(month_val: Month) -> const u8[:] {
-    return MONTH_NAMES[month_number(month_val) - 1];
+    return match month_val {
+        const for <N, V> in variants<Month> {
+            V => N,
+        },
+    };
 }
 
 fn month_short_name(month_val: Month) -> const u8[:] {
-    return MONTH_SHORT_NAMES[month_number(month_val) - 1];
+    return month_name(month_val)[..3];
 }
 
 fn weekday_number(weekday_val: Weekday) -> i64 {
-    return match weekday_val {
-        Sunday => 0,
-        Monday => 1,
-        Tuesday => 2,
-        Wednesday => 3,
-        Thursday => 4,
-        Friday => 5,
-        Saturday => 6,
-    };
+    var idx: i64 = 0;
+    const for <N, V> in variants<Weekday> {
+        let v: Weekday = default<V>();
+        if weekday_val == v { return idx; }
+        idx += 1;
+    }
+    return 0;
 }
 
 fn weekday_from_number(weekday_num: i64) -> Weekday {
     let norm = rem_euclid_i64(weekday_num, 7);
-    return match norm {
-        0 => Weekday.Sunday,
-        1 => Weekday.Monday,
-        2 => Weekday.Tuesday,
-        3 => Weekday.Wednesday,
-        4 => Weekday.Thursday,
-        5 => Weekday.Friday,
-        6 => Weekday.Saturday,
-        _ => Weekday.Sunday,
-    };
+    var idx: i64 = 0;
+    const for <N, V> in variants<Weekday> {
+        if norm == idx { return default<V>(); }
+        idx += 1;
+    }
+    return Weekday.Sunday;
 }
 
 fn weekday_name(weekday_val: Weekday) -> const u8[:] {
-    return WEEKDAY_NAMES[weekday_number(weekday_val)];
+    return match weekday_val {
+        const for <N, V> in variants<Weekday> {
+            V => N,
+        },
+    };
 }
 
 fn weekday_short_name(weekday_val: Weekday) -> const u8[:] {
-    return WEEKDAY_SHORT_NAMES[weekday_number(weekday_val)];
+    return weekday_name(weekday_val)[..3];
 }
 
 // ---- civil calendar math (Howard Hinnant) ----------------------------------

@@ -141,8 +141,8 @@ checkfree fn validate_host_header_chars(host_val: const u8[:]) -> bool {
         if b == '%' {
             let rem = host_val[i..];
             guard rem.len >= 3
-                && http_internal::is_hex_char(rem[1])
-                && http_internal::is_hex_char(rem[2]) else {
+                && core::is_ascii_hexdigit(rem[1])
+                && core::is_ascii_hexdigit(rem[2]) else {
                 return false;
             }
         }

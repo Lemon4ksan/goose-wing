@@ -124,11 +124,12 @@ fn is_valid_request_target(target: const u8[:], method: const u8[:]) -> bool {
 
 // Checks whether `s` contains any bare CR or bare LF not paired as `\r\n`.
 fn has_bare_cr_or_lf(s: const u8[:]) -> bool {
-    for i in s.len {
+    let n = s.len;
+    for i in n {
         let b = s[i];
         if b == '\r' {
             let nxt = core::add_sat_i64(i, 1);
-            guard nxt < s.len && s[nxt] == '\n' else { return true; }
+            guard nxt < n && s[nxt] == '\n' else { return true; }
         }
         if b == '\n' {
             guard i > 0 && s[core::sub_sat_i64(i, 1)] == '\r' else { return true; }
@@ -218,7 +219,8 @@ fn decode_query_component<B>(raw: const u8[:], out: B&) -> bool {
     defer if !committed { out.clear(); };
     out.clear();
     var idx: i64 = 0;
-    while idx < raw.len {
+    let total = raw.len;
+    while idx < total {
         let b = raw[idx];
         if b == '+' {
             guard buf_push(out, ' ') else { return false; }
@@ -226,13 +228,11 @@ fn decode_query_component<B>(raw: const u8[:], out: B&) -> bool {
             continue;
         }
         if b == '%' {
-            let p1 = core::add_sat_i64(idx, 1);
-            let p3 = core::add_sat_i64(idx, 3);
-            guard p3 <= raw.len else { return false; }
-            let dec_byte, ok_hex = core::parse_u8_hex(raw[p1..p3]);
-            guard ok_hex else { return false; }
-            guard buf_push(out, dec_byte) else { return false; }
-            idx = p3;
+            let end_hex = core::add_sat_i64(idx, 3);
+            guard end_hex <= total else { return false; }
+            let dec_byte, ok_hex = core::parse_u8_hex(raw[core::add_sat_i64(idx, 1)..end_hex]);
+            guard ok_hex && buf_push(out, dec_byte) else { return false; }
+            idx = end_hex;
             continue;
         }
         guard buf_push(out, b) else { return false; }
@@ -357,6 +357,34 @@ fn apply_request_framing_header(name: const u8[:], val: const u8[:], req: Reques
     return ParseStatus.Complete;
 }
 
+// Parses one RFC 9112 Section 7.1 chunk at `src[cursor..]`, advancing `cursor` past its trailing CRLF.
+// Returns `(data_start, data_end, Complete)`; `data_start == data_end` signals the terminal `0\r\n` chunk.
+// Leaves `cursor` unchanged when returning a non-Complete status.
+//
+// Example:
+//   src = "5\r\nhello\r\n", cursor = 0
+//   returns: 3, 8, ParseStatus.Complete, cursor = 10
+fn parse_next_chunk_span(src: const u8[:], cursor: i64&) -> i64, i64, ParseStatus {
+    let pos = cursor;
+    let total = src.len;
+    guard pos >= 0 && pos < total else { return 0, 0, ParseStatus.Incomplete; }
+    let crlf = core::find_crlf(src[pos..]);
+    guard crlf >= 0 else { return 0, 0, ParseStatus.Incomplete; }
+    let sz_hex, _, _ = core::split_once_byte(src[pos..core::add_sat_i64(pos, crlf)], ';');
+    let chunk_u, ok_hex = core::parse_u64_hex(core::trim_lws(sz_hex));
+    guard ok_hex else { return 0, 0, ParseStatus.BadRequest; }
+    guard chunk_u <= (MAX_H1_BODY_BYTES as u64) else { return 0, 0, ParseStatus.PayloadTooLarge; }
+    let data_start = core::add_sat_i64(core::add_sat_i64(pos, crlf), 2);
+    let data_end = core::add_sat_i64(data_start, chunk_u as i64);
+    let next_pos = core::add_sat_i64(data_end, 2);
+    guard next_pos <= total else { return 0, 0, ParseStatus.Incomplete; }
+    guard src[data_end] == '\r' && src[core::add_sat_i64(data_end, 1)] == '\n' else {
+        return 0, 0, ParseStatus.BadRequest;
+    }
+    cursor = next_pos;
+    return data_start, data_end, ParseStatus.Complete;
+}
+
 // Scans a chunked body in `src` (RFC 9112 Section 7.1), returning total framed bytes consumed.
 //
 // Example:
@@ -366,31 +394,11 @@ fn scan_chunked_framing(src: const u8[:]) -> i64, ParseStatus {
     var cursor:     i64 = 0;
     var total_body: i64 = 0;
     while cursor < src.len {
-        let crlf = core::find_crlf(src[cursor..]);
-        guard crlf >= 0 else { return 0, ParseStatus.Incomplete; }
-        let sz_line = src[cursor..core::add_sat_i64(cursor, crlf)];
-        let sz_hex, _, _ = core::split_once_byte(sz_line, ';');
-        let chunk_u, ok_hex = core::parse_u64_hex(core::trim_lws(sz_hex));
-        guard ok_hex else { return 0, ParseStatus.BadRequest; }
-        guard chunk_u <= (MAX_H1_BODY_BYTES as u64) else { return 0, ParseStatus.PayloadTooLarge; }
-        let chunk_len = chunk_u as i64;
-        cursor = core::add_sat_i64(cursor, core::add_sat_i64(crlf, 2));
-        if chunk_len == 0 {
-            guard core::add_sat_i64(cursor, 2) <= src.len else { return 0, ParseStatus.Incomplete; }
-            guard src[cursor] == '\r' && src[core::add_sat_i64(cursor, 1)] == '\n' else {
-                return 0, ParseStatus.BadRequest;
-            }
-            return core::add_sat_i64(cursor, 2), ParseStatus.Complete;
-        }
-        total_body = core::add_sat_i64(total_body, chunk_len);
+        let d_start, d_end, st = parse_next_chunk_span(src, cursor);
+        guard st == ParseStatus.Complete else { return 0, st; }
+        if d_start == d_end { return cursor, ParseStatus.Complete; }
+        total_body += d_end - d_start;
         guard total_body <= MAX_H1_BODY_BYTES else { return 0, ParseStatus.PayloadTooLarge; }
-        let end_data = core::add_sat_i64(cursor, chunk_len);
-        let end_chunk = core::add_sat_i64(end_data, 2);
-        guard end_chunk <= src.len else { return 0, ParseStatus.Incomplete; }
-        guard src[end_data] == '\r' && src[core::add_sat_i64(end_data, 1)] == '\n' else {
-            return 0, ParseStatus.BadRequest;
-        }
-        cursor = end_chunk;
     }
     return 0, ParseStatus.Incomplete;
 }
@@ -406,31 +414,13 @@ fn decode_chunked_body<B>(raw_chunked: const u8[:], out: B&) -> i64, ParseStatus
     defer if !committed { out.resize(saved_len); };
     var cursor: i64 = 0;
     while cursor < raw_chunked.len {
-        let crlf = core::find_crlf(raw_chunked[cursor..]);
-        guard crlf >= 0 else { return 0, ParseStatus.Incomplete; }
-        let sz_line = raw_chunked[cursor..core::add_sat_i64(cursor, crlf)];
-        let sz_hex, _, _ = core::split_once_byte(sz_line, ';');
-        let chunk_u, ok_hex = core::parse_u64_hex(core::trim_lws(sz_hex));
-        guard ok_hex else { return 0, ParseStatus.BadRequest; }
-        guard chunk_u <= (MAX_H1_BODY_BYTES as u64) else { return 0, ParseStatus.PayloadTooLarge; }
-        let chunk_len = chunk_u as i64;
-        cursor = core::add_sat_i64(cursor, core::add_sat_i64(crlf, 2));
-        if chunk_len == 0 {
-            guard core::add_sat_i64(cursor, 2) <= raw_chunked.len else { return 0, ParseStatus.Incomplete; }
-            guard raw_chunked[cursor] == '\r' && raw_chunked[core::add_sat_i64(cursor, 1)] == '\n' else {
-                return 0, ParseStatus.BadRequest;
-            }
+        let d_start, d_end, st = parse_next_chunk_span(raw_chunked, cursor);
+        guard st == ParseStatus.Complete else { return 0, st; }
+        if d_start == d_end {
             committed = true;
-            return core::add_sat_i64(cursor, 2), ParseStatus.Complete;
+            return cursor, ParseStatus.Complete;
         }
-        let end_data = core::add_sat_i64(cursor, chunk_len);
-        let end_chunk = core::add_sat_i64(end_data, 2);
-        guard end_chunk <= raw_chunked.len else { return 0, ParseStatus.Incomplete; }
-        guard raw_chunked[end_data] == '\r' && raw_chunked[core::add_sat_i64(end_data, 1)] == '\n' else {
-            return 0, ParseStatus.BadRequest;
-        }
-        guard buf_append(out, raw_chunked[cursor..end_data]) else { return 0, ParseStatus.PayloadTooLarge; }
-        cursor = end_chunk;
+        guard buf_append(out, raw_chunked[d_start..d_end]) else { return 0, ParseStatus.PayloadTooLarge; }
     }
     return 0, ParseStatus.Incomplete;
 }
@@ -545,12 +535,7 @@ fn parse_request_view(wire: const u8[:]) -> RequestView, i64, ParseStatus {
 
 // Resets `res` to a clean `200 OK` state for reuse across pipelined keep-alive requests.
 fn reset_response(res: ResponseView&) {
-    res.status_code = 200;
-    let _ = buf_set(res.content_type, "text/plain");
-    res.extra_hdrs.clear();
-    res.body = "";
-    res.body_buf.clear();
-    res.close_conn = false;
+    res = ResponseView { .. };
 }
 
 // Configures `res` with a zero-copy `text/plain` slice (no copy into `body_buf`).

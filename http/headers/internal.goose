@@ -552,9 +552,7 @@ fn rebuild_inline_slots_and_chains(
     map:       http::HeaderMap&,
     spill_raw: const u8[:] = "",
 ) {
-    for i in 64 {
-        map.inline_slots[i] = 0xFF;
-    }
+    map.inline_slots = [0xFF; 64];
     for i in map.entries.len {
         map.entries[i].next_idx = 0xFF;
     }

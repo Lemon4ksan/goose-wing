@@ -73,10 +73,14 @@ def find_openssl_bin() -> str | None:
 
 def ensure_harness_binary(force_rebuild: bool = False) -> Path:
     BIN_DIR.mkdir(parents=True, exist_ok=True)
+    latest_tls_mtime = max(
+        (p.stat().st_mtime for p in (ROOT_DIR / "tls").glob("*.goose")),
+        default=0.0,
+    )
     if (
         not force_rebuild
         and HARNESS_EXE.is_file()
-        and HARNESS_EXE.stat().st_mtime >= HARNESS_SRC.stat().st_mtime
+        and HARNESS_EXE.stat().st_mtime >= max(HARNESS_SRC.stat().st_mtime, latest_tls_mtime)
     ):
         return HARNESS_EXE
 

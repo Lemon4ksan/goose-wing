@@ -652,57 +652,24 @@ fn reset_conn_slot_for_initial(
     guard tls_srv.generation != 0 else { return false; }
 
     let cslot .= g_quic_srv_conns[c_idx];
-    cslot.active = true;
-    cslot.ep_idx = ep_idx;
-    cslot.ep_gen = eslot.generation;
-    cslot.conn_id = next_srv_gen(g_quic_srv_next_conn_id);
+    cslot = QuicSrvConnSlot {
+        active:                  true,
+        ep_idx:                  ep_idx,
+        ep_gen:                  eslot.generation,
+        conn_id:                 next_srv_gen(g_quic_srv_next_conn_id),
+        tls_srv:                 tls_srv,
+        peer_port:               peer_port,
+        idle_timeout_ms:         eslot.idle_timeout_ms,
+        last_activity_ns:        now_ns,
+        max_streams_bidi_tx_val: QUIC_SRV_INIT_MAX_STREAMS_BIDI,
+        max_streams_uni_tx_val:  QUIC_SRV_INIT_MAX_STREAMS_UNI,
+        ..
+    };
     init_conn_inplace(cslot.conn, scid[..], hdr.version);
-    cslot.tls_srv = tls_srv;
     guard cslot.peer_ip.try_set(peer_ip) && install_initial_keys(cslot.conn, hdr.dcid[..], hdr.version) else {
         zeroize_and_free_conn_slot(c_idx);
         return false;
     }
-    cslot.peer_port = peer_port;
-    cslot.peer_tp_applied = false;
-    cslot.need_sni_creds = false;
-    cslot.sni_event_emitted = false;
-    cslot.hs_complete_emitted = false;
-    cslot.close_initiated = false;
-    cslot.close_event_emitted = false;
-    cslot.handshake_done_queued = false;
-    cslot.new_cid_queued = false;
-    cslot.init_keys_discarded = false;
-    cslot.hs_keys_discarded = false;
-    cslot.pending_close_tx = false;
-    cslot.close_is_app = false;
-    cslot.close_error = 0;
-    cslot.close_reason.clear();
-    cslot.needs_ack_initial = false;
-    cslot.needs_ack_hs = false;
-    cslot.needs_ack_app = false;
-    cslot.has_path_resp = false;
-    cslot.ping_probe_pending = false;
-    cslot.next_tx_pn_init = 0;
-    cslot.next_tx_pn_hs = 0;
-    cslot.next_tx_pn_app = 0;
-    cslot.pto_count = 0;
-    cslot.idle_timeout_ms = eslot.idle_timeout_ms;
-    cslot.last_activity_ns = now_ns;
-    cslot.ack_eliciting_sent_since_rx = false;
-    cslot.drain_deadline_ns = 0;
-    cslot.need_max_data_tx = false;
-    cslot.reclaimed_bidi_streams = 0;
-    cslot.reclaimed_uni_streams = 0;
-    cslot.need_max_streams_bidi_tx = false;
-    cslot.max_streams_bidi_tx_val = QUIC_SRV_INIT_MAX_STREAMS_BIDI;
-    cslot.need_max_streams_uni_tx = false;
-    cslot.max_streams_uni_tx_val = QUIC_SRV_INIT_MAX_STREAMS_UNI;
-    cslot.tx_init_crypto.clear();
-    cslot.tx_init_crypto_sent = 0;
-    cslot.tx_hs_crypto.clear();
-    cslot.tx_hs_crypto_sent = 0;
-    cslot.sent_chunks.clear();
-    cslot.alt_cid.clear();
     eslot.active_conns = core::add_sat_u32(eslot.active_conns, 1);
     return true;
 }

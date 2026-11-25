@@ -152,12 +152,27 @@ fn parse_alpn_protos_arg(
 //   flag = "-is-server"
 //   returns: true, cfg.is_server = true
 fn parse_bogo_bool_flag(flag: const u8[:], cfg: BogoConfig&) -> bool {
-    if flag == "-is-server" { cfg.is_server = true; return true; }
-    if flag == "-verify-peer" { cfg.verify_peer = true; return true; }
-    if flag == "-fallback-scsv" { cfg.fallback_scsv = true; return true; }
-    if flag == "-ipv6" { cfg.ipv6 = true; return true; }
-    if flag == "-key-update" { cfg.key_update = true; return true; }
-    if flag == "-shim-writes-first" { cfg.writes_first = true; return true; }
+    let names: (const u8[:])[11] = [
+        "-is-server", "-verify-peer", "-fallback-scsv", "-ipv6",
+        "-key-update", "-shim-writes-first", "-no-ssl3", "-no-tls1",
+        "-no-tls11", "-no-tls12", "-expect-no-session",
+    ];
+    var flags: bool[6] = [
+        cfg.is_server, cfg.verify_peer, cfg.fallback_scsv,
+        cfg.ipv6, cfg.key_update, cfg.writes_first,
+    ];
+    for i in 11 {
+        if flag == names[i] {
+            if i < 6 { flags[i] = true; }
+            cfg.is_server = flags[0];
+            cfg.verify_peer = flags[1];
+            cfg.fallback_scsv = flags[2];
+            cfg.ipv6 = flags[3];
+            cfg.key_update = flags[4];
+            cfg.writes_first = flags[5];
+            return true;
+        }
+    }
     return false;
 }
 
@@ -421,7 +436,8 @@ fn run_pure_bogo_client(fd: i64, cfg: const BogoConfig&) -> i32 {
     if cfg.cert_file.len > 0 || cfg.key_file.len > 0 {
         guard load_pure_client_mtls_creds(cfg.cert_file[..], cfg.key_file[..], cli_cfg) else {
             net::tcp_close(fd);
-            return BOGO_EXIT_FAIL;
+            bogo_err("BOGO_UNIMPLEMENTED: unsupported client mTLS key type\n");
+            return BOGO_EXIT_UNIMPLEMENTED;
         }
     }
     let slot_idx, ok_hs = tls::client_handshake(fd, cli_cfg);

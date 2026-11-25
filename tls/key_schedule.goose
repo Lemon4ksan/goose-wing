@@ -30,11 +30,7 @@ const KS_STAGE_RESUMPTION: u8 = 4;
 //     opaque context<0..255> = Context;
 // } HkdfLabel;
 inline fn is_all_zero_slice(data: const u8[:]) -> bool {
-    var acc: u8 = 0;
-    for b in data {
-        acc |= b;
-    }
-    return acc == 0;
+    return core::ct_declassify_u8(core::ct_is_zero_bit(data)) == 1;
 }
 
 fn hkdf_expand_label(

@@ -13,25 +13,6 @@ import http.headers;
 
 // ---- http/headers/chunked.goose internal helpers ----
 
-const H1_HEX_NIBBLE_LUT: const i8[256] = [
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, -1, -1, -1, -1, -1, -1,
-    -1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-    -1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-];
-
 checkfree inline fn h1_read_le_u16(s: const u8[:]) -> u16 {
     if s.len < 2 { return 0; }
     return s[0] | ((s[1] as u16) << 8);
@@ -53,9 +34,10 @@ checkfree inline fn h1_read_le_u64(s: const u8[:]) -> u64 {
 
 checkfree fn skip_bws(s: const u8[:], cursor: i64&) {
     var pos = cursor;
+    let total = s.len;
     guard pos >= 0 else { return; }
-    while pos >= 0 && pos < s.len && (s[pos] == ' ' || s[pos] == '\t') {
-        pos = core::add_sat_i64(pos, 1);
+    while pos < total && (s[pos] == ' ' || s[pos] == '\t') {
+        pos += 1;
     }
     cursor = pos;
 }
@@ -68,10 +50,11 @@ checkfree fn skip_bws(s: const u8[:], cursor: i64&) {
 //   returns: true, cursor = 8
 checkfree fn parse_chunk_ext_name(s: const u8[:], cursor: i64&) -> bool {
     var pos = cursor;
+    let total = s.len;
     guard pos >= 0 else { return false; }
     let name_start = pos;
-    while pos >= 0 && pos < s.len && core::is_tchar(s[pos]) {
-        pos = core::add_sat_i64(pos, 1);
+    while pos < total && core::is_tchar(s[pos]) {
+        pos += 1;
     }
     cursor = pos;
     return pos > name_start;
@@ -84,7 +67,8 @@ checkfree fn parse_chunk_ext_name(s: const u8[:], cursor: i64&) -> bool {
 //   returns: ChunkedDecodeError.None
 checkfree fn parse_chunk_ext_param_val(s: const u8[:], cursor: i64&) -> http::ChunkedDecodeError {
     var pos = cursor;
-    guard pos >= 0 && pos < s.len else { return http::ChunkedDecodeError.InvalidChunkExtension; }
+    let total = s.len;
+    guard pos >= 0 && pos < total else { return http::ChunkedDecodeError.InvalidChunkExtension; }
     if s[pos] == '"' {
         guard http::parse_chunk_ext_quoted_val(s, cursor) else {
             return http::ChunkedDecodeError.InvalidChunkExtension;
@@ -92,8 +76,8 @@ checkfree fn parse_chunk_ext_param_val(s: const u8[:], cursor: i64&) -> http::Ch
         return http::ChunkedDecodeError.None;
     }
     let val_start = pos;
-    while pos >= 0 && pos < s.len && core::is_tchar(s[pos]) {
-        pos = core::add_sat_i64(pos, 1);
+    while pos < total && core::is_tchar(s[pos]) {
+        pos += 1;
     }
     cursor = pos;
     guard pos > val_start else {
@@ -162,14 +146,14 @@ checkfree fn parse_hex_chunk_value(
     }
     var chunk_size: u64 = 0;
     for b in chunk_size_line[sig_start..hex_len] {
-        let val = H1_HEX_NIBBLE_LUT[b];
+        let val = core::hex_digit_to_val(b);
         guard val >= 0 else {
             return http::ChunkedDecodeError.InvalidChunkSizeHex;
         }
         if chunk_size > 0x07FFFFFFFFFFFFFF {
             return http::ChunkedDecodeError.ChunkSizeOverflow;
         }
-        chunk_size = core::shl_sat_u64(chunk_size, 4) | (val as u64);
+        chunk_size = (chunk_size << 4) | (val as u64);
     }
     out_size = chunk_size;
     return http::ChunkedDecodeError.None;
@@ -193,10 +177,6 @@ checkfree fn validate_chunk_size_line_chars(chunk_size_line: const u8[:]) -> htt
     return http::ChunkedDecodeError.None;
 }
 
-checkfree fn is_hex_char(b: u8) -> bool {
-    return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F');
-}
-
 // Scans contiguous hex digits from cursor.
 //
 // Example:
@@ -204,9 +184,10 @@ checkfree fn is_hex_char(b: u8) -> bool {
 //   returns: 4, cursor = 4
 checkfree fn scan_hex_digits(s: const u8[:], cursor: i64&) -> i64 {
     var pos = cursor;
+    let total = s.len;
     guard pos >= 0 else { return pos; }
-    while pos >= 0 && pos < s.len && is_hex_char(s[pos]) {
-        pos = core::add_sat_i64(pos, 1);
+    while pos < total && core::is_ascii_hexdigit(s[pos]) {
+        pos += 1;
     }
     cursor = pos;
     return pos;
@@ -280,13 +261,9 @@ fn has_embedded_nulls(data: const u8[:]) -> bool {
 //   s = "1024"
 //   returns: true, out_val = 1024
 fn parse_cl_digits(s: const u8[:], out_val: i64&) -> bool {
-    guard s.len > 0 else { return false; }
-    for b in s {
-        guard b >= '0' && b <= '9' else { return false; }
-    }
-    let num, ok = s.parse_i64_dec();
-    guard ok else { return false; }
-    out_val = num;
+    let num, ok = s.parse_u64_dec();
+    guard ok && num <= 0x7FFFFFFFFFFFFFFF else { return false; }
+    out_val = num as i64;
     return true;
 }
 
@@ -323,74 +300,9 @@ checkfree fn is_line_whitespace_only(line: const u8[:]) -> bool {
 }
 
 // Maps a `WellKnownHeader` variant to its canonical lowercase wire name.
-
 checkfree fn well_known_header_name(id: http::WellKnownHeader) -> const u8[:] {
-    return match id {
-        Host => "host",
-        ContentType => "content-type",
-        ContentLength => "content-length",
-        ContentDisposition => "content-disposition",
-        ContentEncoding => "content-encoding",
-        ContentLanguage => "content-language",
-        ContentLocation => "content-location",
-        ContentRange => "content-range",
-        Accept => "accept",
-        AcceptCharset => "accept-charset",
-        AcceptEncoding => "accept-encoding",
-        AcceptLanguage => "accept-language",
-        AcceptRanges => "accept-ranges",
-        Authorization => "authorization",
-        ProxyAuthorization => "proxy-authorization",
-        WwwAuthenticate => "www-authenticate",
-        ProxyAuthenticate => "proxy-authenticate",
-        Cookie => "cookie",
-        SetCookie => "set-cookie",
-        SetCookie2 => "set-cookie2",
-        ClearSiteData => "clear-site-data",
-        CacheControl => "cache-control",
-        Age => "age",
-        Expires => "expires",
-        Date => "date",
-        ETag => "etag",
-        IfMatch => "if-match",
-        IfNoneMatch => "if-none-match",
-        IfModifiedSince => "if-modified-since",
-        IfUnmodifiedSince => "if-unmodified-since",
-        IfRange => "if-range",
-        LastModified => "last-modified",
-        Location => "location",
-        Range => "range",
-        Vary => "vary",
-        Via => "via",
-        Connection => "connection",
-        KeepAlive => "keep-alive",
-        TransferEncoding => "transfer-encoding",
-        TE => "te",
-        Trailer => "trailer",
-        Upgrade => "upgrade",
-        UserAgent => "user-agent",
-        Server => "server",
-        Referer => "referer",
-        OriginHeader => "origin",
-        StrictTransportSecurity => "strict-transport-security",
-        ContentSecurityPolicy => "content-security-policy",
-        XContentTypeOptions => "x-content-type-options",
-        XFrameOptions => "x-frame-options",
-        XWebkitCsp => "x-webkit-csp",
-        AccessControlAllowOrigin => "access-control-allow-origin",
-        AccessControlAllowCredentials => "access-control-allow-credentials",
-        AccessControlAllowHeaders => "access-control-allow-headers",
-        AccessControlAllowMethods => "access-control-allow-methods",
-        AccessControlExposeHeaders => "access-control-expose-headers",
-        AccessControlMaxAge => "access-control-max-age",
-        AccessControlRequestHeaders => "access-control-request-headers",
-        AccessControlRequestMethod => "access-control-request-method",
-        AltSvc => "alt-svc",
-        RetryAfter => "retry-after",
-        Priority => "priority",
-        Expect => "expect",
-        _ => "",
-    };
+    let slot = http::well_known_to_slot(id);
+    return if slot >= 0 && slot < 63 { http::WELL_KNOWN_HEADER_NAMES[slot] } else { "" };
 }
 
 const WELL_KNOWN_HEADER_FLAGS_LUT: const u8[64] = [
@@ -552,26 +464,36 @@ fn handle_obs_fold_stack(
     return http::HeaderParseError.None;
 }
 
+fn validate_obs_fold_continuation(
+    line:           const u8[:],
+    policy:         http::ObsFoldPolicy,
+    has_prev_entry: bool,
+    map:            http::HeaderMap&,
+) -> const u8[:], http::HeaderParseError {
+    if policy.is_first_header || !has_prev_entry {
+        map.valid = false;
+        return "", http::HeaderParseError.LeadingWhitespaceOnFirstHeader;
+    }
+    guard policy.allow_obs_fold else {
+        map.valid = false;
+        return "", http::HeaderParseError.ObsFoldForbidden;
+    }
+    let trimmed = line.trim_lws();
+    guard http::is_valid_header_value(trimmed) else {
+        map.valid = false;
+        return "", http::HeaderParseError.InvalidHeaderValue;
+    }
+    return trimmed, http::HeaderParseError.None;
+}
+
 fn handle_obs_fold(
     line:   const u8[:],
     policy: http::ObsFoldPolicy,
     map:    http::HeaderMap&,
 ) -> http::HeaderParseError {
-    if policy.is_first_header || map.entries.len == 0 {
-        map.valid = false;
-        return http::HeaderParseError.LeadingWhitespaceOnFirstHeader;
-    }
-    guard policy.allow_obs_fold else {
-        map.valid = false;
-        return http::HeaderParseError.ObsFoldForbidden;
-    }
-
-    let trimmed_continuation = line.trim_lws();
-    guard http::is_valid_header_value(trimmed_continuation) else {
-        map.valid = false;
-        return http::HeaderParseError.InvalidHeaderValue;
-    }
-    return handle_obs_fold_stack(trimmed_continuation, map);
+    let trimmed, err = validate_obs_fold_continuation(line, policy, map.entries.len > 0, map);
+    guard err == http::HeaderParseError.None else { return err; }
+    return handle_obs_fold_stack(trimmed, map);
 }
 
 fn handle_obs_fold(
@@ -582,24 +504,11 @@ fn handle_obs_fold(
 ) -> http::HeaderParseError {
     let in_spill = arena.spill_entries.len > 0;
     let prev_in_arena = in_spill
-        || (map.entries.len > 0 &&
-            map.entries[core::sub_sat_i64(map.entries.len, 1)].reserved == http::HEADER_SRC_ARENA);
+        || (map.entries.len > 0 && map.entries[map.entries.len - 1].reserved == http::HEADER_SRC_ARENA);
     if !prev_in_arena {
         return handle_obs_fold(line, policy, map);
     }
-    if policy.is_first_header {
-        map.valid = false;
-        return http::HeaderParseError.LeadingWhitespaceOnFirstHeader;
-    }
-    guard policy.allow_obs_fold else {
-        map.valid = false;
-        return http::HeaderParseError.ObsFoldForbidden;
-    }
-
-    let trimmed_continuation = line.trim_lws();
-    guard http::is_valid_header_value(trimmed_continuation) else {
-        map.valid = false;
-        return http::HeaderParseError.InvalidHeaderValue;
-    }
-    return http::handle_obs_fold_arena(trimmed_continuation, map, arena, in_spill);
+    let trimmed, err = validate_obs_fold_continuation(line, policy, true, map);
+    guard err == http::HeaderParseError.None else { return err; }
+    return http::handle_obs_fold_arena(trimmed, map, arena, in_spill);
 }

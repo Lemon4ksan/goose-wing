@@ -21,7 +21,9 @@
     "*FalseStart*": "TLS 1.2 False Start does not apply to TLS 1.3",
     "*OCSP*": "BoGo stapled OCSP shim flags are tested via native LIT OCSP suites",
     "*SCT*": "BoGo SCT shim flags are tested via native LIT SCT suites",
-    "*ExportKeyingMaterial*": "BoGo EKM shim flags are tested via native LIT suites"
+    "*ExportKeyingMaterial*": "BoGo EKM shim flags are tested via native LIT suites",
+    "RenegotiationInfo-Forbidden-TLS13": "PureGoose is TLS 1.3-only and never offers TLS 1.2 renegotiation_info in ClientHello",
+    "EMS-Forbidden-TLS13": "PureGoose is TLS 1.3-only and never offers TLS 1.2 extended_master_secret in ClientHello"
   },
   "ErrorMap": {
     ":UNEXPECTED_MESSAGE:": ["BOGO_ERR: HANDSHAKE_FAILED", "BOGO_ERR: RECORD_ERROR"],
@@ -35,6 +37,7 @@
     ":UNSUPPORTED_PROTOCOL:": ["BOGO_ERR: HANDSHAKE_FAILED"],
     ":HANDSHAKE_FAILURE_ON_CLIENT_HELLO:": ["BOGO_ERR: HANDSHAKE_FAILED"],
     ":NO_SHARED_CIPHER:": ["BOGO_ERR: HANDSHAKE_FAILED"],
+    ":NO_COMMON_SIGNATURE_ALGORITHMS:": ["BOGO_ERR: HANDSHAKE_FAILED"],
     ":WRONG_VERSION_NUMBER:": ["BOGO_ERR: HANDSHAKE_FAILED"],
     ":CERTIFICATE_VERIFY_FAILED:": ["BOGO_ERR: VERIFY_FAILED", "BOGO_ERR: HANDSHAKE_FAILED"],
     ":PEER_DID_NOT_RETURN_A_CERTIFICATE:": ["BOGO_ERR: HANDSHAKE_FAILED"],

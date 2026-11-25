@@ -342,4 +342,135 @@ export fn wing_ctgrind_hmac_hkdf_sha256(
     return 1;
 }
 
+inline fn copy_iv12_and_tag16(
+    iv:  const u8[:],
+    tag: const u8[:],
+    n:   u8[12]&,
+    t:   u8[16]&,
+) -> bool {
+    return copy_12(iv, n) && copy_16(tag, t);
+}
+
+inline fn copy_hpke_seal_outputs(
+    enc:     const u8[:],
+    ct:      const u8[:],
+    out_enc: u8[:],
+    out_ct:  u8[:],
+) -> u8 {
+    guard out_enc.len >= 32 && ct.len <= out_ct.len else { return 0; }
+    for i in 32 { out_enc[i] = enc[i]; }
+    for i in ct.len { out_ct[i] = ct[i]; }
+    return 1;
+}
+
+export fn wing_ctgrind_aes128_gcm_open(
+    key: const u8[:],
+    iv:  const u8[:],
+    ct:  const u8[:],
+    tag: const u8[:],
+    out: u8[:],
+) -> u8 {
+    var k: u8[16] = [0; 16];
+    var n: u8[12] = [0; 12];
+    var t: u8[16] = [0; 16];
+    defer core::secure_zeroize_16(k);
+    guard copy_16(key, k) && copy_iv12_and_tag16(iv, tag, n, t) else { return 0; }
+    guard out.len >= ct.len else { return 0; }
+    let _, ok = core::aes128_gcm_open_into(k, n, ct, "", t, out);
+    return if ok { 1 } else { 2 };
+}
+
+export fn wing_ctgrind_chacha20_poly1305_open(
+    key: const u8[:],
+    iv:  const u8[:],
+    ct:  const u8[:],
+    tag: const u8[:],
+    out: u8[:],
+) -> u8 {
+    var k: u8[32] = [0; 32];
+    var n: u8[12] = [0; 12];
+    var t: u8[16] = [0; 16];
+    defer core::secure_zeroize_32(k);
+    guard copy_32(key, k) && copy_iv12_and_tag16(iv, tag, n, t) else { return 0; }
+    guard out.len >= ct.len else { return 0; }
+    let _, ok = core::chacha20_poly1305_open_into(k, n, ct, "", t, out);
+    return if ok { 1 } else { 2 };
+}
+
+export fn wing_ctgrind_xchacha20_poly1305_open(
+    key: const u8[:],
+    iv:  const u8[:],
+    ct:  const u8[:],
+    tag: const u8[:],
+    out: u8[:],
+) -> u8 {
+    var k: u8[32] = [0; 32];
+    var n: u8[24] = [0; 24];
+    var t: u8[16] = [0; 16];
+    defer core::secure_zeroize_32(k);
+    guard copy_32(key, k) && copy_24(iv, n) && copy_16(tag, t) else { return 0; }
+    var pt_buf: u8[..256] = [];
+    defer core::secure_zeroize_slice(pt_buf[..]);
+    let ok = core::xchacha20_poly1305_open(k, n, ct, "", t, pt_buf);
+    guard ok && pt_buf.len <= out.len else { return 2; }
+    for i in pt_buf.len { out[i] = pt_buf[i]; }
+    return 1;
+}
+
+export fn wing_ctgrind_tls_key_schedule(
+    ecdhe:   const u8[:],
+    hs_hash: const u8[:],
+    out:     u8[:],
+) -> u8 {
+    guard ecdhe.len == 32 && hs_hash.len == 32 && out.len >= 32 else { return 0; }
+    var ks, ok = tls_internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+    defer tls_internal::ks_zeroize(ks);
+    guard ok && tls_internal::ks_init_early_secret(ks, "") &&
+        tls_internal::ks_advance_to_handshake(ks, ecdhe) &&
+        tls_internal::ks_derive_handshake_traffic(ks, hs_hash) &&
+        tls_internal::ks_advance_to_master(ks, hs_hash) else {
+        return 0;
+    }
+    for i in 32 { out[i] = ks.client_ap_traffic[i]; }
+    return 1;
+}
+
+export fn wing_ctgrind_hpke_seal_base(
+    pk_r:    const u8[:],
+    eph_sk:  const u8[:],
+    pt:      const u8[:],
+    out_enc: u8[:],
+    out_ct:  u8[:],
+) -> u8 {
+    var pk: u8[32] = [0; 32];
+    var sk: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(sk);
+    guard copy_32(pk_r, pk) && copy_32(eph_sk, sk) else { return 0; }
+    var enc: u8[32]    = [0; 32];
+    var ct:  u8[..272] = [];
+    let ok = security::hpke_seal_base(
+        pk, "", "", pt, sk, rfc::HPKE_AEAD_AES_128_GCM, enc, ct,
+    );
+    guard ok else { return 0; }
+    return copy_hpke_seal_outputs(enc, ct, out_enc, out_ct);
+}
+
+export fn wing_ctgrind_hpke_open_base(
+    sk_r: const u8[:],
+    enc:  const u8[:],
+    ct:   const u8[:],
+    out:  u8[:],
+) -> u8 {
+    var sk: u8[32] = [0; 32];
+    var e:  u8[32] = [0; 32];
+    defer core::secure_zeroize_32(sk);
+    guard copy_32(sk_r, sk) && copy_32(enc, e) else { return 0; }
+    var pt: u8[..256] = [];
+    defer core::secure_zeroize_slice(pt[..]);
+    let ok = security::hpke_open_base(e, sk, "", "", ct, rfc::HPKE_AEAD_AES_128_GCM, pt);
+    guard ok && pt.len <= out.len else { return 2; }
+    for i in pt.len { out[i] = pt[i]; }
+    return 1;
+}
+
 fn main() {}

@@ -31,7 +31,7 @@ enum RateLimitDecision {
 fn new_gcra_quota(limit: u64, period_ns: i64, burst: u64 = 0) -> GcraQuota {
     let p_ns = if period_ns > 0 { period_ns as u64 } else { core::SECOND as u64 };
     let l = max(limit, 1);
-    let t_ns = max(security_internal::fast_div_u64(p_ns, l), 1);
+    let t_ns = max(p_ns / l, 1);
     let tau_ns = core::mul_sat_u64(t_ns, burst);
 
     return GcraQuota {

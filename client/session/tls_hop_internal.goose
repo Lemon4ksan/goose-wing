@@ -278,6 +278,16 @@ fn lookup_cached_ech_config(
     return ech, false;
 }
 
+fn resolve_tls_backend_route(backend: tls::TlsBackendKind, pure_only_opts: bool) -> bool, http::Error {
+    if backend == tls::TlsBackendKind.SystemOnly && pure_only_opts {
+        return false,
+            http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "SystemOnly TLS backend rejects PureGoose-only options");
+    }
+    let force_pure = backend == tls::TlsBackendKind.PureGoose ||
+        (backend == tls::TlsBackendKind.Auto && pure_only_opts);
+    return force_pure, http::Error { .. };
+}
+
 fn establish_https_proxy_transport(
     session:     const client::Session&,
     raw_sock:    i64,
@@ -291,9 +301,11 @@ fn establish_https_proxy_transport(
     }
     let host_is_hsts = session.enable_hsts && session.hsts.is_hsts_host(proxy_host, now_sec);
     let effective_insecure_skip = session.insecure_skip_verify && !host_is_hsts;
-    let force_pure = session.tls_backend == tls::TlsBackendKind.PureGoose ||
-        (session.tls_backend == tls::TlsBackendKind.Auto &&
-            (session.virtual_clock_us > 0 || session.tls_expired_leaf_grace_sec > 0));
+    let pure_only_opts = session.virtual_clock_us > 0 || session.tls_expired_leaf_grace_sec > 0;
+    let force_pure, route_err = resolve_tls_backend_route(session.tls_backend, pure_only_opts);
+    guard http::ok(route_err) else {
+        return net::Transport.Disconnected, route_err;
+    }
     if !force_pure {
         let ep_slot, _, tls_err = establish_backend_tls_connection(
             session, raw_sock, proxy_host, effective_insecure_skip, eff_timeout, "http/1.1",
@@ -464,10 +476,12 @@ fn establish_https_transport(
 ) -> net::Transport, net::NegotiatedProtocol, http::Error {
     let host_is_hsts = session.enable_hsts && session.hsts.is_hsts_host(host_str, now_sec);
     let effective_insecure_skip = session.insecure_skip_verify && !host_is_hsts;
-    let force_pure = session.tls_backend == tls::TlsBackendKind.PureGoose ||
-        (session.tls_backend == tls::TlsBackendKind.Auto &&
-            (ech_list.len > 0 || session.virtual_clock_us > 0 ||
-             session.tls_expired_leaf_grace_sec > 0 || session.enable_ktls_offload));
+    let pure_only_opts = ech_list.len > 0 || session.virtual_clock_us > 0 ||
+        session.tls_expired_leaf_grace_sec > 0 || session.enable_ktls_offload;
+    let force_pure, route_err = resolve_tls_backend_route(session.tls_backend, pure_only_opts);
+    guard http::ok(route_err) else {
+        return net::Transport.Disconnected, net::NegotiatedProtocol.Http11, route_err;
+    }
     if !force_pure {
         let ep_slot, neg_alpn, tls_err = establish_backend_tls_connection(
             session, sock, host_str, effective_insecure_skip, tls_timeout_ms,

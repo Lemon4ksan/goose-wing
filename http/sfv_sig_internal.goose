@@ -12,71 +12,53 @@ import http.sfv;
 
 fn sf_skip_ws(src: const u8[:], pos: i64) -> i64 {
     var p = pos;
-    while p < src.len && core::is_lws(src[p]) {
-        p = p + 1;
-    }
+    let n = src.len;
+    while p < n && core::is_lws(src[p]) { p += 1; }
     return p;
 }
 
 fn sf_skip_sp(src: const u8[:], pos: i64) -> i64 {
     var p = pos;
-    while p < src.len && src[p] == ' ' {
-        p = core::add_sat_i64(p, 1);
-    }
+    let n = src.len;
+    while p < n && src[p] == ' ' { p += 1; }
     return p;
 }
 
 // Parses an RFC 8941 Boolean: ?0 or ?1
 fn sf_parse_boolean(src: const u8[:], pos: i64, out_item: http::SfItem&, out_next: i64&) -> bool {
-    let p_plus_1 = pos + 1;
-    if p_plus_1 >= src.len || src[pos] != '?' {
-        return false;
-    }
-    let b = src[p_plus_1];
-    let next_idx = pos + 2;
-    if b == '1' {
-        out_item.kind = http::SfType.Boolean;
-        out_item.bool_val = true;
-        out_next = next_idx;
-        return true;
-    }
-    if b == '0' {
-        out_item.kind = http::SfType.Boolean;
-        out_item.bool_val = false;
-        out_next = next_idx;
-        return true;
-    }
-    return false;
+    guard pos + 1 < src.len && src[pos] == '?' else { return false; }
+    let b = src[pos + 1];
+    guard b == '0' || b == '1' else { return false; }
+    out_item.kind = http::SfType.Boolean;
+    out_item.bool_val = b == '1';
+    out_next = pos + 2;
+    return true;
 }
 
-checkfree inline fn sf_check_escape(src: const u8[:], p: i64) -> bool {
-    let p_esc = p + 1;
-    guard p_esc < src.len else { return false; }
-    let ch = src[p_esc];
+checkfree fn sf_check_escape(src: const u8[:], p: i64) -> bool {
+    guard p >= 0 && p + 1 < src.len else { return false; }
+    let ch = src[p + 1];
     return ch == '\\' || ch == '"';
 }
 
 // Parses an RFC 8941 String: "..." with escaping (\", \\)
 fn sf_parse_string(src: const u8[:], pos: i64, out_item: http::SfItem&, out_next: i64&) -> bool {
-    if pos >= src.len || src[pos] != '"' {
-        return false;
-    }
-    let start = pos + 1;
+    let n = src.len;
+    guard pos < n && src[pos] == '"' else { return false; }
     var p = pos + 1;
-    while p < src.len {
+    while p < n {
         let ch = src[p];
         if ch == '\\' {
             guard sf_check_escape(src, p) else { return false; }
-            p = p + 2;
+            p += 2;
         } else if ch == '"' {
             out_item.kind = http::SfType.String;
-            out_item.str_val = src[start..p];
+            out_item.str_val = src[pos + 1..p];
             out_next = p + 1;
             return true;
-        } else if !core::is_ascii_printable(ch) {
-            return false;
         } else {
-            p = p + 1;
+            guard core::is_ascii_printable(ch) else { return false; }
+            p += 1;
         }
     }
     return false;
@@ -84,33 +66,29 @@ fn sf_parse_string(src: const u8[:], pos: i64, out_item: http::SfItem&, out_next
 
 // Parses an RFC 8941 Byte Sequence: :base64:
 fn sf_parse_binary(src: const u8[:], pos: i64, out_item: http::SfItem&, out_next: i64&) -> bool {
-    if pos >= src.len || src[pos] != ':' {
-        return false;
-    }
-    let start = core::add_sat_i64(pos, 1);
-    var p = core::add_sat_i64(pos, 1);
+    let n = src.len;
+    guard pos < n && src[pos] == ':' else { return false; }
+    var p = pos + 1;
     var eq_count:   i64 = 0;
     var data_count: i64 = 0;
-    while p < src.len {
+    while p < n {
         let ch = src[p];
         if ch == ':' {
-            let b64_len = core::sub_sat_i64(p, start);
-            guard (b64_len & 3) == 0 && eq_count <= 2 && (eq_count == 0 || data_count > 0) else { return false; }
+            guard ((p - (pos + 1)) & 3) == 0 && eq_count <= 2 && (eq_count == 0 || data_count > 0) else {
+                return false;
+            }
             out_item.kind = http::SfType.Binary;
-            out_item.str_val = src[start..p];
-            out_next = core::add_sat_i64(p, 1);
+            out_item.str_val = src[pos + 1..p];
+            out_next = p + 1;
             return true;
         }
         if ch == '=' {
-            eq_count = core::add_sat_i64(eq_count, 1);
+            eq_count += 1;
         } else {
-            guard eq_count == 0 else { return false; }
-            guard core::is_ascii_alpha(ch) || core::is_ascii_digit(ch) || ch == '+' || ch == '/' else {
-                return false;
-            }
-            data_count = core::add_sat_i64(data_count, 1);
+            guard eq_count == 0 && (core::is_ascii_alphanumeric(ch) || ch == '+' || ch == '/') else { return false; }
+            data_count += 1;
         }
-        p = core::add_sat_i64(p, 1);
+        p += 1;
     }
     return false;
 }
@@ -124,37 +102,33 @@ fn sf_parse_binary(src: const u8[:], pos: i64, out_item: http::SfItem&, out_next
 fn sf_decode_byte_sequence<B>(item: const http::SfItem&, out: B&) -> bool {
     out.clear();
     let encoded = item.str_val;
-    guard item.kind == http::SfType.Binary && (encoded.len & 3) == 0 else { return false; }
+    let total = encoded.len;
+    guard item.kind == http::SfType.Binary && (total & 3) == 0 else { return false; }
     var committed = false;
     defer if !committed { out.clear(); };
 
     var buf:  u64 = 0;
     var bits: u64 = 0;
-    var idx:  i64 = 0;
-    while idx < encoded.len {
+    for idx in total {
         let ch = encoded[idx];
         if ch == '=' {
             guard bits == 4 || bits == 2 else { return false; }
             let expected_pad: i64 = if bits == 4 { 2 } else { 1 };
-            guard core::sub_sat_i64(encoded.len, idx) == expected_pad else { return false; }
-            var p = idx;
-            while p < encoded.len {
+            guard total - idx == expected_pad else { return false; }
+            for p in idx..total {
                 guard encoded[p] == '=' else { return false; }
-                p = core::add_sat_i64(p, 1);
             }
             committed = true;
             return true;
         }
         let v = core::base64_val(ch);
         guard v >= 0 else { return false; }
-        buf = core::shl_sat_u64(buf & 0xFF, 6) | (v as u64);
-        bits = core::add_sat_u64(bits, 6);
+        buf = ((buf & 0xFF) << 6) | (v as u64);
+        bits += 6;
         if bits >= 8 {
-            bits = core::sub_sat_u64(bits, 8);
-            let byte_out = ((buf >> bits) & 0xFF) as u8;
-            guard out.try_push(byte_out) else { return false; }
+            bits -= 8;
+            guard out.try_push(((buf >> bits) & 0xFF) as u8) else { return false; }
         }
-        idx = core::add_sat_i64(idx, 1);
     }
     committed = true;
     return true;
@@ -162,25 +136,14 @@ fn sf_decode_byte_sequence<B>(item: const http::SfItem&, out: B&) -> bool {
 
 // Parses an RFC 8941 Token: starts with alpha or *, followed by tchar, :, /
 fn sf_parse_token(src: const u8[:], pos: i64, out_item: http::SfItem&, out_next: i64&) -> bool {
-    if pos >= src.len {
-        return false;
-    }
-    let first = src[pos];
-    if !core::is_ascii_alpha(first) && first != '*' {
-        return false;
-    }
-    let start = pos;
-    var p = start + 1;
-    while p < src.len {
-        let ch = src[p];
-        if core::is_tchar(ch) || ch == ':' || ch == '/' {
-            p = p + 1;
-        } else {
-            break;
-        }
+    let n = src.len;
+    guard pos < n && (core::is_ascii_alpha(src[pos]) || src[pos] == '*') else { return false; }
+    var p = pos + 1;
+    while p < n && (core::is_tchar(src[p]) || src[p] == ':' || src[p] == '/') {
+        p += 1;
     }
     out_item.kind = http::SfType.Token;
-    out_item.str_val = src[start..p];
+    out_item.str_val = src[pos..p];
     out_next = p;
     return true;
 }
@@ -195,16 +158,14 @@ fn sf_scan_digits(
     out_next:   i64&,
 ) -> bool {
     var p = pos;
+    let n = src.len;
     var accum: i64 = 0;
     var count: i32 = 0;
-    while p < src.len && core::is_ascii_digit(src[p]) {
-        let digit = (src[p] - '0') as i64;
-        accum = accum * 10 + digit;
-        count = count + 1;
-        p = p + 1;
-        if count > max_digits {
-            return false;
-        }
+    while p < n && core::is_ascii_digit(src[p]) {
+        count += 1;
+        guard count <= max_digits else { return false; }
+        accum = accum * 10 + (src[p] - '0');
+        p += 1;
     }
     out_accum = accum;
     out_count = count;
@@ -307,20 +268,15 @@ fn sf_parse_date(src: const u8[:], pos: i64, out_item: http::SfItem&, out_next: 
     return true;
 }
 
-checkfree inline fn sf_hex_lc_val(c: u8) -> u8, bool {
-    let v = http::SF_LC_HEX_LUT[c];
-    return v, v != 255;
+checkfree fn sf_decode_pct_hex(hi: u8, lo: u8) -> i32 {
+    let v1 = http::SF_LC_HEX_LUT[hi];
+    let v2 = http::SF_LC_HEX_LUT[lo];
+    if v1 == 255 || v2 == 255 { return -1; }
+    return ((v1 << 4) | v2);
 }
 
-checkfree inline fn sf_decode_pct_hex(hi: u8, lo: u8) -> u8, bool {
-    let v1, ok1 = sf_hex_lc_val(hi);
-    let v2, ok2 = sf_hex_lc_val(lo);
-    return (v1 * 16) | v2, ok1 && ok2;
-}
-
-inline fn sf_step_utf8_dfa(b: u8, state: i64&) -> bool {
-    let cls = http::UTF8_DFA_CLASS[b];
-    let idx = core::add_sat_i64(state, cls);
+fn sf_step_utf8_dfa(b: u8, state: i64&) -> bool {
+    let idx = state + http::UTF8_DFA_CLASS[b];
     guard idx >= 0 && idx < 108 else { return false; }
     state = http::UTF8_DFA_TRANS[idx];
     return state != 12;
@@ -329,18 +285,18 @@ inline fn sf_step_utf8_dfa(b: u8, state: i64&) -> bool {
 fn validate_display_string(raw_str: const u8[:]) -> bool {
     var state: i64 = 0;
     var i:     i64 = 0;
-    while i < raw_str.len {
+    let total = raw_str.len;
+    while i < total {
         let b = raw_str[i];
         if b == '%' {
-            let i1 = core::add_sat_i64(i, 1);
-            let i2 = core::add_sat_i64(i, 2);
-            guard i2 < raw_str.len else { return false; }
-            let dec_b, hex_ok = sf_decode_pct_hex(raw_str[i1], raw_str[i2]);
-            guard hex_ok && sf_step_utf8_dfa(dec_b, state) else { return false; }
+            guard core::add_sat_i64(i, 2) < total else { return false; }
+            let dec = sf_decode_pct_hex(
+                raw_str[core::add_sat_i64(i, 1)], raw_str[core::add_sat_i64(i, 2)],
+            );
+            guard dec >= 0 && sf_step_utf8_dfa(dec as u8, state) else { return false; }
             i = core::add_sat_i64(i, 3);
         } else {
-            guard b >= 0x20 && b <= 0x7E && b != '%' && b != '"' else { return false; }
-            guard sf_step_utf8_dfa(b, state) else { return false; }
+            guard b >= 0x20 && b <= 0x7E && b != '"' && sf_step_utf8_dfa(b, state) else { return false; }
             i = core::add_sat_i64(i, 1);
         }
     }
@@ -349,12 +305,11 @@ fn validate_display_string(raw_str: const u8[:]) -> bool {
 
 // Parses an RFC 9651 Section 3.3.4 Display String: %"..."
 fn sf_parse_display_string(src: const u8[:], pos: i64, out_item: http::SfItem&, out_next: i64&) -> bool {
-    guard pos + 1 < src.len && src[pos] == '%' && src[pos + 1] == '"' else { return false; }
+    let n = src.len;
+    guard pos + 1 < n && src[pos] == '%' && src[pos + 1] == '"' else { return false; }
     let start_idx = pos + 2;
-    var p = pos + 2;
-    while p < src.len {
-        let ch = src[p];
-        if ch == '"' {
+    for p in start_idx..n {
+        if src[p] == '"' {
             let raw_str = src[start_idx..p];
             guard validate_display_string(raw_str) else { return false; }
             out_item.kind = http::SfType.DisplayString;
@@ -362,38 +317,21 @@ fn sf_parse_display_string(src: const u8[:], pos: i64, out_item: http::SfItem&, 
             out_next = p + 1;
             return true;
         }
-        p = p + 1;
     }
     return false;
 }
 
 // Parses any bare RFC 8941 & RFC 9651 item
 fn sf_parse_bare_item(src: const u8[:], pos: i64, out_item: http::SfItem&, out_next: i64&) -> bool {
-    if pos >= src.len {
-        return false;
-    }
+    guard pos < src.len else { return false; }
     let ch = src[pos];
-    if ch == '%' {
-        return sf_parse_display_string(src, pos, out_item, out_next);
-    }
-    if ch == '?' {
-        return sf_parse_boolean(src, pos, out_item, out_next);
-    }
-    if ch == '"' {
-        return sf_parse_string(src, pos, out_item, out_next);
-    }
-    if ch == ':' {
-        return sf_parse_binary(src, pos, out_item, out_next);
-    }
-    if ch == '@' {
-        return sf_parse_date(src, pos, out_item, out_next);
-    }
-    if ch == '-' || core::is_ascii_digit(ch) {
-        return sf_parse_number(src, pos, out_item, out_next);
-    }
-    if core::is_ascii_alpha(ch) || ch == '*' {
-        return sf_parse_token(src, pos, out_item, out_next);
-    }
+    if ch == '%' { return sf_parse_display_string(src, pos, out_item, out_next); }
+    if ch == '?' { return sf_parse_boolean(src, pos, out_item, out_next); }
+    if ch == '"' { return sf_parse_string(src, pos, out_item, out_next); }
+    if ch == ':' { return sf_parse_binary(src, pos, out_item, out_next); }
+    if ch == '@' { return sf_parse_date(src, pos, out_item, out_next); }
+    if ch == '-' || core::is_ascii_digit(ch) { return sf_parse_number(src, pos, out_item, out_next); }
+    if core::is_ascii_alpha(ch) || ch == '*' { return sf_parse_token(src, pos, out_item, out_next); }
     return false;
 }
 
@@ -407,43 +345,30 @@ inline fn is_sf_key_char(b: u8) -> bool {
 //   src = "foo_bar=1", pos = 0
 //   returns: "foo_bar", next_pos = 7, ok = true
 fn sf_parse_key(src: const u8[:], pos: i64) -> const u8[:], i64, bool {
-    if pos >= src.len {
-        return "", pos, false;
-    }
+    let n = src.len;
+    guard pos < n else { return "", pos, false; }
     let first = src[pos];
-    if !((first >= 'a' && first <= 'z') || first == '*') {
-        return "", pos, false;
-    }
-    let start = pos;
-    var p = start + 1;
-    while p < src.len && is_sf_key_char(src[p]) {
-        p = p + 1;
-    }
-    if p < src.len && src[p] >= 'A' && src[p] <= 'Z' {
-        return "", pos, false;
-    }
-    return src[start..p], p, true;
+    guard (first >= 'a' && first <= 'z') || first == '*' else { return "", pos, false; }
+    var p = pos + 1;
+    while p < n && is_sf_key_char(src[p]) { p += 1; }
+    guard p >= n || src[p] < 'A' || src[p] > 'Z' else { return "", pos, false; }
+    return src[pos..p], p, true;
 }
 
 // Parses parameters: ;key=val;flag;key2=val2 (RFC 8941 Section 3.1.2: *( ";" *SP parameter ))
 fn sf_parse_parameters(src: const u8[:], pos: i64, out_params: http::SfParameter[..8]&, out_next: i64&) -> bool {
     var p = pos;
-    while p < src.len && src[p] == ';' {
+    let n = src.len;
+    while p < n && src[p] == ';' {
         p = sf_skip_sp(src, p + 1); // skip ';' and *SP
-
         let key, k_next, ok_k = sf_parse_key(src, p);
-        if !ok_k {
-            return false;
-        }
+        guard ok_k else { return false; }
         p = k_next;
 
         var val_item = http::SfItem { kind: http::SfType.Boolean, bool_val: true };
-        if p < src.len && src[p] == '=' {
-            p = p + 1; // skip '='
+        if p < n && src[p] == '=' {
             var v_next: i64 = 0;
-            if !sf_parse_bare_item(src, p, val_item, v_next) {
-                return false;
-            }
+            guard sf_parse_bare_item(src, p + 1, val_item, v_next) else { return false; }
             p = v_next;
         }
 
@@ -457,10 +382,8 @@ fn sf_parse_parameters(src: const u8[:], pos: i64, out_params: http::SfParameter
         let param = http::SfParameter { key: key, item: val_item };
         if found_idx >= 0 {
             out_params[found_idx] = param;
-        } else if out_params.len < 8 {
-            out_params.push(param);
         } else {
-            return false;
+            guard out_params.try_push(param) else { return false; }
         }
     }
     out_next = p;
@@ -492,13 +415,12 @@ fn sf_parse_inner_list_items(
     inner_items: http::SfItem[..16]&,
     out_next:    i64&,
 ) -> bool {
-    var p = core::add_sat_i64(pos, 1); // skip '('
-    while p < src.len {
-        while p < src.len && src[p] == ' ' {
-            p = core::add_sat_i64(p, 1);
-        }
-        if p < src.len && src[p] == ')' {
-            out_next = core::add_sat_i64(p, 1);
+    var p = pos + 1; // skip '('
+    let n = src.len;
+    while p < n {
+        p = sf_skip_sp(src, p);
+        if p < n && src[p] == ')' {
+            out_next = p + 1;
             return true;
         }
         var inner_item = http::SfItem { .. };
@@ -508,12 +430,11 @@ fn sf_parse_inner_list_items(
         guard sf_parse_bare_item(src, p, inner_item, in_next) &&
               sf_parse_parameters(src, in_next, item_params, params_next) &&
               copy_inner_item_params(item_params, inner_item.params) &&
-              inner_items.len < 16 else {
+              inner_items.try_push(inner_item) else {
             return false;
         }
-        inner_items.push(inner_item);
         p = params_next;
-        guard p < src.len && (src[p] == ' ' || src[p] == ')') else { return false; }
+        guard p < n && (src[p] == ' ' || src[p] == ')') else { return false; }
     }
     return false;
 }

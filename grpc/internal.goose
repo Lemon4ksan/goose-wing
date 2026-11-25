@@ -110,46 +110,18 @@ inline fn is_message_unencoded(b: u8) -> bool {
     return b >= 0x20 && b <= 0x7E && b != '%';
 }
 
-fn div_u64(n: u64, d: u64) -> u64 {
-    guard d > 0 else { return 0; }
-    guard n >= d else { return 0; }
-
-    var cur_d = d;
-    var cur_q: u64 = 1;
-    let half_n = n >> 1;
-
-    while cur_d <= half_n {
-        cur_d = core::add_sat_u64(cur_d, cur_d);
-        cur_q = core::add_sat_u64(cur_q, cur_q);
-    }
-
-    var rem_n = n;
-    var quotient: u64 = 0;
-
-    while cur_q > 0 {
-        if rem_n >= cur_d {
-            rem_n = core::sub_sat_u64(rem_n, cur_d);
-            quotient = quotient | cur_q;
-        }
-        cur_d = cur_d >> 1;
-        cur_q = cur_q >> 1;
-    }
-
-    return quotient;
-}
-
-inline fn convert_timeout_unit(num: u64, unit: u8) -> u64, bool {
+fn convert_timeout_unit(num: u64, unit: u8) -> u64, bool {
     if unit == 'H' { return core::mul_sat_u64(num, 3600000), true; }
     if unit == 'M' { return core::mul_sat_u64(num, 60000), true; }
     if unit == 'S' { return core::mul_sat_u64(num, 1000), true; }
     if unit == 'm' { return num, true; }
     if unit == 'u' {
-        let ms = if num > 0 && num < 1000 { 1 } else { div_u64(num, 1000) };
-        return ms, true;
+        let q, _ = core::div_rem_u64(num, 1000);
+        return if num > 0 && num < 1000 { 1 } else { q }, true;
     }
     if unit == 'n' {
-        let ms = if num > 0 && num < 1000000 { 1 } else { div_u64(num, 1000000) };
-        return ms, true;
+        let q, _ = core::div_rem_u64(num, 1000000);
+        return if num > 0 && num < 1000000 { 1 } else { q }, true;
     }
     return 0, false;
 }
@@ -169,14 +141,8 @@ inline fn resolve_effective_http_status(headers: const http::HeaderMap&) -> i32 
     return 200;
 }
 
-inline fn protowire_varint_len(val: u64) -> u64 {
-    var v = val;
-    var n: u64 = 1;
-    while v >= 0x80 {
-        v = v >> 7;
-        n = core::add_sat_u64(n, 1);
-    }
-    return n;
+checkfree fn protowire_varint_len(val: u64) -> u64 {
+    return ((70 - clz(val | 1)) / 7) as u64;
 }
 
 inline fn write_protowire_varint(val: u64, dst: u8[:], pos: u64&) {

@@ -99,6 +99,16 @@ uint8_t wing_ctgrind_xchacha20_poly1305(sl_u8 key, sl_u8 iv, sl_u8 pt,
                                         sl_u8 out);
 uint8_t wing_ctgrind_hmac_hkdf_sha256(sl_u8 key, sl_u8 salt, sl_u8 info,
                                       sl_u8 out);
+uint8_t wing_ctgrind_aes128_gcm_open(sl_u8 key, sl_u8 iv, sl_u8 ct, sl_u8 tag,
+                                     sl_u8 out);
+uint8_t wing_ctgrind_chacha20_poly1305_open(sl_u8 key, sl_u8 iv, sl_u8 ct,
+                                            sl_u8 tag, sl_u8 out);
+uint8_t wing_ctgrind_xchacha20_poly1305_open(sl_u8 key, sl_u8 iv, sl_u8 ct,
+                                             sl_u8 tag, sl_u8 out);
+uint8_t wing_ctgrind_tls_key_schedule(sl_u8 ecdhe, sl_u8 hs_hash, sl_u8 out);
+uint8_t wing_ctgrind_hpke_seal_base(sl_u8 pk_r, sl_u8 eph_sk, sl_u8 pt,
+                                    sl_u8 out_enc, sl_u8 out_ct);
+uint8_t wing_ctgrind_hpke_open_base(sl_u8 sk_r, sl_u8 enc, sl_u8 ct, sl_u8 out);
 #ifdef __cplusplus
 }
 #endif
@@ -588,6 +598,169 @@ static int test_hmac_hkdf_sha256(void) {
   return (ok == 1u && acc != 0u);
 }
 
+static int test_aes128_gcm_open(void) {
+  uint8_t key[16] = {0xfe, 0xff, 0xe9, 0x92, 0x86, 0x65, 0x73, 0x1c,
+                     0x6d, 0x6a, 0x8f, 0x94, 0x67, 0x30, 0x83, 0x08};
+  uint8_t iv[12] = {0xca, 0xfe, 0xba, 0xbe, 0xfa, 0xce,
+                    0xdb, 0xad, 0xde, 0xca, 0xf8, 0x88};
+  uint8_t ct[64] = {0};
+  uint8_t out[64] = {0};
+  uint8_t tag[16] = {0};
+  const uint8_t *pt = (const uint8_t *)
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  if (wing_aes_gcm_seal_scalar(key, 16, iv, pt, 64, NULL, 0, ct, tag) != 64) {
+    return 0;
+  }
+
+  CT_POISON(key, sizeof(key));
+  CT_POISON(iv, sizeof(iv));
+  CT_POISON(ct, sizeof(ct));
+  CT_POISON(tag, sizeof(tag));
+  uint8_t ok_valid = wing_ctgrind_aes128_gcm_open(
+      make_slice(key, 16), make_slice(iv, 12), make_slice(ct, 64),
+      make_slice(tag, 16), make_slice(out, 64));
+  CT_UNPOISON(&ok_valid, 1);
+  tag[0] ^= 0x01;
+  uint8_t ok_bad = wing_ctgrind_aes128_gcm_open(
+      make_slice(key, 16), make_slice(iv, 12), make_slice(ct, 64),
+      make_slice(tag, 16), make_slice(out, 64));
+  CT_UNPOISON(&ok_bad, 1);
+  CT_UNPOISON(key, sizeof(key));
+  CT_UNPOISON(iv, sizeof(iv));
+  CT_UNPOISON(ct, sizeof(ct));
+  CT_UNPOISON(tag, sizeof(tag));
+  CT_UNPOISON(out, sizeof(out));
+  return ok_valid == 1u && ok_bad == 2u;
+}
+
+static int test_chacha20_poly1305_open(void) {
+  uint8_t key[32];
+  uint8_t iv[12];
+  uint8_t pt[64];
+  uint8_t sealed[80] = {0};
+  uint8_t out[64] = {0};
+  for (int i = 0; i < 32; i++) key[i] = (uint8_t)(0x40 + i);
+  for (int i = 0; i < 12; i++) iv[i] = (uint8_t)(0x10 + i);
+  for (int i = 0; i < 64; i++) pt[i] = (uint8_t)(0xA0 + i);
+  if (wing_ctgrind_chacha20_poly1305(make_slice(key, 32), make_slice(iv, 12),
+                                     make_slice(pt, 64),
+                                     make_slice(sealed, 80)) != 1u) {
+    return 0;
+  }
+
+  CT_POISON(key, sizeof(key));
+  CT_POISON(iv, sizeof(iv));
+  CT_POISON(sealed, sizeof(sealed));
+  uint8_t ok_valid = wing_ctgrind_chacha20_poly1305_open(
+      make_slice(key, 32), make_slice(iv, 12), make_slice(sealed, 64),
+      make_slice(sealed + 64, 16), make_slice(out, 64));
+  CT_UNPOISON(&ok_valid, 1);
+  sealed[79] ^= 0x80;
+  uint8_t ok_bad = wing_ctgrind_chacha20_poly1305_open(
+      make_slice(key, 32), make_slice(iv, 12), make_slice(sealed, 64),
+      make_slice(sealed + 64, 16), make_slice(out, 64));
+  CT_UNPOISON(&ok_bad, 1);
+  CT_UNPOISON(key, sizeof(key));
+  CT_UNPOISON(iv, sizeof(iv));
+  CT_UNPOISON(sealed, sizeof(sealed));
+  CT_UNPOISON(out, sizeof(out));
+  return ok_valid == 1u && ok_bad == 2u;
+}
+
+static int test_xchacha20_poly1305_open(void) {
+  uint8_t key[32];
+  uint8_t iv[24];
+  uint8_t pt[64];
+  uint8_t sealed[80] = {0};
+  uint8_t out[64] = {0};
+  for (int i = 0; i < 32; i++) key[i] = (uint8_t)(0x80 + i);
+  for (int i = 0; i < 24; i++) iv[i] = (uint8_t)(0x40 + i);
+  for (int i = 0; i < 64; i++) pt[i] = (uint8_t)(0x20 + i);
+  if (wing_ctgrind_xchacha20_poly1305(make_slice(key, 32), make_slice(iv, 24),
+                                      make_slice(pt, 64),
+                                      make_slice(sealed, 80)) != 1u) {
+    return 0;
+  }
+
+  CT_POISON(key, sizeof(key));
+  CT_POISON(iv, sizeof(iv));
+  CT_POISON(sealed, sizeof(sealed));
+  uint8_t ok_valid = wing_ctgrind_xchacha20_poly1305_open(
+      make_slice(key, 32), make_slice(iv, 24), make_slice(sealed, 64),
+      make_slice(sealed + 64, 16), make_slice(out, 64));
+  CT_UNPOISON(&ok_valid, 1);
+  sealed[64] ^= 0x04;
+  uint8_t ok_bad = wing_ctgrind_xchacha20_poly1305_open(
+      make_slice(key, 32), make_slice(iv, 24), make_slice(sealed, 64),
+      make_slice(sealed + 64, 16), make_slice(out, 64));
+  CT_UNPOISON(&ok_bad, 1);
+  CT_UNPOISON(key, sizeof(key));
+  CT_UNPOISON(iv, sizeof(iv));
+  CT_UNPOISON(sealed, sizeof(sealed));
+  CT_UNPOISON(out, sizeof(out));
+  return ok_valid == 1u && ok_bad == 2u;
+}
+
+static int test_tls_key_schedule(void) {
+  uint8_t ecdhe[32];
+  uint8_t hs_hash[32];
+  uint8_t out[32] = {0};
+  for (int i = 0; i < 32; i++) {
+    ecdhe[i] = (uint8_t)(0x21 + i);
+    hs_hash[i] = (uint8_t)(0x55 + i);
+  }
+  CT_POISON(ecdhe, sizeof(ecdhe));
+  uint8_t ok = wing_ctgrind_tls_key_schedule(
+      make_slice(ecdhe, 32), make_slice(hs_hash, 32), make_slice(out, 32));
+  CT_UNPOISON(out, sizeof(out));
+  CT_UNPOISON(ecdhe, sizeof(ecdhe));
+  uint8_t acc = 0;
+  for (int i = 0; i < 32; i++) acc |= out[i];
+  return (ok == 1u && acc != 0u);
+}
+
+static int test_hpke_open_base(void) {
+  uint8_t sk_r[32];
+  uint8_t pk_r[32] = {0};
+  uint8_t eph_sk[32];
+  uint8_t pt[32];
+  uint8_t enc[32] = {0};
+  uint8_t ct[48] = {0};
+  uint8_t out[32] = {0};
+  for (int i = 0; i < 32; i++) {
+    sk_r[i] = (uint8_t)(0x31 + i);
+    eph_sk[i] = (uint8_t)(0x71 + i);
+    pt[i] = (uint8_t)(0x11 + i);
+  }
+  uint8_t b32[32] = {0};
+  b32[0] = 9;
+  if (wing_ctgrind_x25519_scalarmult(make_slice(sk_r, 32), make_slice(b32, 32),
+                                     make_slice(pk_r, 32)) != 1u) {
+    return 0;
+  }
+  if (wing_ctgrind_hpke_seal_base(make_slice(pk_r, 32), make_slice(eph_sk, 32),
+                                  make_slice(pt, 32), make_slice(enc, 32),
+                                  make_slice(ct, 48)) != 1u) {
+    return 0;
+  }
+
+  CT_POISON(sk_r, sizeof(sk_r));
+  CT_POISON(ct, sizeof(ct));
+  uint8_t ok_valid = wing_ctgrind_hpke_open_base(
+      make_slice(sk_r, 32), make_slice(enc, 32), make_slice(ct, 48),
+      make_slice(out, 32));
+  CT_UNPOISON(&ok_valid, 1);
+  ct[47] ^= 0x01;
+  uint8_t ok_bad = wing_ctgrind_hpke_open_base(
+      make_slice(sk_r, 32), make_slice(enc, 32), make_slice(ct, 48),
+      make_slice(out, 32));
+  CT_UNPOISON(&ok_bad, 1);
+  CT_UNPOISON(sk_r, sizeof(sk_r));
+  CT_UNPOISON(ct, sizeof(ct));
+  CT_UNPOISON(out, sizeof(out));
+  return ok_valid == 1u && ok_bad == 2u;
+}
+
 typedef struct {
   const char *name;
   int (*fn)(void);
@@ -597,11 +770,16 @@ int main(int argc, char **argv) {
   goose_init(argc, argv);
   const CtCheck checks[] = {
       {"wing_aes_gcm_seal_scalar", test_aes_gcm_scalar},
+      {"aes128_gcm_open", test_aes128_gcm_open},
       {"ct_eq_bytes", test_ct_eq_bytes},
       {"aes128_and_aes256_encrypt_block", test_aes_blocks},
       {"chacha20_poly1305", test_chacha20_poly1305},
+      {"chacha20_poly1305_open", test_chacha20_poly1305_open},
       {"xchacha20_poly1305", test_xchacha20_poly1305},
+      {"xchacha20_poly1305_open", test_xchacha20_poly1305_open},
       {"hmac_and_hkdf_sha256", test_hmac_hkdf_sha256},
+      {"tls_key_schedule", test_tls_key_schedule},
+      {"hpke_open_base", test_hpke_open_base},
       {"x25519_scalarmult", test_x25519},
       {"ecdsa_p256_sign", test_ecdsa_p256_sign},
       {"p256_ecdh_shared_secret", test_p256_ecdh},

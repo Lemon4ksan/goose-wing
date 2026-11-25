@@ -459,57 +459,16 @@ fn emit_h3_stream_reset(slot_idx: i64, st_idx: i64, error_code: u64) {
 
 fn reset_h3_edge_slot(slot_idx: i64, gen: u64) {
     let slot .= g_h3_edge_slots[slot_idx];
-    slot.active = true;
-    slot.generation = gen;
-    slot.conn_failed = false;
-    slot.has_peer_ctrl = false;
-    slot.peer_ctrl_stream_id = 0;
-    slot.has_peer_qenc = false;
-    slot.peer_qenc_stream_id = 0;
-    slot.has_peer_qdec = false;
-    slot.peer_qdec_stream_id = 0;
-    slot.peer_settings_received = false;
-    slot.peer_settings = fingerprint::H3Settings { .. };
-    slot.local_settings = fingerprint::H3Settings { .. };
-    slot.peer_goaway_seen = false;
-    slot.peer_goaway_id = 0;
-    slot.has_max_push_id = false;
-    slot.max_push_id = 0;
-    slot.ctrl_stage = H3EdgeCtrlStage.ReadHeader;
-    slot.ctrl_hdr_buf.clear();
-    slot.ctrl_frame_type = 0;
-    slot.ctrl_remaining = 0;
-    slot.ctrl_payload_buf.clear();
-    slot.ctrl_empty_streak = 0;
-    slot.qenc_rx_buf.clear();
-    slot.qdec_rx_buf.clear();
-    slot.uni_pending.clear();
-    slot.ignored_uni_head = -1;
-    slot.ignored_uni_count = 0;
+    if slot.ev_data_buf.len > 0 { core::secure_zeroize_slice(slot.ev_data_buf[..]); }
+    if slot.ev_hdr_raw.len > 0 { core::secure_zeroize_slice(slot.ev_hdr_raw[..]); }
     // RFC 9204 Section 3.2.1: Dynamic Table Capacity - Initial decoder capacity MUST be 0 until instructed.
-    slot.qpack_dec_table = new_qpack_table(
-        H3_EDGE_QPACK_DEFAULT_CAP,
-        H3_EDGE_QPACK_DEFAULT_BLOCKED,
-        0,
-    );
-    slot.qpack_enc_table = new_qpack_table(
-        H3_EDGE_QPACK_DEFAULT_CAP,
-        H3_EDGE_QPACK_DEFAULT_BLOCKED,
-        0,
-    );
-    slot.stream_head = -1;
-    slot.stream_count = 0;
-    slot.ev_head = -1;
-    slot.ev_tail = -1;
-    if slot.ev_data_buf.len > 0 {
-        core::secure_zeroize_slice(slot.ev_data_buf[..]);
-    }
-    slot.ev_data_buf.clear();
-    slot.ev_hdr_entries.clear();
-    if slot.ev_hdr_raw.len > 0 {
-        core::secure_zeroize_slice(slot.ev_hdr_raw[..]);
-    }
-    slot.ev_hdr_raw.clear();
+    slot = H3EdgeSlot {
+        active:          true,
+        generation:      gen,
+        qpack_dec_table: new_qpack_table(H3_EDGE_QPACK_DEFAULT_CAP, H3_EDGE_QPACK_DEFAULT_BLOCKED, 0),
+        qpack_enc_table: new_qpack_table(H3_EDGE_QPACK_DEFAULT_CAP, H3_EDGE_QPACK_DEFAULT_BLOCKED, 0),
+        ..
+    };
 }
 
 fn free_h3_stream_slot(st_idx: i64) {

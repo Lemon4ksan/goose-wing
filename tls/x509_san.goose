@@ -7,6 +7,7 @@ namespace tls;
 
 import std;
 import core;
+import cookie.psl;
 import .internal;
 import .asn1;
 import .record;
@@ -63,6 +64,7 @@ fn x509_match_wildcard_san(pat: const u8[:], host: const u8[:]) -> bool {
     guard pat.len >= 3 && pat[0] == '*' && pat[1] == '.' else { return false; }
     let suffix = pat[2..];
     guard !suffix.contains_byte('*') && suffix.contains_byte('.') else { return false; }
+    guard !cookie::is_public_suffix(suffix) else { return false; }
     guard !x509_is_ip_literal(host) else { return false; }
 
     let dot_idx = host.index_of_byte('.');

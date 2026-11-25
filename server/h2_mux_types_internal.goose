@@ -53,26 +53,7 @@ struct H2ServerStream {
 }
 
 fn reset_server_stream(st: H2ServerStream&) {
-    st.stream_id = 0;
-    st.phase = H2StreamPhase.Idle;
-    st.active = false;
-    st.headers_received = false;
-    st.body_received = false;
-    st.headers_sent = false;
-    st.response_sent = false;
-    st.pending_has_trailers = false;
-    st.pending_async = false;
-    st.spill_slab_idx = -1;
-    st.slab_lease_deadline_ns = 0;
-    st.method.clear();
-    st.path.clear();
-    st.scheme.clear();
-    st.authority.clear();
-    st.headers.clear();
-    st.trailers.clear();
-    st.body.clear();
-    st.declared_content_length = -1;
-    st.unclaimed_local_window = 0;
+    st = H2ServerStream { .. };
 }
 
 // ---- Server Connection Session -------------------------------------------
@@ -113,41 +94,13 @@ fn new_h2_server_session(
     conn.local_initial_window_size = 8192;
     conn.max_header_list_size = 16384;
     var sess = H2ServerSession {
-        conn:                  conn,
-        hpack_enc:             http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE),
-        preface_handled:       false,
-        server_settings_sent:  false,
-        client_settings_acked: false,
-        pending_settings_ack:  false,
-        server_name:           [],
+        conn:        conn,
+        hpack_enc:   http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE),
+        server_name: [],
         ..
     };
     let _ = sess.server_name.try_set(server_name_str[..min(server_name_str.len, 64)]);
     return sess;
-}
-
-inline fn reset_hpack_dyn_table_inplace(dt: http2::DynamicTable&) {
-    dt.head = 0;
-    dt.count = 0;
-    dt.arena_write_pos = 0;
-    dt.arena_head = 0;
-    dt.arena_tail = 0;
-    dt.next_generation = 1;
-    dt.used_bytes = 0;
-    dt.max_allowed_size = rfc::HPACK_DEFAULT_MAX_DYN_SIZE;
-    dt.current_max_size = rfc::HPACK_DEFAULT_MAX_DYN_SIZE;
-    for i in 256 {
-        dt.hash_table.slots[i] = 0;
-        dt.hash_table.generations[i] = 0;
-    }
-}
-
-inline fn reset_h2_stream_nodes_inplace(conn: http2::Connection&) {
-    for n_i in 128 {
-        conn.stream_nodes[n_i].stream_id = 0;
-        conn.stream_nodes[n_i].next = -1;
-        conn.stream_nodes[n_i].prev = -1;
-    }
 }
 
 fn reset_h2_server_session_inplace(
@@ -155,71 +108,7 @@ fn reset_h2_server_session_inplace(
     server_name_str: const u8[:] = "goose-wing/1.0",
     now_ms:          u64         = 0,
 ) {
-    reset_hpack_dyn_table_inplace(sess.conn.hpack_dec);
-    sess.conn.conn_send_window = 65535;
-    sess.conn.conn_recv_window = 65535;
-    sess.conn.peer_initial_window_size = 65535;
-    sess.conn.local_initial_window_size = 8192;
-    sess.conn.local_max_frame_size = 16384;
-    sess.conn.peer_max_frame_size = 16384;
-    sess.conn.max_header_list_size = 16384;
-    sess.conn.max_concurrent_streams = 16;
-    sess.conn.active_stream_count = 0;
-    sess.conn.last_peer_stream_id = 0;
-    sess.conn.last_local_stream_id = 0;
-    sess.conn.is_server = true;
-    sess.conn.enable_push = false;
-    sess.conn.enable_connect_protocol = 1;
-    sess.conn.unclaimed_recv_window = 0;
-    sess.conn.coalesce_window_updates = false;
-    sess.conn.streams.clear();
-    sess.conn.stream_index = [core::FlatIndexBucket { .. }; 256];
-    sess.conn.idle_priorities.clear();
-    sess.conn.continuation_stream_id = 0;
-    sess.conn.continuation_frames_cnt = 0;
-    sess.conn.accumulated_header_size = 0;
-    sess.conn.continuation_start_ms = 0;
-    sess.conn.max_header_block_duration_ms = 10000;
-    sess.conn.reset_limiter.tokens = 1000;
-    sess.conn.reset_limiter.burst = 1000;
-    sess.conn.reset_limiter.rate_per_sec = 33;
-    sess.conn.reset_limiter.last_refill_ms = now_ms;
-    sess.conn.empty_frame_streak = 0;
-    sess.conn.pending_control_frames = 0;
-    sess.conn.concurrency_violations = 0;
-    sess.conn.initial_window_update_count = 0;
-    sess.conn.client_sent_priority = false;
-    sess.conn.no_rfc7540_priorities = false;
-    sess.conn.peer_no_rfc7540_set = false;
-    sess.conn.is_behind_proxy = false;
-    sess.conn.urgency_streak_count = 0;
-    sess.conn.active_urgency_mask = 0;
-    sess.conn.urgency_heads = [-1; 8];
-    sess.conn.urgency_tails = [-1; 8];
-    sess.conn.bucket_prefer_incremental = [false; 8];
-    sess.conn.bucket_last_inc_idx = [-1; 8];
-    reset_h2_stream_nodes_inplace(sess.conn);
-    sess.conn.shutdown_notice_sent = false;
-    sess.conn.shutdown_ping_opaque = 0x57494E47474F4157;
-    sess.conn.goaway_sent = false;
-    sess.conn.goaway_received = false;
-    sess.conn.goaway_last_stream_id = 0;
-    sess.conn.goaway_error_code = 0;
-    reset_hpack_dyn_table_inplace(sess.hpack_enc);
-    sess.streams.clear();
-    sess.preface_handled = false;
-    sess.server_settings_sent = false;
-    sess.client_settings_acked = false;
-    sess.pending_settings_ack = false;
-    sess.pending_dyn_size_update = false;
-    sess.pending_min_dyn_size = rfc::HPACK_DEFAULT_MAX_DYN_SIZE;
-    sess.min_pending_max_size = rfc::HPACK_DEFAULT_MAX_DYN_SIZE as i64;
-    let _ = sess.server_name.try_set(server_name_str[..min(server_name_str.len, 64)]);
-    sess.header_accumulator.clear();
-    sess.header_accum_stream_id = 0;
-    sess.header_accum_rejected_err = 0;
-    sess.header_accum_end_stream = false;
-    sess.header_accum_is_trailer = false;
+    sess = new_h2_server_session(server_name_str, now_ms);
 }
 
 // Finds an active server stream slot by stream_id

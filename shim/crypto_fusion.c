@@ -62,6 +62,15 @@ static void wing_scrub_stack_1024(void) {
     wing_fusion_zeroize(scrub, sizeof(scrub));
 }
 
+void wing_ct_declassify(wing_slice s);
+uint8_t wing_ct_declassify_u8(uint8_t v);
+
+static inline uint8_t wing_ct_nonzero_public_bit(uint8_t diff) {
+    uint32_t d = (uint32_t)diff;
+    uint8_t bit = (uint8_t)((d | (0u - d)) >> 31);
+    return wing_ct_declassify_u8(bit);
+}
+
 // Returns 1 if [src, src+len) and [dst, dst+len) partially overlap (exact in-place src == dst is allowed).
 static inline int wing_slices_partial_overlap(const uint8_t *src, const uint8_t *dst, int64_t len) {
     if (len <= 0 || src == dst) return 0;
@@ -679,7 +688,7 @@ wing_aes_gcm_open_aesni_rk(const uint8_t *rk_bytes, int nr, const __m128i h[4], 
         diff |= (computed_tag[i] ^ tag_ptr[i]);
     }
     wing_fusion_zeroize(computed_tag, sizeof(computed_tag));
-    if (diff != 0) {
+    if (wing_ct_nonzero_public_bit(diff) != 0) {
         if (src_len > 0) {
             wing_fusion_zeroize(dst_ptr, (size_t)src_len);
         }
@@ -1017,7 +1026,7 @@ static int64_t wing_aes_gcm_open_scalar_rk(const uint8_t rk[240], int nr, const 
     }
     wing_fusion_zeroize(j0_enc, sizeof(j0_enc));
     wing_fusion_zeroize(y, sizeof(y));
-    if (diff != 0) {
+    if (wing_ct_nonzero_public_bit(diff) != 0) {
         if (src_len > 0) {
             wing_fusion_zeroize(dst_ptr, (size_t)src_len);
         }
@@ -1833,7 +1842,7 @@ int64_t wing_chacha_poly_open_aead(wing_slice key, wing_slice iv, wing_slice src
     }
     wing_fusion_zeroize(computed_tag, sizeof(computed_tag));
 
-    if (diff != 0) {
+    if (wing_ct_nonzero_public_bit(diff) != 0) {
         wing_fusion_zeroize(st0, sizeof(st0));
         if (src.len > 0) {
             wing_fusion_zeroize(dst.ptr, (size_t)src.len);
@@ -2042,9 +2051,6 @@ int64_t wing_aes_gcm_open_prepared(wing_slice ctx, wing_slice iv, wing_slice src
     wing_scrub_stack_1024();
     return ret;
 }
-
-void wing_ct_declassify(wing_slice s);
-uint8_t wing_ct_declassify_u8(uint8_t v);
 
 #ifndef WING_CTGRIND_VALGRIND
 // Production no-op declassification barriers (overridden by Valgrind ctgrind under -DWING_CTGRIND_VALGRIND=1).

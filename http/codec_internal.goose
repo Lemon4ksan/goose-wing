@@ -552,7 +552,7 @@ fn compress_dcb_payload<B>(
     if cmds.len == 0 || matched < 4 {
         return core::brotli_compress(raw_content, out_buf, 0);
     }
-    var w = core::new_brotli_bit_writer();
+    var w = core::BrotliBitWriter { .. };
     var dist_ring: u32[4] = [4, 11, 15, 16];
     core::emit_brotli_stream_header(w, out_buf);
     core::emit_brotli_compressed_chunk(w, raw_content, cmds[..], dist_ring, out_buf);

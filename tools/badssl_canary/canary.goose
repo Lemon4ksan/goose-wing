@@ -13,11 +13,20 @@ import wing from "../..";
 //   raw = "openssl"
 //   returns: tls::TlsBackendKind.SystemOpenSsl, true
 fn parse_backend_kind(raw: const u8[:]) -> tls::TlsBackendKind, bool {
-    if raw == "pure" { return tls::TlsBackendKind.PureGoose, true; }
-    if raw == "openssl" { return tls::TlsBackendKind.SystemOpenSsl, true; }
-    if raw == "schannel" { return tls::TlsBackendKind.SystemSchannel, true; }
-    if raw == "secure_transport" { return tls::TlsBackendKind.SystemSecureTransport, true; }
-    if raw == "auto" { return tls::TlsBackendKind.Auto, true; }
+    let names: (const u8[:])[6] = [
+        "pure", "openssl", "schannel", "secure_transport", "auto", "system_only",
+    ];
+    let kinds: tls::TlsBackendKind[6] = [
+        tls::TlsBackendKind.PureGoose,
+        tls::TlsBackendKind.SystemOpenSsl,
+        tls::TlsBackendKind.SystemSchannel,
+        tls::TlsBackendKind.SystemSecureTransport,
+        tls::TlsBackendKind.Auto,
+        tls::TlsBackendKind.SystemOnly,
+    ];
+    for i in 6 {
+        if raw == names[i] { return kinds[i], true; }
+    }
     return tls::TlsBackendKind.PureGoose, false;
 }
 
@@ -39,6 +48,7 @@ fn backend_kind_str(kind: tls::TlsBackendKind) -> const u8[:] {
         SystemSchannel => "schannel",
         SystemSecureTransport => "secure_transport",
         Auto => "auto",
+        SystemOnly => "system_only",
     };
 }
 

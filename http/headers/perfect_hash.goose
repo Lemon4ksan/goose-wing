@@ -29,25 +29,14 @@ enum KnownHeaderId {
 }
 
 // Converts a KnownHeaderId to a bit flag for 32-bit presence masks.
-checkfree inline fn header_id_to_bit(id: KnownHeaderId) -> u32 {
-    return match id {
-        Host => 0x0002,
-        Date => 0x0004,
-        Accept => 0x0008,
-        Cookie => 0x0010,
-        Origin => 0x0020,
-        Server => 0x0040,
-        Connection => 0x0080,
-        UserAgent => 0x0100,
-        ContentType => 0x0200,
-        ContentLength => 0x0400,
-        Authorization => 0x0800,
-        TransferEncoding => 0x1000,
-        SecWebSocketKey => 0x2000,
-        Upgrade => 0x4000,
-        Expect => 0x8000,
-        _ => 0,
-    };
+checkfree fn header_id_to_bit(id: KnownHeaderId) -> u32 {
+    var bit: u32 = 0;
+    const for <N, V> in variants<KnownHeaderId> {
+        let v: KnownHeaderId = default<V>();
+        if id == v { return if bit == 0 { 0 } else { (1 as u32) << bit }; }
+        bit += 1;
+    }
+    return 0;
 }
 
 // Identifies well-known HTTP header in O(1) time without linear search.

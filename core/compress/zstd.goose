@@ -77,35 +77,15 @@ const OF_DEFAULT_DIST: i16[29] = [
     1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1,
 ];
 
-const ZSTD_POW2_U64: u64[64] = [
-    0x0000000000000001, 0x0000000000000002, 0x0000000000000004, 0x0000000000000008,
-    0x0000000000000010, 0x0000000000000020, 0x0000000000000040, 0x0000000000000080,
-    0x0000000000000100, 0x0000000000000200, 0x0000000000000400, 0x0000000000000800,
-    0x0000000000001000, 0x0000000000002000, 0x0000000000004000, 0x0000000000008000,
-    0x0000000000010000, 0x0000000000020000, 0x0000000000040000, 0x0000000000080000,
-    0x0000000000100000, 0x0000000000200000, 0x0000000000400000, 0x0000000000800000,
-    0x0000000001000000, 0x0000000002000000, 0x0000000004000000, 0x0000000008000000,
-    0x0000000010000000, 0x0000000020000000, 0x0000000040000000, 0x0000000080000000,
-    0x0000000100000000, 0x0000000200000000, 0x0000000400000000, 0x0000000800000000,
-    0x0000001000000000, 0x0000002000000000, 0x0000004000000000, 0x0000008000000000,
-    0x0000010000000000, 0x0000020000000000, 0x0000040000000000, 0x0000080000000000,
-    0x0000100000000000, 0x0000200000000000, 0x0000400000000000, 0x0000800000000000,
-    0x0001000000000000, 0x0002000000000000, 0x0004000000000000, 0x0008000000000000,
-    0x0010000000000000, 0x0020000000000000, 0x0040000000000000, 0x0080000000000000,
-    0x0100000000000000, 0x0200000000000000, 0x0400000000000000, 0x0800000000000000,
-    0x1000000000000000, 0x2000000000000000, 0x4000000000000000, 0x8000000000000000,
-];
-
 // ---- helper bit functions --------------------------------------------------
 
-inline fn zstd_high_bit(v: u32) -> i32 {
-    if v == 0 { return -1; }
+checkfree fn zstd_high_bit(v: u32) -> i32 {
     return (63 - clz(v)) as i32;
 }
 
 // Extraction of nb bits (0 <= nb <= 32) from bit_container at bits_consumed.
 // Completely branchless: eliminates 19,200+ branches per 256KB block.
-inline fn zstd_extract_bits(bit_container: u64, bits_consumed: u32, nb: u32) -> u32 {
+checkfree fn zstd_extract_bits(bit_container: u64, bits_consumed: u32, nb: u32) -> u32 {
     let top32 = (bit_container << (bits_consumed & 63)) >> 32;
     return (top32 >> ((32 - nb) & 63)) as u32;
 }
@@ -121,48 +101,18 @@ struct ZstdBitReader {
 }
 
 fn new_zstd_bit_reader(src: const u8[:]) -> ZstdBitReader {
-    if src.len == 0 {
-        return ZstdBitReader { src: src, bit_pos: 0, underflow: true };
+    guard src.len > 0 && src[src.len - 1] != 0 else {
+        return ZstdBitReader { src: src, underflow: true, .. };
     }
-    let last_byte = src[src.len - 1];
-    if last_byte == 0 {
-        return ZstdBitReader { src: src, bit_pos: 0, underflow: true };
-    }
-    var sentinel: i32 = 7;
-    while sentinel >= 0 {
-        if ((last_byte >> (sentinel as u8)) & 1) != 0 {
-            break;
-        }
-        sentinel--;
-    }
-    let total_bits = (src.len - 1) * 8 + sentinel;
-    return ZstdBitReader {
-        src:          src,
-        bit_pos:      total_bits,
-        underflow:    false,
-        cache_offset: -1,
-        cache_chunk:  0,
-    };
+    let sentinel = zstd_high_bit(src[src.len - 1]);
+    return ZstdBitReader { src: src, bit_pos: (src.len - 1) * 8 + sentinel, .. };
 }
 
 fn read_le_u64_partial(src: const u8[:], offset: i64, len: i64) -> u64 {
-    if len >= 8 {
-        let b0 = src[offset] as u64;
-        let b1 = src[offset + 1] as u64;
-        let b2 = src[offset + 2] as u64;
-        let b3 = src[offset + 3] as u64;
-        let b4 = src[offset + 4] as u64;
-        let b5 = src[offset + 5] as u64;
-        let b6 = src[offset + 6] as u64;
-        let b7 = src[offset + 7] as u64;
-        return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24) |
-               (b4 << 32) | (b5 << 40) | (b6 << 48) | (b7 << 56);
-    }
+    if len >= 8 { return read_le_u64(src, offset); }
     var chunk: u64 = 0;
-    var i:     i64 = 0;
-    while i < len {
+    for i in len {
         chunk |= (src[offset + i] as u64) << ((i * 8) as u64);
-        i++;
     }
     return chunk;
 }
@@ -235,39 +185,23 @@ fn fwd_refill(r: ForwardBitReader&) {
 
 fn new_forward_bit_reader(src: const u8[:], start_offset: i64) -> ForwardBitReader {
     if start_offset < 0 || start_offset > src.len {
-        return ForwardBitReader {
-            src:       src,
-            byte_idx:  src.len,
-            bit_count: 0,
-            bit_buf:   0,
-            underflow: true,
-        };
+        return ForwardBitReader { src: src, byte_idx: src.len, underflow: true, .. };
     }
-    var r = ForwardBitReader {
-        src:       src,
-        byte_idx:  start_offset,
-        bit_count: 0,
-        bit_buf:   0,
-        underflow: false,
-    };
+    var r = ForwardBitReader { src: src, byte_idx: start_offset, .. };
     fwd_refill(r);
     return r;
 }
 
 fn fwd_peek(r: ForwardBitReader&, n: i32) -> u32 {
     guard n > 0 && n <= 32 else { return 0; }
-    if r.bit_count < n {
-        fwd_refill(r);
-    }
-    let mask = sub_sat_u64(ZSTD_POW2_U64[(n & 63) as u64], 1);
-    return ((r.bit_buf & mask) & 0xFFFFFFFF) as u32;
+    if r.bit_count < n { fwd_refill(r); }
+    let mask = ((1 as u64) << (n as u64)) - 1;
+    return (r.bit_buf & mask) as u32;
 }
 
 fn fwd_consume(r: ForwardBitReader&, n: i32) {
     guard n > 0 else { return; }
-    if r.bit_count < n {
-        fwd_refill(r);
-    }
+    if r.bit_count < n { fwd_refill(r); }
     if r.bit_count < n {
         r.underflow = true;
         r.bit_count = 0;
@@ -279,8 +213,7 @@ fn fwd_consume(r: ForwardBitReader&, n: i32) {
         r.bit_count = 0;
         return;
     }
-    let q, _ = div_rem_u64(r.bit_buf, ZSTD_POW2_U64[(n & 63) as u64]);
-    r.bit_buf = q;
+    r.bit_buf >>= ((n & 63) as u64);
     r.bit_count = (sub_sat_i64(r.bit_count, n) & 63) as i32;
 }
 
@@ -712,20 +645,11 @@ fn read_fse_symbol_count(r: ForwardBitReader&, threshold: i32, max_val: i32, nb_
 }
 
 fn shrink_fse_threshold(remaining: i32, threshold: i32&, nb_bits: i32&) {
-    var thr: i64 = threshold;
-    var nb:  i64 = nb_bits;
-    let rem_u = (remaining & 1023) as u32;
-    while thr > remaining && thr > 1 {
-        if remaining <= 1 {
-            break;
-        }
-        let clz_v = (clz(rem_u) & 63) as u32;
-        let hb = sub_sat_u32(63, clz_v);
-        nb = add_sat_u32(hb, 1);
-        thr = (ZSTD_POW2_U64[(hb as u64) & 15] & 1023) as i64;
+    if threshold > remaining && remaining > 1 {
+        let hb = zstd_high_bit((remaining & 1023) as u32);
+        nb_bits = (hb + 1) & 15;
+        threshold = ((1 as i32) << (hb & 15)) & 1023;
     }
-    threshold = (thr & 1023) as i32;
-    nb_bits = (nb & 15) as i32;
 }
 
 fn record_fse_symbol_count(
@@ -761,7 +685,7 @@ fn fse_read_ncount(
     let log_u = add_sat_u32(low4, 5);
     guard log_u <= 9 else { return false; }
 
-    let init_thr = (ZSTD_POW2_U64[(log_u as u64) & 15] & 1023) as i32;
+    let init_thr = (1 as i32) << log_u;
     var remaining: i32  = (add_sat_i64(init_thr, 1) & 1023) as i32;
     var threshold: i32  = init_thr;
     var nb_bits:   i32  = (add_sat_u32(log_u, 1) & 15) as i32;
@@ -1956,172 +1880,63 @@ struct SeqExecCtx {
     dict_content:     const u8[:] = "",
 }
 
-// Configures literal-length sequence state for mode 0..3 (RFC 8878 §3.1.1.3.2.1.1).
+// Configures an FSE sequence table state (LL/OF/ML) for mode 0..3 (RFC 8878 §3.1.1.3.2.1.1).
 // Leaves `offset` unchanged on error.
 //
 // Example:
-//   src = [0x01], offset = 0, block_end = 1, ll_mode = 1
+//   src = [0x01], offset = 0, block_end = 1, mode = 1, table_type = 1
 //   returns: true, offset = 1
-fn build_sequence_ll_state(
-    src:       const u8[:],
-    offset:    i64&,
-    block_end: i64,
-    ll_mode:   i32,
-    state:     ZstdEntropyState&,
+fn build_sequence_table_state(
+    src:         const u8[:],
+    offset:      i64&,
+    block_end:   i64,
+    mode:        i32,
+    table_type:  i32,
+    max_allowed: u8,
+    max_log:     i32,
+    kind:        u8&,
+    rle_entry:   FseEntry&,
+    tabs:        FseTable[>..]&,
 ) -> bool {
-    if ll_mode == 0 {
-        state.ll_kind = ZSTD_TBL_DEFAULT;
+    if mode == 0 {
+        kind = ZSTD_TBL_DEFAULT;
         return true;
     }
-    if ll_mode == 1 {
+    if mode == 1 {
         guard offset < block_end else { return false; }
         let sym = src[offset];
-        guard sym <= 35 else { return false; }
+        guard sym <= max_allowed else { return false; }
         offset++;
         let idx = sym as i64;
-        state.rle_ll[0] = FseEntry {
-            base_val:   LL_BASE[idx],
-            new_state:  0,
-            nb_bits:    0,
-            extra_bits: LL_EXTRA_BITS[idx],
+        rle_entry = if table_type == 1 {
+            FseEntry { base_val: LL_BASE[idx], extra_bits: LL_EXTRA_BITS[idx], .. }
+        } else if table_type == 2 {
+            FseEntry { base_val: (1 as u32) << sym, extra_bits: sym, .. }
+        } else {
+            FseEntry { base_val: ML_BASE[idx], extra_bits: ML_EXTRA_BITS[idx], .. }
         };
-        state.ll_kind = ZSTD_TBL_RLE;
+        kind = ZSTD_TBL_RLE;
         return true;
     }
-    if ll_mode == 2 {
+    if mode == 2 {
         var counts:    i16[256] = [0; 256];
         var max_sym:   i32      = 0;
         var table_log: i32      = 0;
         let saved_offset = offset;
-        guard fse_read_ncount(src[..block_end], offset, counts[..], max_sym, table_log) else {
+        guard fse_read_ncount(src[..block_end], offset, counts[..], max_sym, table_log)
+            && offset <= block_end && max_sym <= max_allowed && table_log <= max_log else {
             offset = saved_offset;
             return false;
         }
-        guard offset <= block_end && max_sym <= 35 && table_log <= 9 else {
+        if tabs.len == 0 { tabs.push(FseTable {}); }
+        guard fse_build_dtable(counts[..], max_sym, table_log, tabs[0], table_type) else {
             offset = saved_offset;
             return false;
         }
-        if state.ll_tabs.len == 0 { state.ll_tabs.push(FseTable {}); }
-        guard fse_build_dtable(counts[..], max_sym, table_log, state.ll_tabs[0], 1) else {
-            offset = saved_offset;
-            return false;
-        }
-        state.ll_kind = ZSTD_TBL_CUSTOM;
+        kind = ZSTD_TBL_CUSTOM;
         return true;
     }
-    return state.ll_kind != ZSTD_TBL_UNSET;
-}
-
-// Configures offset sequence state for mode 0..3 (RFC 8878 §3.1.1.3.2.1.1).
-// Leaves `offset` unchanged on error.
-//
-// Example:
-//   src = [0x01], offset = 0, block_end = 1, of_mode = 1
-//   returns: true, offset = 1
-fn build_sequence_of_state(
-    src:       const u8[:],
-    offset:    i64&,
-    block_end: i64,
-    of_mode:   i32,
-    state:     ZstdEntropyState&,
-) -> bool {
-    if of_mode == 0 {
-        state.of_kind = ZSTD_TBL_DEFAULT;
-        return true;
-    }
-    if of_mode == 1 {
-        guard offset < block_end else { return false; }
-        let sym = src[offset];
-        guard sym <= 31 else { return false; }
-        offset++;
-        let sc = sym as u32;
-        state.rle_of[0] = FseEntry {
-            base_val:   (1 as u32) << sc,
-            new_state:  0,
-            nb_bits:    0,
-            extra_bits: sc as u8,
-        };
-        state.of_kind = ZSTD_TBL_RLE;
-        return true;
-    }
-    if of_mode == 2 {
-        var counts:    i16[256] = [0; 256];
-        var max_sym:   i32      = 0;
-        var table_log: i32      = 0;
-        let saved_offset = offset;
-        guard fse_read_ncount(src[..block_end], offset, counts[..], max_sym, table_log) else {
-            offset = saved_offset;
-            return false;
-        }
-        guard offset <= block_end && max_sym <= 31 && table_log <= 8 else {
-            offset = saved_offset;
-            return false;
-        }
-        if state.of_tabs.len == 0 { state.of_tabs.push(FseTable {}); }
-        guard fse_build_dtable(counts[..], max_sym, table_log, state.of_tabs[0], 2) else {
-            offset = saved_offset;
-            return false;
-        }
-        state.of_kind = ZSTD_TBL_CUSTOM;
-        return true;
-    }
-    return state.of_kind != ZSTD_TBL_UNSET;
-}
-
-// Configures match-length sequence state for mode 0..3 (RFC 8878 §3.1.1.3.2.1.1).
-// Leaves `offset` unchanged on error.
-//
-// Example:
-//   src = [0x01], offset = 0, block_end = 1, ml_mode = 1
-//   returns: true, offset = 1
-fn build_sequence_ml_state(
-    src:       const u8[:],
-    offset:    i64&,
-    block_end: i64,
-    ml_mode:   i32,
-    state:     ZstdEntropyState&,
-) -> bool {
-    if ml_mode == 0 {
-        state.ml_kind = ZSTD_TBL_DEFAULT;
-        return true;
-    }
-    if ml_mode == 1 {
-        guard offset < block_end else { return false; }
-        let sym = src[offset];
-        guard sym <= 52 else { return false; }
-        offset++;
-        let idx = sym as i64;
-        state.rle_ml[0] = FseEntry {
-            base_val:   ML_BASE[idx],
-            new_state:  0,
-            nb_bits:    0,
-            extra_bits: ML_EXTRA_BITS[idx],
-        };
-        state.ml_kind = ZSTD_TBL_RLE;
-        return true;
-    }
-    if ml_mode == 2 {
-        var counts:    i16[256] = [0; 256];
-        var max_sym:   i32      = 0;
-        var table_log: i32      = 0;
-        let saved_offset = offset;
-        guard fse_read_ncount(src[..block_end], offset, counts[..], max_sym, table_log) else {
-            offset = saved_offset;
-            return false;
-        }
-        guard offset <= block_end && max_sym <= 52 && table_log <= 9 else {
-            offset = saved_offset;
-            return false;
-        }
-        if state.ml_tabs.len == 0 { state.ml_tabs.push(FseTable {}); }
-        guard fse_build_dtable(counts[..], max_sym, table_log, state.ml_tabs[0], 3) else {
-            offset = saved_offset;
-            return false;
-        }
-        state.ml_kind = ZSTD_TBL_CUSTOM;
-        return true;
-    }
-    return state.ml_kind != ZSTD_TBL_UNSET;
+    return kind != ZSTD_TBL_UNSET;
 }
 
 inline fn resolve_seq_table_view(
@@ -2388,15 +2203,14 @@ fn init_fast_seq_reader(
     let ll_u = (ll_log & 15) as u32;
     let of_u = (of_log & 15) as u32;
     let ml_u = (ml_log & 15) as u32;
-    let init_bits = add_sat_u32(add_sat_u32(ll_u, of_u), ml_u);
-    guard add_sat_u32(bits_consumed, init_bits) <= 64 else { return false; }
+    guard bits_consumed + ll_u + of_u + ml_u <= 64 else { return false; }
 
     state_ll = zstd_extract_bits(bit_container, bits_consumed, ll_u);
-    bits_consumed = add_sat_u32(bits_consumed, ll_u);
+    bits_consumed += ll_u;
     state_of = zstd_extract_bits(bit_container, bits_consumed, of_u);
-    bits_consumed = add_sat_u32(bits_consumed, of_u);
+    bits_consumed += of_u;
     state_ml = zstd_extract_bits(bit_container, bits_consumed, ml_u);
-    bits_consumed = add_sat_u32(bits_consumed, ml_u);
+    bits_consumed += ml_u;
     return true;
 }
 
@@ -2448,9 +2262,13 @@ fn decode_sequences<B>(
     let of_mode = ((comp_modes >> 4) & 3) as i32;
     let ml_mode = ((comp_modes >> 2) & 3) as i32;
 
-    guard build_sequence_ll_state(src, offset, block_end, ll_mode, state) &&
-          build_sequence_of_state(src, offset, block_end, of_mode, state) &&
-          build_sequence_ml_state(src, offset, block_end, ml_mode, state) else {
+    guard build_sequence_table_state(
+        src, offset, block_end, ll_mode, 1, 35, 9, state.ll_kind, state.rle_ll[0], state.ll_tabs,
+    ) && build_sequence_table_state(
+        src, offset, block_end, of_mode, 2, 31, 8, state.of_kind, state.rle_of[0], state.of_tabs,
+    ) && build_sequence_table_state(
+        src, offset, block_end, ml_mode, 3, 52, 9, state.ml_kind, state.rle_ml[0], state.ml_tabs,
+    ) else {
         return CompressError.CorruptedBitstream;
     }
 
@@ -2685,13 +2503,9 @@ fn parse_zstd_dictionary(dict: const u8[:], out_dict: ParsedZstdDict&) -> Compre
 //   wd = 0x00
 //   returns: 1024
 fn decode_zstd_window_descriptor(wd: u8) -> i64 {
-    let hi, _ = div_rem_u64(wd, 8);
-    let exp = add_sat_u32((hi & 31) as u32, 10);
-    let mantissa = (wd & 7) as u64;
-    let window_base = ZSTD_POW2_U64[(exp as u64) & 63];
-    let q, _ = div_rem_u64(window_base, 8);
-    let total = add_sat_u64(window_base, mul_sat_u64(q, mantissa));
-    return (total & 0x7FFFFFFFFFFFFFFF) as i64;
+    let exp = ((wd >> 3) as u64) + 10;
+    let window_base = (1 as u64) << exp;
+    return (window_base + ((window_base >> 3) * (wd & 7))) as i64;
 }
 
 // Parses the optional Zstd `Dictionary_ID` field (RFC 8878 Section 3.1.1.1.3).

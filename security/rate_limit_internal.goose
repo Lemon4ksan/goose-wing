@@ -11,35 +11,6 @@ import rfc.http;
 const GCRA_MAX_CLOCK_DRIFT_NS: u64 = 5000000000; // 5.0 seconds
 const SLOT_RETRY_AFTER:        u8  = 60;
 
-// Zero-allocation binary division without arithmetic overflow operator hazards.
-fn fast_div_u64(n: u64, d: u64) -> u64 {
-    guard d > 0 else { return 0; }
-    guard n >= d else { return 0; }
-
-    var cur_d = d;
-    var cur_q: u64 = 1;
-    let half_n = n >> 1;
-
-    while cur_d <= half_n {
-        cur_d = core::add_sat_u64(cur_d, cur_d);
-        cur_q = core::add_sat_u64(cur_q, cur_q);
-    }
-
-    var rem_n = n;
-    var quotient: u64 = 0;
-
-    while cur_q > 0 {
-        if rem_n >= cur_d {
-            rem_n = core::sub_sat_u64(rem_n, cur_d);
-            quotient = quotient | cur_q;
-        }
-        cur_d = cur_d >> 1;
-        cur_q = cur_q >> 1;
-    }
-
-    return quotient;
-}
-
 // Clamps TAT if system clock drifted or jumped backward into the past.
 inline fn clamp_clock_drift(tat_old: u64, now_ns: u64, limit_window: u64) -> u64 {
     let drift_threshold = core::add_sat_u64(limit_window, GCRA_MAX_CLOCK_DRIFT_NS);
@@ -61,8 +32,7 @@ inline fn calc_remaining_burst(
     guard tat_new > baseline else { return max_burst; }
     let diff = core::sub_sat_u64(tat_new, baseline);
     guard tau_ns > diff else { return 0; }
-    let rem_cells = fast_div_u64(core::sub_sat_u64(tau_ns, diff), t_safe);
-    return min(rem_cells, max_burst);
+    return min((tau_ns - diff) / t_safe, max_burst);
 }
 
 fn eval_gcra_config(
@@ -319,7 +289,7 @@ inline fn advance_probabilistic_sample_slot(pgcra: security::ProbabilisticGcra&,
 inline fn ceil_ns_to_sec(ns: u64) -> u64 {
     if ns == 0 { return 0; }
     if ns <= 1000000000 { return 1; }
-    return fast_div_u64(core::add_sat_u64(ns, 999999999), 1000000000);
+    return core::add_sat_u64(ns, 999999999) / 1000000000;
 }
 
 fn find_header_hash_entry_idx(
@@ -458,28 +428,20 @@ inline fn clamp_edge_max_clients(max_clients: i64) -> i64 {
 }
 
 fn calc_edge_bucket_cap(eff_max: i64) -> i64 {
-    let target = core::add_sat_i64(eff_max, eff_max);
-    var cap = EDGE_MIN_BUCKET_CAP;
-    while cap < target && cap < 0x20000000 {
-        cap = core::add_sat_i64(cap, cap);
-    }
-    return cap;
+    let target = min((eff_max * 2) as u64, 0x20000000);
+    return max(EDGE_MIN_BUCKET_CAP, core::next_pow2_u64(target) as i64);
 }
 
 fn clear_edge_arena_slot(slot_idx: i64) {
     guard slot_idx >= 0 && slot_idx < g_edge_rl_slots.len else { return; }
     let meta .= g_edge_rl_slots[slot_idx];
-    for i in meta.entries_len {
-        let e_idx = core::add_sat_i64(meta.entries_offset, i);
-        if e_idx < g_edge_rl_entries.len {
-            reset_entry_slot(g_edge_rl_entries[e_idx]);
-        }
+    let e_end = min(meta.entries_offset + meta.entries_len, g_edge_rl_entries.len);
+    for e_idx in meta.entries_offset..e_end {
+        reset_entry_slot(g_edge_rl_entries[e_idx]);
     }
-    for b in meta.buckets_cap {
-        let b_idx = core::add_sat_i64(meta.buckets_offset, b);
-        if b_idx < g_edge_rl_buckets.len {
-            g_edge_rl_buckets[b_idx] = EDGE_BUCKET_EMPTY;
-        }
+    let b_end = min(meta.buckets_offset + meta.buckets_cap, g_edge_rl_buckets.len);
+    for b_idx in meta.buckets_offset..b_end {
+        g_edge_rl_buckets[b_idx] = EDGE_BUCKET_EMPTY;
     }
     meta.entries_len = 0;
     meta.tombstones = 0;
@@ -554,16 +516,14 @@ fn edge_probe_bucket(slot_idx: i64, client_id: const u8[:]) -> i64, i64, i64, bo
     var first_tomb: i64 = -1;
 
     for _ in meta.buckets_cap {
-        let b_val = g_edge_rl_buckets[core::add_sat_i64(meta.buckets_offset, pos)];
-        if b_val == EDGE_BUCKET_EMPTY {
-            return 0, pos, first_tomb, false;
-        }
+        let b_val = g_edge_rl_buckets[meta.buckets_offset + pos];
+        if b_val == EDGE_BUCKET_EMPTY { return 0, pos, first_tomb, false; }
         if b_val == EDGE_BUCKET_TOMBSTONE && first_tomb < 0 {
             first_tomb = pos;
         } else if edge_bucket_matches(meta, b_val, client_id) {
             return b_val, pos, first_tomb, true;
         }
-        pos = core::add_sat_i64(pos, 1);
+        pos += 1;
         if pos >= meta.buckets_cap { pos = 0; }
     }
     return 0, -1, first_tomb, false;
@@ -574,12 +534,12 @@ fn edge_insert_clean_bucket(slot_idx: i64, client_id: const u8[:], local_idx: i6
     guard meta.buckets_cap > 0 else { return; }
     var pos = edge_hash_start_pos(client_id, meta.buckets_cap);
     for _ in meta.buckets_cap {
-        let abs_b = core::add_sat_i64(meta.buckets_offset, pos);
+        let abs_b = meta.buckets_offset + pos;
         if g_edge_rl_buckets[abs_b] < 0 {
             g_edge_rl_buckets[abs_b] = local_idx;
             return;
         }
-        pos = core::add_sat_i64(pos, 1);
+        pos += 1;
         if pos >= meta.buckets_cap { pos = 0; }
     }
 }
@@ -587,11 +547,11 @@ fn edge_insert_clean_bucket(slot_idx: i64, client_id: const u8[:], local_idx: i6
 fn rebuild_edge_slot_buckets(slot_idx: i64) {
     let meta .= g_edge_rl_slots[slot_idx];
     for b in meta.buckets_cap {
-        g_edge_rl_buckets[core::add_sat_i64(meta.buckets_offset, b)] = EDGE_BUCKET_EMPTY;
+        g_edge_rl_buckets[meta.buckets_offset + b] = EDGE_BUCKET_EMPTY;
     }
     meta.tombstones = 0;
     for i in meta.entries_len {
-        let e .= g_edge_rl_entries[core::add_sat_i64(meta.entries_offset, i)];
+        let e .= g_edge_rl_entries[meta.entries_offset + i];
         if e.in_use {
             edge_insert_clean_bucket(slot_idx, e.client_id[..], i);
         }
@@ -602,9 +562,8 @@ fn edge_remove_bucket_key(slot_idx: i64, client_id: const u8[:]) {
     let _, hit_pos, _, found = edge_probe_bucket(slot_idx, client_id);
     guard found && hit_pos >= 0 else { return; }
     let meta .= g_edge_rl_slots[slot_idx];
-    let abs_b = core::add_sat_i64(meta.buckets_offset, hit_pos);
-    g_edge_rl_buckets[abs_b] = EDGE_BUCKET_TOMBSTONE;
-    meta.tombstones = core::add_sat_i64(meta.tombstones, 1);
+    g_edge_rl_buckets[meta.buckets_offset + hit_pos] = EDGE_BUCKET_TOMBSTONE;
+    meta.tombstones += 1;
 }
 
 fn edge_pick_clock_victim(
@@ -624,7 +583,7 @@ fn edge_pick_clock_victim(
     var oldest_seen: u64 = 0xFFFFFFFFFFFFFFFF;
 
     for _ in scan_len {
-        let e .= g_edge_rl_entries[core::add_sat_i64(meta.entries_offset, idx)];
+        let e .= g_edge_rl_entries[meta.entries_offset + idx];
         if e.last_seen_ns <= oldest_seen {
             oldest_seen = e.last_seen_ns;
             oldest_idx = idx;
@@ -633,12 +592,11 @@ fn edge_pick_clock_victim(
             idle_seen = e.last_seen_ns;
             idle_idx = idx;
         }
-        idx = core::add_sat_i64(idx, 1);
+        idx += 1;
         if idx >= count { idx = 0; }
     }
     let victim = if idle_idx >= 0 { idle_idx } else { oldest_idx };
-    var next_cur = core::add_sat_i64(victim, 1);
-    if next_cur >= count { next_cur = 0; }
+    let next_cur = if victim + 1 >= count { 0 } else { victim + 1 };
     return victim, next_cur;
 }
 
@@ -758,19 +716,19 @@ fn evict_idle_edge_arena_clients(
     var i:       i64 = 0;
     var evicted: i64 = 0;
     while i < meta.entries_len {
-        let e_idx = core::add_sat_i64(meta.entries_offset, i);
+        let e_idx = meta.entries_offset + i;
         if should_evict_client(g_edge_rl_entries[e_idx], max_idle_ns, now_ns) {
             deactivate_client_slot(g_edge_rl_entries[e_idx]);
-            let last_idx = core::sub_sat_i64(meta.entries_len, 1);
+            let last_idx = meta.entries_len - 1;
             if i < last_idx {
-                let last_abs = core::add_sat_i64(meta.entries_offset, last_idx);
+                let last_abs = meta.entries_offset + last_idx;
                 g_edge_rl_entries[e_idx] = g_edge_rl_entries[last_abs];
                 reset_entry_slot(g_edge_rl_entries[last_abs]);
             }
             meta.entries_len = last_idx;
-            evicted = core::add_sat_i64(evicted, 1);
+            evicted += 1;
         } else {
-            i = core::add_sat_i64(i, 1);
+            i += 1;
         }
     }
     if evicted > 0 {

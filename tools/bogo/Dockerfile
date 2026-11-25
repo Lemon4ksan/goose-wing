@@ -38,5 +38,5 @@ CMD [ \
     "-shim-path", "/app/tools/bin/bogo_shim", \
     "-shim-config", "/app/tools/bogo/bogo_config.json", \
     "-allow-unimplemented", \
-    "-test", "Basic-Client-TLS13;Basic-Server-TLS13;TLS13-*" \
+    "-test", "Basic-Client-TLS13;Basic-Server-TLS13;TLS13-*;*-TLS13*" \
 ]

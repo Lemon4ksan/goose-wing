@@ -43,13 +43,29 @@ fn ct_eq_bytes(bytes_a: const u8[:], bytes_b: const u8[:]) -> bool {
     return non_zero == 0;
 }
 
-// Constant-time 16-byte authentication tag comparison (Poly1305 / AES-GCM).
-fn ct_eq_tag16(tag_a: const u8[16]&, tag_b: const u8[16]&) -> bool {
+// Constant-time 16-byte authentication tag comparison returning 1 if equal, 0 otherwise.
+inline fn ct_eq_tag16_bit(tag_a: const u8[16]&, tag_b: const u8[16]&) -> u8 {
     let diff0 = core::read_le_u64(tag_a[..], 0) ^ core::read_le_u64(tag_b[..], 0);
     let diff1 = core::read_le_u64(tag_a[..], 8) ^ core::read_le_u64(tag_b[..], 8);
     let diff = diff0 | diff1;
     let non_zero = (diff | (0 - diff)) >> 63;
-    return non_zero == 0;
+    return (1 - non_zero) as u8;
+}
+
+// Constant-time 16-byte authentication tag comparison (Poly1305 / AES-GCM).
+fn ct_eq_tag16(tag_a: const u8[16]&, tag_b: const u8[16]&) -> bool {
+    return ct_eq_tag16_bit(tag_a, tag_b) == 1;
+}
+
+// Constant-time all-zero check returning 1 if every byte of `data` is 0, 0 otherwise.
+inline fn ct_is_zero_bit(data: const u8[:]) -> u8 {
+    var acc: u8 = 0;
+    for b in data {
+        acc |= b;
+    }
+    let d = acc as u32;
+    let non_zero = (d | (0 - d)) >> 31;
+    return (1 - non_zero) as u8;
 }
 
 // Constant-time 32-byte MAC comparison (HMAC-SHA256).

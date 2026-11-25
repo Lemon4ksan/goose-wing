@@ -369,6 +369,7 @@ fn emit_srv_ee_message(slot: QuicTlsServerSlot&) -> bool {
 }
 
 fn emit_srv_cert_and_cv_messages(slot: QuicTlsServerSlot&) -> bool {
+    defer core::secure_scrub_stack();
     defer release_quic_srv_signing_creds(slot);
     var cert_msg: u8[..20500] = [];
     guard tls_internal::encode_server_cert_chain_msg(
@@ -383,6 +384,7 @@ fn emit_srv_cert_and_cv_messages(slot: QuicTlsServerSlot&) -> bool {
     var cv_input: u8[160] = [0; 160];
     let cv_len, ok_cv = build_certificate_verify_message(true, h_to_cert[..], cv_input[..]);
     var sig_buf: u8[..512] = [];
+    defer core::secure_zeroize_slice(sig_buf[..]);
     let sig_scheme, ok_sig = tls_internal::sign_certificate_verify(
         slot.cert_der[..],
         slot.priv_seed,
@@ -462,11 +464,12 @@ fn emit_srv_full_flight(
     var srv_rand:  u8[32]   = [0; 32];
     var srv_share: u8[..65] = [];
     var ecdhe:     u8[32]   = [0; 32];
+    defer core::secure_scrub_stack();
     defer core::secure_zeroize_32(ecdhe);
     guard tls_internal::generate_server_handshake_keys_for_group(
         choice.selected_group, choice.client_share[..], srv_rand, srv_share, ecdhe,
     ) else {
-        return quic_srv_fail(slot, Alert.HandshakeFailure);
+        return quic_srv_fail(slot, Alert.IllegalParameter);
     }
 
     var sh_pay: u8[..256] = [];
@@ -1062,18 +1065,21 @@ fn compute_cli_ecdhe(
     out_secret: u8[32]&,
 ) -> bool {
     guard sh.selected_group == slot.active_group else { return false; }
+    defer core::secure_scrub_stack();
     defer core::secure_zeroize_32(slot.eph_priv);
     if sh.selected_group == rfc::GROUP_X25519 {
         guard sh.server_share.len == 32 else { return false; }
         var peer32: u8[32] = [0; 32];
         core::ct_copy_bytes(peer32[..], sh.server_share[..32]);
-        let ss, ok = core::x25519_shared_secret(slot.eph_priv, peer32);
+        var ss, ok = core::x25519_shared_secret(slot.eph_priv, peer32);
+        defer core::secure_zeroize_32(ss);
         guard ok else { return false; }
         out_secret = ss;
         return true;
     }
     guard sh.selected_group == rfc::GROUP_SECP256R1 && sh.server_share.len == 65 else { return false; }
-    let ss, ok = core::p256_ecdh_shared_secret(slot.eph_priv, sh.server_share[..]);
+    var ss, ok = core::p256_ecdh_shared_secret(slot.eph_priv, sh.server_share[..]);
+    defer core::secure_zeroize_32(ss);
     guard ok else { return false; }
     out_secret = ss;
     return true;

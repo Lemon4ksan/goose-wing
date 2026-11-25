@@ -19,80 +19,43 @@ const PUNYCODE_DIGITS: u8[36] = [
     '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
 ];
 
-fn punycode_div_u64(n: u64, d: u64) -> u64, u64 {
-    guard d > 0 && n >= d else { return 0, n; }
-    var cur_d = d;
-    var cur_q: u64 = 1;
-    let half_n = n >> 1;
-    while cur_d <= half_n {
-        cur_d = add_sat_u64(cur_d, cur_d);
-        cur_q = add_sat_u64(cur_q, cur_q);
-    }
-    var rem_n = n;
-    var quotient: u64 = 0;
-    while cur_q > 0 {
-        if rem_n >= cur_d {
-            rem_n = sub_sat_u64(rem_n, cur_d);
-            quotient = quotient | cur_q;
-        }
-        cur_d = cur_d >> 1;
-        cur_q = cur_q >> 1;
-    }
-    return quotient, rem_n;
-}
-
 fn punycode_adapt(delta_in: u64, numpoints: u64, firsttime: bool) -> u64 {
-    var d0 = delta_in >> 1;
-    if firsttime {
-        let q0, _ = punycode_div_u64(delta_in, PUNYCODE_DAMP);
-        d0 = q0;
-    }
-    let d1, _ = punycode_div_u64(d0, max(numpoints, 1));
-    var delta = add_sat_u64(d0, d1);
-    let base_minus_tmin: u64 = 35;
-    let threshold:       u64 = 455;
+    let d0 = if firsttime { delta_in / PUNYCODE_DAMP } else { delta_in >> 1 };
+    var delta = d0 + (d0 / max(numpoints, 1));
     var k: u64 = 0;
-    while delta > threshold {
-        let q, _ = punycode_div_u64(delta, base_minus_tmin);
-        delta = q;
-        k = add_sat_u64(k, PUNYCODE_BASE);
+    while delta > 455 {
+        delta /= 35;
+        k += PUNYCODE_BASE;
     }
-    let num = mul_sat_u64(36, delta);
-    let den = add_sat_u64(delta, PUNYCODE_SKEW);
-    let tail, _ = punycode_div_u64(num, den);
-    return add_sat_u64(k, tail);
+    return k + ((36 * delta) / (delta + PUNYCODE_SKEW));
 }
 
 fn punycode_emit_delta(q_in: u64, bias: u64, out_ace: u8[..63]&) -> bool {
     var q = q_in;
     var k = PUNYCODE_BASE;
     while true {
-        let bias_plus_tmax = add_sat_u64(bias, PUNYCODE_TMAX);
         let t = if k <= bias {
             PUNYCODE_TMIN
-        } else if k >= bias_plus_tmax {
+        } else if k >= bias + PUNYCODE_TMAX {
             PUNYCODE_TMAX
         } else {
-            sub_sat_u64(k, bias)
+            k - bias
         };
         if q < t { break; }
-        let base_minus_t = sub_sat_u64(PUNYCODE_BASE, t);
-        let q_minus_t = sub_sat_u64(q, t);
-        let q_next, rem = punycode_div_u64(q_minus_t, base_minus_t);
-        let digit = min(add_sat_u64(t, rem), 35) as i64;
-        let ch = PUNYCODE_DIGITS[digit];
-        guard out_ace.try_push(ch) else { return false; }
-        q = q_next;
-        k = add_sat_u64(k, PUNYCODE_BASE);
+        let base_minus_t = PUNYCODE_BASE - t;
+        let q_minus_t = q - t;
+        let digit = min(t + (q_minus_t % base_minus_t), 35) as i64;
+        guard out_ace.try_push(PUNYCODE_DIGITS[digit]) else { return false; }
+        q = q_minus_t / base_minus_t;
+        k += PUNYCODE_BASE;
     }
-    let final_digit = min(q, 35) as i64;
-    let final_ch = PUNYCODE_DIGITS[final_digit];
-    return out_ace.try_push(final_ch);
+    return out_ace.try_push(PUNYCODE_DIGITS[min(q, 35) as i64]);
 }
 
 fn punycode_extract_codepoints(utf8_label: const u8[:], cps: u64[..63]&, has_non_ascii: bool&) -> bool {
     var idx: i64 = 0;
-    while idx < utf8_label.len {
+    let total = utf8_label.len;
+    while idx < total {
         let cp, sz, ok = decode_utf8(utf8_label[idx..]);
         guard ok && sz > 0 else { return false; }
         var norm_cp = cp as u64;
@@ -104,7 +67,7 @@ fn punycode_extract_codepoints(utf8_label: const u8[:], cps: u64[..63]&, has_non
             has_non_ascii = true;
         }
         guard cps.try_push(norm_cp) else { return false; }
-        idx = add_sat_i64(idx, sz);
+        idx += sz;
     }
     return cps.len > 0;
 }
@@ -114,7 +77,7 @@ fn punycode_copy_basic_codepoints(cps: const u64[:], out_ace: u8[..63]&) -> u64,
     for c in cps {
         if c < 0x80 {
             guard out_ace.try_push(c as u8) else { return 0, false; }
-            basic_count = add_sat_u64(basic_count, 1);
+            basic_count += 1;
         }
     }
     if basic_count > 0 {
@@ -142,11 +105,11 @@ fn punycode_step_non_basic(
 ) -> bool {
     for c in cps {
         if c < n {
-            delta = add_sat_u64(delta, 1);
+            delta += 1;
             guard delta <= 0xFFFFFFFF else { return false; }
         } else if c == n {
             guard punycode_emit_delta(delta, bias, out_ace) else { return false; }
-            let next_h = add_sat_u64(h, 1);
+            let next_h = h + 1;
             bias = punycode_adapt(delta, next_h, h == basic_count);
             delta = 0;
             h = next_h;
@@ -183,13 +146,12 @@ fn punycode_encode_label(utf8_label: const u8[:], out_ace: u8[..63]&) -> bool {
     let total_cp = cps.len as u64;
     while h < total_cp {
         let m = punycode_find_next_min_cp(cps[..], n);
-        let step_mul = mul_sat_u64(sub_sat_u64(m, n), add_sat_u64(h, 1));
-        delta = add_sat_u64(delta, step_mul);
+        delta = add_sat_u64(delta, mul_sat_u64(m - n, h + 1));
         guard delta <= 0xFFFFFFFF else { return false; }
         n = m;
         guard punycode_step_non_basic(cps[..], n, basic_count, delta, bias, h, out_ace) else { return false; }
-        delta = add_sat_u64(delta, 1);
-        n = add_sat_u64(n, 1);
+        delta += 1;
+        n += 1;
     }
     return true;
 }
@@ -199,11 +161,8 @@ fn punycode_encode_label(utf8_label: const u8[:], out_ace: u8[..63]&) -> bool {
 // Example:
 //   domain = "www.ck", start = 0 -> returns 3
 fn scan_domain_label_end(domain: const u8[:], start: i64) -> i64 {
-    var dot = start;
-    while dot < domain.len && domain[dot] != 0x2E {
-        dot = add_sat_i64(dot, 1);
-    }
-    return dot;
+    let rel = index_of_byte(domain[start..], '.');
+    return if rel >= 0 { start + rel } else { domain.len };
 }
 
 // Normalizes a UTF-8 or ASCII domain into lowercase Punycode/ACE (`xn--...`) labels (RFC 3492).
@@ -213,13 +172,12 @@ fn scan_domain_label_end(domain: const u8[:], start: i64) -> i64 {
 //   returns: true, out_ace = "example.xn--fiqs8s"
 fn punycode_encode_domain(utf8_domain: const u8[:], out_ace: u8[..256]&) -> bool {
     out_ace.clear();
-    guard utf8_domain.len > 0 && utf8_domain.len <= 256 else { return false; }
-    guard validate_utf8(utf8_domain) else { return false; }
-    let last_idx = sub_sat_i64(utf8_domain.len, 1);
-    guard utf8_domain[0] != 0x2E && utf8_domain[last_idx] != 0x2E else { return false; }
+    let total = utf8_domain.len;
+    guard total > 0 && total <= 256 && validate_utf8(utf8_domain) else { return false; }
+    guard utf8_domain[0] != '.' && utf8_domain[total - 1] != '.' else { return false; }
     guard !is_ip_address_literal(utf8_domain) else { return false; }
     var start: i64 = 0;
-    while start < utf8_domain.len {
+    while start < total {
         let dot = scan_domain_label_end(utf8_domain, start);
         guard dot > start else { return false; }
         var label_ace: u8[..63] = [];
@@ -228,19 +186,19 @@ fn punycode_encode_domain(utf8_domain: const u8[:], out_ace: u8[..256]&) -> bool
             guard out_ace.try_push('.') else { return false; }
         }
         guard out_ace.try_append(label_ace[..]) else { return false; }
-        start = add_sat_i64(dot, 1);
+        start = dot + 1;
     }
     return out_ace.len > 0;
 }
 
-inline fn punycode_base36_digit(b: u8) -> u64, bool {
-    if b >= 'a' && b <= 'z' { return sub_sat_u64(b, 97), true; }
-    if b >= 'A' && b <= 'Z' { return sub_sat_u64(b, 65), true; }
-    if b >= '0' && b <= '9' { return add_sat_u64(sub_sat_u64(b, 48), 26), true; }
-    return 0, false;
+fn punycode_base36_digit(b: u8) -> i32 {
+    if b >= 'a' && b <= 'z' { return (b - 'a'); }
+    if b >= 'A' && b <= 'Z' { return (b - 'A'); }
+    if b >= '0' && b <= '9' { return (b - '0' + 26); }
+    return -1;
 }
 
-inline fn is_valid_punycode_basic_prefix(prefix: const u8[:]) -> bool {
+fn is_valid_punycode_basic_prefix(prefix: const u8[:]) -> bool {
     for b in prefix {
         guard is_ascii_alphanumeric(b) || b == '-' else { return false; }
     }
@@ -253,7 +211,7 @@ inline fn is_valid_punycode_basic_prefix(prefix: const u8[:]) -> bool {
 // Example:
 //   ace_body = "kva", pos = 0, i = 0, bias = 72
 //   returns: ok = true, pos = 3, i = 745
-inline fn punycode_decode_delta(
+fn punycode_decode_delta(
     ace_body: const u8[:],
     pos:      i64&,
     i:        u64&,
@@ -266,32 +224,30 @@ inline fn punycode_decode_delta(
 
     var w: u64 = 1;
     var k = PUNYCODE_BASE;
+    let body_len = ace_body.len;
     while true {
-        guard pos < ace_body.len else { return false; }
-        let d, ok_d = punycode_base36_digit(ace_body[pos]);
-        guard ok_d else { return false; }
-        pos = add_sat_i64(pos, 1);
+        guard pos < body_len else { return false; }
+        let d_raw = punycode_base36_digit(ace_body[pos]);
+        guard d_raw >= 0 else { return false; }
+        let d = d_raw as u64;
+        pos += 1;
 
-        let max_add = sub_sat_u64(0xFFFFFFFF, i);
-        let max_d, _ = punycode_div_u64(max_add, w);
-        guard d <= max_d else { return false; }
-        i = add_sat_u64(i, mul_sat_u64(d, w));
+        guard d <= (0xFFFFFFFF - i) / w else { return false; }
+        i += d * w;
 
-        let bias_plus_tmax = add_sat_u64(bias, PUNYCODE_TMAX);
         let t = if k <= bias {
             PUNYCODE_TMIN
-        } else if k >= bias_plus_tmax {
+        } else if k >= bias + PUNYCODE_TMAX {
             PUNYCODE_TMAX
         } else {
-            sub_sat_u64(k, bias)
+            k - bias
         };
         if d < t { break; }
 
-        let base_minus_t = sub_sat_u64(PUNYCODE_BASE, t);
-        let max_w, _ = punycode_div_u64(0xFFFFFFFF, base_minus_t);
-        guard w <= max_w else { return false; }
-        w = mul_sat_u64(w, base_minus_t);
-        k = add_sat_u64(k, PUNYCODE_BASE);
+        let base_minus_t = PUNYCODE_BASE - t;
+        guard w <= 0xFFFFFFFF / base_minus_t else { return false; }
+        w *= base_minus_t;
+        k += PUNYCODE_BASE;
     }
     committed = true;
     return true;
@@ -304,31 +260,32 @@ inline fn punycode_decode_delta(
 //   ace_body = "bcher-kva"
 //   returns: true
 fn is_valid_punycode_ace_body(ace_body: const u8[:]) -> bool {
-    guard ace_body.len > 0 else { return false; }
+    let body_len = ace_body.len;
+    guard body_len > 0 else { return false; }
     let delim = last_index_of_byte(ace_body, '-');
     // RFC 3492 Section 3.1: Delimiter '-' MUST NOT appear at index 0 with empty basic-char prefix (e.g. "xn---a").
     guard delim != 0 else { return false; }
     let basic_len = max(0, delim) as u64;
     guard delim <= 0 || is_valid_punycode_basic_prefix(ace_body[..delim]) else { return false; }
-    var pos = max(0, add_sat_i64(delim, 1));
-    guard pos < ace_body.len else { return false; }
+    var pos = max(0, delim + 1);
+    guard pos < body_len else { return false; }
 
     var out_len = basic_len;
     var n = PUNYCODE_INITIAL_N;
     var i: u64 = 0;
     var bias = PUNYCODE_INITIAL_BIAS;
 
-    while pos < ace_body.len {
+    while pos < body_len {
         let oldi = i;
         guard punycode_decode_delta(ace_body, pos, i, bias) else { return false; }
-        let next_len = add_sat_u64(out_len, 1);
+        let next_len = out_len + 1;
         guard next_len <= 63 else { return false; }
-        bias = punycode_adapt(sub_sat_u64(i, oldi), next_len, oldi == 0);
-        let q_n, rem_i = punycode_div_u64(i, next_len);
-        guard q_n <= sub_sat_u64(0x10FFFF, n) else { return false; }
-        n = add_sat_u64(n, q_n);
+        bias = punycode_adapt(i - oldi, next_len, oldi == 0);
+        let q_n = i / next_len;
+        guard q_n <= 0x10FFFF - n else { return false; }
+        n += q_n;
         guard n > 0x9F && (n < 0xD800 || n > 0xDFFF) else { return false; }
-        i = add_sat_u64(rem_i, 1);
+        i = (i % next_len) + 1;
         out_len = next_len;
     }
     return out_len > basic_len;
@@ -339,11 +296,9 @@ fn is_valid_punycode_ace_body(ace_body: const u8[:]) -> bool {
 // Per RFC 3492 / RFC 5891 Section 4.2.3, a Punycode label MUST encode at least one non-ASCII code point.
 fn validate_punycode_label(label: const u8[:]) -> bool {
     guard label.len > 0 && label.len <= 63 else { return false; }
-    let last_idx = sub_sat_i64(label.len, 1);
-    guard label[0] != '-' && label[last_idx] != '-' else { return false; }
+    guard label[0] != '-' && label[label.len - 1] != '-' else { return false; }
     for b in label {
-        let is_valid = is_ascii_alphanumeric(b) || b == '-' || b == '_';
-        guard is_valid else { return false; }
+        guard is_ascii_alphanumeric(b) || b == '-' || b == '_' else { return false; }
     }
     guard label.len >= 4 && label[2] == '-' && label[3] == '-' else { return true; }
     let ace_body, is_xn = strip_prefix_fold(label, "xn--");
@@ -355,17 +310,14 @@ fn validate_punycode_label(label: const u8[:]) -> bool {
 // Enforces that every label is <= 63 bytes, all Punycode labels are valid non-ASCII encodings,
 // and total encoded domain length does not exceed 253 bytes.
 fn validate_idna_domain_bounds(domain: const u8[:]) -> bool {
-    guard domain.len > 0 && domain.len <= 253 else { return false; }
-    let last_idx = sub_sat_i64(domain.len, 1);
-    guard domain[last_idx] != '.' else { return false; }
+    let total = domain.len;
+    guard total > 0 && total <= 253 && domain[total - 1] != '.' else { return false; }
     var start: i64 = 0;
-    while start < domain.len {
+    while start < total {
         let dot_pos = scan_domain_label_end(domain, start);
-        guard dot_pos > start else { return false; }
-        let label = domain[start..dot_pos];
-        guard validate_punycode_label(label) else { return false; }
-        if dot_pos == domain.len { break; }
-        start = add_sat_i64(dot_pos, 1);
+        guard dot_pos > start && validate_punycode_label(domain[start..dot_pos]) else { return false; }
+        if dot_pos == total { break; }
+        start = dot_pos + 1;
     }
     return true;
 }
@@ -373,29 +325,27 @@ fn validate_idna_domain_bounds(domain: const u8[:]) -> bool {
 // Go #78760 / CVE-2026-39821 & CVE-2026-97044: Reject invalid ACE/Punycode labels that contain no
 // non-ASCII delta, and enforce RFC 1035 DNS label (<= 63B) and total domain (<= 253B) length limits.
 fn validate_host_punycode_labels(host_str: const u8[:]) -> bool {
-    if host_str.len == 0 {
-        return true;
-    }
+    if host_str.len == 0 { return true; }
     let trimmed, _ = strip_suffix(host_str, ".");
-    guard trimmed.len > 0 && trimmed.len <= 253 else { return false; }
+    let total = trimmed.len;
+    guard total > 0 && total <= 253 else { return false; }
 
     var start: i64 = 0;
-    while start < trimmed.len {
+    while start < total {
         let dot_pos = scan_domain_label_end(trimmed, start);
         guard dot_pos > start else { return false; }
         let label = trimmed[start..dot_pos];
         guard label.len <= 63 else { return false; }
         let ace_body, is_xn = strip_prefix_fold(label, "xn--");
         if is_xn {
-            let last_lbl_idx = sub_sat_i64(label.len, 1);
-            guard label[0] != '-' && label[last_lbl_idx] != '-' && !contains_byte(ace_body, '_') else {
+            guard label[0] != '-' && label[label.len - 1] != '-' && !contains_byte(ace_body, '_') else {
                 return false;
             }
             guard is_valid_punycode_ace_body(ace_body) else { return false; }
         }
-        if dot_pos == trimmed.len { break; }
-        start = add_sat_i64(dot_pos, 1);
-        guard start < trimmed.len else { return false; }
+        if dot_pos == total { break; }
+        start = dot_pos + 1;
+        guard start < total else { return false; }
     }
     return true;
 }

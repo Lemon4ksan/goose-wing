@@ -155,6 +155,29 @@ fi
                 exit 1
             fi
         fi
+
+        if $LIT_BIN sloc --help >/dev/null 2>&1; then
+            if [ -n "$GATE_FILES" ]; then
+                echo "[pre-commit] Checking staged files for SLOC line-packing..."
+                if ! $LIT_BIN sloc $GATE_FILES --check-packing --max-packing 1.35 --no-baseline >/dev/null 2>&1; then
+                    $LIT_BIN sloc $GATE_FILES --check-packing --max-packing 1.35 --no-baseline
+                    echo "[pre-commit] SLOC PACKING REJECTED: staged files exceed max statements/SLOC ratio."
+                    exit 1
+                fi
+            fi
+
+            SLOC_BASELINE_FILE=".lit/sloc-baseline"
+            if [ -f "$SLOC_BASELINE_FILE" ]; then
+                echo "[pre-commit] Evaluating SLOC & compiler-smell ratchet against baseline..."
+                if ! $LIT_BIN sloc . --baseline "$SLOC_BASELINE_FILE" --check-packing --check-smells --sloc-delta 0 >/dev/null 2>&1; then
+                    $LIT_BIN sloc . --baseline "$SLOC_BASELINE_FILE" --check-packing --check-smells --sloc-delta 0
+                    echo "[pre-commit] SLOC RATCHET REJECTED: shipping SLOC, packing, or compiler smells regressed."
+                    exit 1
+                fi
+            fi
+        else
+            echo "[pre-commit] Notice: $LIT_BIN does not support 'sloc'; rebuild goose-lit to enable SLOC ratchet."
+        fi
     fi
 
 echo "[pre-commit] All invariants and complexity gates passed."

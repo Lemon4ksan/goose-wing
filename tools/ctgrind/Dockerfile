@@ -8,6 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    clang \
     cmake \
     gcc \
     g++ \
@@ -32,14 +33,24 @@ RUN mkdir -p /app/.lit/cache/ctgrind && \
     goose --standalone --header /app/.lit/cache/ctgrind/ctgrind_target.h \
         -o /app/.lit/cache/ctgrind/ctgrind_target.c tools/ctgrind/ctgrind_target.goose && \
     gcc -O2 -g -DUSE_VALGRIND=1 -DWING_CTGRIND_VALGRIND=1 -fno-store-merging -mstackrealign -Wall -Wextra -Werror \
-        -c tools/ctgrind/ctgrind_harness.c -o /app/.lit/cache/ctgrind/ctgrind_harness.o && \
+        -c tools/ctgrind/ctgrind_harness.c -o /app/.lit/cache/ctgrind/ctgrind_harness.gcc.o && \
     gcc -O2 -g -fno-store-merging -mstackrealign \
-        -c /app/.lit/cache/ctgrind/ctgrind_target.c -o /app/.lit/cache/ctgrind/ctgrind_target.o && \
+        -c /app/.lit/cache/ctgrind/ctgrind_target.c -o /app/.lit/cache/ctgrind/ctgrind_target.gcc.o && \
     gcc -O2 -g -fno-store-merging -mstackrealign \
-        /app/.lit/cache/ctgrind/ctgrind_target.o /app/.lit/cache/ctgrind/ctgrind_harness.o \
+        /app/.lit/cache/ctgrind/ctgrind_target.gcc.o /app/.lit/cache/ctgrind/ctgrind_harness.gcc.o \
         shim/rio.c shim/uring.c shim/kqueue.c shim/simd.c shim/tcp.c \
         shim/af_xdp.c shim/dpdk.c shim/smartnic.c shim/page_ring.c \
         shim/page_mem.c shim/spsc.c shim/tls_backend.c \
-        -lpthread -lm -ldl -o /app/.lit/cache/ctgrind/ctgrind_harness
+        -lpthread -lm -ldl -o /app/.lit/cache/ctgrind/ctgrind_harness_gcc && \
+    clang -O2 -g -DUSE_VALGRIND=1 -DWING_CTGRIND_VALGRIND=1 -Wall -Wextra -Werror \
+        -c tools/ctgrind/ctgrind_harness.c -o /app/.lit/cache/ctgrind/ctgrind_harness.clang.o && \
+    clang -O2 -g \
+        -c /app/.lit/cache/ctgrind/ctgrind_target.c -o /app/.lit/cache/ctgrind/ctgrind_target.clang.o && \
+    clang -O2 -g \
+        /app/.lit/cache/ctgrind/ctgrind_target.clang.o /app/.lit/cache/ctgrind/ctgrind_harness.clang.o \
+        shim/rio.c shim/uring.c shim/kqueue.c shim/simd.c shim/tcp.c \
+        shim/af_xdp.c shim/dpdk.c shim/smartnic.c shim/page_ring.c \
+        shim/page_mem.c shim/spsc.c shim/tls_backend.c \
+        -lpthread -lm -ldl -o /app/.lit/cache/ctgrind/ctgrind_harness_clang
 
-ENTRYPOINT ["valgrind", "--error-exitcode=42", "--track-origins=yes", "/app/.lit/cache/ctgrind/ctgrind_harness"]
+ENTRYPOINT ["sh", "-c", "valgrind --error-exitcode=42 --track-origins=yes /app/.lit/cache/ctgrind/ctgrind_harness_gcc && valgrind --error-exitcode=42 --track-origins=yes /app/.lit/cache/ctgrind/ctgrind_harness_clang"]

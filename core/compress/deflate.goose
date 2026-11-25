@@ -81,19 +81,7 @@ inline fn comp_try_fill<B>(out: B&, count: i64, fill_byte: u8) -> bool {
     while rem > 0 {
         let step = min(rem, 64);
         out.append(chunk[..step]);
-        rem = sub_sat_i64(rem, step);
-    }
-    return true;
-}
-
-inline fn comp_try_fill(out: u8[>..]&, count: i64, fill_byte: u8) -> bool {
-    guard count >= 0 else { return false; }
-    let chunk: u8[64] = [fill_byte; 64];
-    var rem = count;
-    while rem > 0 {
-        let step = min(rem, 64);
-        out.append(chunk[..step]);
-        rem = sub_sat_i64(rem, step);
+        rem -= step;
     }
     return true;
 }
@@ -863,28 +851,18 @@ fn decode_codelen_symbol(r: BitReader&, table: const HuffmanTable&) -> i32, bool
 // ---- decompressor: rfc 1951 inflate ----------------------------------------
 
 inline fn copy_fast_match<B>(out: B&, dist: i64, m_len: i64) -> bool {
-    let back_idx = sub_sat_i64(out.len, dist);
+    let back_idx = out.len - dist;
     if dist >= m_len {
-        return comp_try_append(out, out[back_idx..add_sat_i64(back_idx, m_len)]);
+        return comp_try_append(out, out[back_idx..back_idx + m_len]);
     }
     if dist == 1 {
-        let b = out[back_idx];
-        let blk: u8[32] = [b; 32];
-        var rem = m_len;
-        while rem >= 32 {
-            guard comp_try_append(out, blk[..]) else { return false; }
-            rem = sub_sat_i64(rem, 32);
-        }
-        if rem > 0 {
-            guard comp_try_append(out, blk[..rem]) else { return false; }
-        }
-        return true;
+        return comp_try_fill(out, m_len, out[back_idx]);
     }
     var curr: i64 = 0;
     while curr < m_len {
-        let step = min(add_sat_i64(curr, dist), sub_sat_i64(m_len, curr));
-        guard comp_try_append(out, out[back_idx..add_sat_i64(back_idx, step)]) else { return false; }
-        curr = add_sat_i64(curr, step);
+        let step = min(curr + dist, m_len - curr);
+        guard comp_try_append(out, out[back_idx..back_idx + step]) else { return false; }
+        curr += step;
     }
     return true;
 }
@@ -901,15 +879,12 @@ fn apply_deflate_match<B>(
         return copy_fast_match(out, dist_i64, match_len as i64);
     }
 
-    for i in match_len {
-        let curr = sub_sat_i64(out.len, out_start_pos);
+    for _ in match_len {
+        let curr = out.len - out_start_pos;
         if dist_i64 <= curr {
-            let b = out[sub_sat_i64(out.len, dist_i64)];
-            guard comp_try_push(out, b) else { return false; }
+            guard comp_try_push(out, out[out.len - dist_i64]) else { return false; }
         } else {
-            let dict_back = sub_sat_i64(dist_i64, curr);
-            let dict_idx = sub_sat_i64(dict.len, dict_back);
-            guard comp_try_push(out, dict[dict_idx]) else { return false; }
+            guard comp_try_push(out, dict[dict.len - (dist_i64 - curr)]) else { return false; }
         }
     }
     return true;
@@ -1057,12 +1032,9 @@ fn decode_huffman_fast_loop<B>(
     max_window_dist:  i64 = 32768,
 ) -> bool, CompressError {
     var err = CompressError.None;
-    while add_sat_i64(r.pos, 16) <= r.src.len && comp_has_room(out, 260) {
-        if max_output_bytes > 0 {
-            let produced = sub_sat_i64(out.len, out_start_pos);
-            if add_sat_i64(produced, 260) > max_output_bytes {
-                return false, CompressError.None;
-            }
+    while r.pos + 16 <= r.src.len && comp_has_room(out, 260) {
+        if max_output_bytes > 0 && (out.len - out_start_pos) + 260 > max_output_bytes {
+            return false, CompressError.None;
         }
         let status = step_inflate_fast(
             r, lit_table, dist_table, out, out_start_pos, max_window_dist, err,
@@ -1170,7 +1142,7 @@ fn decode_block_codes<B>(
         guard l_err == CompressError.None else { return l_err; }
 
         if kind == 0 {
-            if max_output_bytes > 0 && sub_sat_i64(out.len, out_start_pos) >= max_output_bytes {
+            if max_output_bytes > 0 && out.len - out_start_pos >= max_output_bytes {
                 return CompressError.OutputBufferOverflow;
             }
             guard comp_try_push(out, (val & 0xFF) as! u8) else {
@@ -1185,12 +1157,12 @@ fn decode_block_codes<B>(
         let match_dist, d_err = decode_match_distance(r, dist_table);
         guard d_err == CompressError.None else { return d_err; }
 
-        let produced = sub_sat_i64(out.len, out_start_pos);
-        if max_output_bytes > 0 && add_sat_i64(produced, val as i64) > max_output_bytes {
+        let produced = out.len - out_start_pos;
+        if max_output_bytes > 0 && produced + (val as i64) > max_output_bytes {
             return CompressError.OutputBufferOverflow;
         }
         let dist_i64 = match_dist as i64;
-        guard dist_i64 <= max_window_dist && dist_i64 <= add_sat_i64(produced, d_len) else {
+        guard dist_i64 <= max_window_dist && dist_i64 <= produced + d_len else {
             return CompressError.DistanceOutOfBounds;
         }
 
@@ -1208,25 +1180,22 @@ fn inflate_stored_block<B>(
     max_output_bytes: i64,
 ) -> CompressError {
     align_to_byte(r);
-    guard add_sat_i64(r.pos, 4) <= r.src.len else {
+    guard r.pos + 4 <= r.src.len else {
         return CompressError.InputBufferTruncated;
     }
-    let len = (r.src[r.pos] as u32) | ((r.src[add_sat_i64(r.pos, 1)] as u32) << 8);
-    let nlen = (r.src[add_sat_i64(r.pos, 2)] as u32) | ((r.src[add_sat_i64(r.pos, 3)] as u32) << 8);
-    r.pos = add_sat_i64(r.pos, 4);
+    let len = read_le_u16(r.src, r.pos) as u32;
+    let nlen = read_le_u16(r.src, r.pos + 2) as u32;
+    r.pos += 4;
     guard ((len ^ 0xFFFF) & 0xFFFF) == nlen else {
         return CompressError.LengthMismatch;
     }
     let len_i64 = len as i64;
-    let end_pos = add_sat_i64(r.pos, len_i64);
+    let end_pos = r.pos + len_i64;
     guard end_pos <= r.src.len else {
         return CompressError.InputBufferTruncated;
     }
-    if max_output_bytes > 0 {
-        let produced = sub_sat_i64(out.len, out_start_pos);
-        if add_sat_i64(produced, len_i64) > max_output_bytes {
-            return CompressError.OutputBufferOverflow;
-        }
+    if max_output_bytes > 0 && (out.len - out_start_pos) + len_i64 > max_output_bytes {
+        return CompressError.OutputBufferOverflow;
     }
     if len_i64 > 0 {
         guard comp_try_append(out, r.src[r.pos..end_pos]) else {
@@ -1795,12 +1764,12 @@ fn get_deflate_config(level: i32) -> DeflateConfig {
 
 // Emits uncompressed RFC 1951 Stored blocks (BTYPE 00).
 fn emit_stored_blocks<B>(src: const u8[:], out: B&, w: BitWriter&, is_final: bool) {
+    let total = src.len;
     var offset: i64 = 0;
-    while offset < src.len || (src.len == 0 && offset == 0) {
-        let remaining = sub_sat_i64(src.len, offset);
-        let block_size = min(remaining, 65535);
-        let next_off = add_sat_i64(offset, block_size);
-        let is_last = is_final && (next_off >= src.len);
+    while offset < total || (total == 0 && offset == 0) {
+        let block_size = min(total - offset, 65535);
+        let next_off = offset + block_size;
+        let is_last = is_final && (next_off >= total);
         let bfinal_bit: u32 = if is_last { 1 } else { 0 };
 
         write_bits(w, bfinal_bit, 3, out);
@@ -1866,27 +1835,24 @@ fn emit_fixed_block<B>(tokens: const LzToken[:], out: B&, w: BitWriter&, is_fina
 // ---- level-1 single-pass fast compressor (zero token materialization) ------
 
 inline fn extend_match_fast(src: const u8[:], pos: i64, cand: i64, end_pos: i64) -> i32 {
-    let max_l = min(sub_sat_i64(end_pos, pos), 258);
+    let max_l = min(end_pos - pos, 258);
     var l: i64 = 4;
-    while add_sat_i64(l, 8) <= max_l {
-        let diff = read_le_u64(src, add_sat_i64(pos, l)) ^ read_le_u64(src, add_sat_i64(cand, l));
+    while l + 8 <= max_l {
+        let diff = read_le_u64(src, pos + l) ^ read_le_u64(src, cand + l);
         if diff != 0 {
-            let tz = ctz(diff) >> 3;
-            return add_sat_i64(l, tz) as! i32;
+            return (l + (ctz(diff) >> 3)) as! i32;
         }
-        l = add_sat_i64(l, 8);
+        l += 8;
     }
-    while l < max_l && src[add_sat_i64(pos, l)] == src[add_sat_i64(cand, l)] {
-        l = add_sat_i64(l, 1);
+    while l < max_l && src[pos + l] == src[cand + l] {
+        l += 1;
     }
     return l as! i32;
 }
 
 inline fn emit_literal_span<B>(src: const u8[:], start: i64, end_pos: i64, w: BitWriter&, out: B&) {
-    var p = start;
-    while p < end_pos {
-        emit_fixed_literal(w, src[p], out);
-        p = add_sat_i64(p, 1);
+    for b in src[start..end_pos] {
+        emit_fixed_literal(w, b, out);
     }
 }
 
@@ -1894,7 +1860,7 @@ fn deflate_fast_l1_small<B>(src: const u8[:], out: B&, w: BitWriter&, is_final: 
     let out_mark = out.len;
     let saved_w = w;
     let pad_bits = ((8 - (((saved_w.bit_count as! u32) + 3) & 7)) & 7) as i64;
-    let stored_bits = 3 + pad_bits + 32 + (src.len * 8);
+    let stored_bits = add_sat_i64(add_sat_i64(35, pad_bits), mul_sat_i64(src.len, 8));
 
     var head: u16[2048] = [0; 2048];
     let bfinal_bit: u32 = if is_final { 1 } else { 0 };
@@ -1910,17 +1876,15 @@ fn deflate_fast_l1_small<B>(src: const u8[:], out: B&, w: BitWriter&, is_final: 
         let cand_p1 = head[h as i64] as i64;
         head[h as i64] = ((pos as! u32) + 1) as! u16;
 
-        let cand = cand_p1 - 1;
+        let cand = sub_sat_i64(cand_p1, 1);
         if cand_p1 > 0 && read_le_u32(src, cand) == v {
             miss_counter = 32;
             let m_len = extend_match_fast(src, pos, cand, src.len);
-            let dist = sub_sat_i64(pos, cand) as! i32;
-            emit_fixed_match(w, m_len, dist, out);
+            emit_fixed_match(w, m_len, sub_sat_i64(pos, cand) as! i32, out);
             let next_pos = add_sat_i64(pos, m_len as i64);
             if m_len <= 16 && next_pos <= limit {
                 let anchor = sub_sat_i64(next_pos, 2);
-                let av = read_le_u32(src, anchor);
-                let ah = ((av * LZ_HASH_MUL) >> 21) & 2047;
+                let ah = ((read_le_u32(src, anchor) * LZ_HASH_MUL) >> 21) & 2047;
                 head[ah as i64] = ((anchor as! u32) + 1) as! u16;
             }
             pos = next_pos;
@@ -1928,8 +1892,7 @@ fn deflate_fast_l1_small<B>(src: const u8[:], out: B&, w: BitWriter&, is_final: 
         }
 
         miss_counter += 1;
-        let step = (miss_counter >> 5) as i64;
-        let stop = min(add_sat_i64(pos, step), limit + 1);
+        let stop = min(add_sat_i64(pos, (miss_counter >> 5) as i64), add_sat_i64(limit, 1));
         emit_literal_span(src, pos, stop, w, out);
         pos = stop;
     }
@@ -1964,8 +1927,8 @@ fn run_fast_l1_chunk_loop<B>(
     var pos = chunk_start;
     var miss_counter:  u32 = 32;
     var matches_found: u32 = 0;
-    let limit = sub_sat_i64(chunk_end, 12);
-    let probe_mark = add_sat_i64(chunk_start, 2048);
+    let limit = chunk_end - 12;
+    let probe_mark = chunk_start + 2048;
 
     while pos <= limit {
         let v = read_le_u32(src, pos);
@@ -1974,17 +1937,16 @@ fn run_fast_l1_chunk_loop<B>(
         head[h as i64] = (pos as! u32) + 1;
 
         let cand = cand_p1 - 1;
-        let dist = sub_sat_i64(pos, cand);
+        let dist = pos - cand;
         if cand_p1 > 0 && dist <= 32768 && read_le_u32(src, cand) == v {
             miss_counter = 32;
             matches_found += 1;
             let m_len = extend_match_fast(src, pos, cand, chunk_end);
             emit_fixed_match(w, m_len, dist as! i32, out);
-            let next_pos = add_sat_i64(pos, m_len as i64);
+            let next_pos = pos + (m_len as i64);
             if m_len <= 16 && next_pos <= limit {
-                let anchor = sub_sat_i64(next_pos, 2);
-                let av = read_le_u32(src, anchor);
-                let ah = ((av * LZ_HASH_MUL) >> 18) & 16383;
+                let anchor = next_pos - 2;
+                let ah = ((read_le_u32(src, anchor) * LZ_HASH_MUL) >> 18) & 16383;
                 head[ah as i64] = (anchor as! u32) + 1;
             }
             pos = next_pos;
@@ -1994,8 +1956,7 @@ fn run_fast_l1_chunk_loop<B>(
             return pos, true;
         }
         miss_counter += 1;
-        let step = (miss_counter >> 5) as i64;
-        let stop = min(add_sat_i64(pos, step), limit + 1);
+        let stop = min(pos + ((miss_counter >> 5) as i64), limit + 1);
         emit_literal_span(src, pos, stop, w, out);
         pos = stop;
     }
@@ -2047,35 +2008,40 @@ fn deflate_fast_l1_chunk<B>(
     }
 }
 
+inline fn deflate_l1_native_one<B>(
+    src:       const u8[:],
+    head:      u32[:],
+    bit_state: u64[:],
+    dst:       u8[:],
+    out:       B&,
+    w:         BitWriter&,
+) -> bool {
+    let n = native_deflate_l1_chunk(src, 0, src.len, 1, head, bit_state, dst);
+    guard n >= 0 else { return false; }
+    guard comp_try_append(out, dst[..n]) else {
+        w.overflow = true;
+        return false;
+    }
+    return true;
+}
+
 fn deflate_fast_l1_simd<B>(src: const u8[:], out: B&, w: BitWriter&) -> bool {
     let out_mark = out.len;
     var bit_state: u64[2] = [0, 0];
     if src.len <= 4000 {
         var head: u32[2048] = [0; 2048];
         var dst:  u8[4096]  = [0; 4096];
-        let n = native_deflate_l1_chunk(src, 0, src.len, 1, head[..], bit_state[..], dst[..]);
-        guard n >= 0 else { return false; }
-        guard comp_try_append(out, dst[..n]) else {
-            w.overflow = true;
-            return false;
-        }
-        return true;
+        return deflate_l1_native_one(src, head[..], bit_state[..], dst[..], out, w);
     } else if src.len <= 16384 {
         var head: u32[4096] = [0; 4096];
         var dst:  u8[16448] = [0; 16448];
-        let n = native_deflate_l1_chunk(src, 0, src.len, 1, head[..], bit_state[..], dst[..]);
-        guard n >= 0 else { return false; }
-        guard comp_try_append(out, dst[..n]) else {
-            w.overflow = true;
-            return false;
-        }
-        return true;
+        return deflate_l1_native_one(src, head[..], bit_state[..], dst[..], out, w);
     }
     var head:        u32[16384] = [0; 16384];
     var dst:         u8[65600]  = [0; 65600];
     var chunk_start: i64        = 0;
     while chunk_start < src.len {
-        let chunk_end = min(add_sat_i64(chunk_start, 65535), src.len);
+        let chunk_end = min(chunk_start + 65535, src.len);
         let chunk_final: i32 = if chunk_end >= src.len { 1 } else { 0 };
         let n = native_deflate_l1_chunk(
             src, chunk_start, chunk_end, chunk_final,
@@ -2103,11 +2069,12 @@ fn deflate_fast_level1<B>(src: const u8[:], out: B&, w: BitWriter&, is_final: bo
     if src.len <= 16384 {
         return deflate_fast_l1_small(src, out, w, is_final);
     }
-    var head:        u32[16384] = [0; 16384];
-    var chunk_start: i64        = 0;
-    while chunk_start < src.len {
-        let chunk_end = min(add_sat_i64(chunk_start, 65535), src.len);
-        let chunk_is_final = is_final && (chunk_end >= src.len);
+    var head: u32[16384] = [0; 16384];
+    let total = src.len;
+    var chunk_start: i64 = 0;
+    while chunk_start < total {
+        let chunk_end = min(chunk_start + 65535, total);
+        let chunk_is_final = is_final && (chunk_end >= total);
         deflate_fast_l1_chunk(src, chunk_start, chunk_end, chunk_is_final, head, out, w);
         guard !w.overflow else { return false; }
         chunk_start = chunk_end;
@@ -2118,31 +2085,24 @@ fn deflate_fast_level1<B>(src: const u8[:], out: B&, w: BitWriter&, is_final: bo
 // ---- general lz77 match finder (levels 2..9 & preset dictionaries) ---------
 
 inline fn hash3_nodict(src: const u8[:], pos: i64) -> i64 {
-    let tri = src[pos] |
-              ((src[add_sat_i64(pos, 1)] as u32) << 8) |
-              ((src[add_sat_i64(pos, 2)] as u32) << 16);
-    return ((tri * LZ_HASH_MUL) >> 17) & 32767;
+    return ((read_le_u24(src, pos) * LZ_HASH_MUL) >> 17) & 32767;
 }
 
 inline fn hash3_small(src: const u8[:], pos: i64) -> i64 {
-    let tri = src[pos] |
-              ((src[add_sat_i64(pos, 1)] as u32) << 8) |
-              ((src[add_sat_i64(pos, 2)] as u32) << 16);
-    return ((tri * LZ_HASH_MUL) >> 20) & 4095;
+    return ((read_le_u24(src, pos) * LZ_HASH_MUL) >> 20) & 4095;
 }
 
 inline fn match_len_nodict(src: const u8[:], pos: i64, cand: i64, max_l: i64) -> i32 {
     var l: i64 = 0;
-    while add_sat_i64(l, 8) <= max_l {
-        let diff = read_le_u64(src, add_sat_i64(pos, l)) ^ read_le_u64(src, add_sat_i64(cand, l));
+    while l + 8 <= max_l {
+        let diff = read_le_u64(src, pos + l) ^ read_le_u64(src, cand + l);
         if diff != 0 {
-            let tz = ctz(diff) >> 3;
-            return add_sat_i64(l, tz) as! i32;
+            return (l + (ctz(diff) >> 3)) as! i32;
         }
-        l = add_sat_i64(l, 8);
+        l += 8;
     }
-    while l < max_l && src[add_sat_i64(pos, l)] == src[add_sat_i64(cand, l)] {
-        l = add_sat_i64(l, 1);
+    while l < max_l && src[pos + l] == src[cand + l] {
+        l += 1;
     }
     return l as! i32;
 }
@@ -2196,7 +2156,7 @@ fn find_longest_match_nodict(
 
     while cand >= 0 && chain_count < chain_lim {
         let cand_i64 = cand as i64;
-        let dist = sub_sat_i64(pos, cand_i64);
+        let dist = pos - cand_i64;
         if dist > max_dist || dist <= 0 { break; }
 
         let l = probe_cand_len_nodict(src, pos, cand_i64, cur_len, max_l, has_u32, target_u32);
@@ -2257,9 +2217,9 @@ fn insert_skip_hashes_nodict(
         }
         return;
     }
-    let limit = sub_sat_i64(src.len, 2);
+    let limit = src.len - 2;
     for k in 1..m_len {
-        let p = add_sat_i64(start_pos, k);
+        let p = start_pos + k;
         if p >= limit { break; }
         let h = if small_hash { hash3_small(src, p) } else { hash3_nodict(src, p) };
         let mask: i64 = if small_hash { 8191 } else { 32767 };
@@ -2284,14 +2244,14 @@ inline fn emit_miss_step_nodict(
 ) -> i64 {
     st.miss_run += 1;
     if st.miss_run > 128 {
-        let step = min((1 + ((st.miss_run - 128) >> 5)) as i64, sub_sat_i64(src.len, pos));
-        for i in step {
-            push_literal_token(src[add_sat_i64(pos, i)], tokens, lit_count);
+        let step = min((1 + ((st.miss_run - 128) >> 5)) as i64, src.len - pos);
+        for b in src[pos..pos + step] {
+            push_literal_token(b, tokens, lit_count);
         }
-        return add_sat_i64(pos, step);
+        return pos + step;
     }
     push_literal_token(src[pos], tokens, lit_count);
-    return add_sat_i64(pos, 1);
+    return pos + 1;
 }
 
 fn step_lz77_nodict(
@@ -2370,9 +2330,10 @@ fn lz77_run_nodict_tables(
     var pos: i64 = 0;
     var st = LazyState {};
 
-    while pos < src.len {
+    let total = src.len;
+    while pos < total {
         var cand: i32 = -1;
-        if add_sat_i64(pos, 2) < src.len {
+        if pos + 2 < total {
             let h = if small_hash { hash3_small(src, pos) } else { hash3_nodict(src, pos) };
             cand = head[h];
             prev[pos & mask] = cand;
@@ -2455,24 +2416,25 @@ fn match_len_at_offset_dict(
     total_len:  i64,
 ) -> i32 {
     var l: i64 = 0;
-    let max_l = min(sub_sat_i64(total_len, pos), 258);
-    let s_off = sub_sat_i64(pos, dict_len);
-    let c_off = sub_sat_i64(cand, dict_len);
+    let max_l = min(total_len - pos, 258);
+    let s_off = pos - dict_len;
+    let c_off = cand - dict_len;
     if c_off >= 0 {
-        while add_sat_i64(l, 8) <= max_l {
-            let diff = read_le_u64(src, add_sat_i64(s_off, l)) ^ read_le_u64(src, add_sat_i64(c_off, l));
+        while l + 8 <= max_l {
+            let diff = read_le_u64(src, s_off + l) ^ read_le_u64(src, c_off + l);
             if diff != 0 {
-                l = add_sat_i64(l, ctz(diff) >> 3);
+                l += ctz(diff) >> 3;
                 break;
             }
-            l = add_sat_i64(l, 8);
+            l += 8;
         }
     }
     while l < max_l {
-        let byte_s = get_deflate_byte(add_sat_i64(pos, l), dict_slice, dict_len, src);
-        let byte_c = get_deflate_byte(add_sat_i64(cand, l), dict_slice, dict_len, src);
-        if byte_s != byte_c { break; }
-        l = add_sat_i64(l, 1);
+        if get_deflate_byte(pos + l, dict_slice, dict_len, src)
+            != get_deflate_byte(cand + l, dict_slice, dict_len, src) {
+            break;
+        }
+        l += 1;
     }
     return l as! i32;
 }
@@ -2515,7 +2477,7 @@ fn find_longest_match_dict(
 
     while cand >= 0 && chain_count < chain_lim {
         let cand_i64 = cand as i64;
-        let dist = sub_sat_i64(pos, cand_i64);
+        let dist = pos - cand_i64;
         if dist > max_dist || dist <= 0 { break; }
 
         if !match_endpoint_mismatch_dict(pos, cand_i64, cur_len, total_len, dict_slice, dict_len, src) {
@@ -2544,10 +2506,8 @@ fn update_range_hashes_dict(
     head:       i32[4096]&,
     prev:       i32[32768]&,
 ) {
-    var k = start_pos;
-    while k < end_pos {
+    for k in start_pos..end_pos {
         update_skip_hash_dict(k, total_len, dict_slice, dict_len, src, head, prev);
-        k = add_sat_i64(k, 1);
     }
 }
 
@@ -2626,10 +2586,10 @@ fn lz77_find_matches_dict(
     var prev: i32[32768] = [0; 32768];
 
     if dict_len >= 3 {
-        for p in sub_sat_i64(dict_len, 2) {
+        for p in dict_len - 2 {
             let b0 = dict_slice[p] as u32;
-            let b1 = dict_slice[add_sat_i64(p, 1)] as u32;
-            let b2 = dict_slice[add_sat_i64(p, 2)] as u32;
+            let b1 = dict_slice[p + 1] as u32;
+            let b2 = dict_slice[p + 2] as u32;
             let h = (((b0 << 8) ^ (b1 << 4) ^ b2) & 4095) as i64;
             prev[p & 32767] = head[h];
             head[h] = p as! i32;
@@ -2641,10 +2601,10 @@ fn lz77_find_matches_dict(
 
     while pos < total_len {
         var cand: i32 = -1;
-        if add_sat_i64(pos, 2) < total_len {
+        if pos + 2 < total_len {
             let b0 = get_deflate_byte(pos, dict_slice, dict_len, src) as u32;
-            let b1 = get_deflate_byte(add_sat_i64(pos, 1), dict_slice, dict_len, src) as u32;
-            let b2 = get_deflate_byte(add_sat_i64(pos, 2), dict_slice, dict_len, src) as u32;
+            let b1 = get_deflate_byte(pos + 1, dict_slice, dict_len, src) as u32;
+            let b2 = get_deflate_byte(pos + 2, dict_slice, dict_len, src) as u32;
             let h = (((b0 << 8) ^ (b1 << 4) ^ b2) & 4095) as i64;
             cand = head[h];
             prev[pos & 32767] = cand;

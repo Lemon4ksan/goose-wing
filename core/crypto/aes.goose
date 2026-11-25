@@ -741,7 +741,7 @@ fn aes256_gcm_open<B>(
     var enc_j0 = aes_encrypt_block(ks, j0);
     var computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, ciphertext);
 
-    guard ct_eq_tag16(computed_tag, tag) else {
+    guard ct_declassify_u8(ct_eq_tag16_bit(computed_tag, tag)) == 1 else {
         zeroize_aes256_ks(ks);
         zeroize_aes_gcm_blocks(h, enc_j0, computed_tag);
         return false;
@@ -868,7 +868,7 @@ fn aes128_gcm_open<B>(
     var enc_j0 = aes128_encrypt_block(ks, j0);
     var computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, ciphertext);
 
-    guard ct_eq_tag16(computed_tag, tag) else {
+    guard ct_declassify_u8(ct_eq_tag16_bit(computed_tag, tag)) == 1 else {
         zeroize_aes128_ks(ks);
         zeroize_aes_gcm_blocks(h, enc_j0, computed_tag);
         return false;

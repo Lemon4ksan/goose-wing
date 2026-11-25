@@ -391,43 +391,19 @@ fn wipe_up_slot_buffers(slot: H2UpSlot&) {
 
 fn reset_up_slot(slot: H2UpSlot&, raw_cfg: const H2UpstreamConfig&, gen: u64) {
     let cfg = clamp_up_config(raw_cfg);
-    slot.active = true;
-    slot.generation = gen;
-    slot.free_next = -1;
-    slot.cfg = cfg;
-    slot.conn = http2::new_h2_connection(0, cfg.max_header_list_size, false);
+    wipe_up_slot_buffers(slot);
+    slot = H2UpSlot {
+        active:                      true,
+        generation:                  gen,
+        cfg:                         cfg,
+        conn:                        http2::new_h2_connection(0, cfg.max_header_list_size, false),
+        peer_max_concurrent_streams: H2_UP_MAX_STREAMS_CAP,
+        peer_max_header_list_size:   cfg.max_header_list_size,
+        ..
+    };
     slot.conn.is_server = false;
     slot.conn.enable_push = false;
     slot.conn.local_max_frame_size = cfg.max_frame_size;
-    slot.peer_max_concurrent_streams = H2_UP_MAX_STREAMS_CAP;
-    slot.peer_max_frame_size = rfc::H2_DEFAULT_MAX_FRAME_SIZE;
-    slot.peer_max_header_list_size = cfg.max_header_list_size;
-    slot.peer_header_table_size = rfc::HPACK_DEFAULT_MAX_DYN_SIZE as u32;
-    slot.next_client_sid = 1;
-    slot.last_local_sid = 0;
-    slot.sent_goaway_last_sid = 0;
-    slot.local_goaway_sent = false;
-    slot.protocol_failed = false;
-    slot.empty_data_streak = 0;
-    slot.hpack_enc_pending_sz_update = false;
-    slot.hpack_enc_min_sz = rfc::HPACK_DEFAULT_MAX_DYN_SIZE;
-    slot.local_rst_head = 0;
-    slot.in_cont = false;
-    slot.cont_stream_id = 0;
-    slot.cont_end_stream = false;
-    slot.cont_count = 0;
-    slot.ev_head = H2_UP_INVALID_IDX;
-    slot.ev_tail = H2_UP_INVALID_IDX;
-    for i in 128 {
-        slot.stream_ids[i] = 0;
-        slot.stream_is_head[i] = 0;
-        slot.stream_unclaimed_id[i] = 0;
-        slot.stream_unclaimed_rx[i] = 0;
-        slot.local_rst_ring[i] = 0;
-    }
-    wipe_up_slot_buffers(slot);
-    slot.hpack_enc = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
-    slot.hpack_dec = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
 }
 
 // ---- Lifecycle & Wire Drain API --------------------------------------------

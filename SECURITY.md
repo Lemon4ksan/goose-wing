@@ -30,8 +30,8 @@ The security boundary covers untrusted network wire input and peer behavior
 across these areas:
 
 - Memory safety and bounds checking in C shims (`shim/simd.c`, `shim/tcp.c`,
-  `shim/rio.c`, `shim/uring.c`, `shim/kqueue.c`, `shim/af_xdp.c`,
-  `shim/smartnic.c`).
+  `shim/rio.c`, `shim/uring.c`, `shim/kqueue.c`, `shim/af_xdp.c`, `shim/dpdk.c`,
+  `shim/smartnic.c`, `shim/tls_backend.c`).
 - HTTP/1.1 framing, chunked transfer coding, and `Content-Length` /
   `Transfer-Encoding` smuggling defenses in `http/headers/`.
 - HTTP/2 frame decoding, HPACK decompression, flow control arithmetic, and
@@ -56,3 +56,28 @@ across these areas:
   returns a bounded error status without panicking or corrupting memory.
 - Vulnerabilities in third-party dependencies unless reachable through
   `goose-wing` APIs.
+
+## TLS backend guidance and audit status
+
+`goose-wing` includes a pure-Goose TLS 1.3 implementation (`PureGoose`)
+alongside plug-and-play bindings to audited OS and system TLS libraries
+(`SystemOpenSsl`, `SystemSchannel`, `SystemSecureTransport`) via
+[`tls/backend.goose`](tls/backend.goose) and
+[`shim/tls_backend.c`](shim/tls_backend.c).
+
+- For production deployments, configure `TlsBackendKind.SystemOnly` to force an
+  OS/system TLS library (`SystemOpenSsl`, `SystemSchannel`, or
+  `SystemSecureTransport`) and fail closed (`TlsBackendStatus.Unavailable`) if
+  none is available or a requested feature requires `PureGoose`.
+- By default, `client::Config` and `server::HttpServer` use
+  `TlsBackendKind.Auto`, which prefers `SystemOpenSsl` / `SystemSchannel` /
+  `SystemSecureTransport` when compatible and falls back to `PureGoose` when
+  system libraries are unavailable or `PureGoose`-only features (ECH, virtual
+  clocks, expired-leaf grace, PQ hybrid) are enabled. Use
+  `tls::endpoint_transport_active_kind` or `TlsEndpoint.active_kind` to inspect
+  or assert the active backend at runtime.
+- Neither `PureGoose` nor its cryptographic primitives in `core/crypto/` have
+  undergone a paid third-party cryptographic audit. Automated verification
+  covers Wycheproof/CCTV/ACVP test vectors, Valgrind TIMECOP
+  (`tools/ctgrind.py`), `dudect` Welch t-tests, `C2SP/x509-limbo`, and BoringSSL
+  BoGo (`tools/bogo.py`).

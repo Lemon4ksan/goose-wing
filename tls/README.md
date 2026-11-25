@@ -120,25 +120,21 @@ self-signed Ed25519 certificate DER in memory with
 
 ### Switching between PureGoose and OpenSSL or Schannel backends
 
-`tls::TlsBackendConfig` selects between `PureGoose` (built-in TLS 1.3),
-`SystemOpenSsl`, `SystemSchannel`, `SystemSecureTransport`, and `Auto`. Native
-system backends also support TLS 1.2 fallback via `TlsMinVersion.Tls12`.
+`tls::TlsBackendConfig` selects between `SystemOnly` (fail-closed OS/system
+TLS), `Auto` (system TLS with `PureGoose` fallback for ECH/PQ/virtual-clock
+features), `SystemOpenSsl`, `SystemSchannel`, `SystemSecureTransport`, and
+`PureGoose`. Native system backends also support TLS 1.2 opt-in via
+`TlsMinVersion.Tls12`. See [`../SECURITY.md`](../SECURITY.md) for TLS backend
+threat-model and audit notes.
 
 ```goose
 import wing;
 
 var bcfg = tls::TlsBackendConfig {
-    kind:        tls::TlsBackendKind.Auto,
+    kind:        tls::TlsBackendKind.SystemOnly,
     min_version: tls::TlsMinVersion.Tls13,
     ..
 };
-if tls::tls_backend_available(tls::TlsBackendKind.SystemOpenSsl) {
-    bcfg.kind = tls::TlsBackendKind.SystemOpenSsl;
-} else if tls::tls_backend_available(tls::TlsBackendKind.SystemSchannel) {
-    bcfg.kind = tls::TlsBackendKind.SystemSchannel;
-} else {
-    bcfg.kind = tls::TlsBackendKind.PureGoose;
-}
 let _ = bcfg.server_name.try_set("example.com");
 let _ = bcfg.alpn_wire.try_set("\x02h2\x08http/1.1");
 
@@ -146,6 +142,7 @@ let fd = net::tcp_connect("example.com", 443, 5000);
 if fd > 0 {
     let slot_id, alpn, st = tls::endpoint_client_handshake_fd(fd, bcfg, 5000);
     if st == tls::TlsBackendStatus.Ok {
+        let active, ok_ak = tls::endpoint_transport_active_kind(slot_id);
         let _ = tls::endpoint_transport_send(fd, slot_id, "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n");
         var rx: u8[4096] = [0; 4096];
         let n = tls::endpoint_transport_recv_slice(fd, slot_id, rx[..], 5000);
@@ -289,6 +286,7 @@ fn endpoint_server_handshake_fd(fd: i64, cfg: const TlsBackendConfig&, timeout_m
 recursive fn endpoint_transport_send(fd: i64, slot_id: i64, data: const u8[:]) -> i32
 recursive fn endpoint_transport_recv_slice(fd: i64, slot_id: i64, dst: u8[:], timeout_ms: u32 = 5000) -> i32
 recursive fn endpoint_transport_close(fd: i64, slot_id: i64)
+fn endpoint_transport_active_kind(slot_id: i64) -> TlsBackendKind, bool
 fn tls_stream_open(fd: i64, cfg: const TlsBackendConfig&) -> TlsStream, TlsBackendStatus
 fn tls_stream_step_handshake(s: TlsStream&) -> TlsBackendStatus
 fn tls_stream_write(s: TlsStream&, plaintext: const u8[:]) -> i64, TlsBackendStatus

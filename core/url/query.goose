@@ -87,89 +87,21 @@ inline fn query_token_val(tok: u64, wire: const u8[:]) -> const u8[:] {
     return wire[val_off..val_off + vlen];
 }
 
-// Finds the next '&' delimiter starting at `start` using 64-bit SWAR word scanning.
-//
-// Example:
-//   s = "foo=bar&baz=qux", start = 0
-//   returns: 7 (points to '&')
-inline fn find_next_ampersand(s: const u8[:], start: i64) -> i64 {
-    var i = start;
-    while i + 8 <= s.len {
-        let w = read_le_u64(s, i);
-        if swar_has_byte(w, '&') {
-            break;
-        }
-        i += 8;
-    }
-    while i < s.len {
-        if s[i] == '&' {
-            return i;
-        }
-        i++;
-    }
-    return s.len;
-}
-
-// Finds the first '=' in `s` using 64-bit SWAR word scanning.
-// Returns 0-based index or -1 if not found.
-//
-// Example:
-//   s = "foo=bar"
-//   returns: 3
-inline fn find_first_equals(s: const u8[:]) -> i64 {
-    var i: i64 = 0;
-    while i + 8 <= s.len {
-        let w = read_le_u64(s, i);
-        if swar_has_byte(w, '=') {
-            break;
-        }
-        i += 8;
-    }
-    while i < s.len {
-        if s[i] == '=' {
-            return i;
-        }
-        i++;
-    }
-    return -1;
-}
-
-// Scans `s` for presence of percent-encoding character '%' using SWAR.
-inline fn slice_has_percent(s: const u8[:]) -> bool {
-    var i: i64 = 0;
-    while i + 8 <= s.len {
-        let w = read_le_u64(s, i);
-        if swar_has_byte(w, '%') {
-            return true;
-        }
-        i += 8;
-    }
-    while i < s.len {
-        if s[i] == '%' {
-            return true;
-        }
-        i++;
-    }
-    return false;
-}
-
 fn percent_decode_query<B>(input_bytes: const u8[:], out: B&) -> bool {
     out.clear();
     var scan_idx: i64 = 0;
-    while scan_idx < input_bytes.len {
-        let idx1 = add_sat_i64(scan_idx, 1);
-        let idx2 = add_sat_i64(scan_idx, 2);
-        let has_hex = input_bytes[scan_idx] == '%' && idx2 < input_bytes.len;
-        let hi = if has_hex { hex_digit_to_val(input_bytes[idx1]) } else { -1 };
-        let lo = if has_hex { hex_digit_to_val(input_bytes[idx2]) } else { -1 };
+    let total = input_bytes.len;
+    while scan_idx < total {
+        let has_hex = input_bytes[scan_idx] == '%' && scan_idx + 2 < total;
+        let hi = if has_hex { hex_digit_to_val(input_bytes[scan_idx + 1]) } else { -1 };
+        let lo = if has_hex { hex_digit_to_val(input_bytes[scan_idx + 2]) } else { -1 };
         let is_esc = hi >= 0 && lo >= 0;
         let decoded_char = if is_esc { (((hi << 4) | lo) & 0xFF) as u8 } else { input_bytes[scan_idx] };
         guard out.try_push(decoded_char) else {
             out.clear();
             return false;
         }
-        let step: i64 = if is_esc { 3 } else { 1 };
-        scan_idx = add_sat_i64(scan_idx, step);
+        scan_idx += if is_esc { 3 } else { 1 };
     }
     return true;
 }
@@ -179,15 +111,13 @@ fn percent_decode_query<B>(input_bytes: const u8[:], out: B&) -> bool {
 // Example:
 //   raw = "?foo=bar#frag"
 //   returns: "foo=bar", base = 1
-inline fn sanitize_query_input(raw: const u8[:]) -> const u8[:], i64 {
+fn sanitize_query_input(raw: const u8[:]) -> const u8[:], i64 {
     guard raw.len > 0 else { return "", 0; }
     let input_no_q, had_q = strip_prefix(raw, "?");
     var input = input_no_q;
     let base: i64 = if had_q { 1 } else { 0 };
-    let hash_idx = core::index_of_byte(input, '#');
-    if hash_idx >= 0 {
-        input = input[..hash_idx];
-    }
+    let hash_idx = index_of_byte(input, '#');
+    if hash_idx >= 0 { input = input[..hash_idx]; }
     return input, base;
 }
 
@@ -197,35 +127,26 @@ inline fn sanitize_query_input(raw: const u8[:]) -> const u8[:], i64 {
 // Example:
 //   pair = "key=val", base_offset = 1, start = 0
 //   returns: tok (pack offset 1, k_len 3, v_len 3), is_overflow = false
-inline fn extract_token_descriptor(
+fn extract_token_descriptor(
     pair:        const u8[:],
     base_offset: i64,
     start:       i64,
 ) -> u64, bool {
-    let eq_pos = find_first_equals(pair);
-    let has_esc = slice_has_percent(pair);
-    let flags: u64 = if has_esc { QUERY_TOKEN_FLAG_ESCAPE } else { 0 };
-    let key_off = add_sat_i64(base_offset, start);
+    let eq_pos = index_of_byte(pair, '=');
+    let flags: u64 = if contains_byte(pair, '%') { QUERY_TOKEN_FLAG_ESCAPE } else { 0 };
+    let key_off = base_offset + start;
     let off_over = key_off < 0 || key_off > 0x3FFFFFFF;
 
     if eq_pos < 0 {
-        let is_over = off_over || (pair.len > MAX_URL_QUERY_KEY_LIMIT) || (pair.len > 0xFFFF);
-        let k_len = min(pair.len, 0xFFFF);
-        let tok = pack_query_token(key_off, k_len, 0, flags | QUERY_TOKEN_FLAG_VALUELESS);
-        return tok, is_over;
+        let is_over = off_over || pair.len > MAX_URL_QUERY_KEY_LIMIT || pair.len > 0xFFFF;
+        return pack_query_token(key_off, min(pair.len, 0xFFFF), 0, flags | QUERY_TOKEN_FLAG_VALUELESS), is_over;
     }
 
     let k_raw = eq_pos;
     let v_raw = pair.len - (eq_pos + 1);
-    let is_over = off_over ||
-        (k_raw > MAX_URL_QUERY_KEY_LIMIT) ||
-        (v_raw > MAX_URL_QUERY_VAL_LIMIT) ||
-        (k_raw > 0xFFFF) ||
-        (v_raw > 0xFFFF);
-    let k_len = min(k_raw, 0xFFFF);
-    let v_len = min(v_raw, 0xFFFF);
-    let tok = pack_query_token(key_off, k_len, v_len, flags);
-    return tok, is_over;
+    let is_over = off_over || k_raw > MAX_URL_QUERY_KEY_LIMIT || v_raw > MAX_URL_QUERY_VAL_LIMIT
+        || k_raw > 0xFFFF || v_raw > 0xFFFF;
+    return pack_query_token(key_off, min(k_raw, 0xFFFF), min(v_raw, 0xFFFF), flags), is_over;
 }
 
 // Parses a wire query string into zero-copy 64-bit token descriptors (RFC 3986 §3.4).
@@ -238,15 +159,17 @@ inline fn extract_token_descriptor(
 fn parse_query_params(raw_search: const u8[:]) -> QueryTokens {
     var res = QueryTokens { wire: raw_search, .. };
     let input, base_offset = sanitize_query_input(raw_search);
-    guard input.len > 0 else { return res; }
+    let total = input.len;
+    guard total > 0 else { return res; }
 
     var start: i64 = 0;
-    while start < input.len {
+    while start < total {
         if res.tokens.len >= res.tokens.cap {
             res.overflow = true;
             break;
         }
-        let end = find_next_ampersand(input, start);
+        let rel = index_of_byte(input[start..], '&');
+        let end = if rel >= 0 { start + rel } else { total };
         let pair = input[start..end];
         let token_start = start;
         start = end + 1;
@@ -255,79 +178,50 @@ fn parse_query_params(raw_search: const u8[:]) -> QueryTokens {
         let tok, is_over = extract_token_descriptor(pair, base_offset, token_start);
         if is_over {
             res.overflow = true;
-            let key_off = add_sat_i64(base_offset, token_start);
-            if key_off > 0x3FFFFFFF || pair.len > 0xFFFF {
-                continue;
-            }
+            if base_offset + token_start > 0x3FFFFFFF || pair.len > 0xFFFF { continue; }
         }
         res.tokens.push(tok);
     }
     return res;
 }
 
+fn find_query_token(tokens: const QueryTokens&, key_str: const u8[:]) -> u64, bool {
+    for tok in tokens.tokens {
+        let raw_key = query_token_key(tok, tokens.wire);
+        if query_token_has_escape(tok) && (contains_byte(raw_key, '%') || contains_byte(raw_key, '+')) {
+            var dec_key: u8[..64] = [];
+            if percent_decode_query(raw_key, dec_key) && dec_key[..] == key_str {
+                return tok, true;
+            }
+        } else if raw_key == key_str {
+            return tok, true;
+        }
+    }
+    return 0, false;
+}
+
 // Retrieves the first parameter value slice for given key from QueryTokens.
 // Fast path performs direct zero-copy byte slice comparison.
 // Fallback matches percent-encoded wire keys against plain ASCII search keys.
 fn get_query_param(tokens: const QueryTokens&, key_str: const u8[:]) -> const u8[:] {
-    for tok in tokens.tokens {
-        let raw_key = query_token_key(tok, tokens.wire);
-        var matches = false;
-        if query_token_has_escape(tok) && (contains_byte(raw_key, '%') || contains_byte(raw_key, '+')) {
-            var dec_key: u8[..64] = [];
-            let dec_ok = percent_decode_query(raw_key, dec_key);
-            matches = dec_ok && (dec_key[..] == key_str);
-        } else {
-            matches = (raw_key == key_str);
-        }
-        if matches {
-            return query_token_val(tok, tokens.wire);
-        }
-    }
-    return "";
+    let tok, ok = find_query_token(tokens, key_str);
+    return if ok { query_token_val(tok, tokens.wire) } else { "" };
 }
 
 // Checks if QueryTokens contains a parameter for given key.
 fn has_query_param(tokens: const QueryTokens&, key_str: const u8[:]) -> bool {
-    for tok in tokens.tokens {
-        let raw_key = query_token_key(tok, tokens.wire);
-        var matches = false;
-        if query_token_has_escape(tok) && (contains_byte(raw_key, '%') || contains_byte(raw_key, '+')) {
-            var dec_key: u8[..64] = [];
-            let dec_ok = percent_decode_query(raw_key, dec_key);
-            matches = dec_ok && (dec_key[..] == key_str);
-        } else {
-            matches = (raw_key == key_str);
-        }
-        if matches {
-            return true;
-        }
-    }
-    return false;
+    let _, ok = find_query_token(tokens, key_str);
+    return ok;
 }
 
 // Retrieves and percent-decodes parameter value for given key into caller-provided buffer `out`.
 // Returns true if key was found and successfully decoded.
 fn get_query_param_decoded<B>(tokens: const QueryTokens&, key_str: const u8[:], out: B&) -> bool {
     out.clear();
-    for tok in tokens.tokens {
-        let raw_key = query_token_key(tok, tokens.wire);
-        var matches = false;
-        if query_token_has_escape(tok) && (contains_byte(raw_key, '%') || contains_byte(raw_key, '+')) {
-            var dec_key: u8[..64] = [];
-            let dec_ok = percent_decode_query(raw_key, dec_key);
-            matches = dec_ok && (dec_key[..] == key_str);
-        } else {
-            matches = (raw_key == key_str);
-        }
-        if matches {
-            if query_token_is_valueless(tok) {
-                return true;
-            }
-            let raw_val = query_token_val(tok, tokens.wire);
-            return percent_decode_query(raw_val, out);
-        }
-    }
-    return false;
+    let tok, ok = find_query_token(tokens, key_str);
+    guard ok else { return false; }
+    if query_token_is_valueless(tok) { return true; }
+    return percent_decode_query(query_token_val(tok, tokens.wire), out);
 }
 
 // CVE-2026-39825 & CVE-2025-61726 defense: Count query parameters separated by '&',
@@ -378,6 +272,35 @@ enum QueryParamMatch {
     Value,
 }
 
+inline fn query_key_matches(raw_stmt_key: const u8[:], key: const u8[:]) -> bool {
+    if raw_stmt_key == key { return true; }
+    guard contains_byte(raw_stmt_key, '%') else { return false; }
+    var dec_key: u8[..64] = [];
+    return percent_decode_query(raw_stmt_key, dec_key) && dec_key[..] == key;
+}
+
+inline fn match_query_statement(statement: const u8[:], key: const u8[:]) -> const u8[:], QueryParamMatch {
+    let raw_key, raw_val, has_eq = statement.split_once_byte('=');
+    let stmt_key = if has_eq { raw_key } else { statement };
+    guard query_key_matches(stmt_key, key) else { return "", QueryParamMatch.Missing; }
+    if has_eq { return raw_val, QueryParamMatch.Value; }
+    return "", QueryParamMatch.Valueless;
+}
+
+fn find_raw_query_param(raw_query: const u8[:], key: const u8[:]) -> const u8[:], QueryParamMatch {
+    guard key.len > 0 && raw_query.len > 0 else { return "", QueryParamMatch.Missing; }
+    let q, _ = sanitize_query_input(raw_query);
+    var rem = q;
+    while rem.len > 0 {
+        let statement, tail, has_amp = rem.split_once_byte('&');
+        rem = if has_amp { tail } else { "" };
+        guard statement.len > 0 else { continue; }
+        let val, kind = match_query_statement(statement, key);
+        if kind != QueryParamMatch.Missing { return val, kind; }
+    }
+    return "", QueryParamMatch.Missing;
+}
+
 // Fast zero-allocation query parameter lookup directly from raw query slice.
 // Scans raw_query for key without allocating a QueryParamsList or parsing unrelated parameters.
 // Returns QueryParamMatch.Value (and writes decoded value into out), QueryParamMatch.Valueless
@@ -388,97 +311,23 @@ enum QueryParamMatch {
 //   raw_query = "?a=1&flag", key = "flag" -> QueryParamMatch.Valueless, out = ""
 //   raw_query = "?a=1&flag", key = "z" -> QueryParamMatch.Missing
 fn get_query_param_fast<B>(raw_query: const u8[:], key: const u8[:], out: B&) -> QueryParamMatch {
-    guard key.len > 0 && raw_query.len > 0 else { return QueryParamMatch.Missing; }
-
-    var q = raw_query;
-    if q[0] == '?' {
-        q = q[1..];
+    let raw_val, match_kind = find_raw_query_param(raw_query, key);
+    if match_kind == QueryParamMatch.Valueless {
+        out.clear();
+        return QueryParamMatch.Valueless;
     }
-    let hash_idx = core::index_of_byte(q, '#');
-    if hash_idx >= 0 {
-        q = q[..hash_idx];
+    guard match_kind == QueryParamMatch.Value else { return QueryParamMatch.Missing; }
+    guard percent_decode_query(raw_val, out) else {
+        out.clear();
+        return QueryParamMatch.Missing;
     }
-
-    var cursor: i64 = 0;
-    while cursor < q.len {
-        var end = q.len;
-        let amp_pos = core::index_of_byte(q[cursor..], '&');
-        if amp_pos >= 0 {
-            end = cursor + amp_pos;
-        }
-
-        let statement = q[cursor..end];
-        cursor = if amp_pos >= 0 { end + 1 } else { end };
-        guard statement.len > 0 else { continue; }
-
-        let eq_pos = core::index_of_byte(statement, '=');
-        let raw_stmt_key = if eq_pos >= 0 { statement[..eq_pos] } else { statement };
-
-        var matches = (raw_stmt_key == key);
-        if !matches && core::index_of_byte(raw_stmt_key, '%') >= 0 {
-            var decoded_stmt_key: u8[..64] = [];
-            let dec_ok = percent_decode_query(raw_stmt_key, decoded_stmt_key);
-            matches = dec_ok && (decoded_stmt_key[..] == key);
-        }
-
-        if matches {
-            if eq_pos < 0 {
-                out.clear();
-                return QueryParamMatch.Valueless;
-            }
-            let stmt_val = statement[eq_pos + 1..];
-            out.clear();
-            let dec_ok = percent_decode_query(stmt_val, out);
-            guard dec_ok else {
-                out.clear();
-                return QueryParamMatch.Missing;
-            }
-            return QueryParamMatch.Value;
-        }
-    }
-    return QueryParamMatch.Missing;
+    return QueryParamMatch.Value;
 }
 
 // Fast zero-allocation query parameter existence check.
 fn has_query_param_fast(raw_query: const u8[:], key: const u8[:]) -> bool {
-    guard key.len > 0 && raw_query.len > 0 else { return false; }
-
-    var q = raw_query;
-    if q[0] == '?' {
-        q = q[1..];
-    }
-    let hash_idx = core::index_of_byte(q, '#');
-    if hash_idx >= 0 {
-        q = q[..hash_idx];
-    }
-
-    var cursor: i64 = 0;
-    while cursor < q.len {
-        var end = q.len;
-        let amp_pos = core::index_of_byte(q[cursor..], '&');
-        if amp_pos >= 0 {
-            end = cursor + amp_pos;
-        }
-
-        let statement = q[cursor..end];
-        cursor = if amp_pos >= 0 { end + 1 } else { end };
-        guard statement.len > 0 else { continue; }
-
-        let eq_pos = core::index_of_byte(statement, '=');
-        let raw_stmt_key = if eq_pos >= 0 { statement[..eq_pos] } else { statement };
-
-        var matches = (raw_stmt_key == key);
-        if !matches && core::index_of_byte(raw_stmt_key, '%') >= 0 {
-            var decoded_stmt_key: u8[..64] = [];
-            let dec_ok = percent_decode_query(raw_stmt_key, decoded_stmt_key);
-            matches = dec_ok && (decoded_stmt_key[..] == key);
-        }
-
-        if matches {
-            return true;
-        }
-    }
-    return false;
+    let _, match_kind = find_raw_query_param(raw_query, key);
+    return match_kind != QueryParamMatch.Missing;
 }
 
 // ---- Form URL-Encoding (WHATWG / RFC 6749 / RFC 7009 / RFC 7662) ------------
@@ -487,49 +336,8 @@ const UPPER_HEX_DIGITS: const u8[16] = [
     '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
 ];
 
-const FORM_HEX_NIBBLE_LUT: const u8[256] = [
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 255, 255, 255, 255, 255, 255,
-    255, 10, 11, 12, 13, 14, 15, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 10, 11, 12, 13, 14, 15, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-];
-
-const FORM_HEX_HI_LUT: const u8[256] = [
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 255, 255, 255, 255, 255, 255,
-    255, 160, 176, 192, 208, 224, 240, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 160, 176, 192, 208, 224, 240, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-];
-
 inline fn is_form_urlencode_safe(b: u8) -> bool {
-    if b >= 'A' && b <= 'Z' { return true; }
-    if b >= 'a' && b <= 'z' { return true; }
-    if b >= '0' && b <= '9' { return true; }
-    return b == '-' || b == '.' || b == '_' || b == '*';
+    return is_ascii_alphanumeric(b) || b == '-' || b == '.' || b == '_' || b == '*';
 }
 
 inline fn append_form_urlencoded(src: const u8[:], dst: u8[..1024]&) -> bool {
@@ -542,8 +350,8 @@ inline fn append_form_urlencoded(src: const u8[:], dst: u8[..1024]&) -> bool {
         } else {
             guard sub_sat_i64(rem, temp.len) >= 3 else { return false; }
             temp.push('%');
-            temp.push(UPPER_HEX_DIGITS[((b >> 4) & 0x0F) as i64]);
-            temp.push(UPPER_HEX_DIGITS[(b & 0x0F) as i64]);
+            temp.push(UPPER_HEX_DIGITS[(b >> 4) & 0x0F]);
+            temp.push(UPPER_HEX_DIGITS[b & 0x0F]);
         }
     }
     dst.append(temp[..]);
@@ -555,29 +363,28 @@ inline fn append_form_urlencoded(src: const u8[:], dst: u8[..1024]&) -> bool {
 // Example:
 //   src = "a%3Ab+c"
 //   returns: ok = true, out = "a:b c"
-inline fn decode_form_urlencoded(src: const u8[:], out: u8[..256]&) -> bool {
+fn decode_form_urlencoded(src: const u8[:], out: u8[..256]&) -> bool {
     out.clear();
     var temp: u8[..256] = [];
     defer secure_zeroize_slice(temp[..]);
     var i: i64 = 0;
-    while i < src.len {
+    let total = src.len;
+    while i < total {
         let b = src[i];
         if b == '+' {
             guard temp.try_push(' ') else { return false; }
-            i = add_sat_i64(i, 1);
+            i += 1;
         } else if b == '%' {
-            let i1 = add_sat_i64(i, 1);
-            let i2 = add_sat_i64(i, 2);
-            guard i2 < src.len else { return false; }
-            let hi = FORM_HEX_HI_LUT[src[i1]];
-            let lo = FORM_HEX_NIBBLE_LUT[src[i2]];
-            guard hi != 255 && lo <= 15 else { return false; }
-            let decoded = hi | lo;
+            guard i + 2 < total else { return false; }
+            let hi = hex_digit_to_val(src[i + 1]);
+            let lo = hex_digit_to_val(src[i + 2]);
+            guard hi >= 0 && lo >= 0 else { return false; }
+            let decoded = ((hi << 4) | lo) as u8;
             guard decoded != 0 && temp.try_push(decoded) else { return false; }
-            i = add_sat_i64(i, 3);
+            i += 3;
         } else {
             guard b != 0 && temp.try_push(b) else { return false; }
-            i = add_sat_i64(i, 1);
+            i += 1;
         }
     }
     out.append(temp[..]);

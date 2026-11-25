@@ -1,0 +1,10 @@
+# scope_name | kind (bench|stage) | path_prefixes [| bench_file]
+L0_Plaintext_GET | bench | http/,wire/,server/,rfc/ | bench/server_profiling_benchmark.goose
+L0_Plaintext_GET_Memoized | bench | http/,wire/,server/ | bench/server_profiling_benchmark.goose
+L0_Plaintext_GET::http1.framing | stage | wire/,http/ | bench/server_profiling_benchmark.goose
+L0_Plaintext_GET::http1.l0_turn | stage | server/,http/ | bench/server_profiling_benchmark.goose
+Dynamic_Route_JSON_Serialize | bench | server/,core/bytes/,http/ | bench/server_profiling_benchmark.goose
+Full_Pipeline_Auth_Cache_Hit | bench | server/,security/,http/ | bench/server_profiling_benchmark.goose
+Full_Pipeline_Auth_Cache_Miss | bench | server/,security/,http/ | bench/server_profiling_benchmark.goose
+Full_Pipeline_Gzip_Compress | bench | core/compress/,http/,server/ | bench/server_profiling_benchmark.goose
+HTTP1_Pipelined_16x | bench | http/,wire/,server/ | bench/server_profiling_benchmark.goose
