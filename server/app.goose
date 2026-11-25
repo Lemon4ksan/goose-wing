@@ -224,6 +224,46 @@ fn handle_empty<P, Q, B, ResBody, F: fn(ResBody&) -> Reply<EmptyBody>>(
     return finish_reply_verdict(res);
 }
 
+fn bind_and_validate_json<ReqBody>(
+    req:  const http::Request&,
+    body: ReqBody&,
+    vp:   http::ValidationProblem&,
+) -> bool {
+    let ok_bind = http::bind_json(req.body[..], body, vp);
+    let ok_val = ok_bind && http::check_dto_valid(body);
+    if ok_bind && !ok_val {
+        let custom_code = http::dto_validation_code(body);
+        if custom_code.len > 0 {
+            let _ = vp.problem.title.try_set(custom_code);
+        }
+        let _ = http::check_field(
+            vp, false, http::ValidationLocation.Body,
+            "$", "invalid_payload", "payload validation failed",
+        );
+    }
+    return ok_val;
+}
+
+fn bind_and_validate_query<Query>(
+    raw_q: const u8[:],
+    q:     Query&,
+    vp:    http::ValidationProblem&,
+) -> bool {
+    let ok_bind = http::bind_query(raw_q, q, vp);
+    let ok_val = ok_bind && http::check_dto_valid(q);
+    if ok_bind && !ok_val {
+        let custom_code = http::dto_validation_code(q);
+        if custom_code.len > 0 {
+            let _ = vp.problem.title.try_set(custom_code);
+        }
+        let _ = http::check_field(
+            vp, false, http::ValidationLocation.Query,
+            "$", "invalid_query_param", "query validation failed",
+        );
+    }
+    return ok_val;
+}
+
 // Binds JSON `ReqBody` from `req` per `spec`, validates it, wipes secrets on exit, and writes `out` or `400`.
 fn handle_json<P, Q, ReqBody, ResBody, F: fn(const ReqBody&, ResBody&) -> Reply<EmptyBody>>(
     _spec:       const client::EndpointSpec<P, Q, ReqBody, ResBody>&,
@@ -234,12 +274,7 @@ fn handle_json<P, Q, ReqBody, ResBody, F: fn(const ReqBody&, ResBody&) -> Reply<
     var body = ReqBody { .. };
     defer http::zeroize_struct_secrets(body);
     var vp = http::ValidationProblem { .. };
-    let ok_bind = http::bind_json(req.body[..], body, vp) &&
-        http::check_field(
-            vp, http::check_dto_valid(body), http::ValidationLocation.Body,
-            "$", "invalid_payload", "payload validation failed",
-        );
-    guard ok_bind else {
+    guard bind_and_validate_json(req, body, vp) else {
         return write_bind_bad_request(res, vp, detail_mode);
     }
     var out = ResBody { .. };
@@ -259,12 +294,7 @@ fn handle_query<P, Query, B, ResBody, F: fn(const Query&, ResBody&) -> Reply<Emp
     var q = Query { .. };
     defer http::zeroize_struct_secrets(q);
     var vp = http::ValidationProblem { .. };
-    let ok_bind = http::bind_query(raw_q, q, vp) &&
-        http::check_field(
-            vp, http::check_dto_valid(q), http::ValidationLocation.Query,
-            "$", "invalid_query_param", "query validation failed",
-        );
-    guard ok_bind else {
+    guard bind_and_validate_query(raw_q, q, vp) else {
         return write_bind_bad_request(res, vp, detail_mode);
     }
     var out = ResBody { .. };
@@ -350,12 +380,7 @@ fn dispatch_api_entry<Query, ResBody, Tag, App>(
     var q = Query { .. };
     defer http::zeroize_struct_secrets(q);
     var vp = http::ValidationProblem { .. };
-    let ok_bind = http::bind_query(raw_q, q, vp) &&
-        http::check_field(
-            vp, http::check_dto_valid(q), http::ValidationLocation.Query,
-            "$", "invalid_query_param", "query validation failed",
-        );
-    guard ok_bind else {
+    guard bind_and_validate_query(raw_q, q, vp) else {
         return write_bind_bad_request(res, vp, detail_mode);
     }
     var out = ResBody { .. };
@@ -374,12 +399,7 @@ fn dispatch_api_entry<ReqBody, ResBody, Tag, App>(
     var body = ReqBody { .. };
     defer http::zeroize_struct_secrets(body);
     var vp = http::ValidationProblem { .. };
-    let ok_bind = http::bind_json(req.body[..], body, vp) &&
-        http::check_field(
-            vp, http::check_dto_valid(body), http::ValidationLocation.Body,
-            "$", "invalid_payload", "payload validation failed",
-        );
-    guard ok_bind else {
+    guard bind_and_validate_json(req, body, vp) else {
         return write_bind_bad_request(res, vp, detail_mode);
     }
     var out = ResBody { .. };
@@ -415,6 +435,23 @@ fn api_route_id<Api>(_api: const Api&, field_name: const u8[:], base_id: i32 = 1
         id = core::add_sat_i64(id, 1);
     }
     return -1;
+}
+
+// Returns the compile-time route count declared as fields on struct `Api`.
+fn api_route_count<Api>() -> i32 {
+    var n: i64 = 0;
+    const for <Name, Acc> in fields<Api> {
+        let _ = Name;
+        n = core::add_sat_i64(n, 1);
+    }
+    return if n <= (MAX_USER_ROUTE_ID as i64) { n as i32 } else { MAX_USER_ROUTE_ID };
+}
+
+// Checks whether `handler_id` falls inside the sequential ID range mounted for `Api` at `base_id`.
+fn api_owns_id<Api>(handler_id: i32, base_id: i32 = 1) -> bool {
+    let count = api_route_count<Api>();
+    return count > 0 && handler_id >= base_id &&
+        (handler_id as i64) < (base_id as i64) + (count as i64);
 }
 
 // Dispatches `sctx.handler_id` against struct `api` via `const for`, invoking `tag.serve(app, ..., &out)`.

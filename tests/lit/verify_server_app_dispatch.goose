@@ -36,6 +36,10 @@ fn http::validate(d: const StrictItemBody&) -> bool {
     return d.name.val[..] != "banned" && d.pin.val.len >= 3;
 }
 
+fn http::validate_code(d: const StrictItemBody&) -> const u8[:] {
+    return if d.name.val[..] == "banned" { "banned_name" } else { "" };
+}
+
 struct PingApiTag {}
 struct SearchApiTag {}
 struct CreateApiTag {}
@@ -399,7 +403,12 @@ fn main() {
         wire_out,
         stage,
     );
-    let rej_val = core::contains(wire_out[..], "400 Bad Request");
+    let rej_val = core::contains(wire_out[..], "400 Bad Request") &&
+        core::contains(wire_out[..], "\"title\":\"banned_name\"");
+    let owns_ok = server::api_route_count<DemoApi>() == 3 &&
+        server::api_owns_id<DemoApi>(500, 500) &&
+        server::api_owns_id<DemoApi>(502, 500) &&
+        !server::api_owns_id<DemoApi>(503, 500);
 
     let _b4, _ = server::handle_connection_wire(
         srv,
@@ -411,9 +420,9 @@ fn main() {
     );
     let rej_missing = core::contains(wire_out[..], "400 Bad Request");
 
-    // CHECK: const_api=true true true true true true true
+    // CHECK: const_api=true true true true true true true true
     print(
         "const_api=", api_ping_ok, " ", api_search_ok, " ", api_create_ok,
-        " ", rej_empty, " ", rej_zero, " ", rej_val, " ", rej_missing, "\n",
+        " ", rej_empty, " ", rej_zero, " ", rej_val, " ", owns_ok, " ", rej_missing, "\n",
     );
 }

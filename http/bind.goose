@@ -671,3 +671,12 @@ fn check_dto_valid<T>(dto: const T&) -> bool {
     }
     return all_ok && dto.validate();
 }
+
+// Optional machine-readable validation error code hook overridden via receiver-namespace UFCS.
+fn validate_code<T>(_dto: const T&) -> const u8[:] {
+    return "";
+}
+
+fn dto_validation_code<T>(dto: const T&) -> const u8[:] {
+    return dto.validate_code();
+}
