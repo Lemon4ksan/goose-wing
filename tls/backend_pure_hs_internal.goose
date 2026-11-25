@@ -681,12 +681,12 @@ fn pure_server_pop_or_resume_ch(slot: PureTlsSlot&, out_ch: u8[..16384]&) -> tls
 }
 
 fn pure_fail_ch_parse(slot: PureTlsSlot&, fail_alert: tls::Alert) -> tls::TlsBackendStatus {
-    if fail_alert == tls::Alert.NoApplicationProtocol ||
-        fail_alert == tls::Alert.UnsupportedExtension ||
-        fail_alert == tls::Alert.DecodeError {
-        return pure_fail_with_alert(slot, fail_alert, tls::TlsBackendStatus.HandshakeError);
-    }
-    return tls::TlsBackendStatus.HandshakeError;
+    let alert = if fail_alert != tls::Alert.CloseNotify {
+        fail_alert
+    } else {
+        tls::Alert.IllegalParameter
+    };
+    return pure_fail_with_alert(slot, alert, tls::TlsBackendStatus.HandshakeError);
 }
 
 fn pure_server_stash_deferred_sni(
@@ -750,7 +750,9 @@ fn pure_server_emit_sh_and_flight(
     defer core::secure_zeroize_32(ecdhe);
     guard generate_server_handshake_keys_for_group(
         ch_choice.selected_group, ch_choice.client_share[..], srv_rand, srv_share, ecdhe,
-    ) else { return tls::TlsBackendStatus.HandshakeError; }
+    ) else {
+        return pure_fail_with_alert(slot, tls::Alert.IllegalParameter, tls::TlsBackendStatus.HandshakeError);
+    }
 
     var sh_pay: u8[..2048] = [];
     build_server_hello_payload_for_group(
@@ -819,7 +821,7 @@ fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     }
     if slot.hrr_sent {
         guard pure_server_matches_hrr_ch2(slot, ch_choice) else {
-            return tls::TlsBackendStatus.HandshakeError;
+            return pure_fail_with_alert(slot, tls::Alert.IllegalParameter, tls::TlsBackendStatus.HandshakeError);
         }
     }
 

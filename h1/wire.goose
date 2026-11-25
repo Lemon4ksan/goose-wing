@@ -214,9 +214,8 @@ enum QueryMatch {
 //   raw = "hello%20world+ok", out = []
 //   returns: true, out = "hello world ok"
 fn decode_query_component<B>(raw: const u8[:], out: B&) -> bool {
-    let saved_len = out.len;
     var committed = false;
-    defer if !committed { out.resize(saved_len); };
+    defer if !committed { out.clear(); };
     out.clear();
     var idx: i64 = 0;
     while idx < raw.len {

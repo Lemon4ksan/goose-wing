@@ -191,7 +191,7 @@ fn test_client_config_and_setters() {
     // CHECK: === 1. client::Config & Setters ===
 
     var def_c = client::new_client();
-    let def_ok = (def_c.tls_backend == tls::TlsBackendKind.PureGoose) &&
+    let def_ok = (def_c.tls_backend == tls::TlsBackendKind.Auto) &&
         (def_c.tls_min_version == tls::TlsMinVersion.Tls13) &&
         (def_c.tls_ca_file.len == 0);
 
@@ -547,7 +547,7 @@ fn test_server_config_and_dst_nonce() {
     // CHECK: === 4. HttpServer TLS Config & DST Nonce Determinism ===
 
     var srv = server::new_http_server("127.0.0.1", 8443);
-    let def_srv_ok = (srv.tls_backend == tls::TlsBackendKind.PureGoose) &&
+    let def_srv_ok = (srv.tls_backend == tls::TlsBackendKind.Auto) &&
         (srv.tls_min_version == tls::TlsMinVersion.Tls13) &&
         (srv.tls_cert_pem_file.len == 0) &&
         (srv.tls_key_pem_file.len == 0);

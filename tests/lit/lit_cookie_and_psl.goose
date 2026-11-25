@@ -102,9 +102,9 @@ fn test_f003_samesite_context_and_set_guard() {
     assert(nav_eval.context_type == cookie::SameSiteContextType.SameSiteLax);
 
     let ctx_null_sfc = client_internal::RequestExecutionContext {
+        site_for_cookies:   cookie::null_site_for_cookies(),
         is_main_frame:      true,
         had_cross_site_hop: true,
-        site_for_cookies:   cookie::null_site_for_cookies(),
         ..
     };
     let null_eval = client_internal::compute_hop_samesite_context(ctx_null_sfc, u_bank, true);

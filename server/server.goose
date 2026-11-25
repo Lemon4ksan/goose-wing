@@ -64,7 +64,7 @@ struct HttpServer {
     shutdown_grace_ns:         u64                              = 2000000000,
     accel_mode:                net::ReactorAccelMode            = net::ReactorAccelMode.Auto,
     enable_ktls_offload:       bool                             = true,
-    tls_backend:               tls::TlsBackendKind              = tls::TlsBackendKind.PureGoose,
+    tls_backend:               tls::TlsBackendKind              = tls::TlsBackendKind.Auto,
     tls_min_version:           tls::TlsMinVersion               = tls::TlsMinVersion.Tls13,
     tls_cert_pem_file:         u8[..256]                        = [],
     tls_key_pem_file:          u8[..256]                        = [],

@@ -333,10 +333,18 @@ def _is_fatal_alert(resp: bytes, expected_codes: tuple[int, ...] | None = None) 
     return resp[6] in expected_codes
 
 
+def _is_tls13_post_sh_fatal_alert(resp: bytes) -> bool:
+    if _is_fatal_alert(resp):
+        return True
+    if len(resp) >= 24 and resp[0] == 0x17 and resp[1:3] == b"\x03\x03":
+        return struct.unpack(">H", resp[3:5])[0] == 19
+    return False
+
+
 def _is_rejected(resp: bytes) -> bool:
     if len(resp) == 0:
         return True
-    return _is_fatal_alert(resp)
+    return _is_tls13_post_sh_fatal_alert(resp)
 
 
 def _live_openssl_https_get(
@@ -395,12 +403,12 @@ def run_tlsfuzzer_suite(
     # 2. Bad AEAD MAC on encrypted handshake record after ServerHello
     bad_aead = bytes([0x17, 0x03, 0x03, 0x00, 0x35]) + (b"\xDE" * 53)
     got_sh, resp = _send_after_server_hello(host, port, bad_aead)
-    check(got_sh and _is_fatal_alert(resp), "tlsfuzzer/02 Bad AEAD MAC in handshake record triggers fatal alert", resp.hex())
+    check(got_sh and _is_tls13_post_sh_fatal_alert(resp), "tlsfuzzer/02 Bad AEAD MAC in handshake record triggers fatal alert", resp.hex())
 
     # 3. Short AEAD ciphertext (< 17B tag+inner-type padding floor)
     short_pad = bytes([0x17, 0x03, 0x03, 0x00, 0x05]) + (b"\x00" * 5)
     got_sh, resp = _send_after_server_hello(host, port, short_pad)
-    check(got_sh and _is_fatal_alert(resp), "tlsfuzzer/03 Truncated AEAD padding (<17B) rejected with fatal alert", resp.hex())
+    check(got_sh and _is_tls13_post_sh_fatal_alert(resp), "tlsfuzzer/03 Truncated AEAD padding (<17B) rejected with fatal alert", resp.hex())
 
     # 4. Oversized TLS record ciphertext header (> 16640 bytes, RFC 8446 Section 5.2)
     oversized = bytes([0x17, 0x03, 0x03]) + struct.pack(">H", 16641) + (b"\x00" * 64)
@@ -513,17 +521,17 @@ def run_tls_attacker_suite(
 
     # 6. Unencrypted Finished injected after ServerHello flight -> fatal alert
     got_sh, resp_uf = _send_after_server_hello(host, port, plain_fin)
-    check(got_sh and _is_fatal_alert(resp_uf), "tls-attacker/06 Unencrypted Finished after ServerHello rejected", resp_uf.hex())
+    check(got_sh and _is_tls13_post_sh_fatal_alert(resp_uf), "tls-attacker/06 Unencrypted Finished after ServerHello rejected", resp_uf.hex())
 
     # 7. CCS flood (multiple CCS after ServerHello; RFC 8446 allows max 1) -> fatal alert
     ccs_flood = b"\x14\x03\x03\x00\x01\x01" * 2
     got_sh, resp_cf = _send_after_server_hello(host, port, ccs_flood)
-    check(got_sh and _is_fatal_alert(resp_cf), "tls-attacker/07 CCS flood (2x CCS after ServerHello) rejected", resp_cf.hex())
+    check(got_sh and _is_tls13_post_sh_fatal_alert(resp_cf), "tls-attacker/07 CCS flood (2x CCS after ServerHello) rejected", resp_cf.hex())
 
     # 8. Malformed CCS payload byte (0x02 != 0x01) after ServerHello -> fatal alert
     bad_ccs = b"\x14\x03\x03\x00\x01\x02"
     got_sh, resp_bc = _send_after_server_hello(host, port, bad_ccs)
-    check(got_sh and _is_fatal_alert(resp_bc), "tls-attacker/08 Malformed CCS byte (0x02) after ServerHello rejected", resp_bc.hex())
+    check(got_sh and _is_tls13_post_sh_fatal_alert(resp_bc), "tls-attacker/08 Malformed CCS byte (0x02) after ServerHello rejected", resp_bc.hex())
 
     # 9. Bad KeyShare: all-zero low-order X25519 public key (RFC 7748 Section 6.1) -> fatal alert
     resp_zk = _send_wire(host, port, build_client_hello(key_share_pub=b"\x00" * 32))

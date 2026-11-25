@@ -304,8 +304,10 @@ inline fn punycode_decode_delta(
 //   ace_body = "bcher-kva"
 //   returns: true
 fn is_valid_punycode_ace_body(ace_body: const u8[:]) -> bool {
-    guard ace_body.len > 0 && ace_body[0] != '-' else { return false; }
+    guard ace_body.len > 0 else { return false; }
     let delim = last_index_of_byte(ace_body, '-');
+    // RFC 3492 Section 3.1: Delimiter '-' MUST NOT appear at index 0 with empty basic-char prefix (e.g. "xn---a").
+    guard delim != 0 else { return false; }
     let basic_len = max(0, delim) as u64;
     guard delim <= 0 || is_valid_punycode_basic_prefix(ace_body[..delim]) else { return false; }
     var pos = max(0, add_sat_i64(delim, 1));

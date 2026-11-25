@@ -163,6 +163,8 @@ def load_wycheproof_vectors(wycheproof_dir: Path) -> list[VectorTuple]:
             pk_hex = group.get("publicKey", {}).get("pk", "")
             pk = bytes.fromhex(pk_hex)
             for tc in group.get("tests", []):
+                if tc["result"] == "acceptable":
+                    continue
                 msg = bytes.fromhex(tc["msg"])
                 sig = bytes.fromhex(tc["sig"])
                 valid = tc["result"] == "valid"

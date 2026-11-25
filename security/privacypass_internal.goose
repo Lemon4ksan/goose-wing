@@ -55,9 +55,8 @@ inline fn is_valid_qdtext_byte(b: u8) -> bool {
 //   returns: consumed = 6, ok = true, out = "a\"b"
 inline fn decode_auth_quoted_string<B>(quoted: const u8[:], out: B&) -> i64, bool {
     guard quoted.len >= 2 && quoted[0] == '"' else { return 0, false; }
-    let saved_len = out.len;
     var committed = false;
-    defer if !committed { out.resize(saved_len); };
+    defer if !committed { out.clear(); };
 
     out.clear();
     var pos: i64 = 1;

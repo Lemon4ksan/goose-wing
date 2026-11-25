@@ -30,9 +30,8 @@ import json;
 //   field_name = "x_request_id"
 //   returns: true, out = "x-request-id"
 fn normalize_field_to_header_name<B>(field_name: const u8[:], out: B&) -> bool {
-    let saved_len = out.len;
     var committed = false;
-    defer if !committed { out.resize(saved_len); };
+    defer if !committed { out.clear(); };
     out.clear();
     guard field_name.len > 0 else { return false; }
     for b in field_name {

@@ -61,14 +61,17 @@ inline fn ct_gt_u64(a: u64, b: u64) -> u64 {
     return ct_lt_u64(b, a);
 }
 
+extern fn ct_barrier_u32(val: u32) -> u32 = "wing_ct_barrier_u32";
+extern fn ct_barrier_u64(val: u64) -> u64 = "wing_ct_barrier_u64";
+
 // Creates an all-ones mask (0xFFFFFFFF) if bit == 1, or 0 if bit == 0.
 inline fn ct_mask_u32(bit: u32) -> u32 {
-    return 0 - (bit & 1);
+    return ct_barrier_u32(0 - (bit & 1));
 }
 
 // Creates an all-ones mask (0xFFFFFFFFFFFFFFFF) if bit == 1, or 0 if bit == 0.
 inline fn ct_mask_u64(bit: u64) -> u64 {
-    return 0 - (bit & 1);
+    return ct_barrier_u64(0 - (bit & 1));
 }
 
 // Constant-time multiplexer: returns if_true when mask is ~0, if_false when mask is 0.

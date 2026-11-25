@@ -6,6 +6,7 @@
 namespace core;
 
 import std;
+import core.math;
 import core.crypto.csprng;
 import core.crypto.ct;
 import core.crypto.sha;
@@ -108,7 +109,7 @@ inline fn rsa_limbs_sub_borrow(t: const u32[:], m: const u32[:], n_limbs: i64, d
 inline fn rsa_monty_sub_mask(top_carry: u64, borrow: u64) -> u32 {
     let has_carry = (top_carry | (0 - top_carry)) >> 63;
     let do_sub = ((has_carry | (1 ^ borrow)) & 1) as u32;
-    return 0 - do_sub;
+    return ct_barrier_u32(0 - do_sub);
 }
 
 // Branchless constant-time conditional subtraction: `t = t - m` when `t >= m` or `top_carry != 0`.
@@ -239,7 +240,7 @@ fn rsa_monty_exp_step(
     defer rsa_zeroize_limbs(prod[..]);
     rsa_monty_mul(acc[..], acc[..], m_limbs, m0i, sq);
     rsa_monty_mul(sq[..], base_m, m_limbs, m0i, prod);
-    let mask: u32 = 0 - ((b_val & 1) as u32);
+    let mask: u32 = ct_barrier_u32(0 - ((b_val & 1) as u32));
     for i in m_limbs.len {
         acc[i] = (sq[i] & (~mask)) | (prod[i] & mask);
     }
@@ -252,6 +253,19 @@ inline fn rsa_nonzero_bit(buf: const u8[:]) -> u8 {
     for i in buf.len {
         acc |= buf[i];
     }
+    return ((acc | (0 - acc)) >> 31) as u8;
+}
+
+// Branchless constant-time check returning 1 iff big-endian integer `buf >= 2`, else 0.
+// crap:ignore
+inline fn rsa_exp_gt_one_bit(buf: const u8[:]) -> u8 {
+    guard buf.len > 0 else { return 0; }
+    var acc: u32 = 0;
+    let last = buf.len - 1;
+    for i in last {
+        acc |= buf[i];
+    }
+    acc |= buf[last] >> 1;
     return ((acc | (0 - acc)) >> 31) as u8;
 }
 
@@ -314,25 +328,33 @@ fn rsa_mod_exp(base: const u8[:], exp: const u8[:], m: const u8[:], out: u8[..51
     return true;
 }
 
-// Constant-time zero test over a little-endian `u32` limb slice.
+// Constant-time zero-test bit over a little-endian `u32` limb slice (returns 1 if zero, else 0).
 // crap:ignore
-inline fn rsa_limbs_is_zero(a: const u32[:]) -> bool {
+inline fn rsa_limbs_is_zero_bit(a: const u32[:]) -> u8 {
     var acc: u32 = 0;
     for i in a.len { acc |= a[i]; }
-    return acc == 0;
+    let nz = (acc | (0 - acc)) >> 31;
+    return (1 - nz) as u8;
 }
 
-// Constant-time equality-to-one test over a little-endian `u32` limb slice.
+// Constant-time equality-to-one bit over a little-endian `u32` limb slice (returns 1 if one, else 0).
 // crap:ignore
-inline fn rsa_limbs_is_one(a: const u32[:]) -> bool {
-    guard a.len > 0 else { return false; }
+inline fn rsa_limbs_is_one_bit(a: const u32[:]) -> u8 {
+    guard a.len > 0 else { return 0; }
     var acc: u32 = a[0] ^ 1;
     var i:   i64 = 1;
     while i < a.len {
         acc |= a[i];
         i += 1;
     }
-    return acc == 0;
+    let nz = (acc | (0 - acc)) >> 31;
+    return (1 - nz) as u8;
+}
+
+// Constant-time equality-to-one test over a little-endian `u32` limb slice.
+// crap:ignore
+inline fn rsa_limbs_is_one(a: const u32[:]) -> bool {
+    return rsa_limbs_is_one_bit(a) == 1;
 }
 
 // Shifts a little-endian `u32` limb slice right by 1 bit, injecting `top_carry` into the MSB.
@@ -385,7 +407,7 @@ inline fn rsa_limbs_sub_mod(a: u32[:], b: const u32[:], m: const u32[:]) {
 fn rsa_limbs_mod_inv(r_limbs: const u32[:], m_limbs: const u32[:], out_inv: u32[..128]&) -> bool {
     let n = m_limbs.len;
     guard n > 0 && n <= 128 && r_limbs.len == n && (m_limbs[0] & 1) == 1 else { return false; }
-    guard !rsa_limbs_is_zero(r_limbs) else { return false; }
+    guard ct_declassify_u8(rsa_limbs_is_zero_bit(r_limbs)) == 0 else { return false; }
     var a:     u32[128] = [0; 128];
     var b:     u32[128] = [0; 128];
     var u:     u32[128] = [0; 128];
@@ -406,7 +428,7 @@ fn rsa_limbs_mod_inv(r_limbs: const u32[:], m_limbs: const u32[:], out_inv: u32[
             let d = (a[i] as u64) - b[i] - borrow;
             borrow = d >> 63;
         }
-        let swap_mask: u32 = 0 - (odd & (borrow as u32));
+        let swap_mask: u32 = ct_barrier_u32(0 - (odd & (borrow as u32)));
         for i in n {
             let da = (a[i] ^ b[i]) & swap_mask;
             a[i] ^= da;
@@ -415,7 +437,7 @@ fn rsa_limbs_mod_inv(r_limbs: const u32[:], m_limbs: const u32[:], out_inv: u32[
             u[i] ^= du;
             v[i] ^= du;
         }
-        let odd_mask: u32 = 0 - odd;
+        let odd_mask: u32 = ct_barrier_u32(0 - odd);
         var sub_borrow: u64 = 0;
         for i in n {
             let d = (a[i] as u64) - (b[i] & odd_mask) - sub_borrow;
@@ -431,7 +453,7 @@ fn rsa_limbs_mod_inv(r_limbs: const u32[:], m_limbs: const u32[:], out_inv: u32[
         rsa_limbs_halve_mod(u[0..n], m_limbs);
     }
     out_inv.clear();
-    guard rsa_limbs_is_one(b[0..n]) else { return false; }
+    guard ct_declassify_u8(rsa_limbs_is_one_bit(b[0..n])) == 1 else { return false; }
     out_inv.append(v[0..n]);
     return true;
 }
@@ -445,6 +467,7 @@ fn rsa_mod_exp_blinded_ct(
     m:       const u8[:],
     out:     u8[..512]&,
 ) -> bool {
+    defer secure_scrub_stack();
     let k = m.len;
     var m_limbs:     u32[..128] = [];
     var r_limbs:     u32[..128] = [];
@@ -506,47 +529,81 @@ fn rsa_mod_exp_blinded(
     return rsa_mod_exp_blinded_ct(base, exp, pub_exp, m, out);
 }
 
-// Computes full-width exponent-blinded `out = base^exp mod m` via additive splitting `exp = (exp - r) + r`
-// using a `(exp.len - 1)`-byte CSPRNG mask `r`. Fails closed on CSPRNG error or degenerate exponent.
+// Computes fixed-width big-endian `d_plus = exp + r_be` without secret-dependent branching.
+inline fn rsa_add_blind_exp(exp: const u8[:], r_be: const u8[:], d_plus: u8[:]) {
+    guard r_be.len <= exp.len && d_plus.len == exp.len + 1 else { return; }
+    let offset = exp.len - r_be.len;
+    var carry: u32 = 0;
+    var idx = exp.len - 1;
+    while idx >= 0 {
+        let r_byte: u32 = if idx >= offset { r_be[idx - offset] } else { 0 };
+        let sum:    u32 = exp[idx] + r_byte + carry;
+        d_plus[idx + 1] = (sum & 0xFF) as u8;
+        carry = sum >> 8;
+        idx -= 1;
+    }
+    d_plus[0] = (carry & 0xFF) as u8;
+}
+
+// Computes constant-time exponent-blinded `out = base^exp mod m` for secret `exp >= 2`.
+// Evaluates `base^(exp + r) * (base^-1)^r mod m` in fixed width `exp.len` with zero leading-zero trimming.
 // crap:ignore
 fn rsa_mod_exp_exp_blinded(base: const u8[:], exp: const u8[:], m: const u8[:], out: u8[..512]&) -> bool {
+    defer secure_scrub_stack();
     let k = m.len;
     guard k >= RSA_MIN_MODULUS_BYTES && k <= 512 && base.len == k && exp.len > 1 && exp.len <= 512 else {
         return false;
     }
-    var r_be:     u8[512]   = [0; 512];
-    var d_masked: u8[512]   = [0; 512];
-    var part1:    u8[..512] = [];
-    var part2:    u8[..512] = [];
-    defer secure_zeroize_slice(r_be[0..exp.len]);
-    defer secure_zeroize_slice(d_masked[0..exp.len]);
-    defer secure_zeroize_slice(part1[..]);
-    defer secure_zeroize_slice(part2[..]);
+    guard (m[k - 1] & 1) == 1 && m[0] != 0 else { return false; }
+    let base_ok = ct_declassify_u8((((rsa_be_cmp(base, m) as! u32) >> 31) & 1) as u8);
+    let exp_ok = ct_declassify_u8(rsa_exp_gt_one_bit(exp));
+    guard base_ok != 0 && exp_ok != 0 else { return false; }
 
-    var split_ok = false;
-    for _ in 8 {
-        r_be[0] = 0x00;
-        guard csprng_fill(r_be[1..exp.len]) else { return false; }
-        r_be[exp.len - 1] |= 0x01;
-        var borrow:  u32 = 0;
-        var nonzero: u8  = 0;
-        var idx = exp.len - 1;
-        while idx >= 0 {
-            let diff = (exp[idx] as u32) - r_be[idx] - borrow;
-            let out_b = (diff & 0xFF) as u8;
-            d_masked[idx] = out_b;
-            nonzero |= out_b;
-            borrow = diff >> 31;
-            idx -= 1;
-        }
-        if borrow == 0 && nonzero != 0 {
-            split_ok = true;
-            break;
-        }
+    var r_be:           u8[32]     = [0; 32];
+    var d_plus:         u8[513]    = [0; 513];
+    var m_limbs:        u32[..128] = [];
+    var base_limbs:     u32[..128] = [];
+    var base_inv_limbs: u32[..128] = [];
+    var base_inv_be:    u8[..512]  = [];
+    var part1:          u8[..512]  = [];
+    var part2:          u8[..512]  = [];
+    var r_full:         u8[512]    = [0; 512];
+    var d1:             u8[512]    = [0; 512];
+    var d2:             u8[512]    = [0; 512];
+    defer {
+        secure_zeroize_32(r_be);
+        secure_zeroize_slice(d_plus[0..exp.len + 1]);
+        rsa_zeroize_limbs(base_limbs[..]);
+        rsa_zeroize_limbs(base_inv_limbs[..]);
+        secure_zeroize_slice(base_inv_be[..]);
+        secure_zeroize_slice(part1[..]);
+        secure_zeroize_slice(part2[..]);
+        secure_zeroize_slice(r_full[0..exp.len]);
+        secure_zeroize_slice(d1[0..exp.len]);
+        secure_zeroize_slice(d2[0..exp.len]);
+    };
+
+    rsa_be_to_limbs(m, m_limbs);
+    rsa_be_to_limbs(base, base_limbs);
+    if rsa_limbs_mod_inv(base_limbs[..], m_limbs[..], base_inv_limbs) {
+        let r_len = min(exp.len, 32);
+        guard csprng_fill(r_be[0..r_len]) else { return false; }
+        r_be[r_len - 1] |= 0x01;
+        rsa_add_blind_exp(exp, r_be[0..r_len], d_plus[0..exp.len + 1]);
+        rsa_limbs_to_be(base_inv_limbs[..], k, base_inv_be);
+        rsa_mod_exp_monty_ct(base, d_plus[0..exp.len + 1], m, part1);
+        rsa_mod_exp_monty_ct(base_inv_be[..], r_be[0..r_len], m, part2);
+        rsa_be_mul_mod(part1[..], part2[..], m, out);
+        return out.len == k;
     }
-    guard split_ok else { return false; }
-    guard rsa_mod_exp(base, d_masked[0..exp.len], m, part1) else { return false; }
-    guard rsa_mod_exp(base, r_be[0..exp.len], m, part2) else { return false; }
+
+    guard csprng_fill(r_full[0..exp.len]) else { return false; }
+    for i in exp.len {
+        d1[i] = exp[i] & r_full[i];
+        d2[i] = exp[i] & (~r_full[i]);
+    }
+    rsa_mod_exp_monty_ct(base, d1[0..exp.len], m, part1);
+    rsa_mod_exp_monty_ct(base, d2[0..exp.len], m, part2);
     rsa_be_mul_mod(part1[..], part2[..], m, out);
     return out.len == k;
 }

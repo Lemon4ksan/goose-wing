@@ -44,10 +44,8 @@ fn serialize_h1_request(
     url_val: const core::Url&,
     out:     u8[..4096]&,
 ) -> bool {
-    let saved_len = out.len;
     var committed = false;
-    defer if !committed { out.resize(saved_len); };
-    out.clear();
+    defer if !committed { out.clear(); };
     var target_buf: u8[..4096] = [];
     guard format_request_target(req, url_val, target_buf) else { return false; }
     let has_cl = req.header("Content-Length").len > 0;
@@ -62,6 +60,7 @@ fn serialize_h1_request(
         req.body.len.format_i64_dec(cl_buf);
         guard http::append_header(hdrs, "Content-Length", cl_buf[..]) else { return false; }
     }
+    out.clear();
     guard wire::encode_h1_request(
         req.method[..],
         target_buf[..],

@@ -54,6 +54,13 @@ uint8_t wing_dudect_mlkem768_keygen(sl_u8 d_seed, sl_u8 z_seed, sl_u8 ek_out,
 uint8_t wing_dudect_mlkem768_encaps(sl_u8 ek_in, sl_u8 m_seed, sl_u8 ct_out,
                                     sl_u8 ss_out);
 uint8_t wing_dudect_mlkem768_decapsulate(sl_u8 ct, sl_u8 dk, sl_u8 ss_out);
+uint8_t wing_dudect_ecdsa_p384_sign(sl_u8 priv, sl_u8 msg, sl_u8 out);
+uint8_t wing_dudect_p384_public_key(sl_u8 priv, sl_u8 out);
+uint8_t wing_dudect_p384_ecdh(sl_u8 priv, sl_u8 peer_pub, sl_u8 out);
+uint8_t wing_dudect_rsa_pkcs1_sha256_sign(sl_u8 n_be, sl_u8 d_be, sl_u8 msg,
+                                          sl_u8 out);
+uint8_t wing_dudect_xchacha20_poly1305(sl_u8 key, sl_u8 iv, sl_u8 pt,
+                                       sl_u8 out);
 #ifdef __cplusplus
 }
 #endif
@@ -199,6 +206,8 @@ typedef struct {
   uint8_t x25519_s[32];
   uint8_t x25519_p[32];
   uint8_t ecdsa_priv[32];
+  uint8_t p384_priv[48];
+  uint8_t xchacha_iv[24];
   uint8_t ed_seed[32];
   uint8_t msg[32];
   uint8_t rsa_base[64];
@@ -215,6 +224,7 @@ typedef struct {
   uint8_t rsa_n2048[256];
   uint8_t rsa_e3[1];
   uint8_t p256_peer_pub[65];
+  uint8_t p384_peer_pub[97];
   uint8_t mlkem_ek[1184];
   uint8_t mlkem_dk[2400];
   uint8_t out[512];
@@ -236,6 +246,14 @@ static int init_fixtures(DudectFixtures *f, uint64_t *rng) {
   }
   if (!wing_dudect_p256_public_key(make_slice(peer_priv, 32),
                                    make_slice(f->p256_peer_pub, 65))) {
+    return 0;
+  }
+  uint8_t peer_priv384[48];
+  for (int i = 0; i < 48; i++) {
+    peer_priv384[i] = (uint8_t)(0x41 + i);
+  }
+  if (!wing_dudect_p384_public_key(make_slice(peer_priv384, 48),
+                                   make_slice(f->p384_peer_pub, 97))) {
     return 0;
   }
 
@@ -266,6 +284,8 @@ static int init_fixtures(DudectFixtures *f, uint64_t *rng) {
     a->x25519_p[0] = 9;
     b->x25519_p[0] = 9;
     a->ecdsa_priv[31] = 1;
+    a->p384_priv[47] = 1;
+    memset(a->xchacha_iv, 0x11, 24);
     a->rsa_base[0] = 0x12;
     a->rsa_base[63] = 0x34;
     a->rsa_exp[0] = 0x80;
@@ -287,6 +307,10 @@ static int init_fixtures(DudectFixtures *f, uint64_t *rng) {
     fill_random(rng, b->ecdsa_priv, 32);
     b->ecdsa_priv[0] &= 0x7Fu;
     b->ecdsa_priv[31] |= 0x01u;
+    fill_random(rng, b->p384_priv, 48);
+    b->p384_priv[0] &= 0x7Fu;
+    b->p384_priv[47] |= 0x01u;
+    fill_random(rng, b->xchacha_iv, 24);
     fill_random(rng, b->ed_seed, 32);
     fill_random(rng, b->msg, 32);
     fill_random(rng, b->rsa_base, 64);
@@ -295,7 +319,8 @@ static int init_fixtures(DudectFixtures *f, uint64_t *rng) {
     b->rsa_exp[0] |= 0x80u;
     b->rsa_exp[63] |= 0x01u;
     fill_random(rng, b->rsa_d2048, 256);
-    b->rsa_d2048[0] |= 0x80u;
+    memset(b->rsa_d2048, 0x00, 64);
+    b->rsa_d2048[64] |= 0x80u;
     b->rsa_d2048[255] |= 0x01u;
     fill_random(rng, b->rsa_salt32, 32);
     memcpy(b->mlkem_ct, ct_valid, 1088);
@@ -396,6 +421,34 @@ static uint8_t run_mlkem768_decapsulate(DudectFixtures *f, ClassSlot *s) {
                                           make_slice(f->out, 32));
 }
 
+static uint8_t run_ecdsa_p384_sign(DudectFixtures *f, ClassSlot *s) {
+  return wing_dudect_ecdsa_p384_sign(make_slice(s->p384_priv, 48),
+                                     make_slice(s->msg, 32),
+                                     make_slice(f->out, 96));
+}
+
+static uint8_t run_p384_ecdh(DudectFixtures *f, ClassSlot *s) {
+  return wing_dudect_p384_ecdh(make_slice(s->p384_priv, 48),
+                               make_slice(f->p384_peer_pub, 97),
+                               make_slice(f->out, 48));
+}
+
+static uint8_t run_rsa_pkcs1_sha256_sign(DudectFixtures *f, ClassSlot *s) {
+  return wing_dudect_rsa_pkcs1_sha256_sign(
+      make_slice(f->rsa_n2048, 256), make_slice(s->rsa_d2048, 256),
+      make_slice(s->msg, 32), make_slice(f->out, 256));
+}
+
+static uint8_t run_xchacha20_poly1305(DudectFixtures *f, ClassSlot *s) {
+  uint8_t acc = 0;
+  for (int i = 0; i < 4; i++) {
+    acc ^= wing_dudect_xchacha20_poly1305(
+        make_slice(s->aes256_k, 32), make_slice(s->xchacha_iv, 24),
+        make_slice(s->gcm_pt, 64), make_slice(f->out, 80));
+  }
+  return acc;
+}
+
 typedef struct {
   const char *name;
   TargetFn fn;
@@ -408,11 +461,15 @@ static const TargetSpec g_targets[] = {
     {"aes_encrypt_block", run_aes256_block, 0},
     {"wing_aes_gcm_seal_scalar", run_aes_gcm_seal_scalar, 0},
     {"chacha20_poly1305", run_chacha20_poly1305, 0},
+    {"xchacha20_poly1305", run_xchacha20_poly1305, 0},
     {"x25519_scalarmult", run_x25519_scalarmult, 0},
     {"ecdsa_p256_sign", run_ecdsa_p256_sign, 0},
     {"p256_ecdh_shared_secret", run_p256_ecdh, 0},
+    {"ecdsa_p384_sign", run_ecdsa_p384_sign, 600},
+    {"p384_ecdh_shared_secret", run_p384_ecdh, 600},
     {"ed25519_sign", run_ed25519_sign, 0},
     {"rsa_mod_exp", run_rsa_mod_exp, 0},
+    {"rsa_pkcs1_sha256_sign", run_rsa_pkcs1_sha256_sign, 400},
     {"rsa_pss_sha256_sign_blinded", run_rsa_pss_sign_blinded, 2000},
     {"mlkem768_decapsulate", run_mlkem768_decapsulate, 0},
 };

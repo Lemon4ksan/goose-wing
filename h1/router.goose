@@ -98,9 +98,8 @@ inline fn apply_canonical_segment<B>(seg: const u8[:], out: B&) -> bool {
 //   raw_path = "/api/v1/../users//42?active=1", out = []
 //   returns: true, out = "/api/users/42"
 fn canonicalize_path<B>(raw_path: const u8[:], out: B&) -> bool {
-    let saved_len = out.len;
     var committed = false;
-    defer if !committed { out.resize(saved_len); };
+    defer if !committed { out.clear(); };
     out.clear();
     guard raw_path.len > 0 else {
         guard buf_push(out, '/') else { return false; }

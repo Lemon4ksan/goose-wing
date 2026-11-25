@@ -383,6 +383,7 @@ fn mlkem768_decapsulate(
     sk:            const u8[:],
     shared_secret: u8[:],
 ) -> bool {
+    defer core::secure_scrub_stack();
     guard shared_secret.len >= rfc::MLKEM768_SHARED_SECRET_LEN else { return false; }
     guard ct.len == rfc::MLKEM768_CIPHERTEXT_LEN else { return false; }
     guard sk.len == rfc::MLKEM768_SECRET_KEY_LEN else { return false; }
@@ -515,6 +516,7 @@ fn compute_kpke_keygen_row(
 // FIPS 203 Section 6.1 & 7.1 Algorithms 13 & 16: ML-KEM-768 Key Generation (ML-KEM.KeyGen_internal).
 // Generates 1184-byte encapsulation key `ek` and 2400-byte decapsulation key `dk` from seeds `d` and `z`.
 fn mlkem768_keygen(d_seed: const u8[32]&, z_seed: const u8[32]&) -> u8[1184], u8[2400] {
+    defer core::secure_scrub_stack();
     let k_param: u8[1] = [3]; // k = 3 for ML-KEM-768
     var g_out = ml_kem_g(d_seed[..], k_param[..]);
 

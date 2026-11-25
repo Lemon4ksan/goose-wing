@@ -190,9 +190,8 @@ fn seal_binary_hkdf_aes<B>(
     defer core::secure_zeroize_slice(nonce12[..]);
     guard init_hkdf_salt_nonce(nonce_seed, now_sec, cookie_name, salt, nonce12) else { return false; }
 
-    let saved_len = out.len;
     var committed = false;
-    defer if !committed { core::secure_zeroize_slice(out[..]); out.resize(saved_len); };
+    defer if !committed { core::secure_zeroize_slice(out[..]); out.clear(); };
 
     out.clear();
     out.push(WIRE_VER_HKDF_AES_GCM);
@@ -209,6 +208,7 @@ fn seal_binary_hkdf_aes<B>(
         slot.encryption_key, salt, nonce12, plaintext, aad_stack[..], out[ct_start..],
     );
     guard ok_seal else {
+        core::secure_zeroize_slice(out[..]);
         out.clear();
         return false;
     }
@@ -233,9 +233,8 @@ fn seal_binary_xchacha20<B>(
     defer core::secure_zeroize_32(entropy);
     guard ok_ent else { return false; }
 
-    let saved_len = out.len;
     var committed = false;
-    defer if !committed { core::secure_zeroize_slice(out[..]); out.resize(saved_len); };
+    defer if !committed { core::secure_zeroize_slice(out[..]); out.clear(); };
 
     out.clear();
     let now_u = now_sec as u64;
@@ -253,6 +252,7 @@ fn seal_binary_xchacha20<B>(
     build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, now_u, cookie_name, aad_stack);
     let tag, ok_seal = core::xchacha20_poly1305_seal(slot.encryption_key, nonce24, plaintext, aad_stack[..], out);
     guard ok_seal else {
+        core::secure_zeroize_slice(out[..]);
         out.clear();
         return false;
     }

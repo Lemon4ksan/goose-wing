@@ -1013,6 +1013,52 @@ void wing_secure_zeroize_i32(wing_i32_rw slice) {
     wing_zeroize_raw(slice.data, (size_t)slice.len * sizeof(int32_t));
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#define WING_SIMD_NOINLINE __attribute__((noinline))
+#elif defined(_MSC_VER)
+#define WING_SIMD_NOINLINE __declspec(noinline)
+#else
+#define WING_SIMD_NOINLINE
+#endif
+
+// Compiler value barriers preventing -O2/-O3 from turning CT bitmasks into conditional branches.
+uint8_t wing_ct_barrier_u8(uint8_t v) {
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ __volatile__("" : "+r"(v));
+    return v;
+#else
+    volatile uint8_t tmp = v;
+    return tmp;
+#endif
+}
+
+uint32_t wing_ct_barrier_u32(uint32_t v) {
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ __volatile__("" : "+r"(v));
+    return v;
+#else
+    volatile uint32_t tmp = v;
+    return tmp;
+#endif
+}
+
+uint64_t wing_ct_barrier_u64(uint64_t v) {
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ __volatile__("" : "+r"(v));
+    return v;
+#else
+    volatile uint64_t tmp = v;
+    return tmp;
+#endif
+}
+
+// Overwrites dead callee stack spills left behind by constant-time Goose crypto frames.
+WING_SIMD_NOINLINE
+void wing_secure_scrub_stack(void) {
+    volatile uint8_t scrub[1024];
+    wing_zeroize_raw((void *)scrub, sizeof(scrub));
+}
+
 // Constant-time byte copy using 64-bit SWAR words
 void wing_ct_copy_bytes(wing_bytes_rw dst, wing_bytes_ro src) {
     if (!dst.data || !src.data) return;

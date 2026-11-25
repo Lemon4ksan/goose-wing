@@ -192,10 +192,7 @@ fn serve_live_tls13_session(
     record_payload: const u8[:],
 ) {
     let slot_idx, ok_hs = tls::server_handshake_with_ch(conn, record_payload, tls_cfg);
-    guard ok_hs else {
-        send_fatal_tls_alert(conn, TLS_ALERT_ILLEGAL_PARAMETER);
-        return;
-    }
+    guard ok_hs else { return; }
 
     var pipe = core::new_pipe_buffer();
     var cork = core::new_cork_buffer();

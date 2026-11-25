@@ -1272,9 +1272,9 @@ fn test_f001_samesite_lax_after_cross_site_redirect() {
 
     let curr_url = core::new_url("https://target.example.com/landing");
     var ctx = client_internal::RequestExecutionContext {
+        site_for_cookies:   cookie::null_site_for_cookies(),
         is_main_frame:      true,
         had_cross_site_hop: true,
-        site_for_cookies:   cookie::null_site_for_cookies(),
         ..
     };
     let samesite_eval = client_internal::compute_hop_samesite_context(ctx, curr_url, false);

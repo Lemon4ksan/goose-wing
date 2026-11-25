@@ -558,7 +558,7 @@ def build_ocsp_response(
         + der_gentime(this_update)
         + der_ctx(0, der_gentime(next_update), constructed=True)
     )
-    resp_id = der_ctx(2, der_octet_string(issuer_key_hash), constructed=True)
+    resp_id = der_ctx(2, der_octet_string(issuer_key.skid), constructed=True)
     tbs_resp = der_seq(resp_id + der_gentime(this_update) + der_seq(single))
     sig_alg = der_seq(der_oid(OID_ECDSA_SHA256))
     sig = bytearray(issuer_key.sign_der(tbs_resp))

@@ -6,6 +6,7 @@
 namespace core;
 
 import std;
+import core.math;
 import core.crypto.ct;
 import core.crypto.sha;
 
@@ -148,7 +149,7 @@ fn u256_sub_mod(a: U256, b: U256, m: const u32[8]&) -> U256 {
 // Constant-time 256-bit integer selection.
 // crap:ignore
 inline fn u256_select(bit: u32, if_true: U256, if_false: U256) -> U256 {
-    let mask = 0 - (bit & 1);
+    let mask = ct_barrier_u32(0 - (bit & 1));
     var out = U256 { .. };
     for i in 8 {
         out.v[i] = (if_false.v[i] & (~mask)) | (if_true.v[i] & mask);
@@ -603,6 +604,7 @@ fn ecdsa_p256_public_key(priv_key: const u8[32]&) -> u8[65] {
 // (`X` coordinate of `d * peer_pub`). Validates `peer_pub` is on curve and rejects point at infinity.
 // crap:ignore
 fn p256_ecdh_shared_secret(priv_key: const u8[32]&, peer_pub: const u8[:]) -> u8[32], bool {
+    defer secure_scrub_stack();
     var zero: u8[32] = [0; 32];
     let peer_pt, ok_pt = decode_p256_public_key(peer_pub);
     guard ok_pt else { return zero, false; }
@@ -663,6 +665,7 @@ fn rfc6979_p256_next_k(k_hmac: u8[32]&, v_hmac: u8[32]&, seed_buf: u8[97]&, retr
 // Deterministic RFC 6979 ECDSA P-256 SHA-256 signature generation returning 64-byte `r || s`.
 // crap:ignore
 fn ecdsa_p256_sign(priv_key: const u8[32]&, message: const u8[:]) -> u8[64] {
+    defer secure_scrub_stack();
     var d = u256_add_mod(u256_from_be(priv_key), U256 { .. }, P256_ORDER);
     defer zeroize_u256(d);
     guard ct_declassify_u8(u256_nonzero_bit(d) as u8) != 0 else { return [0; 64]; }
@@ -859,6 +862,13 @@ inline fn u384_nonzero_bit(a: U384) -> i32 {
     return ((acc | (0 - acc)) >> 31) as i32;
 }
 
+// Branchless predicate returning 1 if `1 <= a < P384_ORDER`, else 0.
+// crap:ignore
+inline fn u384_in_order_bit(a: U384) -> u8 {
+    let _, borrow = u384_sub_borrow(a, P384_ORDER);
+    return ((u384_nonzero_bit(a) as u32) & (borrow as u32)) as u8;
+}
+
 // Branchless constant-time 384-bit comparison: returns -1 if a < b, 0 if a == b, 1 if a > b.
 // crap:ignore
 inline fn u384_cmp(a: U384, b: const u32[12]&) -> i32 {
@@ -928,7 +938,7 @@ fn u384_sub_mod(a: U384, b: U384, m: const u32[12]&) -> U384 {
 // Constant-time 384-bit integer selection.
 // crap:ignore
 inline fn u384_select(bit: u32, if_true: U384, if_false: U384) -> U384 {
-    let mask = 0 - (bit & 1);
+    let mask = ct_barrier_u32(0 - (bit & 1));
     var out = U384 { .. };
     for i in 12 {
         out.v[i] = (if_false.v[i] & (~mask)) | (if_true.v[i] & mask);
@@ -1162,16 +1172,15 @@ fn p384_projective_add(p1: P384Projective, p2: P384Projective) -> P384Projective
 // Converts a homogeneous projective P-384 point `(X : Y : Z)` to affine `(X / Z, Y / Z)`.
 // crap:ignore
 fn p384_projective_to_affine(pt: P384Projective) -> P384Point {
-    let z_zero = u384_is_zero(pt.z);
+    let z_zero_bit = (1 ^ u384_nonzero_bit(pt.z)) as u32;
     let z_inv = u384_inv_mod(pt.z, P384_MOD);
     let x = u384_mul_mod(pt.x, z_inv, P384_MOD);
     let y = u384_mul_mod(pt.y, z_inv, P384_MOD);
-    let inf_bit: u32 = if z_zero { 1 } else { 0 };
     let zero = U384 { .. };
     return P384Point {
-        x:        u384_select(inf_bit, zero, x),
-        y:        u384_select(inf_bit, zero, y),
-        infinity: z_zero,
+        x:        u384_select(z_zero_bit, zero, x),
+        y:        u384_select(z_zero_bit, zero, y),
+        infinity: z_zero_bit != 0,
     };
 }
 
@@ -1348,7 +1357,7 @@ fn rfc6979_p384_next_k(k_hmac: u8[48]&, v_hmac: u8[48]&, seed_buf: u8[145]&, ret
     }
     v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
     var k_scalar = u384_from_be(v_hmac);
-    while u384_is_zero(k_scalar) || u384_cmp(k_scalar, P384_ORDER) >= 0 {
+    while ct_declassify_u8(u384_in_order_bit(k_scalar)) == 0 {
         for i in 48 { seed_buf[i] = v_hmac[i]; }
         seed_buf[48] = 0x00;
         k_hmac = hmac_sha384(k_hmac[..], seed_buf[..49]);
@@ -1362,9 +1371,10 @@ fn rfc6979_p384_next_k(k_hmac: u8[48]&, v_hmac: u8[48]&, seed_buf: u8[145]&, ret
 // Deterministic RFC 6979 ECDSA P-384 SHA-384 signature generation returning 96-byte `r || s`.
 // crap:ignore
 fn ecdsa_p384_sign(priv_key: const u8[48]&, message: const u8[:]) -> u8[96] {
+    defer secure_scrub_stack();
     var d = u384_add_mod(u384_from_be(priv_key), U384 { .. }, P384_ORDER);
     defer zeroize_u384(d);
-    guard !u384_is_zero(d) else { return [0; 96]; }
+    guard ct_declassify_u8(u384_nonzero_bit(d) as u8) != 0 else { return [0; 96]; }
     let msg_hash = sha384(message);
     let z = u384_add_mod(u384_from_be(msg_hash), U384 { .. }, P384_ORDER);
     var x_be = u384_to_be(d);
@@ -1390,7 +1400,7 @@ fn ecdsa_p384_sign(priv_key: const u8[48]&, message: const u8[:]) -> u8[96] {
     defer zeroize_u384(rd);
     defer zeroize_u384(z_plus_rd);
     var retry = false;
-    while u384_is_zero(r_val) || u384_is_zero(s_val) {
+    while ct_declassify_u8((u384_nonzero_bit(r_val) & u384_nonzero_bit(s_val)) as u8) == 0 {
         k_scalar = rfc6979_p384_next_k(k_hmac, v_hmac, seed_buf, retry);
         retry = true;
         let r_pt = p384_scalar_mul(g, k_scalar);
@@ -1434,14 +1444,16 @@ fn p384_ecdh_public_key(priv_key: const u8[48]&) -> u8[97], bool {
 // Computes an RFC 8446 Section 4.2.8.2 NIST P-384 (secp384r1) ECDH 48-byte shared secret.
 // crap:ignore
 fn p384_ecdh_shared_secret(priv_key: const u8[48]&, peer_pub: const u8[:]) -> u8[48], bool {
+    defer secure_scrub_stack();
     var zero: u8[48] = [0; 48];
     let peer_pt, ok_pt = decode_p384_public_key(peer_pub);
     guard ok_pt else { return zero, false; }
     var d = u384_add_mod(u384_from_be(priv_key), U384 { .. }, P384_ORDER);
     defer zeroize_u384(d);
-    guard !u384_is_zero(d) else { return zero, false; }
+    guard ct_declassify_u8(u384_nonzero_bit(d) as u8) != 0 else { return zero, false; }
     let shared_pt = p384_scalar_mul(peer_pt, d);
-    guard !shared_pt.infinity else { return zero, false; }
+    let finite_bit = (u384_nonzero_bit(shared_pt.x) | u384_nonzero_bit(shared_pt.y)) as u8;
+    guard ct_declassify_u8(finite_bit) != 0 else { return zero, false; }
     return u384_to_be(shared_pt.x), true;
 }
 

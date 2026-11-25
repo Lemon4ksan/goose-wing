@@ -8,6 +8,8 @@
 namespace core;
 
 import std;
+import core.math;
+import core.crypto.ct;
 
 // ---- Mathematical Constants & Base Point --------------------------------
 
@@ -96,7 +98,7 @@ fn fe_eq(a: Fe10, b: Fe10) -> bool {
 
 // Branchless conditional selection: if cond == 1 return a, else b.
 inline fn fe_select(cond: u8, a: Fe10, b: Fe10) -> Fe10 {
-    let mask = -((cond & 1) as i64);
+    let mask = ct_barrier_u64(0 - ((cond & 1) as u64)) as! i64;
     var out = Fe10 { .. };
     for i in 10 {
         out.v[i] = b.v[i] ^ (mask & (a.v[i] ^ b.v[i]));
@@ -336,13 +338,13 @@ inline fn sc_sub_l_inplace(rem: u64[4]&) {
         let rj = rem[j];
         let lj = ED25519_L_WORDS[j];
         let sub1 = rj - lj;
-        let b1: u64 = if rj < lj { 1 } else { 0 };
+        let b1 = ct_lt_u64(rj, lj);
         let sub2 = sub1 - borrow;
-        let b2: u64 = if sub1 < borrow { 1 } else { 0 };
+        let b2 = ct_lt_u64(sub1, borrow);
         diff[j] = sub2;
         borrow = b1 | b2;
     }
-    let mask: u64 = borrow - 1;
+    let mask: u64 = ct_barrier_u64(borrow - 1);
     for j in 4 {
         rem[j] = (rem[j] & (~mask)) | (diff[j] & mask);
     }
@@ -450,6 +452,7 @@ fn ed25519_is_small_order(p: EdPoint) -> bool {
 
 // Derives a 32-byte Ed25519 public key from a 32-byte secret seed.
 fn ed25519_public_key(seed: const u8[32]&) -> u8[32] {
+    defer secure_scrub_stack();
     var h = sha512(seed[..]);
 
     var s: u8[32] = [0; 32];
@@ -477,6 +480,7 @@ fn ed25519_keypair(seed: const u8[32]&) -> Ed25519KeyPair {
 // Signs an arbitrary byte message using a 32-byte seed (RFC 8032 Section 5.1.6).
 // Returns 64-byte signature (R || S).
 fn ed25519_sign(seed: const u8[32]&, message: const u8[:]) -> u8[64] {
+    defer secure_scrub_stack();
     var h = sha512(seed[..]);
 
     var s:      u8[32] = [0; 32];

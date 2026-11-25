@@ -20,9 +20,21 @@ fn copy_16(src: const u8[:], dst: u8[16]&) -> bool {
     return true;
 }
 
+fn copy_24(src: const u8[:], dst: u8[24]&) -> bool {
+    guard src.len == 24 else { return false; }
+    for i in 24 { dst[i] = src[i]; }
+    return true;
+}
+
 fn copy_32(src: const u8[:], dst: u8[32]&) -> bool {
     guard src.len == 32 else { return false; }
     for i in 32 { dst[i] = src[i]; }
+    return true;
+}
+
+fn copy_48(src: const u8[:], dst: u8[48]&) -> bool {
+    guard src.len == 48 else { return false; }
+    for i in 48 { dst[i] = src[i]; }
     return true;
 }
 
@@ -211,6 +223,122 @@ export fn wing_ctgrind_mlkem768_decapsulate(
 ) -> u8 {
     guard ct.len == 1088 && dk.len == 2400 && ss_out.len >= 32 else { return 0; }
     guard tls_internal::mlkem768_decapsulate(ct, dk, ss_out) else { return 0; }
+    return 1;
+}
+
+export fn wing_ctgrind_ecdsa_p384_sign(
+    priv: const u8[:],
+    msg:  const u8[:],
+    out:  u8[:],
+) -> u8 {
+    var k: u8[48] = [0; 48];
+    defer core::secure_zeroize_48(k);
+    guard copy_48(priv, k) && out.len >= 96 else { return 0; }
+    let sig = core::ecdsa_p384_sign(k, msg);
+    for i in 96 { out[i] = sig[i]; }
+    return 1;
+}
+
+export fn wing_ctgrind_p384_public_key(priv: const u8[:], out: u8[:]) -> u8 {
+    var k: u8[48] = [0; 48];
+    defer core::secure_zeroize_48(k);
+    guard copy_48(priv, k) && out.len >= 97 else { return 0; }
+    let pub = core::ecdsa_p384_public_key(k);
+    for i in 97 { out[i] = pub[i]; }
+    return 1;
+}
+
+export fn wing_ctgrind_p384_ecdh(
+    priv:     const u8[:],
+    peer_pub: const u8[:],
+    out:      u8[:],
+) -> u8 {
+    var k: u8[48] = [0; 48];
+    defer core::secure_zeroize_48(k);
+    guard copy_48(priv, k) && out.len >= 48 else { return 0; }
+    let ss, ok = core::p384_ecdh_shared_secret(k, peer_pub);
+    guard ok else { return 0; }
+    for i in 48 { out[i] = ss[i]; }
+    return 1;
+}
+
+export fn wing_ctgrind_rsa_pkcs1_sha256_sign(
+    n_be: const u8[:],
+    d_be: const u8[:],
+    msg:  const u8[:],
+    out:  u8[:],
+) -> u8 {
+    let k = n_be.len;
+    guard k >= core::RSA_MIN_MODULUS_BYTES && k <= 512 && out.len >= k else { return 0; }
+    var sig: u8[..512] = [];
+    defer core::secure_zeroize_slice(sig[..]);
+    guard core::rsa_pkcs1_sha256_sign(n_be, d_be, msg, sig) && sig.len == k else { return 0; }
+    for i in sig.len { out[i] = sig[i]; }
+    return 1;
+}
+
+export fn wing_ctgrind_rsa_pss_sha256_sign(
+    n_be: const u8[:],
+    d_be: const u8[:],
+    salt: const u8[:],
+    msg:  const u8[:],
+    out:  u8[:],
+) -> u8 {
+    let k = n_be.len;
+    guard k >= core::RSA_MIN_MODULUS_BYTES && k <= 512 && out.len >= k else { return 0; }
+    var sig: u8[..512] = [];
+    defer core::secure_zeroize_slice(sig[..]);
+    guard core::rsa_pss_sha256_sign(n_be, d_be, salt, msg, sig) && sig.len == k else { return 0; }
+    for i in sig.len { out[i] = sig[i]; }
+    return 1;
+}
+
+export fn wing_ctgrind_rsa_pss_sha512_sign(
+    n_be: const u8[:],
+    d_be: const u8[:],
+    salt: const u8[:],
+    msg:  const u8[:],
+    out:  u8[:],
+) -> u8 {
+    let k = n_be.len;
+    guard k >= core::RSA_MIN_MODULUS_BYTES && k <= 512 && out.len >= k else { return 0; }
+    var sig: u8[..512] = [];
+    defer core::secure_zeroize_slice(sig[..]);
+    guard core::rsa_pss_sha512_sign(n_be, d_be, salt, msg, sig) && sig.len == k else { return 0; }
+    for i in sig.len { out[i] = sig[i]; }
+    return 1;
+}
+
+export fn wing_ctgrind_xchacha20_poly1305(
+    key: const u8[:],
+    iv:  const u8[:],
+    pt:  const u8[:],
+    out: u8[:],
+) -> u8 {
+    var k: u8[32] = [0; 32];
+    var n: u8[24] = [0; 24];
+    defer core::secure_zeroize_32(k);
+    guard copy_32(key, k) && copy_24(iv, n) else { return 0; }
+    var ct_buf: u8[..272] = [];
+    let tag, ok = core::xchacha20_poly1305_seal(k, n, pt, "", ct_buf);
+    guard ok && ct_buf.try_append(tag[..]) && ct_buf.len <= out.len else { return 0; }
+    for i in ct_buf.len { out[i] = ct_buf[i]; }
+    return 1;
+}
+
+export fn wing_ctgrind_hmac_hkdf_sha256(
+    key:  const u8[:],
+    salt: const u8[:],
+    info: const u8[:],
+    out:  u8[:],
+) -> u8 {
+    var k: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(k);
+    guard copy_32(key, k) && out.len >= 64 else { return 0; }
+    let mac = core::hmac_sha256(k[..], info);
+    let okm = core::hkdf_sha256_32(k, salt, info);
+    let okm_dst = out[32..64];
+    for i in 32 { out[i] = mac[i]; okm_dst[i] = okm[i]; }
     return 1;
 }
 

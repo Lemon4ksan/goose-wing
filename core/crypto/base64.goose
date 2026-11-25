@@ -278,12 +278,6 @@ fn base64_decode<B>(encoded: const u8[:], out: B&) -> bool {
         idx++;
     }
 
-    // RFC 4648 §3.5: single lone 6-bit char (len % 4 == 1) is impossible
-    guard bits != 6 else { return b64_fail(out); }
-    if bits > 0 {
-        let pad_mask = (((1 as u32) << bits) - 1);
-        guard (buf & pad_mask) == 0 else { return b64_fail(out); }
-    }
     return true;
 }
 

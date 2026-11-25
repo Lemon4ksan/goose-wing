@@ -197,7 +197,7 @@ fn poly1305_finalize(
     var g3 = h3 + c; c = g3 >> 26; g3 &= 0x3FFFFFF;
     var g4 = h4 + c - (1 << 26);
 
-    let mask = (g4 >> 63) - 1;
+    let mask = ct_barrier_u64((g4 >> 63) - 1);
     let nmask = ~mask;
     h0 = (h0 & nmask) | (g0 & mask);
     h1 = (h1 & nmask) | (g1 & mask);

@@ -79,7 +79,7 @@ fn ::strip_suffix_fold(s: const u8[:], suffix: const u8[:]) -> const u8[:], bool
     return core::strip_suffix_fold(s, suffix);
 }
 fn ::each_non_empty_token<F>(src: const u8[:], delim: u8) {
-    core::each_non_empty_token<F>(src, delim);
+    core::each_non_empty_token(src, delim) { part => F(part); };
 }
 
 fn ::parse_u64_dec(s: const u8[:]) -> u64, bool { return core::parse_u64_dec(s); }

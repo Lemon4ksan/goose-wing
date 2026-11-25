@@ -291,7 +291,10 @@ fn establish_https_proxy_transport(
     }
     let host_is_hsts = session.enable_hsts && session.hsts.is_hsts_host(proxy_host, now_sec);
     let effective_insecure_skip = session.insecure_skip_verify && !host_is_hsts;
-    if session.tls_backend != tls::TlsBackendKind.PureGoose {
+    let force_pure = session.tls_backend == tls::TlsBackendKind.PureGoose ||
+        (session.tls_backend == tls::TlsBackendKind.Auto &&
+            (session.virtual_clock_us > 0 || session.tls_expired_leaf_grace_sec > 0));
+    if !force_pure {
         let ep_slot, _, tls_err = establish_backend_tls_connection(
             session, raw_sock, proxy_host, effective_insecure_skip, eff_timeout, "http/1.1",
         );
@@ -461,7 +464,11 @@ fn establish_https_transport(
 ) -> net::Transport, net::NegotiatedProtocol, http::Error {
     let host_is_hsts = session.enable_hsts && session.hsts.is_hsts_host(host_str, now_sec);
     let effective_insecure_skip = session.insecure_skip_verify && !host_is_hsts;
-    if session.tls_backend != tls::TlsBackendKind.PureGoose {
+    let force_pure = session.tls_backend == tls::TlsBackendKind.PureGoose ||
+        (session.tls_backend == tls::TlsBackendKind.Auto &&
+            (ech_list.len > 0 || session.virtual_clock_us > 0 ||
+             session.tls_expired_leaf_grace_sec > 0 || session.enable_ktls_offload));
+    if !force_pure {
         let ep_slot, neg_alpn, tls_err = establish_backend_tls_connection(
             session, sock, host_str, effective_insecure_skip, tls_timeout_ms,
         );

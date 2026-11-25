@@ -15,9 +15,12 @@ inline fn ct_eq_u8(a: u8, b: u8) -> u8 {
     return (1 - non_zero) as u8;
 }
 
+extern fn ct_barrier_u8(val: u8) -> u8 = "wing_ct_barrier_u8";
+extern fn secure_scrub_stack() = "wing_secure_scrub_stack";
+
 // Branchless conditional selection: returns if_true when bit == 1, if_false when bit == 0.
 inline fn ct_select_u8(bit: u8, if_true: u8, if_false: u8) -> u8 {
-    let mask = 0 - (bit & 1);
+    let mask = ct_barrier_u8(0 - (bit & 1));
     return (if_false & (~mask)) | (if_true & mask);
 }
 

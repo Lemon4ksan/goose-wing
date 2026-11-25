@@ -86,6 +86,19 @@ uint8_t wing_ctgrind_mlkem768_keygen(sl_u8 d_seed, sl_u8 z_seed, sl_u8 ek_out,
 uint8_t wing_ctgrind_mlkem768_encaps(sl_u8 ek_in, sl_u8 m_seed, sl_u8 ct_out,
                                      sl_u8 ss_out);
 uint8_t wing_ctgrind_mlkem768_decapsulate(sl_u8 ct, sl_u8 dk, sl_u8 ss_out);
+uint8_t wing_ctgrind_ecdsa_p384_sign(sl_u8 priv, sl_u8 msg, sl_u8 out);
+uint8_t wing_ctgrind_p384_public_key(sl_u8 priv, sl_u8 out);
+uint8_t wing_ctgrind_p384_ecdh(sl_u8 priv, sl_u8 peer_pub, sl_u8 out);
+uint8_t wing_ctgrind_rsa_pkcs1_sha256_sign(sl_u8 n_be, sl_u8 d_be, sl_u8 msg,
+                                           sl_u8 out);
+uint8_t wing_ctgrind_rsa_pss_sha256_sign(sl_u8 n_be, sl_u8 d_be, sl_u8 salt,
+                                         sl_u8 msg, sl_u8 out);
+uint8_t wing_ctgrind_rsa_pss_sha512_sign(sl_u8 n_be, sl_u8 d_be, sl_u8 salt,
+                                         sl_u8 msg, sl_u8 out);
+uint8_t wing_ctgrind_xchacha20_poly1305(sl_u8 key, sl_u8 iv, sl_u8 pt,
+                                        sl_u8 out);
+uint8_t wing_ctgrind_hmac_hkdf_sha256(sl_u8 key, sl_u8 salt, sl_u8 info,
+                                      sl_u8 out);
 #ifdef __cplusplus
 }
 #endif
@@ -405,6 +418,176 @@ static int test_mlkem768_decapsulate(void) {
           memcmp(ss_rej, ss_enc, 32) != 0);
 }
 
+static int test_ecdsa_p384_sign(void) {
+  uint8_t priv[48];
+  uint8_t msg[32];
+  uint8_t sig[96] = {0};
+  for (int i = 0; i < 48; i++) {
+    priv[i] = (uint8_t)(0x31 + i);
+  }
+  for (int i = 0; i < 32; i++) {
+    msg[i] = (uint8_t)(0xA0 + i);
+  }
+
+  CT_POISON(priv, sizeof(priv));
+  CT_POISON(msg, sizeof(msg));
+  uint8_t ok = wing_ctgrind_ecdsa_p384_sign(
+      make_slice(priv, 48), make_slice(msg, 32), make_slice(sig, 96));
+  CT_UNPOISON(sig, sizeof(sig));
+  CT_UNPOISON(priv, sizeof(priv));
+  CT_UNPOISON(msg, sizeof(msg));
+  uint8_t acc = 0;
+  for (int i = 0; i < 96; i++) {
+    acc |= sig[i];
+  }
+  return (ok == 1u && acc != 0u);
+}
+
+static int test_p384_ecdh(void) {
+  uint8_t priv[48];
+  uint8_t peer_priv[48];
+  uint8_t peer_pub[97] = {0};
+  uint8_t ss[48] = {0};
+  for (int i = 0; i < 48; i++) {
+    priv[i] = (uint8_t)(0x21 + i);
+    peer_priv[i] = (uint8_t)(0x51 + i);
+  }
+  if (!wing_ctgrind_p384_public_key(make_slice(peer_priv, 48),
+                                    make_slice(peer_pub, 97))) {
+    return 0;
+  }
+
+  CT_POISON(priv, sizeof(priv));
+  uint8_t ok = wing_ctgrind_p384_ecdh(
+      make_slice(priv, 48), make_slice(peer_pub, 97), make_slice(ss, 48));
+  CT_UNPOISON(ss, sizeof(ss));
+  CT_UNPOISON(priv, sizeof(priv));
+  uint8_t acc = 0;
+  for (int i = 0; i < 48; i++) {
+    acc |= ss[i];
+  }
+  return (ok == 1u && acc != 0u);
+}
+
+static int test_rsa_exp_blinded_signs(void) {
+  uint8_t n2048[256];
+  uint8_t d2048[256];
+  uint8_t d_padded[258];
+  uint8_t e3[1] = {0x03};
+  uint8_t salt32[32];
+  uint8_t salt64[64];
+  uint8_t msg[32];
+  uint8_t sig1[256] = {0};
+  uint8_t sig2[256] = {0};
+  uint8_t sig_pss256[256] = {0};
+  uint8_t sig_pss512[256] = {0};
+  memset(n2048, 0xFF, sizeof(n2048));
+  n2048[253] = 0xE2;
+  n2048[254] = 0x5C;
+  n2048[255] = 0xEF;
+  memset(d2048, 0xAA, sizeof(d2048));
+  d2048[253] = 0x96;
+  d2048[254] = 0xE8;
+  d2048[255] = 0x9F;
+  d_padded[0] = 0x00;
+  d_padded[1] = 0x00;
+  memcpy(d_padded + 2, d2048, 256);
+  memset(salt32, 0x42, sizeof(salt32));
+  memset(salt64, 0x67, sizeof(salt64));
+  memset(msg, 0x5A, sizeof(msg));
+
+  CT_POISON(d2048, sizeof(d2048));
+  CT_POISON(d_padded, sizeof(d_padded));
+  CT_POISON(salt32, sizeof(salt32));
+  CT_POISON(salt64, sizeof(salt64));
+  CT_POISON(msg, sizeof(msg));
+
+  uint8_t ok1 = wing_ctgrind_rsa_pkcs1_sha256_sign(
+      make_slice(n2048, 256), make_slice(d2048, 256), make_slice(msg, 32),
+      make_slice(sig1, 256));
+  uint8_t ok2 = wing_ctgrind_rsa_pkcs1_sha256_sign(
+      make_slice(n2048, 256), make_slice(d_padded, 258), make_slice(msg, 32),
+      make_slice(sig2, 256));
+  uint8_t ok3 = wing_ctgrind_rsa_pss_sha256_sign(
+      make_slice(n2048, 256), make_slice(d2048, 256), make_slice(salt32, 32),
+      make_slice(msg, 32), make_slice(sig_pss256, 256));
+  uint8_t ok4 = wing_ctgrind_rsa_pss_sha512_sign(
+      make_slice(n2048, 256), make_slice(d2048, 256), make_slice(salt64, 64),
+      make_slice(msg, 32), make_slice(sig_pss512, 256));
+
+  CT_UNPOISON(sig1, sizeof(sig1));
+  CT_UNPOISON(sig2, sizeof(sig2));
+  CT_UNPOISON(sig_pss256, sizeof(sig_pss256));
+  CT_UNPOISON(sig_pss512, sizeof(sig_pss512));
+  CT_UNPOISON(d2048, sizeof(d2048));
+  CT_UNPOISON(d_padded, sizeof(d_padded));
+  CT_UNPOISON(salt32, sizeof(salt32));
+  CT_UNPOISON(salt64, sizeof(salt64));
+  CT_UNPOISON(msg, sizeof(msg));
+
+  uint8_t pss_ok = wing_ctgrind_rsa_pss_verify(
+      make_slice(n2048, 256), make_slice(e3, 1), make_slice(msg, 32),
+      make_slice(sig_pss256, 256));
+  return (ok1 == 1u && ok2 == 1u && ok3 == 1u && ok4 == 1u &&
+          pss_ok == 1u && memcmp(sig1, sig2, 256) == 0);
+}
+
+static int test_xchacha20_poly1305(void) {
+  uint8_t key[32];
+  uint8_t iv[24];
+  uint8_t pt[64];
+  uint8_t out[80] = {0};
+  for (int i = 0; i < 32; i++) {
+    key[i] = (uint8_t)(0x80 + i);
+  }
+  for (int i = 0; i < 24; i++) {
+    iv[i] = (uint8_t)(0x40 + i);
+  }
+  for (int i = 0; i < 64; i++) {
+    pt[i] = (uint8_t)(0x20 + i);
+  }
+
+  CT_POISON(key, sizeof(key));
+  CT_POISON(iv, sizeof(iv));
+  CT_POISON(pt, sizeof(pt));
+  uint8_t ok =
+      wing_ctgrind_xchacha20_poly1305(make_slice(key, 32), make_slice(iv, 24),
+                                      make_slice(pt, 64), make_slice(out, 80));
+  CT_UNPOISON(out, sizeof(out));
+  CT_UNPOISON(key, sizeof(key));
+  CT_UNPOISON(iv, sizeof(iv));
+  CT_UNPOISON(pt, sizeof(pt));
+  return ok == 1u;
+}
+
+static int test_hmac_hkdf_sha256(void) {
+  uint8_t key[32];
+  uint8_t salt[16];
+  uint8_t info[16];
+  uint8_t out[64] = {0};
+  for (int i = 0; i < 32; i++) {
+    key[i] = (uint8_t)(0x10 + i);
+  }
+  for (int i = 0; i < 16; i++) {
+    salt[i] = (uint8_t)(0x60 + i);
+    info[i] = (uint8_t)(0x90 + i);
+  }
+
+  CT_POISON(key, sizeof(key));
+  CT_POISON(salt, sizeof(salt));
+  uint8_t ok =
+      wing_ctgrind_hmac_hkdf_sha256(make_slice(key, 32), make_slice(salt, 16),
+                                    make_slice(info, 16), make_slice(out, 64));
+  CT_UNPOISON(out, sizeof(out));
+  CT_UNPOISON(key, sizeof(key));
+  CT_UNPOISON(salt, sizeof(salt));
+  uint8_t acc = 0;
+  for (int i = 0; i < 64; i++) {
+    acc |= out[i];
+  }
+  return (ok == 1u && acc != 0u);
+}
+
 typedef struct {
   const char *name;
   int (*fn)(void);
@@ -417,11 +600,16 @@ int main(int argc, char **argv) {
       {"ct_eq_bytes", test_ct_eq_bytes},
       {"aes128_and_aes256_encrypt_block", test_aes_blocks},
       {"chacha20_poly1305", test_chacha20_poly1305},
+      {"xchacha20_poly1305", test_xchacha20_poly1305},
+      {"hmac_and_hkdf_sha256", test_hmac_hkdf_sha256},
       {"x25519_scalarmult", test_x25519},
       {"ecdsa_p256_sign", test_ecdsa_p256_sign},
       {"p256_ecdh_shared_secret", test_p256_ecdh},
+      {"ecdsa_p384_sign", test_ecdsa_p384_sign},
+      {"p384_ecdh_shared_secret", test_p384_ecdh},
       {"ed25519_sign", test_ed25519_sign},
       {"rsa_mod_exp", test_rsa_mod_exp},
+      {"rsa_exp_blinded_signs", test_rsa_exp_blinded_signs},
       {"rsa_pss_sha256_sign_blinded", test_rsa_pss_sign_blinded},
       {"mlkem768_decapsulate", test_mlkem768_decapsulate},
   };

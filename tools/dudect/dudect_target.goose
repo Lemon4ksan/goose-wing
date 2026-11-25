@@ -20,9 +20,21 @@ fn copy_16(src: const u8[:], dst: u8[16]&) -> bool {
     return true;
 }
 
+fn copy_24(src: const u8[:], dst: u8[24]&) -> bool {
+    guard src.len == 24 else { return false; }
+    for i in 24 { dst[i] = src[i]; }
+    return true;
+}
+
 fn copy_32(src: const u8[:], dst: u8[32]&) -> bool {
     guard src.len == 32 else { return false; }
     for i in 32 { dst[i] = src[i]; }
+    return true;
+}
+
+fn copy_48(src: const u8[:], dst: u8[48]&) -> bool {
+    guard src.len == 48 else { return false; }
+    for i in 48 { dst[i] = src[i]; }
     return true;
 }
 
@@ -202,6 +214,71 @@ export fn wing_dudect_mlkem768_decapsulate(
     guard ct.len == 1088 && dk.len == 2400 && ss_out.len >= 32 else { return 0; }
     guard tls_internal::mlkem768_decapsulate(ct, dk, ss_out) else { return 0; }
     return ss_out[0];
+}
+
+export fn wing_dudect_ecdsa_p384_sign(
+    priv: const u8[:],
+    msg:  const u8[:],
+    out:  u8[:],
+) -> u8 {
+    var k: u8[48] = [0; 48];
+    defer core::secure_zeroize_48(k);
+    guard copy_48(priv, k) && out.len >= 96 else { return 0; }
+    let sig = core::ecdsa_p384_sign(k, msg);
+    for i in 96 { out[i] = sig[i]; }
+    return sig[0];
+}
+
+export fn wing_dudect_p384_public_key(priv: const u8[:], out: u8[:]) -> u8 {
+    var k: u8[48] = [0; 48];
+    defer core::secure_zeroize_48(k);
+    guard copy_48(priv, k) && out.len >= 97 else { return 0; }
+    let pub = core::ecdsa_p384_public_key(k);
+    for i in 97 { out[i] = pub[i]; }
+    return 1;
+}
+
+export fn wing_dudect_p384_ecdh(
+    priv:     const u8[:],
+    peer_pub: const u8[:],
+    out:      u8[:],
+) -> u8 {
+    var k: u8[48] = [0; 48];
+    defer core::secure_zeroize_48(k);
+    guard copy_48(priv, k) && peer_pub.len == 97 && out.len >= 48 else { return 0; }
+    let ss, ok = core::p384_ecdh_shared_secret(k, peer_pub);
+    guard ok else { return 0; }
+    for i in 48 { out[i] = ss[i]; }
+    return ss[0];
+}
+
+export fn wing_dudect_rsa_pkcs1_sha256_sign(
+    n_be: const u8[:],
+    d_be: const u8[:],
+    msg:  const u8[:],
+    out:  u8[:],
+) -> u8 {
+    guard n_be.len >= 256 && n_be.len <= 512 && out.len >= n_be.len else { return 0; }
+    var sig: u8[..512] = [];
+    guard core::rsa_pkcs1_sha256_sign(n_be, d_be, msg, sig) && sig.len == n_be.len else { return 0; }
+    for i in sig.len { out[i] = sig[i]; }
+    return sig[0];
+}
+
+export fn wing_dudect_xchacha20_poly1305(
+    key: const u8[:],
+    iv:  const u8[:],
+    pt:  const u8[:],
+    out: u8[:],
+) -> u8 {
+    var k: u8[32] = [0; 32];
+    var n: u8[24] = [0; 24];
+    guard copy_32(key, k) && copy_24(iv, n) else { return 0; }
+    var ct_buf: u8[..272] = [];
+    let tag, ok = core::xchacha20_poly1305_seal(k, n, pt, "", ct_buf);
+    guard ok && ct_buf.try_append(tag[..]) && ct_buf.len <= out.len else { return 0; }
+    for i in ct_buf.len { out[i] = ct_buf[i]; }
+    return tag[0];
 }
 
 fn main() {}

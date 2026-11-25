@@ -288,6 +288,7 @@ fn clamp_scalar_rfc7748(scalar: const u8[32]&) -> u8[32] {
 // Performs X25519 scalar multiplication: out = scalar * point on Curve25519.
 // crap:ignore
 fn x25519_scalarmult(scalar: const u8[32]&, point: const u8[32]&) -> u8[32] {
+    defer secure_scrub_stack();
     var clamped = clamp_scalar_rfc7748(scalar);
 
     let x_1 = fe_from_bytes(point);

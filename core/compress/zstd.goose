@@ -1464,12 +1464,10 @@ fn decode_huf_4streams_literals(
     let s4 = total_streams - s1 - s2 - s3;
     guard s1 >= 1 && s2 >= 1 && s3 >= 1 && s4 >= 1 else { return false; }
 
-    let sz1 = (regenerated_size + 3) / 4;
-    let sz2 = (regenerated_size + 2) / 4;
-    let sz3 = (regenerated_size + 1) / 4;
-    let c1 = sz1;
-    let c2 = c1 + sz2;
-    let c3 = c2 + sz3;
+    // RFC 8878 Section 4.2.2: 4-Streams Format - first 3 streams each decode (regenerated_size + 3) / 4 bytes.
+    let c1 = (regenerated_size + 3) / 4;
+    let c2 = c1 * 2;
+    let c3 = c1 * 3;
 
     let o1 = offset;
     let o2 = o1 + s1;
