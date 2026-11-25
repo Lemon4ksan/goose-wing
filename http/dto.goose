@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// Declarative multi-source DTO field wrappers (`Path`, `Query`, `Header`, `Cookie`, `Bearer`, `ClientIp`).
-// Placed in `namespace dto` so receiver-namespace UFCS avoids generic fallback ambiguity in `namespace http`.
+// Declarative multi-source DTO extractors and validators (`Path`, `Query`, `Header`, `Cookie`,
+// `Bearer`, `ClientIp`, `NonEmpty`, `Positive`) in `namespace dto` to avoid `http` UFCS ambiguity.
 namespace dto;
 
 import std;
@@ -37,10 +37,12 @@ struct ClientIp {
     val: u8[..48] = [],
 }
 
+// Validates that bounded buffer `B` is non-empty (`val.len > 0`) on decode and DTO validation.
 struct NonEmpty<B> {
     val: B = default<B>(),
 }
 
+// Validates that numeric field `T` is strictly greater than zero on decode and DTO validation.
 struct Positive<T> {
     val: T = default<T>(),
 }
