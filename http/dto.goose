@@ -30,3 +30,11 @@ struct Bearer<B> {
 struct ClientIp {
     val: u8[..48] = [],
 }
+
+struct NonEmpty<B> {
+    val: B = default<B>(),
+}
+
+struct Positive<T> {
+    val: T = default<T>(),
+}

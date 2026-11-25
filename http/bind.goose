@@ -580,3 +580,94 @@ fn ingest_dto<T>(
     committed = true;
     return true;
 }
+
+fn dto::zeroize_if_secret<B>(v: dto::NonEmpty<B>&) { http::zeroize_field_val(v.val); }
+fn dto::zeroize_if_secret<T>(_v: dto::Positive<T>&) {}
+fn dto::ingest_source_kind<B>(_v: const dto::NonEmpty<B>&) -> u8 { return http::INGEST_SRC_JSON_BODY; }
+fn dto::ingest_source_kind<T>(_v: const dto::Positive<T>&) -> u8 { return http::INGEST_SRC_JSON_BODY; }
+
+fn dto::json_encode<B>(v: const dto::NonEmpty<B>&, out: u8[>..]&) {
+    http::encode_json_field_val(v.val, out);
+}
+
+fn dto::json_decode<B>(dst: dto::NonEmpty<B>&, r: json::Reader&) {
+    http::decode_json_field_val(dst.val, r);
+    if r.error.len == 0 && dst.val.len == 0 {
+        json::fail(r, "expected non-empty value");
+    }
+}
+
+fn dto::query_parse<B>(dst: dto::NonEmpty<B>&, raw: const u8[:]) -> bool {
+    return raw.len > 0 && http::parse_query_field_val(dst.val, raw) && dst.val.len > 0;
+}
+
+fn dto::query_format<B, Out>(v: const dto::NonEmpty<B>&, out: Out&) -> bool {
+    return http::format_query_field_val(v.val, out);
+}
+
+fn dto::json_encode<T>(v: const dto::Positive<T>&, out: u8[>..]&) {
+    http::encode_json_field_val(v.val, out);
+}
+
+fn dto::json_decode<T>(dst: dto::Positive<T>&, r: json::Reader&) {
+    var parsed = default<T>();
+    http::decode_json_field_val(parsed, r);
+    if r.error.len == 0 && parsed <= default<T>() {
+        json::fail(r, "expected positive value");
+        return;
+    }
+    if r.error.len == 0 {
+        dst.val = parsed;
+    }
+}
+
+fn dto::query_parse<T>(dst: dto::Positive<T>&, raw: const u8[:]) -> bool {
+    var parsed = default<T>();
+    guard http::parse_query_field_val(parsed, raw) && parsed > default<T>() else { return false; }
+    dst.val = parsed;
+    return true;
+}
+
+fn dto::query_format<T, Out>(v: const dto::Positive<T>&, out: Out&) -> bool {
+    return http::format_query_field_val(v.val, out);
+}
+
+fn field_is_valid<T>(_v: const T&) -> bool {
+    return true;
+}
+
+fn dto::field_is_valid<T>(_v: const dto::Path<T>&) -> bool { return true; }
+fn dto::field_is_valid<T>(_v: const dto::Query<T>&) -> bool { return true; }
+fn dto::field_is_valid<T>(_v: const dto::Header<T>&) -> bool { return true; }
+fn dto::field_is_valid<T>(_v: const dto::Cookie<T>&) -> bool { return true; }
+fn dto::field_is_valid<B>(_v: const dto::Bearer<B>&) -> bool { return true; }
+fn dto::field_is_valid(_v: const dto::ClientIp&) -> bool { return true; }
+
+fn dto::field_is_valid<B>(v: const dto::NonEmpty<B>&) -> bool {
+    return v.val.len > 0;
+}
+
+fn dto::field_is_valid<T>(v: const dto::Positive<T>&) -> bool {
+    return v.val > default<T>();
+}
+
+fn check_field_is_valid<T>(v: const T&) -> bool {
+    return v.field_is_valid();
+}
+
+// Default semantic validation hook overridden per DTO type via receiver-namespace UFCS `fn validate(dto)`.
+fn validate<T>(_dto: const T&) -> bool {
+    return true;
+}
+
+// Evaluates field-level validator types (`dto::NonEmpty`, `dto::Positive`) and struct-level `validate(dto)`.
+fn check_dto_valid<T>(dto: const T&) -> bool {
+    var all_ok = true;
+    const for <Name, Acc> in fields<T> {
+        let _ = Name;
+        if !check_field_is_valid(dto.Acc) {
+            all_ok = false;
+        }
+    }
+    return all_ok && dto.validate();
+}

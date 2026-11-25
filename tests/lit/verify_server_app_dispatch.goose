@@ -26,6 +26,44 @@ struct SearchItemsRes {
     items: UserRes[>..] = [],
 }
 
+struct StrictItemBody {
+    name:  dto::NonEmpty<u8[..32]> = dto::NonEmpty<u8[..32]> { .. },
+    count: dto::Positive<i64>      = dto::Positive<i64> { .. },
+    pin:   core::Secret<u8[..16]>  = core::Secret<u8[..16]> { .. },
+}
+
+fn http::validate(d: const StrictItemBody&) -> bool {
+    return d.name.val[..] != "banned" && d.pin.val.len >= 3;
+}
+
+struct PingApiTag {}
+struct SearchApiTag {}
+struct CreateApiTag {}
+
+fn server::serve(_t: PingApiTag, st: const AppStage&, out: HealthRes&) -> server::Reply<server::EmptyBody> {
+    let _ = out.status.try_set(st.service_tag[..]);
+    return server::ok_reply();
+}
+
+fn server::serve(_t: SearchApiTag, _st: const AppStage&, q: const SearchQueryDto&, out: SearchItemsRes&) -> server::Reply<server::EmptyBody> {
+    var item = UserRes { id: 5, .. };
+    let _ = item.tag.try_set(q.q[..]);
+    out.items.push(item);
+    return server::ok_reply();
+}
+
+fn server::serve(_t: CreateApiTag, _st: const AppStage&, b: const StrictItemBody&, out: UserRes&) -> server::Reply<server::EmptyBody> {
+    out.id = b.count.val;
+    let _ = out.tag.try_set(b.name.val[..]);
+    return server::created(server::EmptyBody {});
+}
+
+struct DemoApi {
+    ping:   server::EmptyRoute<HealthRes, PingApiTag>,
+    search: server::QueryRoute<SearchQueryDto, SearchItemsRes, SearchApiTag>,
+    create: server::JsonRoute<StrictItemBody, UserRes, CreateApiTag>,
+}
+
 struct HealthRes {
     status: u8[..16] = "ok",
 }
@@ -96,17 +134,42 @@ const EP_SEARCH_SPEC = client::EndpointSpec<client::EmptyPart, SearchQueryDto, c
     method:        "GET",
     path_template: "/contract/search",
 };
+const EP_STRICT_SPEC = client::EndpointSpec<client::EmptyPart, client::EmptyPart, StrictItemBody, UserRes> {
+    method:        "POST",
+    path_template: "/api/items",
+};
+const EP_API_PING_SPEC = client::EndpointSpec<client::EmptyPart, client::EmptyPart, client::EmptyPart, HealthRes> {
+    method:        "GET",
+    path_template: "/api/ping",
+};
+const EP_API_SEARCH_SPEC = client::EndpointSpec<client::EmptyPart, SearchQueryDto, client::EmptyPart, SearchItemsRes> {
+    method:        "GET",
+    path_template: "/api/search",
+};
+
+fn make_demo_api() -> DemoApi {
+    return DemoApi {
+        ping:   server::empty_route(EP_API_PING_SPEC, PingApiTag {}),
+        search: server::query_route(EP_API_SEARCH_SPEC, SearchApiTag {}),
+        create: server::json_route(EP_STRICT_SPEC, CreateApiTag {}),
+    };
+}
 
 fn server::on_server_stage(
-    _stage: AppStage&,
-    phase:  wire::ServerHookPhase,
-    cfg:    server::ServerPipelineConfig&,
-    req:    const http::Request&,
-    sctx:   server::ServerStageCtx&,
-    res:    http::Response&,
+    stage: AppStage&,
+    phase: wire::ServerHookPhase,
+    cfg:   server::ServerPipelineConfig&,
+    req:   const http::Request&,
+    sctx:  server::ServerStageCtx&,
+    res:   http::Response&,
 ) -> wire::StageVerdict {
     guard phase == wire::ServerHookPhase.RouteHandler else {
         return wire::StageVerdict.Continue;
+    }
+    let demo_api = make_demo_api();
+    let api_verdict, matched = server::dispatch_api(demo_api, stage, req, sctx, res, 500);
+    if matched {
+        return api_verdict;
     }
     match server::route_from_id<ApiRoute>(sctx.handler_id) {
         Health => {
@@ -189,6 +252,12 @@ fn main() {
     let ok8 = server::route_contract(srv, EP_HEALTH_SPEC, ApiRoute.Health);
     let _ = server::route_contract(srv, EP_NOTE_SPEC, ApiRoute.ContractNote);
     let _ = server::route_contract(srv, EP_SEARCH_SPEC, ApiRoute.ContractSearch);
+    let demo_api = make_demo_api();
+    let demo_next, demo_ok = server::mount_api(srv, demo_api, 500);
+    let demo_cid = server::api_route_id(demo_api, "create", 500);
+    let _ = demo_next;
+    let _ = demo_ok;
+    let _ = demo_cid;
     let grp, grp_ok = server::make_route_group("/v1");
     let ok9 = grp_ok && server::route_group(srv.pipeline.router, grp, "GET", "/ping", ApiRoute.GroupPing);
     let bad_reg = server::route_get(srv, "/nope", ApiRoute.Unknown);
@@ -277,4 +346,74 @@ fn main() {
     let c_q_ok = core::contains(wire_out[..], "\"tag\":\"hi\"");
     // CHECK: contract_srv=true true true
     print("contract_srv=", core::contains(h_res.body[..], "\"ready\""), " ", c_note_ok, " ", c_q_ok, "\n");
+
+    // 7. Compile-time const for API table (`mount_api`/`dispatch_api`) + dto::NonEmpty/Positive + fn validate
+    let _a1, _ = server::handle_connection_wire(
+        srv, "127.0.0.1", "GET /api/ping HTTP/1.1\r\nHost: localhost\r\n\r\n", 9000, wire_out, stage,
+    );
+    let api_ping_ok = demo_ok && demo_next == 503 && demo_cid == 502 &&
+        core::contains(wire_out[..], "\"status\":\"app\"");
+
+    let _a2, _ = server::handle_connection_wire(
+        srv, "127.0.0.1", "GET /api/search?q=go HTTP/1.1\r\nHost: localhost\r\n\r\n", 9100, wire_out, stage,
+    );
+    let api_search_ok = core::contains(wire_out[..], "\"id\":5,\"tag\":\"go\"");
+
+    let _a3, _ = server::handle_connection_wire(
+        srv,
+        "127.0.0.1",
+        "POST /api/items HTTP/1.1\r\nHost: localhost\r\nContent-Length: 37\r\n\r\n{\"name\":\"pen\",\"count\":3,\"pin\":\"1234\"}",
+        9200,
+        wire_out,
+        stage,
+    );
+    let api_create_ok = core::contains(wire_out[..], "201 Created") &&
+        core::contains(wire_out[..], "\"id\":3,\"tag\":\"pen\"");
+
+    // Empty name, non-positive count, or custom validate() rejection -> 400
+    let _b1, _ = server::handle_connection_wire(
+        srv,
+        "127.0.0.1",
+        "POST /api/items HTTP/1.1\r\nHost: localhost\r\nContent-Length: 34\r\n\r\n{\"name\":\"\",\"count\":3,\"pin\":\"1234\"}",
+        9300,
+        wire_out,
+        stage,
+    );
+    let rej_empty = core::contains(wire_out[..], "400 Bad Request");
+
+    let _b2, _ = server::handle_connection_wire(
+        srv,
+        "127.0.0.1",
+        "POST /api/items HTTP/1.1\r\nHost: localhost\r\nContent-Length: 37\r\n\r\n{\"name\":\"pen\",\"count\":0,\"pin\":\"1234\"}",
+        9400,
+        wire_out,
+        stage,
+    );
+    let rej_zero = core::contains(wire_out[..], "400 Bad Request");
+
+    let _b3, _ = server::handle_connection_wire(
+        srv,
+        "127.0.0.1",
+        "POST /api/items HTTP/1.1\r\nHost: localhost\r\nContent-Length: 40\r\n\r\n{\"name\":\"banned\",\"count\":3,\"pin\":\"1234\"}",
+        9500,
+        wire_out,
+        stage,
+    );
+    let rej_val = core::contains(wire_out[..], "400 Bad Request");
+
+    let _b4, _ = server::handle_connection_wire(
+        srv,
+        "127.0.0.1",
+        "POST /api/items HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{}",
+        9600,
+        wire_out,
+        stage,
+    );
+    let rej_missing = core::contains(wire_out[..], "400 Bad Request");
+
+    // CHECK: const_api=true true true true true true true
+    print(
+        "const_api=", api_ping_ok, " ", api_search_ok, " ", api_create_ok,
+        " ", rej_empty, " ", rej_zero, " ", rej_val, " ", rej_missing, "\n",
+    );
 }

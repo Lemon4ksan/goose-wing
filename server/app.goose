@@ -143,10 +143,16 @@ fn dispatch_dto<Dto, Res, F: fn(const Dto&) -> Reply<Res>>(
     res:         http::Response&,
     detail_mode: http::ValidationDetailMode = http::ValidationDetailMode.Detailed,
 ) -> wire::StageVerdict {
-    var dto_val = default<Dto>();
+    var dto_val = Dto { .. };
     defer http::zeroize_struct_secrets(dto_val);
     var vp = http::ValidationProblem { .. };
-    guard ingest_stage_dto(cfg, sctx, req, dto_val, vp) else {
+    let ok_ing = ingest_stage_dto(cfg, sctx, req, dto_val, vp);
+    let ok_val = ok_ing &&
+        http::check_field(
+            vp, http::check_dto_valid(dto_val), http::ValidationLocation.Body,
+            "$", "invalid_payload", "payload validation failed",
+        );
+    guard ok_val else {
         http::write_validation_problem_response(res, vp, detail_mode);
         return finish_reply_verdict(res);
     }
@@ -171,10 +177,16 @@ fn dispatch_with_auth<Auth, Dto, Res, F: fn(const Auth&, const Dto&) -> Reply<Re
         write_reply(res, err_rep);
         return finish_reply_verdict(res);
     }
-    var dto_val = default<Dto>();
+    var dto_val = Dto { .. };
     defer http::zeroize_struct_secrets(dto_val);
     var vp = http::ValidationProblem { .. };
-    guard ingest_stage_dto(cfg, sctx, req, dto_val, vp) else {
+    let ok_ing = ingest_stage_dto(cfg, sctx, req, dto_val, vp);
+    let ok_val = ok_ing &&
+        http::check_field(
+            vp, http::check_dto_valid(dto_val), http::ValidationLocation.Body,
+            "$", "invalid_payload", "payload validation failed",
+        );
+    guard ok_val else {
         http::write_validation_problem_response(res, vp, detail_mode);
         return finish_reply_verdict(res);
     }
@@ -212,7 +224,7 @@ fn handle_empty<P, Q, B, ResBody, F: fn(ResBody&) -> Reply<EmptyBody>>(
     return finish_reply_verdict(res);
 }
 
-// Binds JSON `ReqBody` from `req` per `spec`, wipes secrets on exit, and writes `out` or `400`.
+// Binds JSON `ReqBody` from `req` per `spec`, validates it, wipes secrets on exit, and writes `out` or `400`.
 fn handle_json<P, Q, ReqBody, ResBody, F: fn(const ReqBody&, ResBody&) -> Reply<EmptyBody>>(
     _spec:       const client::EndpointSpec<P, Q, ReqBody, ResBody>&,
     req:         const http::Request&,
@@ -222,7 +234,12 @@ fn handle_json<P, Q, ReqBody, ResBody, F: fn(const ReqBody&, ResBody&) -> Reply<
     var body = ReqBody { .. };
     defer http::zeroize_struct_secrets(body);
     var vp = http::ValidationProblem { .. };
-    guard http::bind_json(req.body[..], body, vp) else {
+    let ok_bind = http::bind_json(req.body[..], body, vp) &&
+        http::check_field(
+            vp, http::check_dto_valid(body), http::ValidationLocation.Body,
+            "$", "invalid_payload", "payload validation failed",
+        );
+    guard ok_bind else {
         return write_bind_bad_request(res, vp, detail_mode);
     }
     var out = ResBody { .. };
@@ -231,7 +248,7 @@ fn handle_json<P, Q, ReqBody, ResBody, F: fn(const ReqBody&, ResBody&) -> Reply<
     return finish_reply_verdict(res);
 }
 
-// Binds URL query `Query` from `req` per `spec`, wipes secrets on exit, and writes `out` or `400`.
+// Binds URL query `Query` from `req` per `spec`, validates it, wipes secrets on exit, and writes `out` or `400`.
 fn handle_query<P, Query, B, ResBody, F: fn(const Query&, ResBody&) -> Reply<EmptyBody>>(
     _spec:       const client::EndpointSpec<P, Query, B, ResBody>&,
     req:         const http::Request&,
@@ -242,11 +259,182 @@ fn handle_query<P, Query, B, ResBody, F: fn(const Query&, ResBody&) -> Reply<Emp
     var q = Query { .. };
     defer http::zeroize_struct_secrets(q);
     var vp = http::ValidationProblem { .. };
-    guard http::bind_query(raw_q, q, vp) else {
+    let ok_bind = http::bind_query(raw_q, q, vp) &&
+        http::check_field(
+            vp, http::check_dto_valid(q), http::ValidationLocation.Query,
+            "$", "invalid_query_param", "query validation failed",
+        );
+    guard ok_bind else {
         return write_bind_bad_request(res, vp, detail_mode);
     }
     var out = ResBody { .. };
     let rep = F(q, &out);
     write_out_reply(res, rep, out);
     return finish_reply_verdict(res);
+}
+
+// ---- Compile-time API route table (const for mount & dispatch) -------------
+
+struct EmptyRoute<ResBody, Tag> {
+    method: u8[..16]  = "GET",
+    path:   u8[..256] = "/",
+    tag:    Tag       = default<Tag>(),
+}
+
+struct QueryRoute<Query, ResBody, Tag> {
+    method: u8[..16]  = "GET",
+    path:   u8[..256] = "/",
+    tag:    Tag       = default<Tag>(),
+}
+
+struct JsonRoute<ReqBody, ResBody, Tag> {
+    method: u8[..16]  = "POST",
+    path:   u8[..256] = "/",
+    tag:    Tag       = default<Tag>(),
+}
+
+fn empty_route<P, Q, B, ResBody, Tag>(
+    spec: const client::EndpointSpec<P, Q, B, ResBody>&,
+    tag:  Tag,
+) -> EmptyRoute<ResBody, Tag> {
+    return EmptyRoute<ResBody, Tag> {
+        method: spec.method,
+        path:   spec.path_template,
+        tag:    tag,
+    };
+}
+
+fn query_route<P, Query, B, ResBody, Tag>(
+    spec: const client::EndpointSpec<P, Query, B, ResBody>&,
+    tag:  Tag,
+) -> QueryRoute<Query, ResBody, Tag> {
+    return QueryRoute<Query, ResBody, Tag> {
+        method: spec.method,
+        path:   spec.path_template,
+        tag:    tag,
+    };
+}
+
+fn json_route<P, Q, ReqBody, ResBody, Tag>(
+    spec: const client::EndpointSpec<P, Q, ReqBody, ResBody>&,
+    tag:  Tag,
+) -> JsonRoute<ReqBody, ResBody, Tag> {
+    return JsonRoute<ReqBody, ResBody, Tag> {
+        method: spec.method,
+        path:   spec.path_template,
+        tag:    tag,
+    };
+}
+
+fn dispatch_api_entry<ResBody, Tag, App>(
+    r:            const EmptyRoute<ResBody, Tag>&,
+    app:          App&,
+    _req:         const http::Request&,
+    res:          http::Response&,
+    _detail_mode: http::ValidationDetailMode,
+) -> wire::StageVerdict {
+    var out = ResBody { .. };
+    let rep = r.tag.serve(app, &out);
+    write_out_reply(res, rep, out);
+    return finish_reply_verdict(res);
+}
+
+fn dispatch_api_entry<Query, ResBody, Tag, App>(
+    r:           const QueryRoute<Query, ResBody, Tag>&,
+    app:         App&,
+    req:         const http::Request&,
+    res:         http::Response&,
+    detail_mode: http::ValidationDetailMode,
+) -> wire::StageVerdict {
+    let raw_q = raw_query_from_url(req.url[..]);
+    var q = Query { .. };
+    defer http::zeroize_struct_secrets(q);
+    var vp = http::ValidationProblem { .. };
+    let ok_bind = http::bind_query(raw_q, q, vp) &&
+        http::check_field(
+            vp, http::check_dto_valid(q), http::ValidationLocation.Query,
+            "$", "invalid_query_param", "query validation failed",
+        );
+    guard ok_bind else {
+        return write_bind_bad_request(res, vp, detail_mode);
+    }
+    var out = ResBody { .. };
+    let rep = r.tag.serve(app, q, &out);
+    write_out_reply(res, rep, out);
+    return finish_reply_verdict(res);
+}
+
+fn dispatch_api_entry<ReqBody, ResBody, Tag, App>(
+    r:           const JsonRoute<ReqBody, ResBody, Tag>&,
+    app:         App&,
+    req:         const http::Request&,
+    res:         http::Response&,
+    detail_mode: http::ValidationDetailMode,
+) -> wire::StageVerdict {
+    var body = ReqBody { .. };
+    defer http::zeroize_struct_secrets(body);
+    var vp = http::ValidationProblem { .. };
+    let ok_bind = http::bind_json(req.body[..], body, vp) &&
+        http::check_field(
+            vp, http::check_dto_valid(body), http::ValidationLocation.Body,
+            "$", "invalid_payload", "payload validation failed",
+        );
+    guard ok_bind else {
+        return write_bind_bad_request(res, vp, detail_mode);
+    }
+    var out = ResBody { .. };
+    let rep = r.tag.serve(app, body, &out);
+    write_out_reply(res, rep, out);
+    return finish_reply_verdict(res);
+}
+
+// Mounts all route fields in struct `api` onto `srv` sequentially starting at `base_id`.
+// Returns the next free route ID and `true` when every route fits inside `1..=MAX_USER_ROUTE_ID`.
+fn mount_api<Api>(srv: HttpServer&, api: const Api&, base_id: i32 = 1) -> i32, bool {
+    var id: i64 = base_id as i64;
+    var all_ok = true;
+    const for <Name, Acc> in fields<Api> {
+        let _ = Name;
+        let ok_range = id >= 1 && id <= (MAX_USER_ROUTE_ID as i64);
+        let ok_add = ok_range &&
+            add_route(srv.pipeline.router, api.Acc.method[..], api.Acc.path[..], id as i32);
+        all_ok = all_ok && ok_add;
+        id = core::add_sat_i64(id, 1);
+    }
+    let next_id: i32 = if id <= (MAX_USER_ROUTE_ID as i64) + 1 { id as i32 } else { -1 };
+    return next_id, all_ok;
+}
+
+// Returns the sequential handler ID of field `field_name` in struct `api` (or `-1` if absent).
+fn api_route_id<Api>(_api: const Api&, field_name: const u8[:], base_id: i32 = 1) -> i32 {
+    var id: i64 = base_id as i64;
+    const for <Name, Acc> in fields<Api> {
+        if Name == field_name {
+            return if id >= 1 && id <= (MAX_USER_ROUTE_ID as i64) { id as i32 } else { -1 };
+        }
+        id = core::add_sat_i64(id, 1);
+    }
+    return -1;
+}
+
+// Dispatches `sctx.handler_id` against struct `api` via `const for`, invoking `tag.serve(app, ..., &out)`.
+fn dispatch_api<Api, App>(
+    api:         const Api&,
+    app:         App&,
+    req:         const http::Request&,
+    sctx:        const ServerStageCtx&,
+    res:         http::Response&,
+    base_id:     i32                        = 1,
+    detail_mode: http::ValidationDetailMode = http::ValidationDetailMode.Detailed,
+) -> wire::StageVerdict, bool {
+    let target: i64 = sctx.handler_id as i64;
+    var id: i64 = base_id as i64;
+    const for <Name, Acc> in fields<Api> {
+        let _ = Name;
+        if target == id {
+            return dispatch_api_entry(api.Acc, app, req, res, detail_mode), true;
+        }
+        id = core::add_sat_i64(id, 1);
+    }
+    return wire::StageVerdict.Continue, false;
 }
