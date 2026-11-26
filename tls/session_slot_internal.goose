@@ -216,8 +216,16 @@ fn unseal_single_slot_record<B>(
 
     if inner_type == rfc::TLS_CONTENT_APPLICATION_DATA {
         guard out_plain.try_append(scratch[..dec_len]) else { return tls::SliceUnsealStatus.Error; }
-        on_key_update_app_data(slot.key_update_tracker);
-        return tls::SliceUnsealStatus.Ok;
+        if dec_len > 0 {
+            slot.empty_app_records = 0;
+            slot.warning_alerts = 0;
+            on_key_update_app_data(slot.key_update_tracker);
+            return tls::SliceUnsealStatus.Ok;
+        }
+        let empty_cnt = core::add_sat_u64(slot.empty_app_records, 1);
+        guard empty_cnt <= 32 else { return tls::SliceUnsealStatus.Error; }
+        slot.empty_app_records = empty_cnt as u8;
+        return tls::SliceUnsealStatus.ControlHandled;
     }
     if inner_type == rfc::TLS_CONTENT_ALERT {
         let alert_level, alert_code, _, ok_a = tls::parse_alert_message(scratch[..dec_len]);
@@ -226,6 +234,9 @@ fn unseal_single_slot_record<B>(
             return tls::SliceUnsealStatus.Closed;
         }
         if ok_a && alert_level == 1 && alert_code == tls::Alert.UserCanceled {
+            let warn_cnt = core::add_sat_u64(slot.warning_alerts, 1);
+            guard warn_cnt <= 4 else { return tls::SliceUnsealStatus.Error; }
+            slot.warning_alerts = warn_cnt as u8;
             return tls::SliceUnsealStatus.ControlHandled;
         }
         return tls::SliceUnsealStatus.Error;
@@ -283,9 +294,7 @@ fn tls_unseal_records_with_scratch<B>(
                 core::secure_zeroize_slice(out_plain[saved_len..out_plain.len]);
             }
             out_plain.resize(saved_len);
-            if consumed > 0 {
-                slot.peer_closed = true;
-            }
+            slot.peer_closed = true;
             return consumed, tls::SliceUnsealStatus.Error;
         }
         consumed = core::add_sat_i64(consumed, total_rec);
@@ -593,6 +602,7 @@ fn tls_read_and_unseal_app_record(
         plain_dec[..payload_len],
     );
     guard ok_dec else {
+        tls::g_tls_cipher_slots[idx].peer_closed = true;
         send_encrypted_fatal_alert(fd, slot_idx, alert_dec);
         return -1;
     }
@@ -611,12 +621,14 @@ fn tls_handle_rx_alert_record(fd: i64, slot_idx: u16, idx: i64, alert_bytes: con
     if ok_a && alert_level == 1 && alert_code == tls::Alert.UserCanceled {
         let warn_cnt = core::add_sat_u64(tls::g_tls_cipher_slots[idx].warning_alerts, 1);
         guard warn_cnt <= 4 else {
+            tls::g_tls_cipher_slots[idx].peer_closed = true;
             send_encrypted_fatal_alert(fd, slot_idx, tls::Alert.UnexpectedMessage);
             return -1;
         }
         tls::g_tls_cipher_slots[idx].warning_alerts = warn_cnt as u8;
         return 1;
     }
+    tls::g_tls_cipher_slots[idx].peer_closed = true;
     if !ok_a {
         send_encrypted_fatal_alert(fd, slot_idx, alert_code);
     } else if alert_level != 2 {
@@ -664,6 +676,7 @@ fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], timeout_ms:
             }
             let empty_cnt = core::add_sat_u64(tls::g_tls_cipher_slots[idx].empty_app_records, 1);
             guard empty_cnt <= 32 else {
+                tls::g_tls_cipher_slots[idx].peer_closed = true;
                 send_encrypted_fatal_alert(fd, slot_idx, tls::Alert.UnexpectedMessage);
                 return -1;
             }
@@ -680,15 +693,18 @@ fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], timeout_ms:
         if inner_type == rfc::TLS_CONTENT_HANDSHAKE {
             let ph_alert = dispatch_post_handshake_record(slot_idx, plain_dec[..dec_len]);
             guard ph_alert == tls::Alert.CloseNotify else {
+                tls::g_tls_cipher_slots[idx].peer_closed = true;
                 send_encrypted_fatal_alert(fd, slot_idx, ph_alert);
                 return -1;
             }
             ctrl_records = core::add_sat_u32(ctrl_records, 1);
             continue;
         }
+        tls::g_tls_cipher_slots[idx].peer_closed = true;
         send_encrypted_fatal_alert(fd, slot_idx, tls::Alert.UnexpectedMessage);
         return -1;
     }
+    tls::g_tls_cipher_slots[idx].peer_closed = true;
     send_encrypted_fatal_alert(fd, slot_idx, tls::Alert.UnexpectedMessage);
     return -1;
 }

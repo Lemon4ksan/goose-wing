@@ -1489,6 +1489,16 @@ fn test_aa_unvalidated_spoof_and_1rtt_migration() {
     assert(quic::quic_server_poll_transmit(ep, now_ns, out_pkt, out_ip, out_p));
     assert(out_p == mig_port);
 
+    // Migrated path MUST enforce 3x AA ceiling until PATH_RESPONSE validates it (H4_C02).
+    var mig_tx:  i64     = out_pkt.len;
+    var big_buf: u8[512] = [0x42; 512];
+    let w3, ok_w3 = quic::quic_server_stream_write(ep, conn_id, 7, big_buf[..], false);
+    assert(ok_w3 && w3 == 512);
+    while quic::quic_server_poll_transmit(ep, now_ns, out_pkt, out_ip, out_p) {
+        mig_tx += out_pkt.len;
+    }
+    assert(mig_tx <= 93);
+
     net::tcp_close(srv_fd);
     print("CHECK_QUIC_FIX2_AA_MIGRATION_OK\n");
 }

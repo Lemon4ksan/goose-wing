@@ -273,8 +273,9 @@ inline fn is_redirect_rewritten_payload_header(name: const u8[:]) -> bool {
 // when a redirect mutates request to GET (RFC 9110 Section 15.4).
 fn remove_payload_and_conditional_headers(headers: http::HeaderMap&) {
     var found = false;
-    var write_entry_i: i64 = 0;
-    var write_raw_pos: u16 = 0;
+    var write_entry_i: i64        = 0;
+    var new_raw:       u8[..8192] = [];
+    defer core::secure_zeroize_slice(new_raw[..]);
     let total_entries = headers.entries.len;
 
     for read_i in total_entries {
@@ -284,10 +285,10 @@ fn remove_payload_and_conditional_headers(headers: http::HeaderMap&) {
             found = true;
             continue;
         }
-        http::compact_kept_entry_in_place(headers, read_i, write_entry_i, write_raw_pos);
+        http::compact_kept_entry_into(headers, read_i, write_entry_i, new_raw);
     }
     if found {
-        http::finish_in_place_compaction(headers, write_entry_i, write_raw_pos);
+        http::finish_compaction(headers, write_entry_i, new_raw);
     }
 }
 
@@ -298,8 +299,9 @@ fn remove_sec_headers_on_downgrade(headers: http::HeaderMap&, target_url: const 
         return;
     }
     var found = false;
-    var write_entry_i: i64 = 0;
-    var write_raw_pos: u16 = 0;
+    var write_entry_i: i64        = 0;
+    var new_raw:       u8[..8192] = [];
+    defer core::secure_zeroize_slice(new_raw[..]);
     let total_entries = headers.entries.len;
 
     for read_i in total_entries {
@@ -309,10 +311,10 @@ fn remove_sec_headers_on_downgrade(headers: http::HeaderMap&, target_url: const 
             found = true;
             continue;
         }
-        http::compact_kept_entry_in_place(headers, read_i, write_entry_i, write_raw_pos);
+        http::compact_kept_entry_into(headers, read_i, write_entry_i, new_raw);
     }
     if found {
-        http::finish_in_place_compaction(headers, write_entry_i, write_raw_pos);
+        http::finish_compaction(headers, write_entry_i, new_raw);
     }
 }
 

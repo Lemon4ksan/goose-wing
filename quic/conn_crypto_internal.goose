@@ -167,6 +167,14 @@ inline fn quic_commit_space_key_update(
     next_iv:     const u8[:],
 ) -> bool {
     core::secure_zeroize_slice(space.prev_aead_key[..]);
+    core::secure_zeroize_slice(space.prev_aead_iv[..]);
+    core::secure_zeroize_slice(space.next_traffic_secret[..]);
+    core::secure_zeroize_slice(space.next_aead_key[..]);
+    core::secure_zeroize_slice(space.next_aead_iv[..]);
+    space.next_traffic_secret.clear();
+    space.next_aead_key.clear();
+    space.next_aead_iv.clear();
+    space.has_next_keys = false;
     guard space.prev_aead_key.try_set(space.aead_key[..])
         && space.prev_aead_iv.try_set(space.aead_iv[..])
         && space.aead_key.try_set(next_key)
@@ -174,6 +182,29 @@ inline fn quic_commit_space_key_update(
         && space.traffic_secret.try_set(next_secret) else {
         return false;
     }
+    space.has_prev_keys = true;
+    space.key_phase = !space.key_phase;
+    space.aead_encrypted_packets = 0;
+    return true;
+}
+
+inline fn quic_commit_cached_next_keys(space: quic::PnSpaceState&) -> bool {
+    guard space.has_next_keys else { return false; }
+    core::secure_zeroize_slice(space.prev_aead_key[..]);
+    core::secure_zeroize_slice(space.prev_aead_iv[..]);
+    let ok = space.prev_aead_key.try_set(space.aead_key[..])
+        && space.prev_aead_iv.try_set(space.aead_iv[..])
+        && space.aead_key.try_set(space.next_aead_key[..])
+        && space.aead_iv.try_set(space.next_aead_iv[..])
+        && space.traffic_secret.try_set(space.next_traffic_secret[..]);
+    core::secure_zeroize_slice(space.next_traffic_secret[..]);
+    core::secure_zeroize_slice(space.next_aead_key[..]);
+    core::secure_zeroize_slice(space.next_aead_iv[..]);
+    space.next_traffic_secret.clear();
+    space.next_aead_key.clear();
+    space.next_aead_iv.clear();
+    space.has_next_keys = false;
+    guard ok else { return false; }
     space.has_prev_keys = true;
     space.key_phase = !space.key_phase;
     space.aead_encrypted_packets = 0;
@@ -379,7 +410,18 @@ inline fn get_rx_space_keys_installed(conn: const quic::QuicConnection&, space_i
     return conn.app_space.keys_installed;
 }
 
-inline fn is_pn_already_received(ranges: const quic::AckInterval[..64]&, pn: u64) -> bool {
+inline fn is_pn_already_received(
+    ranges:             const quic::AckInterval[..64]&,
+    pn:                 u64,
+    has_min_tracked_pn: bool = false,
+    min_tracked_pn:     u64  = 0,
+) -> bool {
+    if has_min_tracked_pn && pn <= min_tracked_pn {
+        return true;
+    }
+    if ranges.len >= ranges.cap && pn < ranges[ranges.len - 1].smallest {
+        return true;
+    }
     for i in ranges.len {
         let r = ranges[i];
         if pn > r.largest {
@@ -464,12 +506,14 @@ inline fn validate_decrypted_packet_bits(
 
 // Removes RFC 9001 Section 5.4 header protection in place and decodes the full non-duplicate packet number.
 inline fn unprotect_packet_header_raw(
-    cipher_suite:    u16,
-    hp_key:          const u8[:],
-    largest_recv_pn: u64,
-    recv_ranges:     const quic::AckInterval[..64]&,
-    work_pkt:        u8[:],
-    hdr:             quic::QuicHeader&,
+    cipher_suite:       u16,
+    hp_key:             const u8[:],
+    largest_recv_pn:    u64,
+    recv_ranges:        const quic::AckInterval[..64]&,
+    has_min_tracked_pn: bool,
+    min_tracked_pn:     u64,
+    work_pkt:           u8[:],
+    hdr:                quic::QuicHeader&,
 ) -> u64, u8, bool {
     let sample_slice, ok_samp = tls::quic_extract_hp_sample(work_pkt, hdr.pn_offset);
     guard ok_samp else { return 0, 0, false; }
@@ -481,7 +525,8 @@ inline fn unprotect_packet_header_raw(
 
     let full_pn, pn_ok = quic::decode_packet_number_checked(largest_recv_pn, trunc_pn, pn_len);
     // RFC 9000 Section 12.3: Packet Numbers - Discard duplicate packets before payload processing.
-    guard pn_ok && !is_pn_already_received(recv_ranges, full_pn) else { return 0, 0, false; }
+    let dup = is_pn_already_received(recv_ranges, full_pn, has_min_tracked_pn, min_tracked_pn);
+    guard pn_ok && !dup else { return 0, 0, false; }
 
     let unmasked_b0 = work_pkt[0];
     if (unmasked_b0 & 0x80) == 0 {
@@ -513,7 +558,11 @@ fn verify_and_decrypt_zero_rtt_packet(
     if conn.role == quic::QuicRole.Client {
         return rfc::QUIC_ERR_PROTOCOL_VIOLATION, false;
     }
-    guard conn.zero_rtt_keys.keys_installed && is_valid_inbound_dcid(conn, hdr) else { return 0, false; }
+    guard conn.zero_rtt_keys.keys_installed
+        && hdr.version == conn.version
+        && is_valid_inbound_dcid(conn, hdr) else {
+        return 0, false;
+    }
 
     var work_pkt: u8[..16512] = [];
     guard pkt_wire_len > 0 && work_pkt.try_append(pkt_slice[..pkt_wire_len]) else { return 0, false; }
@@ -524,6 +573,8 @@ fn verify_and_decrypt_zero_rtt_packet(
         conn.zero_rtt_keys.hp_key[..],
         conn.app_space.largest_recv_pn,
         conn.app_space.recv_ranges,
+        conn.app_space.has_min_tracked_pn,
+        conn.app_space.min_tracked_pn,
         work_pkt[..],
         hdr,
     );
@@ -564,21 +615,36 @@ inline fn try_peer_key_update_open(
     out_plaintext: u8[..16384]&,
 ) -> u64, bool {
     let cs = conn.app_space.cipher_suite;
-    guard conn.app_space.has_app_secret
+    guard conn.state == quic::QuicConnState.Established
+        && conn.app_space.has_app_secret
         && (!conn.app_space.has_recv_packets || full_pn > conn.app_space.phase_highest_pn) else {
         return quic_record_aead_decrypt_failure(conn, cs), false;
     }
-    var next_secret: u8[..48] = [];
-    defer core::secure_zeroize_slice(next_secret[..]);
-    var next_key: u8[..32] = [];
-    defer core::secure_zeroize_slice(next_key[..]);
-    var next_iv: u8[..12] = [];
-    guard quic_derive_next_key_update(
-        cs, conn.version, conn.app_space.traffic_secret[..], next_secret, next_key, next_iv,
-    ) else {
-        return quic_record_aead_decrypt_failure(conn, cs), false;
+    if !conn.app_space.has_next_keys {
+        var cur_secret: u8[..48] = [];
+        defer core::secure_zeroize_slice(cur_secret[..]);
+        guard cur_secret.try_set(conn.app_space.traffic_secret[..])
+            && quic_derive_next_key_update(
+                cs,
+                conn.version,
+                cur_secret[..],
+                conn.app_space.next_traffic_secret,
+                conn.app_space.next_aead_key,
+                conn.app_space.next_aead_iv,
+            ) else {
+                return quic_record_aead_decrypt_failure(conn, cs), false;
+            }
+        conn.app_space.has_next_keys = true;
     }
-    guard quic_aead_open_raw(cs, next_key[..], next_iv[..], full_pn, aad, ciphertext, out_plaintext) else {
+    guard quic_aead_open_raw(
+        cs,
+        conn.app_space.next_aead_key[..],
+        conn.app_space.next_aead_iv[..],
+        full_pn,
+        aad,
+        ciphertext,
+        out_plaintext,
+    ) else {
         return quic_record_aead_decrypt_failure(conn, cs), false;
     }
     let post_err = validate_decrypted_packet_bits(conn, hdr, unmasked_b0);
@@ -586,11 +652,18 @@ inline fn try_peer_key_update_open(
         out_plaintext.clear();
         return post_err, false;
     }
-    guard quic_commit_space_key_update(conn.app_space, next_secret[..], next_key[..], next_iv[..]) else {
+    guard quic_commit_cached_next_keys(conn.app_space) else {
         out_plaintext.clear();
         return rfc::QUIC_ERR_KEY_UPDATE_ERROR, false;
     }
     conn.app_space.phase_highest_pn = full_pn;
+    if conn.tx_app_space.keys_installed && conn.tx_app_space.has_app_secret
+        && conn.tx_app_space.key_phase != conn.app_space.key_phase {
+        guard quic_ratchet_space_keys(conn.tx_app_space, conn.version) else {
+            out_plaintext.clear();
+            return rfc::QUIC_ERR_KEY_UPDATE_ERROR, false;
+        }
+    }
     return 0, true;
 }
 
@@ -672,15 +745,22 @@ fn verify_and_decrypt_packet(
         return verify_unencrypted_test_packet(conn, space, pkt_slice, pkt_wire_len, hdr, out_plaintext);
     }
 
+    let is_long = hdr.header_type == quic::QuicHeaderType.Initial
+        || hdr.header_type == quic::QuicHeaderType.Handshake;
     let is_srv_init = hdr.header_type == quic::QuicHeaderType.Initial && conn.role == quic::QuicRole.Server;
-    guard (!is_srv_init || dgram_len >= 1200) && is_valid_inbound_dcid(conn, hdr) else { return 0, false; }
+    guard (!is_long || hdr.version == conn.version)
+        && (!is_srv_init || dgram_len >= 1200)
+        && is_valid_inbound_dcid(conn, hdr) else {
+        return 0, false;
+    }
 
     var work_pkt: u8[..16512] = [];
     guard pkt_wire_len > 0 && work_pkt.try_append(pkt_slice[..pkt_wire_len]) else { return 0, false; }
 
     let saved_hdr = hdr;
     let full_pn, unmasked_b0, ok_hp = unprotect_packet_header_raw(
-        space.cipher_suite, space.hp_key[..], space.largest_recv_pn, space.recv_ranges, work_pkt[..], hdr,
+        space.cipher_suite, space.hp_key[..], space.largest_recv_pn, space.recv_ranges,
+        space.has_min_tracked_pn, space.min_tracked_pn, work_pkt[..], hdr,
     );
     guard ok_hp else { return 0, false; }
 
@@ -725,6 +805,7 @@ fn quic_process_retry_packet(
         && conn.state == quic::QuicConnState.Initial
         && !conn.retry_received
         && conn.packets_rx == 0
+        && hdr.version == conn.version
         && hdr.token.len > 0 else {
         return false;
     }
@@ -738,7 +819,6 @@ fn quic_process_retry_packet(
         return false;
     }
     conn.retry_received = true;
-    conn.version = hdr.version;
     if conn.initial_space.keys_installed || conn.tx_initial_space.keys_installed {
         return quic_derive_initial_space_keys(
             hdr.scid[..], hdr.version, conn.role, conn.initial_space, conn.tx_initial_space,
@@ -846,9 +926,11 @@ fn process_single_coalesced_packet_with_plain(
     }
 
     if hdr.header_type == quic::QuicHeaderType.VersionNegotiation {
+        guard conn.role == quic::QuicRole.Client && conn.packets_rx == 0 else {
+            return 0, quic::ProcessResult { handled: false, needs_ack: false };
+        }
         let res_pkt = dispatch_packet_type(conn, hdr, out_ack);
         guard res_pkt.handled else { return 0, quic::ProcessResult { handled: false, needs_ack: false }; }
-        conn.packets_rx = core::add_sat_u64(conn.packets_rx, 1);
         return pkt_wire_len, res_pkt;
     }
 
@@ -857,6 +939,7 @@ fn process_single_coalesced_packet_with_plain(
         conn, space_id, pkt_slice, pkt_wire_len, dgram_len, hdr, out_plain, allow_unencrypted_test,
     );
     guard ok_dec else {
+        core::secure_zeroize_slice(out_plain[..]);
         out_plain.clear();
         handle_packet_decrypt_failure(conn, hdr, pkt_slice, fatal_err);
         return 0, quic::ProcessResult { handled: false, needs_ack: false };
@@ -864,6 +947,7 @@ fn process_single_coalesced_packet_with_plain(
 
     let res_frames = quic::process_payload(conn, out_plain[..], hdr.header_type, now_us);
     guard res_frames.handled else {
+        core::secure_zeroize_slice(out_plain[..]);
         out_plain.clear();
         return 0, quic::ProcessResult { handled: false, needs_ack: false };
     }
@@ -875,6 +959,7 @@ fn process_single_coalesced_packet_with_plain(
     }
     let res_pkt = dispatch_packet_type(conn, hdr, out_ack);
     guard res_pkt.handled else {
+        core::secure_zeroize_slice(out_plain[..]);
         out_plain.clear();
         return 0, quic::ProcessResult { handled: false, needs_ack: false };
     }
@@ -891,6 +976,7 @@ fn process_single_coalesced_packet(
     allow_unencrypted_test: bool = false,
 ) -> i64, quic::ProcessResult {
     var plaintext_payload: u8[..16384] = [];
+    defer core::secure_zeroize_slice(plaintext_payload[..]);
     var htype = quic::QuicHeaderType.Initial;
     return process_single_coalesced_packet_with_plain(
         conn, pkt_slice, dgram_len, now_us, out_ack, plaintext_payload, htype, allow_unencrypted_test,

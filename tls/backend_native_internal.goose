@@ -32,6 +32,8 @@ const NATIVE_FLAG_NO_SESSION_TICKETS: i32 = 4;
 
 const NATIVE_FLAG_REQUIRE_ALPN_MATCH: i32 = 8;
 
+const NATIVE_FLAG_REQUIRE_CLIENT_CERT: i32 = 16;
+
 extern fn native_tls_backend_available(kind: i32) -> i32 = "wing_tls_backend_available";
 
 extern fn native_tls_backend_open(
@@ -133,9 +135,9 @@ fn native_backend_rejects_cfg(cfg: const tls::TlsBackendConfig&, is_server: bool
             return true;
         }
         if cfg.cert_der.len > 0 && cfg.cert_pem_file.len == 0 { return true; }
-        return cfg.require_client_cert && (cfg.ca_file.len == 0 || cfg.insecure_skip_verify);
+        return cfg.require_client_cert && cfg.ca_file.len == 0;
     }
-    if cfg.enable_pq_hybrid || cfg.require_ocsp_stapling || cfg.crl_der.len > 0 {
+    if cfg.enable_pq_hybrid || cfg.require_ocsp_stapling || cfg.crl_der.len > 0 || cfg.require_alpn_match {
         return true;
     }
     return !cfg.insecure_skip_verify && cfg.trust_store.anchors.len > 0 && cfg.ca_file.len == 0;
@@ -155,7 +157,7 @@ fn should_route_to_pure_backend(cfg: const tls::TlsBackendConfig&, is_server: bo
         }
         return false;
     }
-    if cfg.enable_pq_hybrid || cfg.require_ocsp_stapling || cfg.crl_der.len > 0 {
+    if cfg.enable_pq_hybrid || cfg.require_ocsp_stapling || cfg.crl_der.len > 0 || cfg.require_alpn_match {
         return true;
     }
     guard !cfg.insecure_skip_verify else { return false; }
@@ -171,20 +173,22 @@ fn should_route_to_pure_backend(cfg: const tls::TlsBackendConfig&, is_server: bo
 //   cfg.insecure_skip_verify = false, cfg.use_system_roots = false, cfg.enable_session_tickets = false
 //   returns: 6 (NATIVE_FLAG_NO_SYSTEM_ROOTS | NATIVE_FLAG_NO_SESSION_TICKETS)
 inline fn pack_native_verify_flags(cfg: const tls::TlsBackendConfig&) -> i32 {
-    let conds: bool[4] = [
+    let conds: bool[5] = [
         cfg.insecure_skip_verify,
         !cfg.use_system_roots,
         !cfg.enable_session_tickets,
         cfg.require_alpn_match,
+        cfg.require_client_cert,
     ];
-    let masks: i32[4] = [
+    let masks: i32[5] = [
         NATIVE_FLAG_INSECURE_SKIP_VERIFY,
         NATIVE_FLAG_NO_SYSTEM_ROOTS,
         NATIVE_FLAG_NO_SESSION_TICKETS,
         NATIVE_FLAG_REQUIRE_ALPN_MATCH,
+        NATIVE_FLAG_REQUIRE_CLIENT_CERT,
     ];
     var flags: i32 = 0;
-    for i in 4 {
+    for i in 5 {
         if conds[i] { flags = flags | masks[i]; }
     }
     return flags;

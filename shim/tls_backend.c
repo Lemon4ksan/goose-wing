@@ -55,6 +55,7 @@
 #define WING_TLS_FLAG_NO_SYSTEM_ROOTS 2
 #define WING_TLS_FLAG_NO_SESSION_TICKETS 4
 #define WING_TLS_FLAG_REQUIRE_ALPN_MATCH 8
+#define WING_TLS_FLAG_REQUIRE_CLIENT_CERT 16
 
 #define WING_TLS_ST_OK 0
 #define WING_TLS_ST_WANT_READ 1
@@ -775,6 +776,7 @@ typedef struct {
     int use_system_roots;
     int no_session_tickets;
     int require_alpn_match;
+    int require_client_cert;
     int min_version;
     int established;
     int closed;
@@ -897,7 +899,10 @@ static int ossl_alpn_select_cb(void *ssl, const unsigned char **out, unsigned ch
                                unsigned int inlen, void *arg) {
     (void)ssl;
     const wing_tls_ep_t *ep = (const wing_tls_ep_t *)arg;
-    if (ep == NULL || ep->alpn_wire_len == 0 || in == NULL || inlen == 0) return OSSL_TLSEXT_ERR_NOACK;
+    if (ep == NULL) return OSSL_TLSEXT_ERR_NOACK;
+    if (ep->alpn_wire_len == 0 || in == NULL || inlen == 0) {
+        return ep->require_alpn_match ? OSSL_TLSEXT_ERR_ALERT_FATAL : OSSL_TLSEXT_ERR_NOACK;
+    }
     size_t si = 0;
     while (si < ep->alpn_wire_len) {
         unsigned int slen = ep->alpn_wire[si++];
@@ -1135,14 +1140,14 @@ static int ossl_open_ep(wing_tls_ep_t *ep) {
     }
 
     if (ep->is_server) {
-        if (!ep->insecure_skip_verify && ep->ca_file[0] != '\0') {
-            if (g_ossl.SSL_CTX_load_verify_locations(ep->ossl_ctx, ep->ca_file, NULL) != 1) {
+        if (ep->require_client_cert) {
+            if (ep->ca_file[0] == '\0' || g_ossl.SSL_CTX_load_verify_locations(ep->ossl_ctx, ep->ca_file, NULL) != 1) {
                 ossl_cleanup_ep(ep);
                 return WING_TLS_ST_VERIFY_ERR;
             }
             g_ossl.SSL_CTX_set_verify(ep->ossl_ctx, OSSL_SSL_VERIFY_PEER | OSSL_SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
         }
-        if (ep->alpn_wire_len > 0 && g_ossl.SSL_CTX_set_alpn_select_cb != NULL) {
+        if ((ep->alpn_wire_len > 0 || ep->require_alpn_match) && g_ossl.SSL_CTX_set_alpn_select_cb != NULL) {
             g_ossl.SSL_CTX_set_alpn_select_cb(ep->ossl_ctx, ossl_alpn_select_cb, ep);
         }
     } else if (ep->insecure_skip_verify) {
@@ -1436,9 +1441,13 @@ static int64_t schannel_read_app(wing_tls_ep_t *ep, wing_tls_rw dst, int32_t *ou
         if (extra_len <= ep->sch_in.len) tls_buf_consume(&ep->sch_in, ep->sch_in.len - extra_len);
         ep->established = 0;
         int32_t hst = schannel_step_hs(ep);
-        if (hst == WING_TLS_ST_OK || hst == WING_TLS_ST_WANT_READ || hst == WING_TLS_ST_WANT_WRITE) {
+        if (hst == WING_TLS_ST_OK) {
             ep->established = 1;
-            *out_st = (hst == WING_TLS_ST_OK) ? WING_TLS_ST_WANT_READ : hst;
+            *out_st = WING_TLS_ST_WANT_READ;
+            return 0;
+        }
+        if (hst == WING_TLS_ST_WANT_READ || hst == WING_TLS_ST_WANT_WRITE) {
+            *out_st = hst;
             return 0;
         }
         *out_st = hst;
@@ -1452,7 +1461,10 @@ static int64_t schannel_read_app(wing_tls_ep_t *ep, wing_tls_rw dst, int32_t *ou
     size_t extra_len = 0;
     for (int i = 0; i < 4; i++) {
         if (bufs[i].BufferType == SECBUFFER_DATA && bufs[i].cbBuffer > 0) {
-            if (!tls_buf_append(&ep->sch_app, (const uint8_t *)bufs[i].pvBuffer, bufs[i].cbBuffer)) {
+            int ok_app = tls_buf_append(&ep->sch_app, (const uint8_t *)bufs[i].pvBuffer, bufs[i].cbBuffer);
+            wing_tls_zeroize(bufs[i].pvBuffer, bufs[i].cbBuffer);
+            if (!ok_app) {
+                tls_buf_consume(&ep->sch_in, ep->sch_in.len);
                 *out_st = WING_TLS_ST_ERR;
                 return 0;
             }
@@ -1672,6 +1684,7 @@ int64_t wing_tls_backend_open(int32_t kind, int32_t is_server, int32_t insecure_
     ep->use_system_roots = (insecure_skip_verify & WING_TLS_FLAG_NO_SYSTEM_ROOTS) == 0 ? 1 : 0;
     ep->no_session_tickets = (insecure_skip_verify & WING_TLS_FLAG_NO_SESSION_TICKETS) != 0 ? 1 : 0;
     ep->require_alpn_match = (insecure_skip_verify & WING_TLS_FLAG_REQUIRE_ALPN_MATCH) != 0 ? 1 : 0;
+    ep->require_client_cert = (insecure_skip_verify & WING_TLS_FLAG_REQUIRE_CLIENT_CERT) != 0 ? 1 : 0;
     ep->min_version = (min_version == WING_TLS_MIN_TLS12) ? WING_TLS_MIN_TLS12 : WING_TLS_MIN_TLS13;
     if (!copy_cstr_ro(ep->sni, sizeof(ep->sni), server_name)) {
         wing_tls_ep_destroy(ep);

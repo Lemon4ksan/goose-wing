@@ -357,6 +357,25 @@ fn apply_request_framing_header(name: const u8[:], val: const u8[:], req: Reques
     return ParseStatus.Complete;
 }
 
+inline fn is_valid_chunk_size_and_ext(line: const u8[:], out_sz: u64&) -> bool {
+    let sz_raw, ext_raw, has_semi = core::split_once_byte(line, ';');
+    let sz_clean = if has_semi { core::trim_lws_end(sz_raw) } else { sz_raw };
+    guard sz_clean.len > 0 else { return false; }
+    for b in sz_clean {
+        guard core::is_ascii_hexdigit(b) else { return false; }
+    }
+    if has_semi {
+        for b in ext_raw {
+            guard b != 0 && b != '\r' && b != '\n' && b != 0x7F && (b >= 0x20 || b == '\t') else {
+                return false;
+            }
+        }
+    }
+    let parsed, ok_hex = core::parse_u64_hex(sz_clean);
+    out_sz = parsed;
+    return ok_hex;
+}
+
 // Parses one RFC 9112 Section 7.1 chunk at `src[cursor..]`, advancing `cursor` past its trailing CRLF.
 // Returns `(data_start, data_end, Complete)`; `data_start == data_end` signals the terminal `0\r\n` chunk.
 // Leaves `cursor` unchanged when returning a non-Complete status.
@@ -369,14 +388,26 @@ fn parse_next_chunk_span(src: const u8[:], cursor: i64&) -> i64, i64, ParseStatu
     let total = src.len;
     guard pos >= 0 && pos < total else { return 0, 0, ParseStatus.Incomplete; }
     let crlf = core::find_crlf(src[pos..]);
-    guard crlf >= 0 else { return 0, 0, ParseStatus.Incomplete; }
-    let sz_hex, _, _ = core::split_once_byte(src[pos..core::add_sat_i64(pos, crlf)], ';');
-    let chunk_u, ok_hex = core::parse_u64_hex(core::trim_lws(sz_hex));
-    guard ok_hex else { return 0, 0, ParseStatus.BadRequest; }
+    if crlf < 0 {
+        let check_end = if src[core::sub_sat_i64(total, 1)] == '\r' {
+            core::sub_sat_i64(total, 1)
+        } else {
+            total
+        };
+        if has_bare_cr_or_lf(src[pos..check_end]) { return 0, 0, ParseStatus.BadRequest; }
+        return 0, 0, ParseStatus.Incomplete;
+    }
+    let line = src[pos..core::add_sat_i64(pos, crlf)];
+    guard !has_bare_cr_or_lf(line) else { return 0, 0, ParseStatus.BadRequest; }
+    var chunk_u: u64 = 0;
+    guard is_valid_chunk_size_and_ext(line, chunk_u) else { return 0, 0, ParseStatus.BadRequest; }
     guard chunk_u <= (MAX_H1_BODY_BYTES as u64) else { return 0, 0, ParseStatus.PayloadTooLarge; }
     let data_start = core::add_sat_i64(core::add_sat_i64(pos, crlf), 2);
     let data_end = core::add_sat_i64(data_start, chunk_u as i64);
     let next_pos = core::add_sat_i64(data_end, 2);
+    if data_end < total && src[data_end] != '\r' {
+        return 0, 0, ParseStatus.BadRequest;
+    }
     guard next_pos <= total else { return 0, 0, ParseStatus.Incomplete; }
     guard src[data_end] == '\r' && src[core::add_sat_i64(data_end, 1)] == '\n' else {
         return 0, 0, ParseStatus.BadRequest;

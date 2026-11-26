@@ -527,6 +527,9 @@ inline fn is_cloud_metadata_mapped_or_nat64_ipv6(eff_ip: const u8[:]) -> Metadat
             MetadataIpMatch.Allowed
         };
     }
+    if core::starts_with(eff_ip, "64:ff9b:1:") || eff_ip == "64:ff9b:1::" {
+        return MetadataIpMatch.Blocked;
+    }
     if core::starts_with(eff_ip, "64:ff9b::") {
         let suffix = eff_ip[9..];
         let blocked = if suffix.len == 0 { true } else { is_cloud_metadata_ipv4_suffix(suffix) };
@@ -565,11 +568,10 @@ fn is_cloud_metadata_or_reserved_ipv6(eff_ip: const u8[:]) -> bool {
     if core::starts_with(eff_ip, "2002:") {
         let rem = eff_ip[5..];
         let p1, _, has_col = rem.split_once_byte(':');
-        let h1 = if has_col && p1.len > 0 { p1 } else { rem };
-        let hex_val1, ok1 = parse_ssrf_hex_u16(h1);
-        if ok1 {
-            return is_cloud_metadata_or_reserved_ipv4_octets((hex_val1 >> 8) & 0xFF, hex_val1 & 0xFF);
-        }
+        if !has_col || p1.len == 0 { return true; }
+        let hex_val1, ok1 = parse_ssrf_hex_u16(p1);
+        guard ok1 else { return true; }
+        return is_cloud_metadata_or_reserved_ipv4_octets((hex_val1 >> 8) & 0xFF, hex_val1 & 0xFF);
     }
     return false;
 }

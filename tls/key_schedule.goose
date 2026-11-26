@@ -542,12 +542,12 @@ fn ks_zeroize(ks: KeySchedule&) {
 
 // ---- PSK Binders Verification (RFC 8446 Section 4.2.11.2) ----------------
 
-// Verifies PSK binder tag on truncated ClientHello in constant time.
-fn verify_psk_binder(
+// Verifies PSK binder tag against a pre-computed truncated ClientHello transcript hash.
+fn verify_psk_binder_hash(
     hash_id:         u8,
     hash_len:        u8,
     binder_key:      const u8[:],
-    truncated_ch:    const u8[:],
+    ch_hash:         const u8[:],
     expected_binder: const u8[:],
 ) -> bool {
     guard (hash_id == HASH_SHA256 && hash_len == 32) || (hash_id == HASH_SHA384 && hash_len == 48) else {
@@ -555,7 +555,7 @@ fn verify_psk_binder(
     }
     guard expected_binder.len == hash_len else { return false; }
     guard binder_key.len >= hash_len else { return false; }
-    guard truncated_ch.len > 0 else { return false; }
+    guard ch_hash.len == hash_len else { return false; }
 
     var finished_key: u8[48] = [0; 48];
     defer core::secure_zeroize_48(finished_key);
@@ -564,19 +564,35 @@ fn verify_psk_binder(
     }
 
     if hash_id == HASH_SHA256 {
-        let ch_hash = core::sha256(truncated_ch);
-        var calc_binder = core::hmac_sha256(finished_key[..32], ch_hash[..]);
+        var calc_binder = core::hmac_sha256(finished_key[..32], ch_hash);
         defer core::secure_zeroize_32(calc_binder);
         var exp: u8[32] = [0; 32];
         for i in 32 { exp[i] = expected_binder[i]; }
         return core::ct_eq_tag32(calc_binder, exp);
-    } else if hash_id == HASH_SHA384 {
+    }
+    var calc_binder = core::hmac_sha384(finished_key[..48], ch_hash);
+    defer core::secure_zeroize_48(calc_binder);
+    var exp: u8[48] = [0; 48];
+    for i in 48 { exp[i] = expected_binder[i]; }
+    return core::ct_eq_tag48(calc_binder, exp);
+}
+
+// Verifies PSK binder tag on truncated ClientHello in constant time.
+fn verify_psk_binder(
+    hash_id:         u8,
+    hash_len:        u8,
+    binder_key:      const u8[:],
+    truncated_ch:    const u8[:],
+    expected_binder: const u8[:],
+) -> bool {
+    guard truncated_ch.len > 0 else { return false; }
+    if hash_id == HASH_SHA256 && hash_len == 32 {
+        let ch_hash = core::sha256(truncated_ch);
+        return verify_psk_binder_hash(hash_id, hash_len, binder_key, ch_hash[..], expected_binder);
+    }
+    if hash_id == HASH_SHA384 && hash_len == 48 {
         let ch_hash = core::sha384(truncated_ch);
-        var calc_binder = core::hmac_sha384(finished_key[..48], ch_hash[..]);
-        defer core::secure_zeroize_48(calc_binder);
-        var exp: u8[48] = [0; 48];
-        for i in 48 { exp[i] = expected_binder[i]; }
-        return core::ct_eq_tag48(calc_binder, exp);
+        return verify_psk_binder_hash(hash_id, hash_len, binder_key, ch_hash[..], expected_binder);
     }
     return false;
 }

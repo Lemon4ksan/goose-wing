@@ -86,11 +86,12 @@ fn create_dpop_proof_es256<B>(
     var committed = false;
     defer if !committed { out.resize(0); };
 
-    guard auth_internal::has_nonzero_byte_32(priv_key) else { return false; }
+    guard core::is_valid_p256_private_key(priv_key) else { return false; }
     var norm_uri: u8[..256] = [];
     guard normalize_dpop_target_uri(target_uri, norm_uri) else { return false; }
 
     let pub_uncomp = core::ecdsa_p256_public_key(priv_key);
+    guard pub_uncomp[0] == 0x04 else { return false; }
     var x_b64: u8[..64] = [];
     var y_b64: u8[..64] = [];
     core::base64url_encode(pub_uncomp[1..33], x_b64);
@@ -163,9 +164,16 @@ fn verify_dpop_proof(
 // RFC 9449 Section 7.1: Attaches `DPoP: <proof>` and optional `Authorization: DPoP <access_token>` headers to `req`.
 fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "") {
     guard proof.len > 0 && proof.len <= 4096 else { return; }
-    guard core::swar_find_ctl(proof) == proof.len else { return; }
+    guard core::swar_find_ctl(proof) == proof.len && !proof.contains_byte(0x7F) else { return; }
+    if access_token.len > 0 {
+        guard access_token.len <= 4096 &&
+            core::swar_find_ctl(access_token) == access_token.len &&
+            !access_token.contains_byte(0x7F) else {
+            return;
+        }
+    }
     http::set_header(req, rfc::DPOP_HEADER, proof);
-    if access_token.len > 0 && access_token.len <= 4096 && core::swar_find_ctl(access_token) == access_token.len {
+    if access_token.len > 0 {
         var auth_val: u8[..4112] = [];
         defer core::secure_zeroize_slice(auth_val[..]);
         auth_val.append("DPoP ");

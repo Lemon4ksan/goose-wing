@@ -20,23 +20,24 @@ import quic.packet;
 import rfc.http;
 import rfc.h3_quic;
 
-const H3_EDGE_DATA_CHUNK_CAP:          u64 = 16384;
-const H3_EDGE_HDR_SECTION_CAP:         u64 = 65536;
-const H3_EDGE_CTRL_BUF_CAP:            u64 = 1024;
-const H3_EDGE_QENC_BUF_CAP:            u64 = 4096;
-const H3_EDGE_QDEC_BUF_CAP:            u64 = 1024;
-const H3_EDGE_COOKIE_BUF_CAP:          u64 = 65535;
-const H3_EDGE_MAX_HEADER_ENTRIES:      i64 = 512;
-const H3_EDGE_MAX_RETAINED_STREAMS:    i64 = 128;
-const H3_EDGE_MAX_UNI_PENDING:         i64 = 16;
-const H3_EDGE_MAX_IGNORED_UNI:         i64 = 1024;
-const H3_EDGE_QPACK_DEFAULT_CAP:       u64 = 4096;
-const H3_EDGE_QPACK_DEFAULT_BLOCKED:   u32 = 16;
-const H3_EDGE_FIELD_OVERHEAD:          u64 = 32;
-const H3_EDGE_STATUS_FIELD_OVERHEAD:   u64 = 39;
-const H3_EDGE_STATUS_MIN:              i32 = 100;
-const H3_EDGE_STATUS_MAX:              i32 = 599;
-const H3_EDGE_VARINT_MAX_HEADER_BYTES: i64 = 16;
+const H3_EDGE_DATA_CHUNK_CAP:               u64 = 16384;
+const H3_EDGE_HDR_SECTION_CAP:              u64 = 65536;
+const H3_EDGE_CTRL_BUF_CAP:                 u64 = 1024;
+const H3_EDGE_QENC_BUF_CAP:                 u64 = 4096;
+const H3_EDGE_QDEC_BUF_CAP:                 u64 = 1024;
+const H3_EDGE_COOKIE_BUF_CAP:               u64 = 65535;
+const H3_EDGE_MAX_HEADER_ENTRIES:           i64 = 512;
+const H3_EDGE_MAX_RETAINED_STREAMS:         i64 = 128;
+const H3_EDGE_MAX_UNI_PENDING:              i64 = 16;
+const H3_EDGE_MAX_IGNORED_UNI:              i64 = 1024;
+const H3_EDGE_MAX_BLOCKED_BYTES_PER_STREAM: u64 = 65536;
+const H3_EDGE_QPACK_DEFAULT_CAP:            u64 = 4096;
+const H3_EDGE_QPACK_DEFAULT_BLOCKED:        u32 = 16;
+const H3_EDGE_FIELD_OVERHEAD:               u64 = 32;
+const H3_EDGE_STATUS_FIELD_OVERHEAD:        u64 = 39;
+const H3_EDGE_STATUS_MIN:                   i32 = 100;
+const H3_EDGE_STATUS_MAX:                   i32 = 599;
+const H3_EDGE_VARINT_MAX_HEADER_BYTES:      i64 = 16;
 
 enum H3EdgeEventKind {
     None,
@@ -164,6 +165,7 @@ struct H3EdgeStreamSlot {
     blocked_has_fin:         bool            = false,
     blocked_head:            i64             = -1,
     blocked_tail:            i64             = -1,
+    blocked_bytes:           u64             = 0,
     deferred_trailers_idx:   i64             = -1,
     errored:                 bool            = false,
     finished:                bool            = false,
@@ -201,6 +203,9 @@ struct H3EdgeSlot {
     qpack_enc_table:        QpackTable               = QpackTable { .. },
     stream_head:            i64                      = -1,
     stream_count:           i64                      = 0,
+    reset_bidi_ids:         u64[..128]               = [],
+    has_reset_bidi_floor:   bool                     = false,
+    reset_bidi_floor:       u64                      = 0,
     ev_head:                i64                      = -1,
     ev_tail:                i64                      = -1,
     ev_data_buf:            u8[..16384]              = [],
@@ -283,6 +288,9 @@ fn free_h3_chunk(idx: i64) {
     }
     g_h3_edge_chunks[idx].in_use = false;
     g_h3_edge_chunks[idx].next_chunk = -1;
+    if g_h3_edge_chunks[idx].buf.len > 0 {
+        core::secure_zeroize_slice(g_h3_edge_chunks[idx].buf[..]);
+    }
     g_h3_edge_chunks[idx].buf.clear();
     g_h3_edge_free_chunks.push(idx);
 }
@@ -428,6 +436,7 @@ fn cleanup_h3_stream_resources(slot_idx: i64, st_idx: i64) {
     free_h3_chunk_chain(st.blocked_head);
     st.blocked_head = -1;
     st.blocked_tail = -1;
+    st.blocked_bytes = 0;
     st.blocked_has_fin = false;
     st.blocked_on_qpack = false;
     if st.deferred_trailers_idx >= 0 {
@@ -457,18 +466,68 @@ fn emit_h3_stream_reset(slot_idx: i64, st_idx: i64, error_code: u64) {
     );
 }
 
+inline fn reset_qpack_table_in_place(tbl: QpackTable&, max_cap: u64, max_blk: u32, init_cap: u64) {
+    core::secure_zeroize_slice(tbl.arena[..]);
+    tbl.capacity_bytes = min(init_cap, max_cap);
+    tbl.max_capacity_bytes = max_cap;
+    tbl.used_bytes = 0;
+    tbl.insert_count = 0;
+    tbl.known_rcvd_count = 0;
+    tbl.draining_index = 0;
+    tbl.max_blocked = max_blk;
+    tbl.arena_write_pos = 0;
+    tbl.blocked_streams.clear();
+    tbl.unacked_sections.clear();
+    tbl.entries.clear();
+}
+
 fn reset_h3_edge_slot(slot_idx: i64, gen: u64) {
     let slot .= g_h3_edge_slots[slot_idx];
     if slot.ev_data_buf.len > 0 { core::secure_zeroize_slice(slot.ev_data_buf[..]); }
     if slot.ev_hdr_raw.len > 0 { core::secure_zeroize_slice(slot.ev_hdr_raw[..]); }
+    if slot.qenc_rx_buf.len > 0 { core::secure_zeroize_slice(slot.qenc_rx_buf[..]); }
+    if slot.qdec_rx_buf.len > 0 { core::secure_zeroize_slice(slot.qdec_rx_buf[..]); }
+    if slot.ctrl_payload_buf.len > 0 { core::secure_zeroize_slice(slot.ctrl_payload_buf[..]); }
+    slot.active = true;
+    slot.generation = gen;
+    slot.conn_failed = false;
+    slot.has_peer_ctrl = false;
+    slot.peer_ctrl_stream_id = 0;
+    slot.has_peer_qenc = false;
+    slot.peer_qenc_stream_id = 0;
+    slot.has_peer_qdec = false;
+    slot.peer_qdec_stream_id = 0;
+    slot.peer_settings_received = false;
+    slot.peer_settings = fingerprint::H3Settings { .. };
+    slot.local_settings = fingerprint::H3Settings { .. };
+    slot.peer_goaway_seen = false;
+    slot.peer_goaway_id = 0;
+    slot.has_max_push_id = false;
+    slot.max_push_id = 0;
+    slot.ctrl_stage = H3EdgeCtrlStage.ReadHeader;
+    slot.ctrl_hdr_buf.clear();
+    slot.ctrl_frame_type = 0;
+    slot.ctrl_remaining = 0;
+    slot.ctrl_payload_buf.clear();
+    slot.ctrl_empty_streak = 0;
+    slot.qenc_rx_buf.clear();
+    slot.qdec_rx_buf.clear();
+    slot.uni_pending.clear();
+    slot.ignored_uni_head = -1;
+    slot.ignored_uni_count = 0;
     // RFC 9204 Section 3.2.1: Dynamic Table Capacity - Initial decoder capacity MUST be 0 until instructed.
-    slot = H3EdgeSlot {
-        active:          true,
-        generation:      gen,
-        qpack_dec_table: new_qpack_table(H3_EDGE_QPACK_DEFAULT_CAP, H3_EDGE_QPACK_DEFAULT_BLOCKED, 0),
-        qpack_enc_table: new_qpack_table(H3_EDGE_QPACK_DEFAULT_CAP, H3_EDGE_QPACK_DEFAULT_BLOCKED, 0),
-        ..
-    };
+    reset_qpack_table_in_place(slot.qpack_dec_table, H3_EDGE_QPACK_DEFAULT_CAP, H3_EDGE_QPACK_DEFAULT_BLOCKED, 0);
+    reset_qpack_table_in_place(slot.qpack_enc_table, H3_EDGE_QPACK_DEFAULT_CAP, H3_EDGE_QPACK_DEFAULT_BLOCKED, 0);
+    slot.stream_head = -1;
+    slot.stream_count = 0;
+    slot.reset_bidi_ids.clear();
+    slot.has_reset_bidi_floor = false;
+    slot.reset_bidi_floor = 0;
+    slot.ev_head = -1;
+    slot.ev_tail = -1;
+    slot.ev_data_buf.clear();
+    slot.ev_hdr_entries.clear();
+    slot.ev_hdr_raw.clear();
 }
 
 fn free_h3_stream_slot(st_idx: i64) {
@@ -531,6 +590,46 @@ fn find_h3_stream(slot_idx: i64, stream_id: u64) -> i64 {
     return -1;
 }
 
+fn is_reset_bidi_stream(slot: const H3EdgeSlot&, stream_id: u64) -> bool {
+    if slot.has_reset_bidi_floor && stream_id <= slot.reset_bidi_floor {
+        return true;
+    }
+    for id in slot.reset_bidi_ids {
+        if id == stream_id {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn record_reset_bidi_stream(slot: H3EdgeSlot&, stream_id: u64) {
+    if is_reset_bidi_stream(slot, stream_id) {
+        return;
+    }
+    if slot.reset_bidi_ids.try_push(stream_id) {
+        return;
+    }
+    var min_idx: i64 = 0;
+    var min_id = slot.reset_bidi_ids[0];
+    for i in 1..slot.reset_bidi_ids.len {
+        if slot.reset_bidi_ids[i] < min_id {
+            min_id = slot.reset_bidi_ids[i];
+            min_idx = i;
+        }
+    }
+    if stream_id < min_id {
+        let next_floor = if slot.has_reset_bidi_floor { max(slot.reset_bidi_floor, stream_id) } else { stream_id };
+        slot.reset_bidi_floor = next_floor;
+        slot.has_reset_bidi_floor = true;
+        return;
+    }
+    let next_floor = if slot.has_reset_bidi_floor { max(slot.reset_bidi_floor, min_id) } else { min_id };
+    slot.reset_bidi_floor = next_floor;
+    slot.has_reset_bidi_floor = true;
+    slot.reset_bidi_ids.remove_at(min_idx);
+    let _ = slot.reset_bidi_ids.try_push(stream_id);
+}
+
 fn find_or_create_h3_stream(slot_idx: i64, stream_id: u64) -> i64, bool {
     let existing = find_h3_stream(slot_idx, stream_id);
     if existing >= 0 {
@@ -539,6 +638,9 @@ fn find_or_create_h3_stream(slot_idx: i64, stream_id: u64) -> i64, bool {
     let slot .= g_h3_edge_slots[slot_idx];
     if slot.stream_count >= H3_EDGE_MAX_RETAINED_STREAMS {
         reap_oldest_finished_stream(slot_idx);
+    }
+    if slot.stream_count >= H3_EDGE_MAX_RETAINED_STREAMS {
+        return -1, false;
     }
     let free_idx, has_free = pop_free_index(g_h3_edge_free_streams);
     var st_idx: i64 = -1;
@@ -608,9 +710,27 @@ fn h3_edge_close(sess: H3EdgeSession&) {
     slot.stream_count = 0;
     slot.ev_head = -1;
     slot.ev_tail = -1;
+    if slot.qenc_rx_buf.len > 0 { core::secure_zeroize_slice(slot.qenc_rx_buf[..]); }
+    if slot.qdec_rx_buf.len > 0 { core::secure_zeroize_slice(slot.qdec_rx_buf[..]); }
+    if slot.ctrl_payload_buf.len > 0 { core::secure_zeroize_slice(slot.ctrl_payload_buf[..]); }
+    core::secure_zeroize_slice(slot.qpack_dec_table.arena[..]);
+    core::secure_zeroize_slice(slot.qpack_enc_table.arena[..]);
     slot.qenc_rx_buf.clear();
     slot.qdec_rx_buf.clear();
     slot.ctrl_payload_buf.clear();
+    slot.qpack_dec_table.blocked_streams.clear();
+    slot.qpack_dec_table.unacked_sections.clear();
+    slot.qpack_dec_table.entries.clear();
+    slot.qpack_dec_table.used_bytes = 0;
+    slot.qpack_dec_table.arena_write_pos = 0;
+    slot.qpack_enc_table.blocked_streams.clear();
+    slot.qpack_enc_table.unacked_sections.clear();
+    slot.qpack_enc_table.entries.clear();
+    slot.qpack_enc_table.used_bytes = 0;
+    slot.qpack_enc_table.arena_write_pos = 0;
+    slot.reset_bidi_ids.clear();
+    slot.has_reset_bidi_floor = false;
+    slot.reset_bidi_floor = 0;
     if slot.ev_data_buf.len > 0 {
         core::secure_zeroize_slice(slot.ev_data_buf[..]);
     }
@@ -1511,6 +1631,9 @@ fn decode_and_deliver_headers_section(
 
 fn queue_stream_blocked_tail(st_idx: i64, tail: const u8[:], end_flag: H3EdgeEndFlag) -> bool {
     let st .= g_h3_edge_streams[st_idx];
+    guard core::add_sat_u64(st.blocked_bytes, tail.len as u64) <= H3_EDGE_MAX_BLOCKED_BYTES_PER_STREAM else {
+        return false;
+    }
     var pos: i64 = 0;
     while pos < tail.len {
         let rem = core::sub_sat_i64(tail.len, pos);
@@ -1521,6 +1644,7 @@ fn queue_stream_blocked_tail(st_idx: i64, tail: const u8[:], end_flag: H3EdgeEnd
             free_h3_chunk(c_idx);
             return false;
         };
+        st.blocked_bytes = core::add_sat_u64(st.blocked_bytes, take as u64);
         if st.blocked_tail < 0 {
             st.blocked_head = c_idx;
             st.blocked_tail = c_idx;
@@ -1928,6 +2052,7 @@ fn replay_unblocked_stream(slot_idx: i64, blocked_stream_id: u64) -> bool {
     let saved_fin = st.blocked_has_fin;
     st.blocked_head = -1;
     st.blocked_tail = -1;
+    st.blocked_bytes = 0;
     st.blocked_has_fin = false;
 
     let still_blocked, hdr_ok = replay_blocked_header_section(slot_idx, st_idx, ch, saved_fin);
@@ -2237,7 +2362,13 @@ fn h3_edge_feed_bidi_stream(
     if (stream_id & rfc::QUIC_STREAM_TYPE_MASK) != rfc::QUIC_CLIENT_BIDI_TYPE || stream_id > rfc::QUIC_VARINT_MAX {
         return emit_h3_protocol_error(slot_idx, stream_id, rfc::H3_ERR_STREAM_CREATION);
     }
+    if is_reset_bidi_stream(slot, stream_id) {
+        return true;
+    }
     let st_idx, _ = find_or_create_h3_stream(slot_idx, stream_id);
+    guard st_idx >= 0 else {
+        return emit_h3_protocol_error(slot_idx, stream_id, rfc::H3_ERR_EXCESSIVE_LOAD);
+    }
     let st .= g_h3_edge_streams[st_idx];
     if st.errored {
         return true;
@@ -2276,6 +2407,7 @@ fn h3_edge_reset_stream(sess: H3EdgeSession&, stream_id: u64) {
         return;
     }
     guard (stream_id & rfc::QUIC_STREAM_TYPE_MASK) == rfc::QUIC_CLIENT_BIDI_TYPE else { return; }
+    record_reset_bidi_stream(slot, stream_id);
     var prev: i64 = -1;
     var curr = slot.stream_head;
     while curr >= 0 {

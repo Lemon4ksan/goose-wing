@@ -93,7 +93,6 @@ int32_t wing_kqueue_kevent_slice(int64_t kq_fd, wing_kevents_ro changes, wing_ke
             int rc = kevent((int)kq_fd, chg_buf, chunk, rcpt_buf, chunk, NULL);
             if (rc < 0) {
                 if (errno == EINTR) {
-                    off += chunk;
                     continue;
                 }
                 return -errno;

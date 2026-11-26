@@ -129,9 +129,11 @@ inline fn x509_check_mask_byte(b: u8, seen_zero_bit: bool&) -> bool {
 }
 
 inline fn x509_validate_dns_candidate(cand: const u8[:]) -> bool {
-    guard cand.len > 0 else { return false; }
-    guard cand[0] != '.' else { return false; }
-    guard !cand.contains_byte(0) else { return false; }
+    guard cand.len > 0 && cand[0] != '.' else { return false; }
+    guard !cand.contains_byte('\\') && core::swar_find_ctl(cand) == cand.len &&
+        !cand.contains_byte(0x7F) && !cand.contains_byte(' ') else {
+        return false;
+    }
     return find(cand, "..") < 0;
 }
 
@@ -320,7 +322,9 @@ fn x509_parse_subtrees_sequence(
 
 inline fn x509_validate_san_uri(elem_buf: const u8[:]) -> bool {
     guard elem_buf.len > 0 && x509_has_valid_uri_scheme(elem_buf) else { return false; }
-    guard !elem_buf.contains_byte('%') && !elem_buf.contains_byte(0) else { return false; }
+    guard !elem_buf.contains_byte('%') && !elem_buf.contains_byte('\\') && !elem_buf.contains_byte(0) else {
+        return false;
+    }
     return core::find(elem_buf, "://") > 0;
 }
 
@@ -340,7 +344,9 @@ inline fn x509_classify_san_element(tag: u8, elem_buf: const u8[:], out_type: tl
     }
     if tag == 0xA4 { // directoryName [4] EXPLICIT Name
         out_type = tls::SanType.DirName;
-        return elem_buf.len > 0;
+        var c = core::cursor_from(elem_buf);
+        var seq = core::cursor_from(elem_buf[..0]);
+        return tls::get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, seq) && c.cursor_len() == 0;
     }
     if tag == 0x86 { // uniformResourceIdentifier [6] IMPLICIT IA5String
         out_type = tls::SanType.Uri;
@@ -411,6 +417,15 @@ inline fn x509_is_dn_foldable_string_tag(tag: u8) -> bool {
         tag == 0x14; // TeletexString
 }
 
+inline fn x509_is_dn_unsupported_string_tag(tag: u8) -> bool {
+    return tag == 0x1E || tag == 0x1C; // BMPString / UniversalString
+}
+
+struct DnAvaSpan {
+    off: i64 = 0,
+    len: i64 = 0,
+}
+
 // RFC 5280 Section 7.1: Canonicalizes a Distinguished Name string attribute by trimming outer
 // spaces, collapsing internal runs of ASCII spaces to a single space, and lowercasing ASCII.
 fn x509_canonicalize_dn_value(raw: const u8[:], out: u8[..256]&) -> bool {
@@ -431,13 +446,18 @@ fn x509_canonicalize_dn_value(raw: const u8[:], out: u8[..256]&) -> bool {
     return true;
 }
 
-fn x509_dn_ava_equal(cand_ava: core::ByteCursor&, cons_ava: core::ByteCursor&) -> bool {
+// Parses one AttributeTypeAndValue from `ava` and matches against `cons_ava` returning 3-state NcMatchResult.
+// Advances both cursors to empty on valid structure; returns `Invalid` on malformed DER or unsupported encodings.
+//
+// Example:
+//   cand_ava = SEQUENCE{CN,"alice"}, cons_ava = SEQUENCE{CN,"ALICE"}
+//   returns: NcMatchResult.Match
+fn x509_dn_ava_match_3state(cand_ava: core::ByteCursor&, cons_ava: core::ByteCursor&) -> NcMatchResult {
     var cand_oid = core::cursor_from(cand_ava.buf[..0]);
     var cons_oid = core::cursor_from(cons_ava.buf[..0]);
     guard tls::get_asn1_element(cand_ava, rfc::ASN1_TAG_OID, cand_oid) &&
-        tls::get_asn1_element(cons_ava, rfc::ASN1_TAG_OID, cons_oid) &&
-        cand_oid.buf == cons_oid.buf else {
-        return false;
+        tls::get_asn1_element(cons_ava, rfc::ASN1_TAG_OID, cons_oid) else {
+        return NcMatchResult.Invalid;
     }
     var cand_tag: u8 = 0;
     var cons_tag: u8 = 0;
@@ -446,37 +466,89 @@ fn x509_dn_ava_equal(cand_ava: core::ByteCursor&, cons_ava: core::ByteCursor&) -
     guard tls::get_any_asn1_element(cand_ava, cand_tag, cand_val) &&
         tls::get_any_asn1_element(cons_ava, cons_tag, cons_val) &&
         cand_ava.cursor_len() == 0 && cons_ava.cursor_len() == 0 else {
-        return false;
+        return NcMatchResult.Invalid;
+    }
+    guard cand_oid.buf == cons_oid.buf else { return NcMatchResult.NoMatch; }
+    guard !x509_is_dn_unsupported_string_tag(cand_tag) && !x509_is_dn_unsupported_string_tag(cons_tag) else {
+        return NcMatchResult.Invalid;
     }
     if x509_is_dn_foldable_string_tag(cand_tag) && x509_is_dn_foldable_string_tag(cons_tag) {
         var norm_cand: u8[..256] = [];
         var norm_cons: u8[..256] = [];
         guard x509_canonicalize_dn_value(cand_val.buf, norm_cand) &&
             x509_canonicalize_dn_value(cons_val.buf, norm_cons) else {
-            return false;
+            return NcMatchResult.Invalid;
         }
-        return norm_cand[..] == norm_cons[..];
+        return if norm_cand[..] == norm_cons[..] { NcMatchResult.Match } else { NcMatchResult.NoMatch };
     }
-    return cand_tag == cons_tag && cand_val.buf == cons_val.buf;
+    if cand_tag != cons_tag { return NcMatchResult.Invalid; }
+    return if cand_val.buf == cons_val.buf { NcMatchResult.Match } else { NcMatchResult.NoMatch };
 }
 
-fn x509_dn_rdn_equal(cand_rdn: core::ByteCursor&, cons_rdn: core::ByteCursor&) -> bool {
-    guard cand_rdn.cursor_len() > 0 && cons_rdn.cursor_len() > 0 else { return false; }
-    while cons_rdn.cursor_len() > 0 {
-        var cons_ava = core::cursor_from(cons_rdn.buf[..0]);
-        var cand_ava = core::cursor_from(cand_rdn.buf[..0]);
-        guard tls::get_asn1_element(cons_rdn, rfc::ASN1_TAG_SEQUENCE, cons_ava) &&
-            tls::get_asn1_element(cand_rdn, rfc::ASN1_TAG_SEQUENCE, cand_ava) &&
-            x509_dn_ava_equal(cand_ava, cons_ava) else {
+// Collects DER SEQUENCE AVA body spans from an RDN SET cursor into `out_spans` (max 8 AVAs).
+//
+// Example:
+//   rdn = SET{AVA0, AVA1}
+//   returns: true, out_spans.len == 2
+fn x509_collect_rdn_avas(rdn: core::ByteCursor&, out_spans: DnAvaSpan[..8]&) -> bool {
+    out_spans.clear();
+    let base = rdn.buf;
+    var off: i64 = 0;
+    while rdn.cursor_len() > 0 {
+        let before_len = rdn.cursor_len();
+        var ava = core::cursor_from(base[..0]);
+        guard tls::get_asn1_element(rdn, rfc::ASN1_TAG_SEQUENCE, ava) else { return false; }
+        let elem_bytes = before_len - rdn.cursor_len();
+        let header_bytes = elem_bytes - ava.cursor_len();
+        guard out_spans.try_push(DnAvaSpan { off: off + header_bytes, len: ava.cursor_len() }) else {
             return false;
         }
+        off += elem_bytes;
     }
-    return cand_rdn.cursor_len() == 0;
+    return out_spans.len > 0;
 }
 
-// RFC 5280 Section 4.2.1.10 & Section 7.1: Matches DirectoryName RDNSequence prefix RDN-by-RDN.
-fn match_dn_name_constraint(candidate_dn: const u8[:], constraint_dn: const u8[:]) -> bool {
-    guard candidate_dn.len > 0 && constraint_dn.len > 0 else { return false; }
+// Compares a candidate RDN SET against a constraint RDN SET order-independently (RFC 5280 §7.1).
+//
+// Example:
+//   cand_rdn = SET{OU=Ops, CN=Ex}, cons_rdn = SET{CN=Ex, OU=Ops}
+//   returns: NcMatchResult.Match
+fn x509_dn_rdn_match_3state(cand_rdn: core::ByteCursor&, cons_rdn: core::ByteCursor&) -> NcMatchResult {
+    let cand_raw = cand_rdn.buf;
+    let cons_raw = cons_rdn.buf;
+    var cand_avas: DnAvaSpan[..8] = [];
+    var cons_avas: DnAvaSpan[..8] = [];
+    guard x509_collect_rdn_avas(cand_rdn, cand_avas) &&
+        x509_collect_rdn_avas(cons_rdn, cons_avas) else {
+        return NcMatchResult.Invalid;
+    }
+    guard cand_avas.len == cons_avas.len else { return NcMatchResult.NoMatch; }
+    var matched_cand: bool[8] = [false; 8];
+    for i in cons_avas.len {
+        var found = false;
+        let cs = cons_avas[i];
+        let cons_slice = cons_raw[cs.off..cs.off + cs.len];
+        for j in cand_avas.len {
+            if matched_cand[j] { continue; }
+            let ds = cand_avas[j];
+            var c_ava = core::cursor_from(cand_raw[ds.off..ds.off + ds.len]);
+            var r_ava = core::cursor_from(cons_slice);
+            let res = x509_dn_ava_match_3state(c_ava, r_ava);
+            if res == NcMatchResult.Invalid { return NcMatchResult.Invalid; }
+            if res == NcMatchResult.Match {
+                matched_cand[j] = true;
+                found = true;
+                break;
+            }
+        }
+        guard found else { return NcMatchResult.NoMatch; }
+    }
+    return NcMatchResult.Match;
+}
+
+// RFC 5280 Section 4.2.1.10 & Section 7.1: Matches DirectoryName RDNSequence prefix RDN-by-RDN (3-state).
+fn x509_match_dn_nc_3state(candidate_dn: const u8[:], constraint_dn: const u8[:]) -> NcMatchResult {
+    guard candidate_dn.len > 0 && constraint_dn.len > 0 else { return NcMatchResult.Invalid; }
     var cand_c = core::cursor_from(candidate_dn);
     var cons_c = core::cursor_from(constraint_dn);
     var cand_seq = core::cursor_from(candidate_dn[..0]);
@@ -484,18 +556,26 @@ fn match_dn_name_constraint(candidate_dn: const u8[:], constraint_dn: const u8[:
     guard tls::get_asn1_element(cand_c, rfc::ASN1_TAG_SEQUENCE, cand_seq) &&
         tls::get_asn1_element(cons_c, rfc::ASN1_TAG_SEQUENCE, cons_seq) &&
         cand_c.cursor_len() == 0 && cons_c.cursor_len() == 0 else {
-        return false;
+        return NcMatchResult.Invalid;
     }
     while cons_seq.cursor_len() > 0 {
         var cons_rdn = core::cursor_from(cons_seq.buf[..0]);
-        var cand_rdn = core::cursor_from(cand_seq.buf[..0]);
-        guard tls::get_asn1_element(cons_seq, rfc::ASN1_TAG_SET, cons_rdn) &&
-            tls::get_asn1_element(cand_seq, rfc::ASN1_TAG_SET, cand_rdn) &&
-            x509_dn_rdn_equal(cand_rdn, cons_rdn) else {
-            return false;
+        guard tls::get_asn1_element(cons_seq, rfc::ASN1_TAG_SET, cons_rdn) else {
+            return NcMatchResult.Invalid;
         }
+        guard cand_seq.cursor_len() > 0 else { return NcMatchResult.NoMatch; }
+        var cand_rdn = core::cursor_from(cand_seq.buf[..0]);
+        guard tls::get_asn1_element(cand_seq, rfc::ASN1_TAG_SET, cand_rdn) else {
+            return NcMatchResult.Invalid;
+        }
+        let rdn_res = x509_dn_rdn_match_3state(cand_rdn, cons_rdn);
+        if rdn_res != NcMatchResult.Match { return rdn_res; }
     }
-    return true;
+    return NcMatchResult.Match;
+}
+
+fn match_dn_name_constraint(candidate_dn: const u8[:], constraint_dn: const u8[:]) -> bool {
+    return x509_match_dn_nc_3state(candidate_dn, constraint_dn) == NcMatchResult.Match;
 }
 
 inline fn x509_match_host_constraint_3state(cand_host: const u8[:], cons_host: const u8[:]) -> NcMatchResult {
@@ -516,7 +596,9 @@ fn x509_match_uri_nc_3state(candidate_uri: const u8[:], constraint: const u8[:])
     }
 
     var host_part = x509_extract_uri_authority(candidate_uri);
-    guard host_part.len > 0 && !host_part.contains_byte('@') else { return NcMatchResult.Invalid; }
+    guard host_part.len > 0 && !host_part.contains_byte('@') && !host_part.contains_byte('\\') else {
+        return NcMatchResult.Invalid;
+    }
 
     if host_part[0] == '[' {
         return x509_match_ipv6_uri_constraint_3state(host_part, constraint);
@@ -530,6 +612,9 @@ fn x509_match_uri_nc_3state(candidate_uri: const u8[:], constraint: const u8[:])
 
     let cand = tls::x509_strip_trailing_dot(host_part);
     guard x509_validate_dns_candidate(cand) else { return NcMatchResult.Invalid; }
+    for b in cand {
+        guard core::is_ascii_alphanumeric(b) || b == '-' || b == '.' else { return NcMatchResult.Invalid; }
+    }
     return x509_match_host_constraint_3state(cand, tls::x509_strip_trailing_dot(constraint));
 }
 
@@ -584,11 +669,7 @@ inline fn x509_match_constraint_entry_3state(
         return x509_match_email_nc_3state(san.val, nc.val);
     }
     if nc.san_type == tls::SanType.DirName {
-        return if match_dn_name_constraint(san.val, nc.val) {
-            NcMatchResult.Match
-        } else {
-            NcMatchResult.NoMatch
-        };
+        return x509_match_dn_nc_3state(san.val, nc.val);
     }
     return NcMatchResult.Invalid;
 }

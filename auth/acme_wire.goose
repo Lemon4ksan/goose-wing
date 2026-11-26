@@ -65,7 +65,7 @@ struct AcmeHttp01Challenge {
 // ---- Internal Key, URL, and Status Helpers ---------------------------------
 
 inline fn acme_make_p256_jwk(priv_key: const u8[32]&) -> JwksKey, bool {
-    guard auth_internal::has_nonzero_byte_32(priv_key) else { return JwksKey { .. }, false; }
+    guard core::is_valid_p256_private_key(priv_key) else { return JwksKey { .. }, false; }
     let pub_key = core::ecdsa_p256_public_key(priv_key);
     guard pub_key[0] == 0x04 else { return JwksKey { .. }, false; }
     var jwk = JwksKey {
@@ -79,9 +79,19 @@ inline fn acme_make_p256_jwk(priv_key: const u8[32]&) -> JwksKey, bool {
     return jwk, true;
 }
 
+// RFC 8555 Section 6.5.1: Replay-Nonce MUST be an unpadded base64url token (`[A-Za-z0-9_-]+`).
+inline fn is_valid_acme_replay_nonce(nonce: const u8[:]) -> bool {
+    guard nonce.len > 0 && nonce.len <= 256 else { return false; }
+    for b in nonce {
+        guard core::is_ascii_alphanumeric(b) || b == '-' || b == '_' else { return false; }
+    }
+    return true;
+}
+
 inline fn is_valid_acme_http_url(url: const u8[:]) -> bool {
     guard url.len > 0 && url.len <= 256 else { return false; }
-    guard core::swar_find_ctl(url) == url.len && !url.contains_byte(' ') && !url.contains_byte('\\') else {
+    guard core::swar_find_ctl(url) == url.len && !url.contains_byte(0x7F) &&
+        !url.contains_byte(' ') && !url.contains_byte('\\') else {
         return false;
     }
     let parsed, err = core::parse_url(url);
@@ -202,8 +212,8 @@ fn acme_sign_jws_es256(
     out_jws:      u8[>..]&,
 ) -> bool {
     out_jws.clear();
-    guard url.len > 0 && nonce.len > 0 else { return false; }
-    guard url.validate_utf8() && nonce.validate_utf8() && kid.validate_utf8() else { return false; }
+    guard url.len > 0 && is_valid_acme_replay_nonce(nonce) else { return false; }
+    guard url.validate_utf8() && kid.validate_utf8() else { return false; }
     let jwk, ok_jwk = acme_make_p256_jwk(priv_key);
     guard ok_jwk else { return false; }
 

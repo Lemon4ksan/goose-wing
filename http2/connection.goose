@@ -80,10 +80,14 @@ struct Connection {
     unclaimed_recv_window:     i64          = 0,
     coalesce_window_updates:   bool         = false,
 
-    // Active streams table (bounded inline storage)
-    streams:         Stream[..128]              = [],
-    stream_index:    core::FlatIndexBucket[256] = [core::FlatIndexBucket { .. }; 256],
-    idle_priorities: IdleStreamPriority[..128]  = [],
+    // Active streams table (bounded inline storage + SWAR tag map + 128-bit active bitmap)
+    streams:              Stream[..128]             = [],
+    stream_ctrl:          u8[256]                   = [core::SWAR_CTRL_EMPTY; 256],
+    stream_keys:          u64[256]                  = [0; 256],
+    stream_slots:         u16[256]                  = [0; 256],
+    stream_gens:          u16[256]                  = [0; 256],
+    active_stream_bitmap: u64[2]                    = [0; 2],
+    idle_priorities:      IdleStreamPriority[..128] = [],
 
     // Exclusive CONTINUATION lock (0 if not expecting CONTINUATION)
     continuation_stream_id:       u32 = 0,
@@ -145,9 +149,70 @@ fn new_h2_connection(
     };
 }
 
+// Marks `slot_idx` active in the 128-bit stream occupancy bitmap.
+inline fn set_stream_bitmap_bit(s: Connection&, slot_idx: i32) {
+    guard slot_idx >= 0 && slot_idx < 128 else { return; }
+    let w = (slot_idx >> 6) as i64;
+    let b = (slot_idx & 63) as u32;
+    s.active_stream_bitmap[w] |= (1 as u64) << b;
+}
+
+// Marks `slot_idx` free in the 128-bit stream occupancy bitmap.
+inline fn clear_stream_bitmap_bit(s: Connection&, slot_idx: i32) {
+    guard slot_idx >= 0 && slot_idx < 128 else { return; }
+    let w = (slot_idx >> 6) as i64;
+    let b = (slot_idx & 63) as u32;
+    s.active_stream_bitmap[w] &= ~((1 as u64) << b);
+}
+
+// Allocates the lowest inactive slot in `s.streams` using `ctz` over `active_stream_bitmap`,
+// or appends to `s.streams` if all materialized slots are busy. Returns slot index or `-1`.
+inline fn alloc_active_stream_slot(s: Connection&, new_stream: Stream) -> i32 {
+    let w0 = ~s.active_stream_bitmap[0];
+    let w1 = ~s.active_stream_bitmap[1];
+    var cand: i32 = -1;
+    if w0 != 0 {
+        cand = ctz(w0) as i32;
+    } else if w1 != 0 {
+        cand = core::add_sat_i64(64, ctz(w1)) as i32;
+    }
+    if cand >= 0 && cand < s.streams.len {
+        s.streams[cand] = new_stream;
+        set_stream_bitmap_bit(s, cand);
+        return cand;
+    }
+    guard s.streams.try_push(new_stream) else { return -1; }
+    let idx = core::sub_sat_i64(s.streams.len, 1) as i32;
+    set_stream_bitmap_bit(s, idx);
+    return idx;
+}
+
+// Releases an active stream slot from the SWAR lookup table, active bitmap, and counter.
+inline fn release_active_stream_slot(s: Connection&, s_idx: i32, stream_id: u32) {
+    guard s_idx >= 0 && s_idx < s.streams.len else { return; }
+    s.streams[s_idx].active = false;
+    let _ = core::swar_index_remove(
+        s.stream_ctrl[..],
+        s.stream_keys[..],
+        s.stream_slots[..],
+        s.stream_gens[..],
+        stream_id,
+    );
+    clear_stream_bitmap_bit(s, s_idx);
+    if s.active_stream_count > 0 {
+        s.active_stream_count--;
+    }
+}
+
 // Finds an active stream by stream_id. Returns (index, true) or (-1, false).
 fn find_stream_idx(s: const Connection&, stream_id: u32) -> i32, bool {
-    let res = core::flat_index_get(s.stream_index[..], stream_id);
+    let res = core::swar_index_get(
+        s.stream_ctrl[..],
+        s.stream_keys[..],
+        s.stream_slots[..],
+        s.stream_gens[..],
+        stream_id,
+    );
     guard res.found && res.slot_idx >= 0 && res.slot_idx < s.streams.len else {
         return -1, false;
     }
@@ -197,22 +262,21 @@ fn open_stream(s: Connection&, stream_id: u32, end_stream: bool) {
         ..
     };
 
-    var slot_idx: i32 = -1;
-    for i in s.streams.len {
-        if !s.streams[i].active {
-            s.streams[i] = new_stream;
-            slot_idx = i as i32;
-            break;
-        }
-    }
-    if slot_idx < 0 {
-        guard s.streams.try_push(new_stream) else { return; }
-        slot_idx = core::sub_sat_i64(s.streams.len, 1) as i32;
-    }
-    let res = core::flat_index_get_or_put(s.stream_index[..], stream_id);
+    let slot_idx = alloc_active_stream_slot(s, new_stream);
+    guard slot_idx >= 0 else { return; }
+    let res = core::swar_index_get_or_put(
+        s.stream_ctrl[..],
+        s.stream_keys[..],
+        s.stream_slots[..],
+        s.stream_gens[..],
+        stream_id,
+    );
     if !res.found && res.bucket_idx >= 0 {
-        let _, _ = core::flat_index_commit_put(
-            s.stream_index[..],
+        let _, _ = core::swar_index_commit_put(
+            s.stream_ctrl[..],
+            s.stream_keys[..],
+            s.stream_slots[..],
+            s.stream_gens[..],
             res.bucket_idx,
             stream_id,
             slot_idx as u16,
@@ -230,11 +294,7 @@ fn close_local_stream(s: Connection&, stream_id: u32) {
     let st .= s.streams[s_idx];
     if st.state == StreamState.HalfClosedRemote {
         st.state = StreamState.Closed;
-        st.active = false;
-        let _ = core::flat_index_remove(s.stream_index[..], stream_id);
-        if s.active_stream_count > 0 {
-            s.active_stream_count--;
-        }
+        release_active_stream_slot(s, s_idx, stream_id);
     } else if st.state == StreamState.Open {
         st.state = StreamState.HalfClosedLocal;
     }
@@ -249,11 +309,7 @@ fn reset_stream(s: Connection&, stream_id: u32) {
     let st .= s.streams[s_idx];
     st.state = StreamState.Closed;
     st.closed_by_rst = true;
-    st.active = false;
-    let _ = core::flat_index_remove(s.stream_index[..], stream_id);
-    if s.active_stream_count > 0 {
-        s.active_stream_count--;
-    }
+    release_active_stream_slot(s, s_idx, stream_id);
     sync_stream_urgency_node(s, s_idx);
 }
 

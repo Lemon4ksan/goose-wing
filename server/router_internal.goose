@@ -535,6 +535,10 @@ inline fn is_already_canonical_route_path(path: const u8[:]) -> bool {
     return true;
 }
 
+// Resolves canonical path into `out`, populating `out` even when `path` is already canonical.
+//
+// Example:
+//   path = "/users/42", out = [] -> returns ("/users/42", true), out = "/users/42"
 inline fn resolve_effective_route_path<B>(path: const u8[:], out: B&) -> const u8[:], bool {
     if is_already_canonical_route_path(path) {
         guard out.try_set(path) else { return "", false; }
@@ -543,6 +547,19 @@ inline fn resolve_effective_route_path<B>(path: const u8[:], out: B&) -> const u
     out.clear();
     guard server::canonicalize_route_path(path, out) else { return "", false; }
     return out[..], true;
+}
+
+// Borrows `path` directly with zero copy when already canonical; otherwise canonicalizes into `scratch`.
+//
+// Example:
+//   path = "/users/42" -> returns ("/users/42", true) with untouched `scratch`
+inline fn resolve_effective_route_path_borrow<B>(path: const u8[:], scratch: B&) -> const u8[:], bool {
+    if is_already_canonical_route_path(path) {
+        return path, true;
+    }
+    scratch.clear();
+    guard server::canonicalize_route_path(path, scratch) else { return "", false; }
+    return scratch[..], true;
 }
 
 inline fn make_found_route(n: const RadixNode&) -> server::RouteMatchResult {

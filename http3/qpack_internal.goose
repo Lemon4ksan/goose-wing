@@ -48,14 +48,37 @@ fn qpack_compact_arena(tbl: http3::QpackTable&) {
     tbl.arena_write_pos = new_pos;
 }
 
-// Evicts entries from the dynamic table until used_bytes <= target_bytes.
-// Returns false if an eviction barrier (referenced entry) prevents eviction.
-fn qpack_evict_until(tbl: http3::QpackTable&, target_bytes: u64) -> bool {
-    while tbl.entries.len > 0 && tbl.used_bytes > target_bytes {
-        let oldest .= tbl.entries[0];
-        if oldest.ref_count > 0 {
-            return false;
+// Simulates evicting oldest entries until `sim_used <= target_bytes` without mutating `tbl`.
+// Returns `(evict_count, surviving_raw_bytes, ok)`.
+inline fn qpack_plan_eviction(tbl: const http3::QpackTable&, target_bytes: u64) -> i64, u32, bool {
+    var sim_used = tbl.used_bytes;
+    var evict_cnt: i64 = 0;
+    while evict_cnt < tbl.entries.len && sim_used > target_bytes {
+        let ent .= tbl.entries[evict_cnt];
+        if ent.ref_count > 0 {
+            return 0, 0, false;
         }
+        let cost = qpack_entry_cost(ent.name_len, ent.val_len);
+        sim_used = core::sub_sat_u64(sim_used, cost);
+        evict_cnt += 1;
+    }
+    guard sim_used <= target_bytes else { return 0, 0, false; }
+    var surviving_raw: u32 = 0;
+    for j in evict_cnt..tbl.entries.len {
+        let ent .= tbl.entries[j];
+        let pair_raw = core::add_sat_u32(ent.name_len, ent.val_len);
+        surviving_raw = core::add_sat_u32(surviving_raw, pair_raw);
+    }
+    return evict_cnt, surviving_raw, true;
+}
+
+// Evicts entries from the dynamic table until used_bytes <= target_bytes atomically.
+// Returns false if an eviction barrier (referenced entry) prevents eviction, leaving `tbl` untouched.
+fn qpack_evict_until(tbl: http3::QpackTable&, target_bytes: u64) -> bool {
+    let evict_cnt, _, ok = qpack_plan_eviction(tbl, target_bytes);
+    guard ok else { return false; }
+    for _ in evict_cnt {
+        let oldest .= tbl.entries[0];
         let cost = qpack_entry_cost(oldest.name_len, oldest.val_len);
         tbl.used_bytes = core::sub_sat_u64(tbl.used_bytes, cost);
         tbl.entries.remove_at(0);
@@ -64,7 +87,7 @@ fn qpack_evict_until(tbl: http3::QpackTable&, target_bytes: u64) -> bool {
     if tbl.entries.len == 0 {
         tbl.arena_write_pos = 0;
     }
-    return tbl.used_bytes <= target_bytes;
+    return true;
 }
 
 inline fn copy_to_arena(tbl: http3::QpackTable&, name: const u8[:], val: const u8[:]) -> u32, u32 {
@@ -98,8 +121,13 @@ inline fn validate_literal_inputs(name: const u8[:], val: const u8[:]) -> bool {
 
 inline fn prepare_table_for_entry(tbl: http3::QpackTable&, cost: u64, raw_len: u32) -> bool {
     guard cost <= tbl.capacity_bytes else { return false; }
-    guard qpack_evict_until(tbl, tbl.capacity_bytes - cost) else { return false; }
-    guard tbl.entries.len < tbl.entries.cap else { return false; }
+    let target = core::sub_sat_u64(tbl.capacity_bytes, cost);
+    let evict_cnt, surviving_raw, can_evict = qpack_plan_eviction(tbl, target);
+    guard can_evict else { return false; }
+    let remaining_entries = core::sub_sat_i64(tbl.entries.len, evict_cnt);
+    guard remaining_entries < tbl.entries.cap else { return false; }
+    guard core::add_sat_u32(surviving_raw, raw_len) <= 16384 else { return false; }
+    guard qpack_evict_until(tbl, target) else { return false; }
     return ensure_arena_capacity(tbl, raw_len);
 }
 

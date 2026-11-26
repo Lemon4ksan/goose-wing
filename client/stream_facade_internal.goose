@@ -476,7 +476,11 @@ fn doh_query(
     guard http::ok(err) && res.status_code == rfc::STATUS_OK else { return dns::Response { .. }, false; }
 
     let parsed, ok_dns = dns::parse_response(res.body[..]);
-    guard ok_dns && parsed.rcode == rfc::DNS_RCODE_NOERROR && parsed.question_count == 1 else {
+    let clean_dom = domain.trim_end_byte('.');
+    guard ok_dns &&
+        parsed.rcode == rfc::DNS_RCODE_NOERROR &&
+        parsed.question_count == 1 &&
+        parsed.qname[..].eq_ascii_fold(clean_dom) else {
         return dns::Response { .. }, false;
     }
     let expected_tx_id: u16 = if session.doh.use_post { tx_id } else { 0 };

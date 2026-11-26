@@ -19,6 +19,7 @@ struct Response {
     is_response:    bool             = false,
     question_count: u16              = 0,
     answer_count:   u16              = 0,
+    qname:          u8[..255]        = [],
     a_records:      u32[..8]         = [],
     aaaa_records:   u8[16][..8]      = [],
     https_records:  HttpsRecord[..4] = [],
@@ -145,8 +146,9 @@ checkfree fn parse_response(raw: const u8[:]) -> Response, bool {
         return resp, true;
     }
 
+    guard resp.question_count == 1 else { return Response { .. }, false; }
     let qname, ok_q = dns_internal::parse_questions(raw, off, resp.question_count);
-    guard ok_q else { return Response { .. }, false; }
+    guard ok_q && resp.qname.try_set(qname[..]) else { return Response { .. }, false; }
     guard dns_internal::parse_answers(resp, raw, off, qname[..]) else {
         return Response { .. }, false;
     }

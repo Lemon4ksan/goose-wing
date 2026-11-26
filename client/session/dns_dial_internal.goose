@@ -161,6 +161,16 @@ fn collect_ipv6_dns_candidates(
     return true;
 }
 
+inline fn is_ssrf_blocked_port(policy: const security::SsrfGuardPolicy&, port: u16) -> bool {
+    guard policy.enabled else { return false; }
+    let port_val = port as i32;
+    if policy.denied_ports.contains(port_val) { return true; }
+    if policy.allowed_ports.len > 0 {
+        return !policy.allowed_ports.contains(port_val);
+    }
+    return policy.deny_local_network && security::is_dangerous_service_port(port_val);
+}
+
 fn append_svcb_hint_candidate(
     ssrf_guard: const security::SsrfGuardPolicy&,
     ip_str:     const u8[:],
@@ -169,7 +179,9 @@ fn append_svcb_hint_candidate(
     priority:   u8,
     out_list:   net::DnsCandidate[..8]&,
 ) -> bool {
-    guard !is_ssrf_blocked_ip(ssrf_guard, ip_str) else { return false; }
+    guard !is_ssrf_blocked_port(ssrf_guard, eff_port) && !is_ssrf_blocked_ip(ssrf_guard, ip_str) else {
+        return false;
+    }
     let _ = out_list.try_push(net::new_dns_candidate(fam, ip_str, eff_port, net::L4Protocol.Tcp, priority));
     return true;
 }
@@ -210,6 +222,7 @@ fn resolve_https_svcb_record<B>(
         return true;
     }
     let meta, eff_port = net::extract_https_svcb_metadata(https_entry.https_records[0], port_num);
+    guard !is_ssrf_blocked_port(session.ssrf_guard, eff_port) else { return false; }
     task.metadata = meta;
     task.https_status = net::DnsQueryStatus.Success;
     if (session.enable_ech || session.auto_ech_discovery) && https_entry.https_records[0].has_ech {

@@ -336,10 +336,16 @@ checkfree fn insert_header(dt: DynamicTable&, name: const u8[:], val: const u8[:
     }
 
     if dt.arena_write_pos + total_raw > (HPACK_MAX_ARENA_BYTES as u32) {
-        h2_internal::evict_overlapping_arena_range(dt, dt.arena_write_pos, HPACK_MAX_ARENA_BYTES as u32);
-        dt.arena_write_pos = 0;
+        h2_internal::compact_hpack_arena(dt);
     }
-    h2_internal::evict_overlapping_arena_range(dt, dt.arena_write_pos, dt.arena_write_pos + total_raw);
+    while dt.count > 0 && dt.arena_write_pos + total_raw > (HPACK_MAX_ARENA_BYTES as u32) {
+        h2_internal::evict_oldest_entry(dt);
+        h2_internal::compact_hpack_arena(dt);
+    }
+    guard dt.arena_write_pos + total_raw <= (HPACK_MAX_ARENA_BYTES as u32) else {
+        evict_until(dt, 0);
+        return;
+    }
     while dt.count >= h2_internal::HPACK_MAX_RING_ENTRIES {
         h2_internal::evict_oldest_entry(dt);
     }

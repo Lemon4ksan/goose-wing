@@ -14,7 +14,9 @@
           "stream_id": 0,
           "wire": "0000510b2f696e6465782e68746d6c",
           "headers": [
-            {":path": "/index.html"}
+            {
+              ":path": "/index.html"
+            }
           ]
         },
         {
@@ -22,10 +24,18 @@
           "stream_id": 4,
           "wire": "0000d1d7510b2f696e6465782e68746d6c500f7777772e6578616d706c652e636f6d",
           "headers": [
-            {":method": "GET"},
-            {":scheme": "https"},
-            {":path": "/index.html"},
-            {":authority": "www.example.com"}
+            {
+              ":method": "GET"
+            },
+            {
+              ":scheme": "https"
+            },
+            {
+              ":path": "/index.html"
+            },
+            {
+              ":authority": "www.example.com"
+            }
           ]
         }
       ]
@@ -46,8 +56,12 @@
           "stream_id": 4,
           "wire": "03811011",
           "headers": [
-            {":authority": "www.example.com"},
-            {":path": "/sample/path"}
+            {
+              ":authority": "www.example.com"
+            },
+            {
+              ":path": "/sample/path"
+            }
           ]
         },
         {
@@ -84,7 +98,9 @@
           "kind": "unblock",
           "stream_id": 8,
           "headers": [
-            {"custom-key": "custom-value"}
+            {
+              "custom-key": "custom-value"
+            }
           ]
         }
       ]
@@ -105,10 +121,18 @@
           "stream_id": 12,
           "wire": "0500d1808182",
           "headers": [
-            {":method": "GET"},
-            {":authority": "www.example.com"},
-            {"x-custom": "v2"},
-            {"x-custom": "v1"}
+            {
+              ":method": "GET"
+            },
+            {
+              ":authority": "www.example.com"
+            },
+            {
+              "x-custom": "v2"
+            },
+            {
+              "x-custom": "v1"
+            }
           ]
         }
       ]
@@ -135,6 +159,219 @@
           "kind": "section",
           "stream_id": 8,
           "wire": "00",
+          "expect_error": "DecompressionFailed",
+          "headers": []
+        }
+      ]
+    },
+    {
+      "name": "qpack_atomic_eviction_H4_C13",
+      "max_table_capacity": 128,
+      "max_blocked_streams": 4,
+      "initial_capacity": 0,
+      "steps": [
+        {
+          "kind": "encoder",
+          "wire": "3f61426b31027631",
+          "expect_insert_count": 1
+        },
+        {
+          "kind": "section",
+          "stream_id": 4,
+          "wire": "020080",
+          "headers": [
+            {
+              "k1": "v1"
+            }
+          ]
+        },
+        {
+          "kind": "encoder",
+          "wire": "4a782d6269672d6e616d655a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
+          "expect_error": "EncoderStreamError"
+        },
+        {
+          "kind": "section",
+          "stream_id": 8,
+          "wire": "020080",
+          "headers": [
+            {
+              "k1": "v1"
+            }
+          ]
+        },
+        {
+          "kind": "encoder",
+          "wire": "49782d6f6b2d6e616d65287a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
+          "expect_insert_count": 2
+        },
+        {
+          "kind": "section",
+          "stream_id": 12,
+          "wire": "030080",
+          "headers": [
+            {
+              "x-ok-name": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "qpack_dynamic_wrap_and_ack",
+      "max_table_capacity": 128,
+      "max_blocked_streams": 4,
+      "initial_capacity": 0,
+      "steps": [
+        {
+          "kind": "encoder",
+          "wire": "3f61426131023131426132023232",
+          "expect_insert_count": 2
+        },
+        {
+          "kind": "section",
+          "stream_id": 4,
+          "wire": "0300d18180",
+          "headers": [
+            {
+              ":method": "GET"
+            },
+            {
+              "a1": "11"
+            },
+            {
+              "a2": "22"
+            }
+          ]
+        },
+        {
+          "kind": "decoder",
+          "wire": "02",
+          "expect_known_rcvd": 2
+        },
+        {
+          "kind": "encoder",
+          "wire": "426133023333426134023434",
+          "expect_insert_count": 4
+        },
+        {
+          "kind": "section",
+          "stream_id": 8,
+          "wire": "0500d18180",
+          "headers": [
+            {
+              ":method": "GET"
+            },
+            {
+              "a3": "33"
+            },
+            {
+              "a4": "44"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "qpack_post_base_and_lit_post_base_ref",
+      "max_table_capacity": 256,
+      "max_blocked_streams": 4,
+      "initial_capacity": 0,
+      "steps": [
+        {
+          "kind": "encoder",
+          "wire": "3fe10144782d70620568656c6c6f45782d70623205776f726c64",
+          "expect_insert_count": 2
+        },
+        {
+          "kind": "section",
+          "stream_id": 4,
+          "wire": "0381d11011",
+          "headers": [
+            {
+              ":method": "GET"
+            },
+            {
+              "x-pb": "hello"
+            },
+            {
+              "x-pb2": "world"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "qpack_stream_cancellation",
+      "max_table_capacity": 220,
+      "max_blocked_streams": 2,
+      "initial_capacity": 0,
+      "steps": [
+        {
+          "kind": "encoder",
+          "wire": "3fbd01",
+          "expect_insert_count": 0
+        },
+        {
+          "kind": "section",
+          "stream_id": 4,
+          "wire": "020080",
+          "expect_error": "StreamBlocked",
+          "headers": []
+        },
+        {
+          "kind": "decoder",
+          "wire": "44",
+          "expect_known_rcvd": 0
+        },
+        {
+          "kind": "section",
+          "stream_id": 8,
+          "wire": "020080",
+          "expect_error": "StreamBlocked",
+          "headers": []
+        },
+        {
+          "kind": "encoder",
+          "wire": "48637573746f6d2d6b08637573746f6d2d76",
+          "expect_insert_count": 1
+        },
+        {
+          "kind": "unblock",
+          "stream_id": 8,
+          "headers": [
+            {
+              "custom-k": "custom-v"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "qpack_error_vectors_extended",
+      "max_table_capacity": 64,
+      "max_blocked_streams": 2,
+      "initial_capacity": 0,
+      "steps": [
+        {
+          "kind": "encoder",
+          "wire": "3f61",
+          "expect_error": "EncoderStreamError"
+        },
+        {
+          "kind": "encoder",
+          "wire": "00",
+          "expect_error": "EncoderStreamError"
+        },
+        {
+          "kind": "encoder",
+          "wire": "4561",
+          "expect_error": "EncoderStreamError"
+        },
+        {
+          "kind": "section",
+          "stream_id": 4,
+          "wire": "0000ff24",
           "expect_error": "DecompressionFailed",
           "headers": []
         }

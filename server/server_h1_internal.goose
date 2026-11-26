@@ -506,6 +506,24 @@ fn try_handle_pipelined_websocket<B>(
     return server::complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out);
 }
 
+fn try_handle_pipelined_websocket_with_stage<Stage, B>(
+    server:   server::HttpServer&,
+    req:      const http::Request&,
+    now_ns:   u64,
+    res:      http::Response&,
+    wire_out: B&,
+    stage:    Stage&,
+) -> bool {
+    guard server.ws_route_count > 0 && (req.presence_mask & http::HDR_PRESENCE_UPGRADE) != 0 else { return false; }
+    guard realtime::is_websocket_upgrade_request(req) else { return false; }
+    let ws_idx = server::find_ws_route(server, req.url[..]);
+    guard ws_idx >= 0 else { return false; }
+    if !authorize_ws_upgrade_stage(server, req, ws_idx, now_ns, res, wire_out, stage) {
+        return true;
+    }
+    return server::complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out);
+}
+
 inline fn reset_server_response_fast(res: http::Response&) {
     res.status_code = rfc::STATUS_OK;
     res.presence_mask = 0;
@@ -573,7 +591,7 @@ fn process_pipelined_pipe_step<Stage, B>(
         return classify_h1_pipe_parse_failure(server, parse_st, stream, pipe, wire_out);
     }
 
-    if try_handle_pipelined_websocket(server, req, wire_out) {
+    if try_handle_pipelined_websocket_with_stage(server, req, now_ns, res, wire_out, stage) {
         total_handled = core::add_sat_i64(total_handled, 1);
         pipe.advance_to(consumed, consumed);
         pipe.advance_to(pipe.readable_len(), pipe.readable_len());

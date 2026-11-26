@@ -355,6 +355,78 @@ def run_udp_chaos_tests(rebuild: bool = False) -> tuple[int, int]:
             )
         finally:
             p_all.close()
+
+        # 6. Burst Packet Loss (3 consecutive drops) + Recovery
+        p_burst = DeterministicNetemProxy("127.0.0.1", port, drop_indices={0, 1, 2})
+        try:
+            timeouts = 0
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.settimeout(0.15)
+                for _ in range(3):
+                    s.sendto(h3_root, ("127.0.0.1", p_burst.port))
+                    try:
+                        s.recvfrom(2048)
+                    except TimeoutError:
+                        timeouts += 1
+                s.settimeout(2.0)
+                s.sendto(h3_root, ("127.0.0.1", p_burst.port))
+                reply_burst, _ = s.recvfrom(2048)
+            record(
+                timeouts == 3 and p_burst.dropped == 3 and b"Hello from goose-wing HTTP/3!" in reply_burst,
+                "udp_burst_loss_3pkts_recovery",
+                f"dropped={p_burst.dropped} timeouts={timeouts}",
+            )
+        finally:
+            p_burst.close()
+
+        # 7. Valid 1200B QUIC v1 Initial under Jitter + Duplication
+        quic_init = bytearray(
+            b"\xc0\x00\x00\x00\x01\x08\x88\x77\x66\x55\x44\x33\x22\x11"
+            b"\x08\x11\x22\x33\x44\x55\x66\x77\x88\x00\x0a\x010123456789"
+        )
+        quic_init.extend(b"\x00" * (1200 - len(quic_init)))
+        p_init = DeterministicNetemProxy("127.0.0.1", port, dup_indices={0}, delay_ms=10.0, jitter_ms=4.0)
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.settimeout(2.0)
+                s.sendto(bytes(quic_init), ("127.0.0.1", p_init.port))
+                r_init, _ = s.recvfrom(2048)
+                s.settimeout(0.1)
+                try:
+                    s.recvfrom(2048)
+                except TimeoutError:
+                    pass
+            ok_init = (
+                len(r_init) >= 30
+                and (r_init[0] & 0xC0) == 0xC0
+                and int.from_bytes(r_init[1:5], "big") == 1
+                and b"\x00\x04" in r_init
+                and b"\x21\x00" in r_init
+                and p_init.duplicated == 1
+            )
+            record(
+                ok_init,
+                "udp_initial_1200b_jitter_dup_tolerance",
+                f"dup={p_init.duplicated} delay={p_init.delayed}",
+            )
+        finally:
+            p_init.close()
+
+        # 8. Interleaved Malformed Datagram + Reordered Healthy Request Recovery
+        p_mal = DeterministicNetemProxy("127.0.0.1", port, reorder_pairs=True)
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.settimeout(2.0)
+                s.sendto(b"\x01\x40", ("127.0.0.1", p_mal.port))
+                s.sendto(h3_info, ("127.0.0.1", p_mal.port))
+                r_info, _ = s.recvfrom(2048)
+            record(
+                p_mal.reordered == 1 and b'{"protocol":"h3","engine":"goose-wing"}' in r_info,
+                "udp_malformed_dgram_interleaved_recovery",
+                f"reordered={p_mal.reordered}",
+            )
+        finally:
+            p_mal.close()
     finally:
         srv.stop()
 
@@ -439,6 +511,15 @@ def validate_packetdrill_script(pkt_path: Path) -> tuple[bool, str]:
         ok_sem = "win 0" in raw and "4096:4096(0)" in raw and "4097:5121(1024)" in raw
         if not ok_sem:
             return False, "missing zero-window / ZWP / reopen invariants"
+    elif name == "tcp_fin_half_close.pkt":
+        ok_sem = "shutdown(4, SHUT_WR)" in raw and "> F. 129:129(0)" in raw and "< F. 65:65(0)" in raw
+        if not ok_sem:
+            return False, "missing FIN half-close / SHUT_WR invariants"
+    elif name == "tcp_fast_retransmit.pkt":
+        dup_acks = len(re.findall(r"<\s+\.\s+1:1\(0\)\s+ack\s+1\b", raw))
+        ok_sem = dup_acks >= 3 and "ack 5841" in raw
+        if not ok_sem:
+            return False, f"missing 3-dup-ACK fast retransmit invariants (dup_acks={dup_acks})"
 
     return True, f"valid DSL ({pkt_events} pkt events, {syscalls} syscalls)"
 
@@ -450,6 +531,8 @@ def validate_packetdrill_and_scripts() -> tuple[int, int]:
         SUITE_DIR / "tcp_syn_retransmit.pkt",
         SUITE_DIR / "tcp_rst_midstream.pkt",
         SUITE_DIR / "tcp_zero_window.pkt",
+        SUITE_DIR / "tcp_fin_half_close.pkt",
+        SUITE_DIR / "tcp_fast_retransmit.pkt",
     ]
     for pkt in pkt_files:
         ok, detail = validate_packetdrill_script(pkt)

@@ -208,6 +208,10 @@ fn is_reserved_ipv6_octets(octs: const u8[16]&) -> bool {
         let mapped: u8[4] = [octs[12], octs[13], octs[14], octs[15]];
         return is_reserved_ipv4_octets(mapped);
     }
+    // ::ffff:0:0:0/96 (RFC 2765 SIIT IPv4-translated, non-globally-reachable per RFC 6890)
+    if octets_all_zero(octs[..8]) && octs[8] == 0xFF && octs[9] == 0xFF && octs[10] == 0 && octs[11] == 0 {
+        return true;
+    }
     // ::/96 (unspecified ::, loopback ::1, deprecated IPv4-compatible ::/96)
     if octets_all_zero(octs[..12]) { return true; }
     let b0 = octs[0];

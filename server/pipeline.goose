@@ -297,6 +297,16 @@ inline fn on_server_stage(
     return wire::StageVerdict.Continue;
 }
 
+// Returns true when `<Stage>` does not intercept static L0 GET routes
+// (`PreRoute`, `PostAuth`, `PreSerialize`, `AfterResponse`), permitting L0 fast-path bypass.
+inline fn allows_fast_l0_static(_stage: const wire::NoOpStage&) -> bool {
+    return true;
+}
+
+inline fn allows_fast_l0_static<Stage>(_stage: const Stage&) -> bool {
+    return false;
+}
+
 // Composes two independent server stages `<First, Next>` sequentially at each `ServerHookPhase`.
 // Short-circuits or aborts immediately if `chain.first` does not return `StageVerdict.Continue`.
 inline fn on_server_stage<First, Next>(

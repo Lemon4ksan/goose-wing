@@ -79,12 +79,8 @@ inline fn is_allowed_acme_session_url(sess: const Session&, url: const u8[:]) ->
 }
 
 inline fn is_valid_replay_nonce(raw: const u8[:]) -> bool {
-    guard raw.len > 0 && raw.len <= ACME_MAX_NONCE_LEN else { return false; }
-    guard core::swar_find_ctl(raw) == raw.len else { return false; }
-    for b in raw {
-        guard core::is_ascii_vchar(b) else { return false; }
-    }
-    return true;
+    guard raw.len <= ACME_MAX_NONCE_LEN else { return false; }
+    return auth::is_valid_acme_replay_nonce(raw);
 }
 
 inline fn capture_replay_nonce(resp: const http::Response&, out_nonce: u8[..128]&) -> bool {
@@ -262,6 +258,7 @@ fn build_acme_new_account_json(contact_email: const u8[:], out: u8[>..]&) -> boo
     if contact_email.len > 0 {
         guard contact_email.validate_utf8() &&
             core::swar_find_ctl(contact_email) == contact_email.len &&
+            !contact_email.contains_byte(0x7F) &&
             !contact_email.contains_byte(' ') else {
             out.clear();
             return false;

@@ -146,6 +146,18 @@ class LocalPkiBundle:
     weak_rsa_key: Path
     client_eku_cert: Path
     client_eku_key: Path
+    not_yet_valid_cert: Path
+    not_yet_valid_key: Path
+    ip_san_cert: Path
+    ip_san_key: Path
+    wildcard_cert: Path
+    wildcard_key: Path
+    two_tier_cert: Path
+    two_tier_key: Path
+    non_ca_inter_cert: Path
+    non_ca_inter_key: Path
+    ed25519_cert: Path
+    ed25519_key: Path
 
 
 def _init_ca(openssl_bin: str, ca_dir: Path, cn: str) -> tuple[Path, Path, Path]:
@@ -245,6 +257,8 @@ subjectAltName = {san}
     )
     if key_type == "rsa1024":
         _run_openssl(openssl_bin, ["genrsa", "-out", str(key_path), "1024"], ca_dir)
+    elif key_type == "ed25519":
+        _run_openssl(openssl_bin, ["genpkey", "-algorithm", "Ed25519", "-out", str(key_path)], ca_dir)
     else:
         _run_openssl(
             openssl_bin,
@@ -336,6 +350,190 @@ def generate_local_pki(work_dir: Path, openssl_bin: str) -> LocalPkiBundle:
         "20350101000000Z",
         eku="clientAuth",
     )
+    not_yet_valid_cert, not_yet_valid_key = _sign_leaf(
+        openssl_bin,
+        trusted_dir,
+        ca_cnf,
+        "notyetvalid",
+        "localhost",
+        "DNS:localhost,IP:127.0.0.1",
+        "20340101000000Z",
+        "20350101000000Z",
+    )
+    ip_san_cert, ip_san_key = _sign_leaf(
+        openssl_bin,
+        trusted_dir,
+        ca_cnf,
+        "ipsan",
+        "127.0.0.1",
+        "IP:127.0.0.1",
+        "20250101000000Z",
+        "20350101000000Z",
+    )
+    wildcard_cert, wildcard_key = _sign_leaf(
+        openssl_bin,
+        trusted_dir,
+        ca_cnf,
+        "wildcard",
+        "*.wing.local",
+        "DNS:*.wing.local",
+        "20250101000000Z",
+        "20350101000000Z",
+    )
+    ed25519_cert, ed25519_key = _sign_leaf(
+        openssl_bin,
+        trusted_dir,
+        ca_cnf,
+        "ed25519leaf",
+        "localhost",
+        "DNS:localhost,IP:127.0.0.1",
+        "20250101000000Z",
+        "20350101000000Z",
+        key_type="ed25519",
+    )
+
+    # Two-tier chain: Root CA -> Intermediate CA (CA:TRUE, pathlen:0) -> Leaf
+    inter_dir = work_dir / "two_tier_inter"
+    inter_dir.mkdir(parents=True, exist_ok=True)
+    (inter_dir / "newcerts").mkdir(exist_ok=True)
+    (inter_dir / "index.txt").write_text("", encoding="utf-8")
+    (inter_dir / "serial").write_text("2000\n", encoding="utf-8")
+    inter_key = inter_dir / "ca.key"
+    inter_csr = inter_dir / "ca.csr"
+    inter_cert = inter_dir / "ca.pem"
+    inter_ext = inter_dir / "inter.ext"
+    inter_ext.write_text(
+        "basicConstraints = critical, CA:TRUE, pathlen:0\nkeyUsage = critical, keyCertSign, cRLSign\n",
+        encoding="utf-8",
+    )
+    _run_openssl(openssl_bin, ["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(inter_key)], inter_dir)
+    _run_openssl(
+        openssl_bin,
+        ["req", "-new", "-key", str(inter_key), "-subj", "/CN=Wing Canary Intermediate CA", "-out", str(inter_csr)],
+        inter_dir,
+    )
+    _run_openssl(
+        openssl_bin,
+        [
+            "ca",
+            "-batch",
+            "-config",
+            str(ca_cnf),
+            "-startdate",
+            "20250101000000Z",
+            "-enddate",
+            "20350101000000Z",
+            "-extfile",
+            str(inter_ext),
+            "-in",
+            str(inter_csr),
+            "-out",
+            str(inter_cert),
+        ],
+        trusted_dir,
+    )
+    inter_cnf = inter_dir / "ca.cnf"
+    inter_cnf.write_text(
+        ca_cnf.read_text(encoding="utf-8").replace(trusted_dir.as_posix(), inter_dir.as_posix()),
+        encoding="utf-8",
+    )
+    two_tier_leaf_cert, two_tier_key = _sign_leaf(
+        openssl_bin,
+        inter_dir,
+        inter_cnf,
+        "twotierleaf",
+        "localhost",
+        "DNS:localhost,IP:127.0.0.1",
+        "20250101000000Z",
+        "20350101000000Z",
+    )
+    two_tier_cert = work_dir / "two_tier_fullchain.pem"
+    two_tier_cert.write_text(
+        two_tier_leaf_cert.read_text(encoding="utf-8") + "\n" + inter_cert.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    # Invalid chain: Trusted Root -> non-CA intermediate (CA:FALSE) -> Leaf
+    non_ca_dir = work_dir / "non_ca_inter"
+    non_ca_dir.mkdir(parents=True, exist_ok=True)
+    non_ca_key = non_ca_dir / "non_ca.key"
+    non_ca_csr = non_ca_dir / "non_ca.csr"
+    non_ca_cert = non_ca_dir / "non_ca.pem"
+    non_ca_ext = non_ca_dir / "non_ca.ext"
+    non_ca_ext.write_text(
+        "basicConstraints = critical, CA:FALSE\nkeyUsage = critical, digitalSignature, keyCertSign\n",
+        encoding="utf-8",
+    )
+    _run_openssl(openssl_bin, ["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(non_ca_key)], non_ca_dir)
+    _run_openssl(
+        openssl_bin,
+        ["req", "-new", "-key", str(non_ca_key), "-subj", "/CN=Wing Non-CA Sub", "-out", str(non_ca_csr)],
+        non_ca_dir,
+    )
+    _run_openssl(
+        openssl_bin,
+        [
+            "ca",
+            "-batch",
+            "-config",
+            str(ca_cnf),
+            "-startdate",
+            "20250101000000Z",
+            "-enddate",
+            "20350101000000Z",
+            "-extfile",
+            str(non_ca_ext),
+            "-in",
+            str(non_ca_csr),
+            "-out",
+            str(non_ca_cert),
+        ],
+        trusted_dir,
+    )
+    non_ca_leaf_key = non_ca_dir / "leaf.key"
+    non_ca_leaf_csr = non_ca_dir / "leaf.csr"
+    non_ca_leaf_cert = non_ca_dir / "leaf.pem"
+    non_ca_leaf_ext = non_ca_dir / "leaf.ext"
+    non_ca_leaf_ext.write_text(
+        "basicConstraints = critical, CA:FALSE\n"
+        "keyUsage = critical, digitalSignature\n"
+        "extendedKeyUsage = serverAuth\n"
+        "subjectAltName = DNS:localhost,IP:127.0.0.1\n",
+        encoding="utf-8",
+    )
+    _run_openssl(openssl_bin, ["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(non_ca_leaf_key)], non_ca_dir)
+    _run_openssl(
+        openssl_bin,
+        ["req", "-new", "-key", str(non_ca_leaf_key), "-subj", "/CN=localhost", "-out", str(non_ca_leaf_csr)],
+        non_ca_dir,
+    )
+    _run_openssl(
+        openssl_bin,
+        [
+            "x509",
+            "-req",
+            "-in",
+            str(non_ca_leaf_csr),
+            "-CA",
+            str(non_ca_cert),
+            "-CAkey",
+            str(non_ca_key),
+            "-CAcreateserial",
+            "-out",
+            str(non_ca_leaf_cert),
+            "-days",
+            "365",
+            "-sha256",
+            "-extfile",
+            str(non_ca_leaf_ext),
+        ],
+        non_ca_dir,
+    )
+    non_ca_inter_cert = work_dir / "non_ca_fullchain.pem"
+    non_ca_inter_cert.write_text(
+        non_ca_leaf_cert.read_text(encoding="utf-8") + "\n" + non_ca_cert.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
 
     # Self-signed leaf (not signed by trusted CA)
     ss_key = work_dir / "selfsigned.key"
@@ -411,6 +609,18 @@ subjectAltName = DNS:localhost,IP:127.0.0.1
         weak_rsa_key=weak_rsa_key,
         client_eku_cert=client_eku_cert,
         client_eku_key=client_eku_key,
+        not_yet_valid_cert=not_yet_valid_cert,
+        not_yet_valid_key=not_yet_valid_key,
+        ip_san_cert=ip_san_cert,
+        ip_san_key=ip_san_key,
+        wildcard_cert=wildcard_cert,
+        wildcard_key=wildcard_key,
+        two_tier_cert=two_tier_cert,
+        two_tier_key=two_tier_key,
+        non_ca_inter_cert=non_ca_inter_cert,
+        non_ca_inter_key=non_ca_leaf_key,
+        ed25519_cert=ed25519_cert,
+        ed25519_key=ed25519_key,
     )
 
 
@@ -587,13 +797,49 @@ def run_offline_matrix(rebuild: bool = False) -> int:
                 ssl.TLSVersion.TLSv1_3,
                 ssl.TLSVersion.TLSv1_3,
             ),
+            "not_yet_valid": LoopbackTlsEndpoint(
+                pki.not_yet_valid_cert,
+                pki.not_yet_valid_key,
+                ssl.TLSVersion.TLSv1_3,
+                ssl.TLSVersion.TLSv1_3,
+            ),
+            "ip_san": LoopbackTlsEndpoint(
+                pki.ip_san_cert,
+                pki.ip_san_key,
+                ssl.TLSVersion.TLSv1_3,
+                ssl.TLSVersion.TLSv1_3,
+            ),
+            "wildcard": LoopbackTlsEndpoint(
+                pki.wildcard_cert,
+                pki.wildcard_key,
+                ssl.TLSVersion.TLSv1_3,
+                ssl.TLSVersion.TLSv1_3,
+            ),
+            "two_tier": LoopbackTlsEndpoint(
+                pki.two_tier_cert,
+                pki.two_tier_key,
+                ssl.TLSVersion.TLSv1_3,
+                ssl.TLSVersion.TLSv1_3,
+            ),
+            "non_ca_inter": LoopbackTlsEndpoint(
+                pki.non_ca_inter_cert,
+                pki.non_ca_inter_key,
+                ssl.TLSVersion.TLSv1_3,
+                ssl.TLSVersion.TLSv1_3,
+            ),
+            "ed25519": LoopbackTlsEndpoint(
+                pki.ed25519_cert,
+                pki.ed25519_key,
+                ssl.TLSVersion.TLSv1_3,
+                ssl.TLSVersion.TLSv1_3,
+            ),
         }
 
         try:
             print("\nExecuting Offline Local CA TLS Canary Matrix...")
             ca_str = str(pki.ca_cert)
 
-            # 1. PureGoose TLS 1.3 Matrix (8 checks)
+            # 1. PureGoose TLS 1.3 Matrix (16 checks)
             st, act, alpn, app_n = invoke_probe(
                 exe, env, "pure", "tls13", "127.0.0.1", servers["valid_tls13"].port, "localhost", ca_str, "h2,http/1.1"
             )
@@ -604,16 +850,67 @@ def run_offline_matrix(rebuild: bool = False) -> int:
             )
             for label, srv_key in (
                 ("expired cert -> VerifyError", "expired"),
+                ("not-yet-valid cert -> VerifyError", "not_yet_valid"),
                 ("wrong hostname -> VerifyError", "wrong_host"),
                 ("self-signed cert -> VerifyError", "self_signed"),
                 ("untrusted root CA -> VerifyError", "untrusted_root"),
                 ("weak 1024-bit RSA cert -> VerifyError", "weak_rsa1024"),
                 ("clientAuth-only EKU cert -> VerifyError", "client_eku"),
+                ("non-CA intermediate cert -> VerifyError", "non_ca_inter"),
             ):
                 st, act, _, _ = invoke_probe(
                     exe, env, "pure", "tls13", "127.0.0.1", servers[srv_key].port, "localhost", ca_str, "-"
                 )
                 check(st == "VerifyError", f"PureGoose: {label}", f"st={st} act={act}")
+
+            st, act, _, app_n = invoke_probe(
+                exe, env, "pure", "tls13", "127.0.0.1", servers["ip_san"].port, "127.0.0.1", ca_str, "-"
+            )
+            check(
+                st == "Ok" and act == "pure" and app_n > 0,
+                "PureGoose: IP SAN 127.0.0.1 matches peer certificate",
+                f"st={st} act={act} app={app_n}",
+            )
+            st, act, _, app_n = invoke_probe(
+                exe, env, "pure", "tls13", "127.0.0.1", servers["wildcard"].port, "sub.wing.local", ca_str, "-"
+            )
+            check(
+                st == "Ok" and act == "pure" and app_n > 0,
+                "PureGoose: wildcard SAN *.wing.local matches single label",
+                f"st={st} act={act} app={app_n}",
+            )
+            st, act, _, _ = invoke_probe(
+                exe, env, "pure", "tls13", "127.0.0.1", servers["wildcard"].port, "a.b.wing.local", ca_str, "-"
+            )
+            check(
+                st == "VerifyError",
+                "PureGoose: wildcard SAN *.wing.local rejects multi-label subdomain",
+                f"st={st} act={act}",
+            )
+            st, act, _, app_n = invoke_probe(
+                exe, env, "pure", "tls13", "127.0.0.1", servers["two_tier"].port, "localhost", ca_str, "-"
+            )
+            check(
+                st == "Ok" and act == "pure" and app_n > 0,
+                "PureGoose: two-tier Root -> Intermediate CA chain accepted",
+                f"st={st} act={act} app={app_n}",
+            )
+            st, act, _, app_n = invoke_probe(
+                exe, env, "pure", "tls13", "127.0.0.1", servers["ed25519"].port, "localhost", ca_str, "-"
+            )
+            check(
+                st == "Ok" and act == "pure" and app_n > 0,
+                "PureGoose: Ed25519 leaf certificate chain verified",
+                f"st={st} act={act} app={app_n}",
+            )
+            st, act, alpn, app_n = invoke_probe(
+                exe, env, "pure", "tls13", "127.0.0.1", servers["valid_tls13"].port, "localhost", ca_str, "http/1.1"
+            )
+            check(
+                st == "Ok" and act == "pure" and alpn == "http/1.1" and app_n > 0,
+                "PureGoose: ALPN http/1.1 preference honored (TLS 1.3)",
+                f"st={st} act={act} alpn={alpn} app={app_n}",
+            )
 
             st, act, _, _ = invoke_probe(
                 exe, env, "pure", "tls13", "127.0.0.1", servers["tls12_only"].port, "localhost", ca_str, "-"

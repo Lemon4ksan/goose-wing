@@ -215,6 +215,9 @@ fn pure_client_handle_hrr(
     guard !slot.hrr_sent else {
         return pure_fail_with_alert(slot, tls::Alert.UnexpectedMessage, tls::TlsBackendStatus.HandshakeError);
     }
+    if sh.psk_resumed || (sh.has_ech_ext && !slot.ech_state.active) {
+        return pure_fail_with_alert(slot, tls::Alert.UnsupportedExtension, tls::TlsBackendStatus.HandshakeError);
+    }
     guard validate_live_client_sh(sh, slot.client_random) &&
         (sh.selected_group != 0 || sh.hrr_cookie.len > 0) else {
         return pure_fail_with_alert(slot, tls::Alert.IllegalParameter, tls::TlsBackendStatus.HandshakeError);
@@ -801,6 +804,9 @@ fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     var ch_choice = ServerClientHelloChoice { .. };
     defer zeroize_server_ch_choice(ch_choice);
     let req_sig = detect_cert_sig_scheme(slot.cert_der[..]);
+    guard req_sig != 0 else {
+        return pure_fail_with_alert(slot, tls::Alert.InternalError, tls::TlsBackendStatus.HandshakeError);
+    }
     let alpn_policy = if slot.require_alpn_match {
         ServerAlpnPolicy.RequireMatch
     } else {
@@ -809,6 +815,7 @@ fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     guard parse_server_client_hello(
         ch_msg[..], slot.alpn_csv[..], req_sig, slot.compressed_cert_algo,
         hrr_mode, ch_choice, slot.require_client_cert, slot.psk_policy, alpn_policy,
+        tls::QuicExtensionMode.Tcp, slot.hrr_sent, slot.transcript,
     ) else { return pure_fail_ch_parse(slot, ch_choice.failure_alert); }
 
     if !slot.hrr_sent && ch_choice.needs_hrr {

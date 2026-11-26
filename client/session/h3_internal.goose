@@ -39,7 +39,7 @@ fn encode_h3_request<B>(
 
     let has_body = ctx.body.len > 0;
     guard http3::send_request_headers(
-        h3_conn, sid, ctx.current_method[..], "https", current_url.host(),
+        h3_conn, sid, ctx.current_method[..], current_url.scheme(), current_url.host(),
         path_buf[..], ctx.headers, !has_body, out,
     ) else { return false; }
 
@@ -86,11 +86,17 @@ fn execute_live_h3_hop(
     now_sec:     i64,
     resp:        http::Response&,
 ) -> bool {
+    // Unencrypted raw UDP datagram framing must never be used to fulfill https:// origins.
+    guard !current_url.is_secure_scheme() else { return false; }
+
     let target_host = if h3_ep.host.len > 0 { h3_ep.host[..] } else { current_url.hostname() };
     let target_port = if h3_ep.port > 0 { h3_ep.port } else { current_url.effective_port() as u16 };
-    if session.ssrf_guard.enabled && session.ssrf_guard.deny_local_network &&
-        (security::is_private_or_reserved_ip(target_host) || security::is_dangerous_service_port(target_port)) {
-        return false;
+    if session.ssrf_guard.enabled {
+        let blk_priv = session.ssrf_guard.deny_local_network && security::is_private_or_reserved_ip(target_host);
+        if blk_priv || security::is_cloud_metadata_or_reserved_ip(target_host) ||
+            security::is_dangerous_service_port(target_port) {
+            return false;
+        }
     }
     let udp_fd = net::udp_bind("0.0.0.0", 0);
     guard udp_fd > 0 else { return false; }
@@ -118,7 +124,7 @@ fn execute_live_h3_hop(
 
     populate_h3_response_from_stream(h3_conn, sid, sc, current_url, ctx.headers, resp);
     ingest_transport_response_headers(
-        session, current_url, true, origin_buf, current_url.pathname(), now_sec, resp,
+        session, current_url, false, origin_buf, current_url.pathname(), now_sec, resp,
     );
     return true;
 }

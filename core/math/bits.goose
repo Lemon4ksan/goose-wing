@@ -87,13 +87,15 @@ inline fn bswap64(x: u64) -> u64 {
 }
 
 // Reads a 16-bit unsigned integer in Little-Endian byte order from slice.
-inline fn read_le_u16(data: const u8[:], offset: i64) -> u16 {
+checkfree inline fn read_le_u16(data: const u8[:], offset: i64) -> u16 {
+    guard offset >= 0 && offset <= data.len - 2 else { return 0; }
     let s = data[offset..offset + 2];
     return (s[0]) | ((s[1] as u16) << 8);
 }
 
 // Reads a 24-bit unsigned integer in Little-Endian byte order from slice.
-inline fn read_le_u24(data: const u8[:], offset: i64) -> u32 {
+checkfree inline fn read_le_u24(data: const u8[:], offset: i64) -> u32 {
+    guard offset >= 0 && offset <= data.len - 3 else { return 0; }
     let s = data[offset..offset + 3];
     return (s[0]) |
            ((s[1] as u32) << 8) |
@@ -101,7 +103,8 @@ inline fn read_le_u24(data: const u8[:], offset: i64) -> u32 {
 }
 
 // Reads a 32-bit unsigned integer in Little-Endian byte order from slice.
-inline fn read_le_u32(data: const u8[:], offset: i64) -> u32 {
+checkfree inline fn read_le_u32(data: const u8[:], offset: i64) -> u32 {
+    guard offset >= 0 && offset <= data.len - 4 else { return 0; }
     let s = data[offset..offset + 4];
     return (s[0]) |
            ((s[1] as u32) << 8) |
@@ -110,7 +113,8 @@ inline fn read_le_u32(data: const u8[:], offset: i64) -> u32 {
 }
 
 // Reads a 64-bit unsigned integer in Little-Endian byte order from slice.
-inline fn read_le_u64(data: const u8[:], offset: i64) -> u64 {
+checkfree inline fn read_le_u64(data: const u8[:], offset: i64) -> u64 {
+    guard offset >= 0 && offset <= data.len - 8 else { return 0; }
     let s = data[offset..offset + 8];
     return (s[0]) |
            ((s[1] as u64) << 8) |
@@ -123,13 +127,15 @@ inline fn read_le_u64(data: const u8[:], offset: i64) -> u64 {
 }
 
 // Reads a 16-bit unsigned integer in Big-Endian (Network) byte order from slice.
-inline fn read_be_u16(data: const u8[:], offset: i64) -> u16 {
+checkfree inline fn read_be_u16(data: const u8[:], offset: i64) -> u16 {
+    guard offset >= 0 && offset <= data.len - 2 else { return 0; }
     let s = data[offset..offset + 2];
     return ((s[0] as u16) << 8) | (s[1]);
 }
 
 // Reads a 24-bit unsigned integer in Big-Endian (Network) byte order from slice.
-inline fn read_be_u24(data: const u8[:], offset: i64) -> u32 {
+checkfree inline fn read_be_u24(data: const u8[:], offset: i64) -> u32 {
+    guard offset >= 0 && offset <= data.len - 3 else { return 0; }
     let s = data[offset..offset + 3];
     return ((s[0] as u32) << 16) |
            ((s[1] as u32) << 8) |
@@ -137,7 +143,8 @@ inline fn read_be_u24(data: const u8[:], offset: i64) -> u32 {
 }
 
 // Reads a 32-bit unsigned integer in Big-Endian (Network) byte order from slice.
-inline fn read_be_u32(data: const u8[:], offset: i64) -> u32 {
+checkfree inline fn read_be_u32(data: const u8[:], offset: i64) -> u32 {
+    guard offset >= 0 && offset <= data.len - 4 else { return 0; }
     let s = data[offset..offset + 4];
     return ((s[0] as u32) << 24) |
            ((s[1] as u32) << 16) |
@@ -146,7 +153,8 @@ inline fn read_be_u32(data: const u8[:], offset: i64) -> u32 {
 }
 
 // Reads a 64-bit unsigned integer in Big-Endian (Network) byte order from slice.
-inline fn read_be_u64(data: const u8[:], offset: i64) -> u64 {
+checkfree inline fn read_be_u64(data: const u8[:], offset: i64) -> u64 {
+    guard offset >= 0 && offset <= data.len - 8 else { return 0; }
     let s = data[offset..offset + 8];
     return ((s[0] as u64) << 56) |
            ((s[1] as u64) << 48) |

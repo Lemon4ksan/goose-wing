@@ -556,7 +556,7 @@ fn run_03_rfc_repro_auth_digest_edge() {
         ..
     };
     var incoming = auth::DigestChallenge {
-        realm:     "new_realm",
+        realm:     "old_realm",
         nonce:     "fresh_nonce_456",
         algorithm: "SHA-256",
         qop:       "auth-int",
@@ -574,6 +574,12 @@ fn run_03_rfc_repro_auth_digest_edge() {
     assert(stored.qop[..] == "auth-int");
     assert(stored.domain[..] == "https://auth.example.com");
     assert(stored.userhash);
+
+    // Cross-realm stale challenge MUST be rejected (RFC 7616 Section 3.3).
+    var cross_realm = incoming;
+    assert(cross_realm.realm.try_set("evil_realm"));
+    assert(!auth::sync_digest_stale_challenge(stored, cross_realm, creds, nc));
+    assert(stored.realm[..] == "old_realm");
     print("DIGEST_STALE_SYNC: OK");
 
     // ---- 4. Mandatory Field & Response Hex Validation ----------------------

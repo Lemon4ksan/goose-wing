@@ -232,6 +232,15 @@ netem-packetdrill *args="--local":
 # Run all local/offline conformance, crypto, PKI, HTTP, and QUIC testbeds
 testbeds-local: bogo tls-audit badssl crypto-vectors dudect ctgrind x509-suites fingerprint-wpt smuggling http-garden cache-conformance hpack-qpack h3spec quic-interop netem-packetdrill
 
+# Run Go black-box wire & CVE conformance suite against compiled tools/bin harnesses
+[unix]
+blackbox-conformance *args="--all":
+    cd tools/blackbox_conformance && go run . {{ args }}
+
+[windows]
+blackbox-conformance *args="--all":
+    Push-Location tools/blackbox_conformance; try { go run . {{ args }} } finally { Pop-Location }
+
 # Run cryptographic, compression, and framing differential fuzzing suite
 diff-fuzz:
     python scripts/diff_fuzz.py

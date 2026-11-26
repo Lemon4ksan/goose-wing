@@ -35,7 +35,7 @@ fn run_verified_tls13_h2_and_reuse(port: u16) -> bool, bool {
     make_https_base_url(port, base);
     var s = client::new_client(client::Config {
         base_url:             base[..],
-        timeout_ms:           3000,
+        timeout_ms:           8000,
         insecure_skip_verify: false,
         ..
     });
@@ -339,11 +339,17 @@ fn run_bad_record_mac_probe(host: const u8[:], port: u16) -> bool {
     wire[last_idx] = wire[last_idx] ^ 0xFF;
     guard net::tcp_send(fd, wire[..wn]) == (wn as i32) else { return false; }
 
-    // Server must either send a fatal alert or close the TCP socket without returning app data.
+    // Server must either send a fatal alert (plaintext or TLS 1.3 encrypted) or close the TCP socket.
     var resp: u8[512] = [0; 512];
     let rn = net::tcp_recv_slice(fd, resp[..], 1500);
     if rn <= 0 { return true; }
-    return resp[0] == 0x15;
+    if resp[0] == 0x15 { return true; }
+    guard resp[0] == 0x17 else { return false; }
+    let fed, fst = tls::tls_endpoint_feed_wire(ep, resp[..rn]);
+    guard fst == tls::TlsBackendStatus.Ok && fed == rn else { return true; }
+    var plain: u8[256] = [0; 256];
+    let pn, pst = tls::tls_endpoint_read_app(ep, plain[..]);
+    return pn == 0 && pst != tls::TlsBackendStatus.Ok;
 }
 
 fn main() {

@@ -328,8 +328,15 @@ fn serve_http1_upgraded_ws<Stage, InBuf, FragBuf, OutBuf>(
 ) -> bool {
     let r_idx = server::find_ws_route(server, req.url[..]);
     guard r_idx >= 0 else { return false; }
-    let behavior = server.ws_routes[r_idx as i64].behavior;
     var ws_res = http::Response { .. };
+    out_wire.clear();
+    if !authorize_ws_upgrade_stage(server, req, r_idx, 0, ws_res, out_wire, stage) {
+        let _ = net::tcp_send(conn_fd, out_wire[..]);
+        in_buf.compact_wire_buffer(consumed);
+        return true;
+    }
+    reset_server_response_fast(ws_res);
+    let behavior = server.ws_routes[r_idx as i64].behavior;
     var ws, ok_ws = realtime::ws_upgrade_request(req, ws_res, behavior.subprotocol[..]);
     guard ok_ws else { return false; }
     ws.max_payload_length = behavior.max_payload_length;

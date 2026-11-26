@@ -73,7 +73,10 @@ fn validate_ocsp_stapling(
     ) else {
         return Alert.BadCertificateStatusResponse;
     }
-    var sig_alert = x509_verify_ocsp_signature(resp, raw_ocsp, issuer_cert, issuer_raw_der);
+    var sig_alert = Alert.BadCertificateStatusResponse;
+    if tls_internal::ocsp_responder_id_matches_cert(resp, raw_ocsp, issuer_cert, issuer_raw_der) {
+        sig_alert = x509_verify_ocsp_signature(resp, raw_ocsp, issuer_cert, issuer_raw_der);
+    }
     if sig_alert != Alert.CloseNotify && resp.responder_cert_der.length > 0 {
         sig_alert = tls_internal::verify_delegated_ocsp_responder(
             resp, raw_ocsp, issuer_cert, issuer_raw_der, now_unix,

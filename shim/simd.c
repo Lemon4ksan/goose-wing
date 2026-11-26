@@ -1885,6 +1885,10 @@ static int64_t wing_deflate_l1_chunk_avx2(const uint8_t *src, int64_t chunk_star
             uint32_t cv;
             memcpy(&cv, src + cand, 4);
             if (cv == v) {
+                if (out_idx >= stored_bytes) {
+                    bail_stored = 1;
+                    break;
+                }
                 miss = 32;
                 matches++;
                 int32_t mlen = wing_extend_match_avx2(src + pos, src + cand, chunk_end - pos);
@@ -1909,24 +1913,45 @@ static int64_t wing_deflate_l1_chunk_avx2(const uint8_t *src, int64_t chunk_star
         int64_t stop = pos + step;
         if (stop > limit + 1) stop = limit + 1;
         while (pos < stop) {
+            if (out_idx >= stored_bytes) {
+                bail_stored = 1;
+                break;
+            }
             uint16_t lit_p = wing_fix_lit_pack[src[pos++]];
             wing_bw_put(&bits, &bc, lit_p >> 4, (int)(lit_p & 15U), dst, &out_idx);
         }
+        if (bail_stored) break;
     }
 
     if (!bail_stored) {
         while (pos < chunk_end) {
+            if (out_idx >= stored_bytes) {
+                bail_stored = 1;
+                break;
+            }
             uint16_t lit_p = wing_fix_lit_pack[src[pos++]];
             wing_bw_put(&bits, &bc, lit_p >> 4, (int)(lit_p & 15U), dst, &out_idx);
         }
-        wing_bw_put(&bits, &bc, 0U, 7, dst, &out_idx);
-        while (bc >= 8) {
-            dst[out_idx++] = (uint8_t)bits;
-            bits >>= 8;
-            bc -= 8;
+    }
+    if (!bail_stored) {
+        if (out_idx >= stored_bytes) {
+            bail_stored = 1;
+        } else {
+            wing_bw_put(&bits, &bc, 0U, 7, dst, &out_idx);
+            while (bc >= 8) {
+                if (out_idx >= dst_cap) {
+                    bail_stored = 1;
+                    break;
+                }
+                dst[out_idx++] = (uint8_t)bits;
+                bits >>= 8;
+                bc -= 8;
+            }
+            if (!bail_stored) {
+                int64_t emitted_bytes = out_idx + ((bc - saved_bc + 7) >> 3);
+                if (emitted_bytes >= stored_bytes) bail_stored = 1;
+            }
         }
-        int64_t emitted_bytes = out_idx + ((bc - saved_bc + 7) >> 3);
-        if (emitted_bytes >= stored_bytes) bail_stored = 1;
     }
 
     if (bail_stored) {

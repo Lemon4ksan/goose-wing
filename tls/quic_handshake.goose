@@ -89,6 +89,7 @@ struct QuicTlsClientSlot {
     key_share_mode:  QuicClientKeyShareMode    = QuicClientKeyShareMode.SendInitialShare,
     stage:           QuicCliStage              = QuicCliStage.Init,
     last_alert:      Alert                     = Alert.CloseNotify,
+    nst_count:       u8                        = 0,
     alpn_csv:        u8[..255]                 = [],
     negotiated_alpn: u8[..255]                 = [],
     local_tp:        u8[..2048]                = [],
@@ -532,11 +533,13 @@ fn eval_srv_ch_choice(
     ch_msg:     const u8[:],
     out_choice: tls_internal::ServerClientHelloChoice&,
 ) -> Alert, bool {
-    let req_sig = if slot.has_creds {
-        tls_internal::detect_cert_sig_scheme(slot.cert_der[..])
-    } else {
-        0
-    };
+    var req_sig: u16 = 0;
+    if slot.has_creds {
+        req_sig = tls_internal::detect_cert_sig_scheme(slot.cert_der[..]);
+        guard req_sig != 0 else {
+            return Alert.InternalError, false;
+        }
+    }
     let hrr_mode = if slot.stage == QuicSrvStage.WaitClientHello2 {
         tls_internal::ServerHrrMode.Reject
     } else {
@@ -1380,16 +1383,24 @@ fn validate_quic_post_hs_nst(body: const u8[:]) -> bool {
     var c = core::cursor_from(body);
     var lifetime: u32 = 0;
     var age_add:  u32 = 0;
-    // RFC 8446 Section 4.6.1: New Session Ticket Message - Require well-formed ticket framing.
-    guard c.get_u32(lifetime) && c.get_u32(age_add) else { return false; }
+    // RFC 8446 Section 4.6.1: New Session Ticket Message - Bound lifetime <= 604800s and check extensions.
+    guard c.get_u32(lifetime) && c.get_u32(age_add) && lifetime <= 604800 else { return false; }
     let nonce, ok_n = c.read_u8_prefixed();
     let ticket, ok_t = c.read_u16_prefixed();
     var ext_c, ok_e = c.read_u16_sub_cursor();
     guard ok_n && ok_t && ok_e && ticket.len >= 1 && c.buf.len == 0 else { return false; }
+    var seen: u16[..16] = [];
     while ext_c.buf.len > 0 {
-        let _, ok_et = ext_c.read_u16();
-        let _, ok_ed = ext_c.read_u16_prefixed();
+        let etype, ok_et = ext_c.read_u16();
+        let edata, ok_ed = ext_c.read_u16_prefixed();
         guard ok_et && ok_ed else { return false; }
+        for prev in seen {
+            if prev == etype { return false; }
+        }
+        guard seen.try_push(etype) else { return false; }
+        if etype == rfc::TLS_EXT_EARLY_DATA && edata.len != 4 {
+            return false;
+        }
     }
     return true;
 }
@@ -1421,9 +1432,13 @@ fn process_cli_established_app_crypto(
         guard msg_type == rfc::TLS_HS_NEW_SESSION_TICKET else {
             return quic_cli_fail(slot, Alert.UnexpectedMessage);
         }
+        guard slot.nst_count < 16 else {
+            return quic_cli_fail(slot, Alert.UnexpectedMessage);
+        }
         guard validate_quic_post_hs_nst(slot.rx_app_buf[4..total_len]) else {
             return quic_cli_fail(slot, Alert.DecodeError);
         }
+        slot.nst_count += 1;
         core::compact_wire_buffer(slot.rx_app_buf, total_len);
     }
     return QuicTlsStatus.Established;

@@ -255,13 +255,22 @@ fn append_ech_inner_sni_and_alpn<B>(ext_buf: B&, inner_sni: const u8[:], inner_a
         ext_buf.append(inner_sni);
     }
     if inner_alpn.len > 0 {
-        guard inner_alpn.len <= 255 else { return false; }
-        let alpn_list_len = core::add_sat_i64(inner_alpn.len, 1) as u16;
+        var wire_list: u8[..256] = [];
+        var tok = core::make_byte_tokenizer(inner_alpn, ',');
+        loop {
+            let raw_proto, has_tok = core::token_next(tok);
+            guard has_tok else { break; }
+            let proto = raw_proto.trim_lws();
+            guard proto.len > 0 && proto.len <= 255 else { return false; }
+            guard wire_list.try_push(proto.len as u8) && wire_list.try_append(proto) else {
+                return false;
+            }
+        }
+        guard wire_list.len > 0 && wire_list.len <= 255 else { return false; }
         ext_buf.append_u16_be(rfc::TLS_EXT_ALPN);
-        ext_buf.append_u16_be(core::add_sat_i64(inner_alpn.len, 3) as u16);
-        ext_buf.append_u16_be(alpn_list_len);
-        ext_buf.push(inner_alpn.len as u8);
-        ext_buf.append(inner_alpn);
+        ext_buf.append_u16_be(core::add_sat_i64(wire_list.len, 2) as u16);
+        ext_buf.append_u16_be(wire_list.len as u16);
+        guard ext_buf.try_append(wire_list[..]) else { return false; }
     }
     return true;
 }

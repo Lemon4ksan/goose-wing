@@ -221,12 +221,74 @@ def run_live_udp_probes(host: str, port: int, build_h3_get_frame: Any) -> tuple[
             "-> HTTP/3 200 OK",
         )
 
-        # 12. Valid SETTINGS followed by duplicate SETTINGS frame -> H3_FRAME_UNEXPECTED (0x0105)
-        ok_set = _udp_exchange(sock, addr, b"\x04\x00", timeout=1.5)
+        # 12-13. Forbidden HTTP/2 SETTINGS (0x03 MAX_CONCURRENT_STREAMS, 0x04 INITIAL_WINDOW_SIZE) -> H3_SETTINGS_ERROR
+        for sid, label in ((0x03, "max_concurrent_streams_0x03"), (0x04, "initial_window_size_0x04")):
+            resp = _udp_exchange(sock, addr, bytes([0x04, 0x02, sid, 0x01]), timeout=1.5)
+            code = _extract_h3_close_error(resp or b"")
+            check(
+                code == H3_ERR_SETTINGS_ERROR,
+                f"forbidden_h2_settings_{label}",
+                f"-> err=0x{code:04x}" if code >= 0 else f"-> resp={resp!r}",
+            )
+
+        # 14. Duplicate SETTINGS identifier (0x07 QPACK_BLOCKED_STREAMS twice) -> H3_SETTINGS_ERROR
+        dup_blocked = bytes([0x04, 0x04, 0x07, 0x01, 0x07, 0x02])
+        resp = _udp_exchange(sock, addr, dup_blocked, timeout=1.5)
+        code = _extract_h3_close_error(resp or b"")
+        check(code == H3_ERR_SETTINGS_ERROR, "duplicate_settings_qpack_blocked_0x07", f"-> err=0x{code:04x}")
+
+        # 15. Truncated SETTINGS 2-byte varint value -> H3_FRAME_ERROR
+        trunc_varint = bytes([0x04, 0x02, 0x06, 0x40])
+        resp = _udp_exchange(sock, addr, trunc_varint, timeout=1.5)
+        code = _extract_h3_close_error(resp or b"")
+        check(code == H3_ERR_FRAME_ERROR, "truncated_settings_varint_value", f"-> err=0x{code:04x}")
+
+        # 16. SETTINGS frame on request stream -> H3_FRAME_UNEXPECTED (0x0105)
+        resp = _udp_exchange(sock, addr, build_h3_get_frame(b"/") + b"\x04\x00", timeout=1.5)
+        code = _extract_h3_close_error(resp or b"")
+        check(code == H3_ERR_FRAME_UNEXPECTED, "forbidden_settings_on_request_stream", f"-> err=0x{code:04x}")
+
+        # 17. GOAWAY frame on request stream -> H3_FRAME_UNEXPECTED (0x0105)
+        resp = _udp_exchange(sock, addr, build_h3_get_frame(b"/") + b"\x07\x01\x00", timeout=1.5)
+        code = _extract_h3_close_error(resp or b"")
+        check(code == H3_ERR_FRAME_UNEXPECTED, "forbidden_goaway_on_request_stream", f"-> err=0x{code:04x}")
+
+        # 18. Unknown QUIC version 0xFACEB00C -> Version Negotiation
+        vn_fb, scid_fb = _build_quic_initial(0xFACEB00C, 1200)
+        vn_fb_res = _udp_exchange(sock, addr, vn_fb, timeout=1.5)
+        vn_fb_ok = (
+            vn_fb_res is not None
+            and len(vn_fb_res) >= 27
+            and (vn_fb_res[0] & 0x80) != 0
+            and struct.unpack(">I", vn_fb_res[1:5])[0] == 0
+            and vn_fb_res[6 : 6 + len(scid_fb)] == scid_fb
+        )
+        check(vn_fb_ok, "invalid_quic_version_0xfaceb00c_negotiation", "-> Version Negotiation 0x00000000")
+
+        # 19. Tiny garbage 1-byte datagrams dropped cleanly, followed by healthy GET /api/info
+        r_g1 = _udp_exchange(sock, addr, b"\x7f", timeout=0.25)
+        r_g2 = _udp_exchange(sock, addr, b"\x00", timeout=0.25)
+        info_res = _udp_exchange(sock, addr, build_h3_get_frame(b"/api/info"), timeout=1.5)
+        check(
+            r_g1 is None
+            and r_g2 is None
+            and info_res is not None
+            and b"goose-wing" in info_res,
+            "tiny_garbage_dgram_resilience",
+            "-> dropped + GET /api/info 200 OK",
+        )
+
+        # 20-21. Valid SETTINGS with GREASE ID 0x21 accepted, followed by duplicate SETTINGS -> H3_FRAME_UNEXPECTED
+        ok_set = _udp_exchange(sock, addr, b"\x04\x02\x21\x05", timeout=1.5)
+        check(
+            ok_set == b"\x04\x00",
+            "valid_settings_with_grease_id_0x21",
+            f"-> ack={ok_set!r}",
+        )
         dup_frame = _udp_exchange(sock, addr, b"\x04\x00", timeout=1.5)
         code = _extract_h3_close_error(dup_frame or b"")
         check(
-            ok_set == b"\x04\x00" and code == H3_ERR_FRAME_UNEXPECTED,
+            code == H3_ERR_FRAME_UNEXPECTED,
             "duplicate_settings_frame_on_control",
             f"-> err=0x{code:04x}",
         )

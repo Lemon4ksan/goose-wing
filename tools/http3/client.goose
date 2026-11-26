@@ -24,7 +24,7 @@ struct H3StreamReceiver {
 
 fn make_h3_client(port: u16, out_origin: u8[..128]&) -> client::Client {
     var base: u8[..128] = [];
-    let _ = base.try_append("https://127.0.0.1:");
+    let _ = base.try_append("http://127.0.0.1:");
     core::format_u64_dec(port, base);
 
     out_origin.clear();
@@ -40,9 +40,10 @@ fn make_h3_client(port: u16, out_origin: u8[..128]&) -> client::Client {
     s.enable_altsvc = true;
     s.enable_protocol_racing = true;
 
+    let now_sec = div_euclid(client::effective_clock_us(s), 1000000);
     var altsvc_hdr: u8[..128] = [];
     http::format_altsvc_header(altsvc_hdr, "h3", port, 86400, true);
-    http::update(s.altsvc, out_origin[..], altsvc_hdr[..], 1700000000);
+    http::update(s.altsvc, out_origin[..], altsvc_hdr[..], now_sec);
     return s;
 }
 
@@ -51,7 +52,8 @@ fn run_h3_get_root(s: client::Client&, origin: const u8[:]) -> bool {
     guard http::ok(err) && resp.status_code == 200 else { return false; }
     guard resp.protocol[..] == "HTTP/3" else { return false; }
     guard resp.body[..] == "Hello from goose-wing HTTP/3!" else { return false; }
-    return http::failed_attempts(s.altsvc, origin) == 0 && !http::is_broken(s.altsvc, origin, 1700000000);
+    let now_sec = div_euclid(client::effective_clock_us(s), 1000000);
+    return http::failed_attempts(s.altsvc, origin) == 0 && !http::is_broken(s.altsvc, origin, now_sec);
 }
 
 fn run_h3_get_query_json(s: client::Client&) -> bool {

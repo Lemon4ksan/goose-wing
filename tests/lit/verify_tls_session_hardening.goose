@@ -131,9 +131,11 @@ fn test_locked_cipher_slots_and_ticket_cache() {
     var id_psk: u8[..48] = [];
     var id_cs:  u16      = 0;
     // Client-cached ticket MUST NOT be visible in server ticket lookup (TLS-01 isolation).
-    assert(!tls_internal::lookup_server_ticket_by_identity("TICKET_ID_LOCK_01", false, id_psk, id_cs, 20000));
+    assert(!tls_internal::lookup_server_ticket_by_identity(
+        "TICKET_ID_LOCK_01", false, id_psk, id_cs, 20000, "locktest.example",
+    ));
 
-    // Server-issued non-mTLS ticket MUST be rejected when require_client_cert = true.
+    // Server-issued non-mTLS ticket MUST be rejected when require_client_cert = true or SNI mismatches.
     tls_internal::store_server_session_ticket(
         "locktest.example",
         "SRV_TKT_NO_MTLS",
@@ -144,9 +146,16 @@ fn test_locked_cipher_slots_and_ticket_cache() {
         false,
         10000,
     );
-    assert(tls_internal::lookup_server_ticket_by_identity("SRV_TKT_NO_MTLS", false, id_psk, id_cs, 20000));
+    assert(tls_internal::lookup_server_ticket_by_identity(
+        "SRV_TKT_NO_MTLS", false, id_psk, id_cs, 20000, "locktest.example",
+    ));
     assert(id_psk.len == 32 && id_cs == rfc::TLS_CIPHER_AES_128_GCM_SHA256);
-    assert(!tls_internal::lookup_server_ticket_by_identity("SRV_TKT_NO_MTLS", true, id_psk, id_cs, 20000));
+    assert(!tls_internal::lookup_server_ticket_by_identity(
+        "SRV_TKT_NO_MTLS", true, id_psk, id_cs, 20000, "locktest.example",
+    ));
+    assert(!tls_internal::lookup_server_ticket_by_identity(
+        "SRV_TKT_NO_MTLS", false, id_psk, id_cs, 20000, "other.example",
+    ));
 
     // Server-issued mTLS-authenticated ticket MUST succeed when require_client_cert = true.
     tls_internal::store_server_session_ticket(
@@ -159,12 +168,16 @@ fn test_locked_cipher_slots_and_ticket_cache() {
         true,
         10000,
     );
-    assert(tls_internal::lookup_server_ticket_by_identity("SRV_TKT_MTLS", true, id_psk, id_cs, 20000));
+    assert(tls_internal::lookup_server_ticket_by_identity(
+        "SRV_TKT_MTLS", true, id_psk, id_cs, 20000, "locktest.example",
+    ));
     assert(id_psk.len == 32 && id_cs == rfc::TLS_CIPHER_AES_128_GCM_SHA256);
 
     tls::clear_session_tickets();
     assert(!tls::lookup_session_ticket_full("locktest.example", out_tkt, out_psk, out_age, out_cs, 20000));
-    assert(!tls_internal::lookup_server_ticket_by_identity("SRV_TKT_MTLS", true, id_psk, id_cs, 20000));
+    assert(!tls_internal::lookup_server_ticket_by_identity(
+        "SRV_TKT_MTLS", true, id_psk, id_cs, 20000, "locktest.example",
+    ));
     print("LOCKED_SLOTS_AND_TICKETS: OK");
 }
 

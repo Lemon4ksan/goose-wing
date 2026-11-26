@@ -96,6 +96,12 @@ struct PnSpaceState {
     has_prev_keys:                 bool                  = false,
     phase_highest_pn:              u64                   = 0,
     aead_encrypted_packets:        u64                   = 0,
+    min_tracked_pn:                u64                   = 0,
+    has_min_tracked_pn:            bool                  = false,
+    has_next_keys:                 bool                  = false,
+    next_traffic_secret:           u8[..48]              = [],
+    next_aead_key:                 u8[..32]              = [],
+    next_aead_iv:                  u8[..12]              = [],
 }
 
 // Installs cryptographic keys for a QUIC packet number space (RFC 9001 §5).
@@ -127,9 +133,19 @@ fn install_keys(
     core::secure_zeroize_slice(space.traffic_secret[..]);
     space.traffic_secret.clear();
     core::secure_zeroize_slice(space.prev_aead_key[..]);
+    core::secure_zeroize_slice(space.prev_aead_iv[..]);
     space.prev_aead_key.clear();
     space.prev_aead_iv.clear();
     space.has_prev_keys = false;
+    core::secure_zeroize_slice(space.next_traffic_secret[..]);
+    core::secure_zeroize_slice(space.next_aead_key[..]);
+    core::secure_zeroize_slice(space.next_aead_iv[..]);
+    space.next_traffic_secret.clear();
+    space.next_aead_key.clear();
+    space.next_aead_iv.clear();
+    space.has_next_keys = false;
+    space.min_tracked_pn = 0;
+    space.has_min_tracked_pn = false;
     space.phase_highest_pn = 0;
     space.aead_encrypted_packets = 0;
     return true;
@@ -362,7 +378,7 @@ fn record_received_pn(ranges: AckInterval[..64]&, pn: u64) -> bool {
             return true;
         }
         if pn >= r.smallest && pn <= r.largest {
-            return true; // Duplicate packet
+            return false; // Duplicate packet
         }
         if core::add_sat_u64(pn, 1) == r.smallest {
             ranges[i].smallest = pn;
@@ -377,7 +393,7 @@ fn record_received_pn(ranges: AckInterval[..64]&, pn: u64) -> bool {
         i = core::add_sat_i64(i, 1);
     }
     if ranges.len >= ranges.cap {
-        return true;
+        return false;
     }
     let _ = ranges.try_push(AckInterval { smallest: pn, largest: pn });
     return true;

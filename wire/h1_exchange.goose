@@ -179,9 +179,11 @@ fn parse_h1_header_block(
 
         guard http::is_valid_header_name(hname) && http::is_valid_header_value(hval) else { return false; }
         if hname.eq_ascii_fold("content-length") {
-            let _, cl_ok = hval.parse_u64_dec();
+            let cl_u, cl_ok = hval.parse_u64_dec();
             let prev_cl = http::header(resp, "Content-Length");
-            guard cl_ok && (prev_cl.len == 0 || prev_cl == hval) else { return false; }
+            guard cl_ok && cl_u <= 0x7FFFFFFFFFFFFFFF && (prev_cl.len == 0 || prev_cl == hval) else {
+                return false;
+            }
         }
         guard http::append_header(resp.headers, hname, hval) else { return false; }
         http::update_response_presence(resp, hname);
@@ -410,7 +412,7 @@ fn pump_cl_body(
     timeout_ms: u32,
 ) -> bool {
     let cl_val, ok_cl = cl_str.parse_u64_dec();
-    guard ok_cl else { return false; }
+    guard ok_cl && cl_val <= 0x7FFFFFFFFFFFFFFF else { return false; }
 
     let init_bytes = min(leftover.len, cl_val as i64);
     if init_bytes > 0 {

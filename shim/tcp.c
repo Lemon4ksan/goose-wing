@@ -2436,6 +2436,7 @@ int64_t wing_epoll_create(void) {
 }
 
 int32_t wing_epoll_add(int64_t epfd, int64_t sock_fd, uint32_t events, uint64_t udata) {
+    if (epfd <= 0) return -1;
     wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
     if (!ctx || sock_fd <= 0 || ctx->count >= WING_MAX_POLL_FDS) return -1;
     for (int i = 0; i < ctx->count; i++) {
@@ -2453,6 +2454,7 @@ int32_t wing_epoll_add(int64_t epfd, int64_t sock_fd, uint32_t events, uint64_t 
 }
 
 int32_t wing_epoll_mod(int64_t epfd, int64_t sock_fd, uint32_t events, uint64_t udata) {
+    if (epfd <= 0) return -1;
     wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
     if (!ctx || sock_fd <= 0) return -1;
     for (int i = 0; i < ctx->count; i++) {
@@ -2466,6 +2468,7 @@ int32_t wing_epoll_mod(int64_t epfd, int64_t sock_fd, uint32_t events, uint64_t 
 }
 
 int32_t wing_epoll_del(int64_t epfd, int64_t sock_fd) {
+    if (epfd <= 0) return -1;
     wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
     if (!ctx || sock_fd <= 0) return -1;
     for (int i = 0; i < ctx->count; i++) {
@@ -2481,6 +2484,7 @@ int32_t wing_epoll_del(int64_t epfd, int64_t sock_fd) {
 }
 
 int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata, int32_t timeout_ms) {
+    if (epfd <= 0) return 0;
     wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
     if (!ctx || ctx->count <= 0) return 0;
     int limit = (out_udata.data != NULL && out_udata.len > 0) ? (int)out_udata.len : 0;
@@ -2520,6 +2524,7 @@ int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out
 
 int32_t wing_epoll_wait_events(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata,
                                wing_slice_u32 out_events, int32_t timeout_ms) {
+    if (epfd <= 0) return 0;
     wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
     if (!ctx || ctx->count <= 0 || out_udata.data == NULL || out_udata.len <= 0 || out_events.data == NULL ||
         out_events.len <= 0) {
@@ -2566,6 +2571,7 @@ int32_t wing_epoll_wait_events(int64_t epfd, wing_slice_i64 out_fds, wing_slice_
 }
 
 void wing_epoll_close(int64_t epfd) {
+    if (epfd <= 0) return;
     wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
     if (ctx) free(ctx);
 }

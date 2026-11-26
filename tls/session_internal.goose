@@ -107,6 +107,7 @@ fn wipe_and_reset_tls_cipher_slot(slot: tls::CipherSlot&) {
     slot.tx_seq = 0;
     slot.peer_closed = false;
     slot.resumed = false;
+    slot.client_authenticated = false;
     slot.enable_session_tickets = true;
     slot.negotiated_alpn.clear();
     slot.server_name.clear();

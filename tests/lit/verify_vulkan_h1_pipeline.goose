@@ -365,14 +365,31 @@ fn test_live_loopback_tcp_and_client() {
     print("tcp: pipe2=", tcp1_ok, " vectored=", tcp2_ok);
 }
 
+fn test_bb_f02_chunked_strict() {
+    var cur: i64 = 0;
+    let _, _, st_0x = h1::parse_next_chunk_span("0x5\r\nhello\r\n", cur);
+    let _, _, st_sp = h1::parse_next_chunk_span(" 5\r\nhello\r\n", cur);
+    let _, _, st_nul = h1::parse_next_chunk_span("5;a\x00b\r\nhello\r\n", cur);
+    let _, _, st_cr = h1::parse_next_chunk_span("5;a\rb\r\nhello\r\n", cur);
+    let _, _, st_lf = h1::parse_next_chunk_span("5\r\nhello\n", cur);
+    let ok = st_0x == h1::ParseStatus.BadRequest &&
+        st_sp == h1::ParseStatus.BadRequest &&
+        st_nul == h1::ParseStatus.BadRequest &&
+        st_cr == h1::ParseStatus.BadRequest &&
+        st_lf == h1::ParseStatus.BadRequest;
+    print("chunk_strict: ", ok);
+}
+
 fn main() {
     test_csprng_api();
     test_routing_query_and_middleware();
     test_pipelining_chunked_and_smuggling();
     test_live_loopback_tcp_and_client();
+    test_bb_f02_chunked_strict();
 }
 
 // CHECK: csprng: empty=false fill=true u64=true
 // CHECK-NEXT: routing: me=true user=true wild=true head=true mna=true nf=true mw=true
 // CHECK-NEXT: wire: pipe=true chunk=true sec=true
 // CHECK-NEXT: tcp: pipe2=true vectored=true
+// CHECK-NEXT: chunk_strict: true

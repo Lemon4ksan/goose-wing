@@ -20,6 +20,7 @@ import .ocsp;
 import .crl;
 import .ticket;
 import .ticket_internal;
+import .session_internal;
 import .pq_ntt_internal;
 import .pq_mlkem_internal;
 import .cert_compression;
@@ -169,16 +170,18 @@ fn validate_ee_solicited_extensions(
 // from the leaf certificate's SubjectPublicKeyInfo OID (RFC 8446 Section 4.4.3).
 fn detect_cert_sig_scheme(cert_der: const u8[:]) -> u16 {
     var cert = tls::ParsedCert { .. };
-    if cert_der.len > 0 && tls::parse_x509_certificate(cert_der, cert) {
-        let spki_oid = tls::span_slice(cert_der, cert.spki_alg_oid);
-        if spki_oid == rfc::OID_SECP256R1[..] {
-            return rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256;
-        }
-        if spki_oid == rfc::OID_RSA_ENCRYPTION[..] {
-            return rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA256;
-        }
+    guard cert_der.len > 0 && tls::parse_x509_certificate(cert_der, cert) else { return 0; }
+    let spki_oid = tls::span_slice(cert_der, cert.spki_alg_oid);
+    if spki_oid == rfc::OID_SECP256R1[..] {
+        return rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256;
     }
-    return rfc::SIG_SCHEME_ED25519;
+    if spki_oid == rfc::OID_RSA_ENCRYPTION[..] {
+        return rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA256;
+    }
+    if spki_oid == rfc::OID_ED25519[..] {
+        return rfc::SIG_SCHEME_ED25519;
+    }
+    return 0;
 }
 
 inline fn is_client_offered_tls13_suite(cs: u16) -> bool {
@@ -199,7 +202,10 @@ fn validate_live_client_sh(sh: const tls::ParsedServerHello&, client_random: con
 
 // RFC 9001 Section 8.4: Prohibit TLS Middlebox Compatibility Mode - Verify 0-byte legacy_session_id_echo.
 fn validate_quic_client_sh(sh: const tls::ParsedServerHello&) -> bool {
-    guard sh.session_id_echo.len == 0 && is_client_offered_tls13_suite(sh.cipher_suite) else {
+    guard sh.session_id_echo.len == 0 &&
+        !sh.psk_resumed &&
+        !sh.has_ech_ext &&
+        is_client_offered_tls13_suite(sh.cipher_suite) else {
         return false;
     }
     return sh.is_hrr || sh.server_share.len > 0;
@@ -227,13 +233,16 @@ fn try_match_single_psk_binder(
     binders_len:         u16,
     selected_cs:         u16,
     out_psk:             u8[..48]&,
-    require_client_cert: bool = false,
+    require_client_cert: bool                  = false,
+    client_sni:          const u8[:]           = "",
+    has_hrr_prefix:      bool                  = false,
+    hrr_prefix_tr:       const tls::Transcript = tls::Transcript { .. },
 ) -> bool, bool {
     out_psk.clear();
     var full_psk: u8[..48] = [];
     defer core::secure_zeroize_slice(full_psk[..]);
     var cs: u16 = 0;
-    if !lookup_server_ticket_by_identity(ticket_id, require_client_cert, full_psk, cs) ||
+    if !lookup_server_ticket_by_identity(ticket_id, require_client_cert, full_psk, cs, 0, client_sni) ||
         (full_psk.len != 32 && full_psk.len != 48) {
         return false, true;
     }
@@ -249,9 +258,21 @@ fn try_match_single_psk_binder(
 
     let trunc_ch, ok_tr = tls_internal::truncate_client_hello_for_binder(ch_msg, binders_len);
     guard ok_tr else { return false, false; }
-    guard tls_internal::verify_psk_binder(
-        ks_early.hash_id, ks_early.hash_len, ks_early.binder_key[..hlen], trunc_ch, binder_slice,
-    ) else { return false, false; }
+    var ok_binder = false;
+    if has_hrr_prefix {
+        var tr_copy = hrr_prefix_tr;
+        transcript_update(tr_copy, trunc_ch);
+        var tr_hash: u8[..48] = [];
+        transcript_current_hash(tr_copy, ks_early.hash_id, tr_hash);
+        ok_binder = tls_internal::verify_psk_binder_hash(
+            ks_early.hash_id, ks_early.hash_len, ks_early.binder_key[..hlen], tr_hash[..], binder_slice,
+        );
+    } else {
+        ok_binder = tls_internal::verify_psk_binder(
+            ks_early.hash_id, ks_early.hash_len, ks_early.binder_key[..hlen], trunc_ch, binder_slice,
+        );
+    }
+    guard ok_binder else { return false, false; }
     guard out_psk.try_set(full_psk[..]) else { return false, false; }
     return true, true;
 }
@@ -292,7 +313,10 @@ fn eval_client_hello_psk_binders(
     selected_cs:         u16,
     out_psk:             u8[..48]&,
     out_selected_id:     u16&,
-    require_client_cert: bool = false,
+    require_client_cert: bool                  = false,
+    client_sni:          const u8[:]           = "",
+    has_hrr_prefix:      bool                  = false,
+    hrr_prefix_tr:       const tls::Transcript = tls::Transcript { .. },
 ) -> bool, bool {
     core::secure_zeroize_slice(out_psk[..]);
     out_psk.clear();
@@ -315,7 +339,7 @@ fn eval_client_hello_psk_binders(
         if !matched {
             let entry_matched, entry_ok = try_match_single_psk_binder(
                 ticket_id, binder_slice, ch_msg, binders_bytes.len as u16, selected_cs,
-                matched_psk, require_client_cert,
+                matched_psk, require_client_cert, client_sni, has_hrr_prefix, hrr_prefix_tr,
             );
             guard entry_ok else { return false, false; }
             if entry_matched {
@@ -353,7 +377,10 @@ fn eval_client_hello_psk_entry(
     selected_cs:         u16,
     out_psk:             u8[..48]&,
     out_selected_id:     u16&,
-    require_client_cert: bool = false,
+    require_client_cert: bool                  = false,
+    client_sni:          const u8[:]           = "",
+    has_hrr_prefix:      bool                  = false,
+    hrr_prefix_tr:       const tls::Transcript = tls::Transcript { .. },
 ) -> bool, bool {
     let last_idx = core::sub_sat_i64(entries.len, 1);
     guard entries.len > 0 && last_idx >= 0 && last_idx < entries.len else { return false, false; }
@@ -361,7 +388,8 @@ fn eval_client_hello_psk_entry(
     let modes_ext, has_modes = tls::find_extension(entries, rfc::TLS_EXT_PSK_KEY_EXCHANGE_MODES);
     guard has_modes && has_valid_psk_dhe_ke_mode(modes_ext) else { return false, false; }
     return eval_client_hello_psk_binders(
-        payload, psk_ext, selected_cs, out_psk, out_selected_id, require_client_cert,
+        payload, psk_ext, selected_cs, out_psk, out_selected_id,
+        require_client_cert, client_sni, has_hrr_prefix, hrr_prefix_tr,
     );
 }
 

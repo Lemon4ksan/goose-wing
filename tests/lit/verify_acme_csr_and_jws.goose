@@ -325,12 +325,12 @@ fn test_acme_sign_jws_es256() {
         "",
     );
 
-    // Escaped quotes/newlines in url/nonce/kid cannot break JSON structure
+    // Escaped quotes/newlines in url/kid cannot break JSON structure; valid base64url nonce enforced.
     var jws_esc: u8[>..] = [];
     assert(auth::acme_sign_jws_es256(
         priv_key,
         "https://acme.example/q=\"1\"",
-        "n\\1",
+        "nonce_esc_1",
         "k\"id",
         "{}",
         jws_esc,
@@ -339,16 +339,20 @@ fn test_acme_sign_jws_es256() {
         jws_esc[..],
         pub_key[..],
         "https://acme.example/q=\"1\"",
-        "n\\1",
+        "nonce_esc_1",
         "k\"id",
         "{}",
     );
 
-    // Reject empty url, empty nonce, zero key, and clear out_jws on failure
+    // Reject empty url, empty or non-base64url nonce, zero key, and clear out_jws on failure
     jws_esc.append("dirty");
     assert(!auth::acme_sign_jws_es256(priv_key, "", "n", "", "{}", jws_esc) && jws_esc.len == 0);
     jws_esc.append("dirty");
     assert(!auth::acme_sign_jws_es256(priv_key, "https://acme.example/x", "", "", "{}", jws_esc) && jws_esc.len == 0);
+    jws_esc.append("dirty");
+    assert(!auth::acme_sign_jws_es256(priv_key, "https://acme.example/x", "n\\1", "", "{}", jws_esc) && jws_esc.len == 0);
+    jws_esc.append("dirty");
+    assert(!auth::acme_sign_jws_es256(priv_key, "https://acme.example/x", "bad+nonce/val==", "", "{}", jws_esc) && jws_esc.len == 0);
     let zero_key: u8[32] = [0; 32];
     jws_esc.append("dirty");
     assert(!auth::acme_sign_jws_es256(zero_key, "https://acme.example/x", "n", "", "{}", jws_esc) && jws_esc.len == 0);

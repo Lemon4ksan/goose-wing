@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 
 typedef struct {
     uint8_t *data;
@@ -101,9 +102,24 @@ int32_t wing_guarded_arena_create(uint64_t requested_capacity, uint32_t flags, u
     }
 
     uint64_t page_size = get_system_page_size();
+    if (requested_capacity > UINT64_MAX - page_size) {
+        return -1;
+    }
     uint64_t aligned_cap = align_page_up(requested_capacity, page_size);
     bool use_guard = (flags & WING_PAGE_GUARD_PAGE) != 0;
+    if (aligned_cap == 0 || (use_guard && aligned_cap > UINT64_MAX - page_size)) {
+        return -1;
+    }
     uint64_t total_alloc = use_guard ? (aligned_cap + page_size) : aligned_cap;
+#if defined(__wasm__)
+    if (total_alloc == 0 || total_alloc > (uint64_t)SIZE_MAX) {
+        return -1;
+    }
+#else
+    if (total_alloc == 0) {
+        return -1;
+    }
+#endif
 
     wing_guarded_arena_t *arena = (wing_guarded_arena_t *)calloc(1, sizeof(wing_guarded_arena_t));
     if (!arena) return -2;
@@ -492,7 +508,10 @@ int32_t wing_mmap_file_send(uint64_t handle, uint64_t offset, uint32_t len, int6
     if (offset >= mf->file_size) return -2;
 
     uint64_t available = mf->file_size - offset;
-    uint32_t to_send = (len < (uint32_t)available) ? len : (uint32_t)available;
+    uint64_t req = (uint64_t)len;
+    uint64_t clamped = (req < available) ? req : available;
+    if (clamped > 0x7FFFFFFFULL) clamped = 0x7FFFFFFFULL;
+    uint32_t to_send = (uint32_t)clamped;
     if (to_send == 0 || !mf->base) return 0;
 
 #if defined(__wasm__)

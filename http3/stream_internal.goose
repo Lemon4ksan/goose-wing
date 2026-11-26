@@ -368,9 +368,6 @@ fn validate_h3_push_promise_fields<F>(
     conn:           http3::Connection&,
     decoded_fields: const F&,
 ) -> u64 {
-    if decoded_fields.len == 0 {
-        return rfc::H3_ERR_NO_ERROR;
-    }
     var seen_regular = false;
     var counts = H3HeaderCounts { .. };
     var req_method: u8[..16]   = [];
@@ -429,9 +426,10 @@ fn record_or_verify_promised_push<F>(
         }
     }
     let new_rec = PromisedPushRecord { push_id: push_id, field_hash: field_hash };
-    if !conn.promised_pushes.try_push(new_rec) && conn.promised_pushes.len > 0 {
-        conn.promised_pushes.remove_at(0);
-        let _ = conn.promised_pushes.try_push(new_rec);
+    guard conn.promised_pushes.try_push(new_rec) else {
+        conn.state = http3::ConnState.Closed;
+        conn.error_code = rfc::H3_ERR_EXCESSIVE_LOAD;
+        return rfc::H3_ERR_EXCESSIVE_LOAD;
     }
     return rfc::H3_ERR_NO_ERROR;
 }

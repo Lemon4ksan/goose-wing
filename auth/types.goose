@@ -158,6 +158,7 @@ struct JwtClaims {
     exp:           i64                = -1,
     nbf:           i64                = -1,
     iat:           i64                = -1,
+    cnf_jkt:       u8[..128]          = [],
     custom_claims: JwtClaimItem[..16] = [],
     raw_payload:   u8[..2048]         = [],
 }

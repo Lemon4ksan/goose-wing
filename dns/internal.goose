@@ -643,9 +643,11 @@ checkfree fn parse_answers(
     expected_qname: const u8[:] = "",
 ) -> bool {
     var expected_owner: u8[..255] = [];
-    let check_owner = resp.question_count > 0 && expected_qname.len > 0;
-    if check_owner {
+    if resp.answer_count > 0 {
+        guard resp.question_count == 1 && expected_qname.len > 0 else { return false; }
         guard copy_dns_name_out(expected_owner, expected_qname) else { return false; }
+    } else {
+        return true;
     }
 
     let saved_idx = idx;
@@ -666,12 +668,12 @@ checkfree fn parse_answers(
         idx += 10;
         guard idx + rdlength <= raw.len else { return false; }
 
-        let owner_ok = !check_owner || dns_names_eq_fold(aname[..], expected_owner[..]);
+        let owner_ok = dns_names_eq_fold(aname[..], expected_owner[..]);
         if rclass != rfc::DNS_QCLASS_IN || !owner_ok {
             idx += rdlength;
             continue;
         }
-        if rtype == rfc::DNS_QTYPE_CNAME && check_owner {
+        if rtype == rfc::DNS_QTYPE_CNAME {
             guard decode_cname_rdata_target(raw, idx, rdlength, expected_owner) else { return false; }
         } else {
             guard resp.parse_answer_record(raw, rtype, rdlength, idx) else { return false; }

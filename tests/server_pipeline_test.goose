@@ -2185,7 +2185,9 @@ fn test_srv_reg3_r1_cache_and_edge_filter(t: lit::T&) {
         res1.body.append("payload-alice");
         let v_m1 = server_internal::stage_server_cache_lookup(cfg.route_cache, req1, 1000, res1, 201);
         sub.assert_true(v_m1 == wire::StageVerdict.Continue, "Initial /items/alice is cache miss");
-        let _ = server_internal::stage_server_cache_store(cfg.route_cache, 1000, res1, 201, req1.url[..]);
+        var ckey1: u8[..256] = [];
+        sub.assert_true(server_internal::build_route_cache_key(req1, ckey1), "build host-scoped route cache key");
+        let _ = server_internal::stage_server_cache_store(cfg.route_cache, 1000, res1, 201, ckey1[..]);
 
         var req2 = http::new_request("GET", "/items/bob");
         http::set_header(req2, "Host", "127.0.0.1");

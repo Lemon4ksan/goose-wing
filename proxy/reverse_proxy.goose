@@ -762,7 +762,7 @@ fn parse_x_accel_control_header(name: const u8[:], val: const u8[:], accel: Upst
         } else {
             let s_slice = if trimmed.len > 1 && trimmed[0] == '@' { trimmed[1..] } else { trimmed };
             let secs, ok = s_slice.parse_u64_dec();
-            if ok {
+            if ok && secs <= 0x7FFFFFFFFFFFFFFF {
                 accel.has_accel_expires = true;
                 accel.accel_expires_sec = secs as i64;
             }

@@ -393,10 +393,10 @@ fn build_ech_sealed_client_hello(
         ech_state.cfg.config_id, ech_state.cs, ech_enc, zero_ct[..], placeholder_ext, !is_hrr_ch2,
     ) else { return false; }
 
-    // RFC 9849 Section 5.2: Outer SNI MUST be public_name (never secret target server_name).
+    // RFC 9849 Section 5.2: Outer SNI MUST be public_name and outer ALPN omitted to protect inner secrets.
     var ch_outer_pay: u8[..4096] = [];
     build_client_hello_payload(
-        client_random, client_pub, ech_state.cfg.public_name[..], config.alpn[..],
+        client_random, client_pub, ech_state.cfg.public_name[..], "",
         ch_outer_pay, "", 0, enable_pq, pq_pub, placeholder_ext[..],
         hrr_cookie, config.client_cert_der.len > 0, 32, nist_pub,
     );

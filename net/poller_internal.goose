@@ -35,9 +35,9 @@ inline fn reactor_cancel_uring_slot(accel: net::ReactorAccelRuntime&, slot: i64)
 }
 
 fn reactor_try_open_uring(accel: net::ReactorAccelRuntime&, listener_fd: i64) -> bool {
-    let rfd = native_uring_create(256, 0);
+    let rfd = native_uring_create(1024, 0);
     guard rfd >= 0 else { return false; }
-    let pbuf, ok_pb = uring_alloc_pbuf_ring(rfd, net::REACTOR_URING_PBUF_BGID, 256, 4096);
+    let pbuf, ok_pb = uring_alloc_pbuf_ring(rfd, net::REACTOR_URING_PBUF_BGID, 1024, 8192);
     if !ok_pb || pbuf == 0 {
         native_uring_close(rfd);
         return false;
@@ -589,7 +589,7 @@ inline fn flush_socket_writes(fd: i32, buf: u8[..4096]&) -> i64 {
 }
 
 fn reactor_wait_rio_slot_tx(accel: net::ReactorAccelRuntime&, slot: i64) -> bool {
-    guard slot >= 0 && slot < net::REACTOR_ACCEL_SLOTS && accel.rio_tx_cq != 0 else { return false; }
+    guard slot >= 0 && slot < net::REACTOR_RIO_SLOTS && accel.rio_tx_cq != 0 else { return false; }
     var spins: i32 = 0;
     while accel.slot_tx_inflight[slot] && spins < 500 {
         let _ = net::reactor_drain_rio_tx_cq(accel);
@@ -603,7 +603,7 @@ fn reactor_wait_rio_slot_tx(accel: net::ReactorAccelRuntime&, slot: i64) -> bool
 }
 
 fn reactor_submit_rio_tx(accel: net::ReactorAccelRuntime&, slot: i64, wire: const u8[:]) -> bool {
-    guard slot >= 0 && slot < net::REACTOR_ACCEL_SLOTS && accel.slot_rio_rq[slot] != 0 else { return false; }
+    guard slot >= 0 && slot < net::REACTOR_RIO_SLOTS && accel.slot_rio_rq[slot] != 0 else { return false; }
     net::ensure_reactor_accel_slab(accel);
     let tx_off_u32 = (core::shl_sat_u64(slot as u64, 13) as u32) | 4096;
     let tx_off = tx_off_u32 as i64;

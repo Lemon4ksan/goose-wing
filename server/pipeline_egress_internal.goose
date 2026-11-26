@@ -323,6 +323,15 @@ fn feed_server_body_chunk(
     return server::feed_server_body_chunk_with_stage(cfg, state, req, sctx, chunk, is_last, res, noop);
 }
 
+fn build_route_cache_key(req: const http::Request&, out: u8[..256]&) -> bool {
+    out.clear();
+    let raw_host = http::header(req, rfc::HEADER_HOST).trim_lws();
+    var host_lower: u8[..256] = [];
+    guard raw_host.len <= host_lower.cap else { return false; }
+    raw_host.to_lower_ascii(host_lower);
+    return out.try_append(host_lower[..]) && out.try_push(0) && out.try_append(req.url[..]);
+}
+
 // Stage 10 (Server Ingress): Coalescing route cache lookup via UFCS `cache.cache_lookup(now_ms)`.
 fn stage_server_cache_lookup(
     cache:      server::HttpRouteCache&,
@@ -331,15 +340,24 @@ fn stage_server_cache_lookup(
     res:        http::Response&,
     handler_id: i32 = -1,
 ) -> wire::StageVerdict {
-    // RFC 9111 Section 3.5: Storing Responses to Authenticated Requests - bypass shared route cache on Authorization
+    // RFC 9111 Section 3.5: Bypass shared route cache on Authorization, Cookie, or no-store/no-cache.
     let has_auth = (req.presence_mask & http::HDR_PRESENCE_AUTHORIZATION) != 0
         || http::has_header(req.headers, rfc::HEADER_AUTHORIZATION);
-    guard !has_auth && (req.method[..] == "GET" || req.method[..] == "HEAD") else {
+    let has_cookie = (req.presence_mask & http::HDR_PRESENCE_COOKIE) != 0
+        || http::has_header(req.headers, rfc::HEADER_COOKIE);
+    let req_cc = http::header(req, "Cache-Control");
+    let bypass_cc = req_cc.contains_fold("no-store") || req_cc.contains_fold("no-cache");
+    guard !has_auth && !has_cookie && !bypass_cc
+        && (req.method[..] == "GET" || req.method[..] == "HEAD") else {
+        return wire::StageVerdict.Continue;
+    }
+    var cache_key: u8[..256] = [];
+    guard build_route_cache_key(req, cache_key) else {
         return wire::StageVerdict.Continue;
     }
     let _prof = server_prof::lit_prof_enter("stage.cache_lookup");
     defer server_prof::lit_prof_leave(_prof);
-    let lookup = cache.cache_lookup(now_ms, handler_id, req.url[..]);
+    let lookup = cache.cache_lookup(now_ms, handler_id, cache_key[..]);
     return match lookup {
         HitFresh => populate_cached_response(cache, res),
         HitStaleNeedsUpdate => {
@@ -463,8 +481,12 @@ fn stage_server_cache_store(
 ) -> wire::StageVerdict {
     let _prof = server_prof::lit_prof_enter("stage.cache_store");
     defer server_prof::lit_prof_leave(_prof);
-    // RFC 9111 Section 4.1: Calculating Cache Keys with the Vary Header Field - skip unkeyed Vary responses
-    if res.status_code == 200 && res.body.len > 0 && !http::has_header(res.headers, rfc::HEADER_VARY) {
+    // RFC 9111 Section 3 / 4.1: Skip unkeyed Vary, Set-Cookie, and private/no-store responses.
+    let res_cc = http::header(res, "Cache-Control");
+    let skip_priv = http::has_header(res.headers, rfc::HEADER_SET_COOKIE)
+        || res_cc.contains_fold("private")
+        || res_cc.contains_fold("no-store");
+    if !skip_priv && res.status_code == 200 && res.body.len > 0 && !http::has_header(res.headers, rfc::HEADER_VARY) {
         let ctype = http::get_inline(res.headers, http::WellKnownHeader.ContentType);
         let existing_etag = http::get_inline(res.headers, http::WellKnownHeader.ETag);
         if existing_etag.len > 0 {

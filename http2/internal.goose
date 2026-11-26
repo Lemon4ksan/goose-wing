@@ -83,11 +83,7 @@ inline fn apply_stream_end_remote(s: http2::Connection&, s_idx: i32) {
     let st .= s.streams[s_idx];
     if st.state == http2::StreamState.HalfClosedLocal {
         st.state = http2::StreamState.Closed;
-        st.active = false;
-        let _ = core::flat_index_remove(s.stream_index[..], st.stream_id);
-        if s.active_stream_count > 0 {
-            s.active_stream_count--;
-        }
+        http2::release_active_stream_slot(s, s_idx, st.stream_id);
     } else {
         st.state = http2::StreamState.HalfClosedRemote;
     }
@@ -188,11 +184,7 @@ fn handle_h2_rst_stream_header(s: http2::Connection&, hdr: const http2::FrameHea
         let st .= s.streams[s_idx];
         st.state = http2::StreamState.Closed;
         st.closed_by_rst = true;
-        st.active = false;
-        let _ = core::flat_index_remove(s.stream_index[..], hdr.stream_id);
-        if s.active_stream_count > 0 {
-            s.active_stream_count--;
-        }
+        http2::release_active_stream_slot(s, s_idx, hdr.stream_id);
         http2::sync_stream_urgency_node(s, s_idx);
     }
     return rfc::H2_ERR_NO_ERROR;

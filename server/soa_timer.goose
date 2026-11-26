@@ -17,24 +17,35 @@ const SOA_INVALID_FD: i64 = -1;
 
 const SOA_INVALID_TICK: u8 = 255;
 
+// Intrusive doubly-linked list node for O(1) timing wheel bucket membership.
+struct SoATimerLink {
+    prev: i32 = -1,
+    next: i32 = -1,
+}
+
 // Structure-of-Arrays connection state table.
 root struct SoAConnTable {
-    fds:            i64[>..]      = [],
-    timeout_ticks:  u8[>..]       = [],
-    leftover_lens:  u16[>..]      = [],
-    leftover_offs:  i64[>..]      = [],
-    tls_ct_lens:    u16[>..]      = [],
-    tls_ct_offs:    i64[>..]      = [],
-    conn_slots:     i32[>..]      = [],
-    is_h2:          bool[>..]     = [],
-    h2_slot_map:    i16[>..]      = [],
-    has_tls:        bool[>..]     = [],
-    tls_slots:      u16[>..]      = [],
-    has_peer_ip:    bool[>..]     = [],
-    peer_ip_hashes: u64[>..]      = [],
-    peer_ips:       u8[..46][>..] = [],
-    count:          i64           = 0,
-    max_slots:      i64           = SOA_TABLE_CAP,
+    fds:            i64[>..]          = [],
+    timeout_ticks:  u8[>..]           = [],
+    leftover_lens:  u16[>..]          = [],
+    leftover_offs:  i64[>..]          = [],
+    tls_ct_lens:    u16[>..]          = [],
+    tls_ct_offs:    i64[>..]          = [],
+    conn_slots:     i32[>..]          = [],
+    is_h2:          bool[>..]         = [],
+    h2_slot_map:    i16[>..]          = [],
+    has_tls:        bool[>..]         = [],
+    tls_slots:      u16[>..]          = [],
+    has_peer_ip:    bool[>..]         = [],
+    peer_ip_hashes: u64[>..]          = [],
+    peer_ips:       u8[..46][>..]     = [],
+    free_l0:        u64[>..]          = [],
+    free_l1:        u64[>..]          = [],
+    wheel_heads:    i32[240]          = [-1; 240],
+    wheel_mask:     u64[4]            = [0; 4],
+    timer_links:    SoATimerLink[>..] = [],
+    count:          i64               = 0,
+    max_slots:      i64               = SOA_TABLE_CAP,
 }
 
 // Grows SoA columns lazily on demand so `slot` is addressable, raising `max_slots` when needed.
@@ -53,12 +64,11 @@ fn soa_table_ensure_slot(table: SoAConnTable&, slot: i64) -> bool {
 fn soa_table_alloc(table: SoAConnTable&, fd: i64, timeout_tick: u8) -> i64 {
     guard fd > 0 else { return SOA_INVALID_FD; }
     let limit = min(table.fds.len, max(table.max_slots, 0));
-    for i in limit {
-        if table.fds[i] < 0 {
-            server_internal::reset_soa_slot_fields(table, i, fd, timeout_tick);
-            table.count = server_internal::advance_high_water_mark(table.count, i);
-            return i;
-        }
+    let free_idx = server_internal::soa_free_find_lowest(table, limit);
+    if free_idx >= 0 {
+        server_internal::reset_soa_slot_fields(table, free_idx, fd, timeout_tick);
+        table.count = server_internal::advance_high_water_mark(table.count, free_idx);
+        return free_idx;
     }
     guard table.fds.len < table.max_slots else { return SOA_INVALID_FD; }
     let idx = table.fds.len;
@@ -96,26 +106,28 @@ inline fn soa_table_touch(table: SoAConnTable&, slot: i64, new_tick: u8) {
         server_internal::push_inactive_soa_slot(table);
     }
     guard server_internal::is_active_slot(table, slot) else { return; }
-    table.timeout_ticks[slot] = new_tick;
+    server_internal::soa_wheel_relink(table, slot, new_tick);
 }
 
-// Sweeps active connection deadlines with minimal memory bandwidth consumption.
-// Scans tightly-packed 1-byte timeout ticks; returns count of expired connections found.
+// Sweeps active connection deadlines in O(1 + k) via the 240-bucket hashed timing wheel.
+// Returns count of expired connection slots written into `out_expired`.
 fn soa_table_sweep_expired(
     table:       SoAConnTable&,
     timer_wheel: const core::TickTimerWheel&,
     out_expired: i64[:],
 ) -> i64 {
+    guard timer_wheel.last_elapsed > 0 && out_expired.len > 0 else { return 0; }
+    let expired_mask = server_internal::build_elapsed_wheel_mask(timer_wheel);
     var expired_n: i64 = 0;
-    let limit = min(max(table.count, 0), table.fds.len);
 
-    for s in limit {
-        let tick = table.timeout_ticks[s];
-        guard tick != SOA_INVALID_TICK && core::tick_timer_is_expired(timer_wheel, tick) else { continue; }
-        guard server_internal::is_active_slot(table, s) else { continue; }
-        guard expired_n < out_expired.len else { break; }
-        expired_n = server_internal::record_expired_conn(out_expired, expired_n, s);
+    for w in 4 {
+        var active = table.wheel_mask[w] & expired_mask[w];
+        while active != 0 && expired_n < out_expired.len {
+            let bit = ctz(active);
+            active &= active - 1;
+            let bucket = (w << 6) | bit;
+            expired_n = server_internal::collect_wheel_bucket_expired(table, bucket, out_expired, expired_n);
+        }
     }
-
     return expired_n;
 }

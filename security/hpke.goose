@@ -175,15 +175,18 @@ fn hpke_open<B>(
 ) -> bool {
     guard ctx.role == HpkeRole.Recipient && ctx.seq < 0xFFFFFFFFFFFFFFFF else { return false; }
     guard ct_with_tag.len >= 16 else { return false; }
+    let ct_len = core::sub_sat_i64(ct_with_tag.len, 16);
+    guard core::crypto_buf_has_room(out, ct_len) else { return false; }
 
     let saved_len = out.len;
     var committed = false;
     defer if !committed {
-        core::secure_zeroize_slice(out[saved_len..]);
-        out.resize(saved_len);
+        if out.len > saved_len {
+            core::secure_zeroize_slice(out[saved_len..]);
+            out.resize(saved_len);
+        }
     };
 
-    let ct_len = core::sub_sat_i64(ct_with_tag.len, 16);
     let ct = ct_with_tag[..^16];
 
     var tag: u8[16] = [0; 16];

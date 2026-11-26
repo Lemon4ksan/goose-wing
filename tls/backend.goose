@@ -191,9 +191,12 @@ fn tls_endpoint_read_app(ep: TlsEndpoint&, dst: u8[:]) -> i64, TlsBackendStatus 
         return 0, TlsBackendStatus.Closed;
     }
     let slot .= tls_internal::g_pure_tls_slots[idx];
-    if core::sub_sat_i64(slot.app_in.len, slot.app_in_pos) == 0 && slot.wire_in.len > 0 {
+    while core::sub_sat_i64(slot.app_in.len, slot.app_in_pos) == 0 && slot.wire_in.len > 0 && !slot.peer_closed {
+        let prev_wire_len = slot.wire_in.len;
         let ust = tls_internal::pure_unseal_one_app_record(slot);
         if ust == TlsBackendStatus.Error { return 0, TlsBackendStatus.Error; }
+        if ust == TlsBackendStatus.WantRead || ust == TlsBackendStatus.Closed { break; }
+        if slot.wire_in.len >= prev_wire_len { break; }
     }
     let rem = core::sub_sat_i64(slot.app_in.len, slot.app_in_pos);
     if rem > 0 {

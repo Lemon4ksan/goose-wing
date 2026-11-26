@@ -175,7 +175,7 @@ inline fn record_client_admission(
     } else {
         limiter.total_rejected = core::add_sat_u64(limiter.total_rejected, 1);
         let next_rej = core::add_sat_u64(limiter.entries[slot].consecutive_rejects, 1);
-        limiter.entries[slot].consecutive_rejects = next_rej as u32;
+        limiter.entries[slot].consecutive_rejects = min(next_rej, 0xFFFFFFFF) as u32;
     }
 }
 
@@ -571,23 +571,17 @@ fn edge_pick_clock_victim(
     start_cursor: i64,
     eff_max:      i64,
     now_ns:       u64,
-) -> i64, i64 {
+) -> i64, i64, bool {
     let meta .= g_edge_rl_slots[slot_idx];
     let count = min(meta.entries_len, eff_max);
-    guard count > 0 else { return 0, 0; }
+    guard count > 0 else { return 0, 0, false; }
     var idx = if start_cursor >= 0 && start_cursor < count { start_cursor } else { 0 };
     let scan_len = min(EDGE_CLOCK_SCAN_LIMIT, count);
-    var idle_idx:    i64 = -1;
-    var idle_seen:   u64 = 0xFFFFFFFFFFFFFFFF;
-    var oldest_idx:  i64 = idx;
-    var oldest_seen: u64 = 0xFFFFFFFFFFFFFFFF;
+    var idle_idx:  i64 = -1;
+    var idle_seen: u64 = 0xFFFFFFFFFFFFFFFF;
 
     for _ in scan_len {
         let e .= g_edge_rl_entries[meta.entries_offset + idx];
-        if e.last_seen_ns <= oldest_seen {
-            oldest_seen = e.last_seen_ns;
-            oldest_idx = idx;
-        }
         if e.cell.tat_ns <= now_ns && e.last_seen_ns <= idle_seen {
             idle_seen = e.last_seen_ns;
             idle_idx = idx;
@@ -595,9 +589,9 @@ fn edge_pick_clock_victim(
         idx += 1;
         if idx >= count { idx = 0; }
     }
-    let victim = if idle_idx >= 0 { idle_idx } else { oldest_idx };
-    let next_cur = if victim + 1 >= count { 0 } else { victim + 1 };
-    return victim, next_cur;
+    guard idle_idx >= 0 else { return 0, idx, false; }
+    let next_cur = if idle_idx + 1 >= count { 0 } else { idle_idx + 1 };
+    return idle_idx, next_cur, true;
 }
 
 inline fn edge_write_bucket_slot(slot_idx: i64, bucket_rel: i64, local_idx: i64) {
@@ -618,13 +612,14 @@ fn edge_evict_and_insert(
     now_ns:     u64,
 ) -> i64, bool, bool {
     let meta .= g_edge_rl_slots[slot_idx];
-    let victim_local, next_cur = edge_pick_clock_victim(
+    let victim_local, next_cur, found_idle = edge_pick_clock_victim(
         slot_idx,
         limiter.next_evict_cursor,
         eff_max,
         now_ns,
     );
     limiter.next_evict_cursor = next_cur;
+    guard found_idle else { return 0, false, false; }
     let abs_victim = core::add_sat_i64(meta.entries_offset, victim_local);
     edge_remove_bucket_key(slot_idx, g_edge_rl_entries[abs_victim].client_id[..]);
     guard populate_entry(g_edge_rl_entries[abs_victim], client_id, now_ns) else {
@@ -688,7 +683,7 @@ inline fn record_edge_admission(
     } else {
         limiter.total_rejected = core::add_sat_u64(limiter.total_rejected, 1);
         let next_rej = core::add_sat_u64(g_edge_rl_entries[abs_entry].consecutive_rejects, 1);
-        g_edge_rl_entries[abs_entry].consecutive_rejects = next_rej as u32;
+        g_edge_rl_entries[abs_entry].consecutive_rejects = min(next_rej, 0xFFFFFFFF) as u32;
     }
 }
 

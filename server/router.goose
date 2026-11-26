@@ -238,15 +238,12 @@ fn is_match_found(res: const RouteMatchResult&) -> bool {
     };
 }
 
-// Matches path against the RadixTree, recording parameter spans into params.
-fn match_path<B>(
-    tree:           const RadixTree&,
-    path:           const u8[:],
-    params:         http::ZeroAllocParams&,
-    out_canon_path: B&,
+inline fn match_path_resolved(
+    tree:     const RadixTree&,
+    eff_path: const u8[:],
+    params:   http::ZeroAllocParams&,
 ) -> RouteMatchResult {
-    let eff_path, ok_path = server_internal::resolve_effective_route_path(path, out_canon_path);
-    guard ok_path && tree.root_idx >= 0 && eff_path.len > 0 else { return RouteMatchResult.NotFound; }
+    guard tree.root_idx >= 0 && eff_path.len > 0 else { return RouteMatchResult.NotFound; }
     params.clear();
 
     var cur_idx = tree.root_idx;
@@ -277,13 +274,31 @@ fn match_path<B>(
     return RouteMatchResult.NotFound;
 }
 
+// Matches path against the RadixTree, recording parameter spans into params and writing `out_canon_path`.
+fn match_path<B>(
+    tree:           const RadixTree&,
+    path:           const u8[:],
+    params:         http::ZeroAllocParams&,
+    out_canon_path: B&,
+) -> RouteMatchResult {
+    let eff_path, ok_path = server_internal::resolve_effective_route_path(path, out_canon_path);
+    guard ok_path else { return RouteMatchResult.NotFound; }
+    return match_path_resolved(tree, eff_path, params);
+}
+
+// Matches path against the RadixTree without copying already-canonical paths.
+//
+// Example:
+//   path = "/users/42" -> returns Found with param "id"="42" without copying `path` into stack scratch
 fn match_path(
     tree:   const RadixTree&,
     path:   const u8[:],
     params: http::ZeroAllocParams&,
 ) -> RouteMatchResult {
     var canon_path: u8[..2048] = [];
-    return match_path(tree, path, params, canon_path);
+    let eff_path, ok_path = server_internal::resolve_effective_route_path_borrow(path, canon_path);
+    guard ok_path else { return RouteMatchResult.NotFound; }
+    return match_path_resolved(tree, eff_path, params);
 }
 
 // Method-segregated radix routing table supporting static, parameterized, and wildcard routes.

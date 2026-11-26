@@ -1161,11 +1161,29 @@ fn test_round3_qpackstrike_suite(t: lit::T&) {
         let err_exceed = cli_conn2.handle_stream_data(sid2, true, bad_push_wire[..], false);
         sub.assert_eq(err_exceed, rfc::H3_ERR_ID_ERROR, "PUSH_PROMISE with push_id > advertised limit MUST return H3_ERR_ID_ERROR");
 
-        // Test D: Client receiving PUSH_PROMISE with push_id <= max_push_id_advertised succeeds
-        var good_push_wire: u8[..64] = [];
-        sub.assert_true(http3::encode_push_promise(good_push_wire, 3, [0x00, 0x00]), "encode PUSH_PROMISE with push_id 3 <= 5");
+        // Test D: Client receiving PUSH_PROMISE with push_id <= max_push_id_advertised and valid fields succeeds;
+        // empty PUSH_PROMISE fails with H3_ERR_GENERAL_PROTOCOL (RFC 9114 §4.6)
+        var good_pp_qpack: u8[..128] = [0x00, 0x00];
+        sub.assert_true(http3::encode_qpack_field(good_pp_qpack, ":method", "GET"), "encode :method");
+        sub.assert_true(http3::encode_qpack_field(good_pp_qpack, ":scheme", "https"), "encode :scheme");
+        sub.assert_true(http3::encode_qpack_field(good_pp_qpack, ":authority", "example.com"), "encode :authority");
+        sub.assert_true(http3::encode_qpack_field(good_pp_qpack, ":path", "/"), "encode :path");
+        var good_push_wire: u8[..256] = [];
+        sub.assert_true(
+            http3::encode_push_promise(good_push_wire, 3, good_pp_qpack[..]),
+            "encode PUSH_PROMISE with push_id 3 <= 5",
+        );
         let err_good_push = cli_conn2.handle_stream_data(sid2, true, good_push_wire[..], false);
         sub.assert_eq(err_good_push, rfc::H3_ERR_NO_ERROR, "PUSH_PROMISE with valid push_id accepted");
+
+        var cli_conn_empty = http3::new_client_connection(settings);
+        let sid_empty, _ = cli_conn_empty.open_request_stream();
+        var max_p_empty: u8[..32] = [];
+        sub.assert_true(http3::send_max_push_id(cli_conn_empty, 5, max_p_empty), "client advertises MAX_PUSH_ID");
+        var empty_push_wire: u8[..64] = [];
+        sub.assert_true(http3::encode_push_promise(empty_push_wire, 1, [0x00, 0x00]), "encode empty PUSH_PROMISE");
+        let err_empty_push = cli_conn_empty.handle_stream_data(sid_empty, true, empty_push_wire[..], false);
+        sub.assert_eq(err_empty_push, rfc::H3_ERR_GENERAL_PROTOCOL, "empty PUSH_PROMISE MUST fail closed");
 
         // Test E: CANCEL_PUSH with Push ID > advertised max limit on control stream returns H3_ERR_ID_ERROR
         var init_ctrl: u8[..64] = [];

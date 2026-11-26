@@ -54,7 +54,21 @@ fn record_space_recv_packet(space: quic::PnSpaceState&, pn: u64) {
     if pn > space.largest_recv_pn || space.recv_ranges.len == 0 {
         space.largest_recv_pn = pn;
     }
-    quic::record_received_pn(space.recv_ranges, pn);
+    let full_before = space.recv_ranges.len >= space.recv_ranges.cap;
+    let old_tail_largest = if full_before {
+        space.recv_ranges[space.recv_ranges.len - 1].largest
+    } else {
+        0
+    };
+    if quic::record_received_pn(space.recv_ranges, pn) && full_before && space.recv_ranges.len > 0 {
+        let new_tail_smallest = space.recv_ranges[space.recv_ranges.len - 1].smallest;
+        if new_tail_smallest > old_tail_largest {
+            if !space.has_min_tracked_pn || old_tail_largest > space.min_tracked_pn {
+                space.min_tracked_pn = old_tail_largest;
+                space.has_min_tracked_pn = true;
+            }
+        }
+    }
 }
 
 fn generate_space_ack(space: quic::PnSpaceState&) -> quic::AckFrame, bool {

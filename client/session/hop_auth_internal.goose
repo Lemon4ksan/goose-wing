@@ -187,9 +187,11 @@ fn compute_401_digest_header<B>(
 
     var active_chal = chal;
     if chal.stale && session.creds.last_digest.valid {
-        let _ = auth::sync_digest_stale_challenge(
+        guard auth::sync_digest_stale_challenge(
             session.creds.last_digest, chal, c_creds, session.creds.nonce_counter,
-        );
+        ) else {
+            return false;
+        }
         active_chal = session.creds.last_digest;
     } else {
         session.creds.last_digest = chal;
@@ -197,6 +199,7 @@ fn compute_401_digest_header<B>(
     guard is_allowed_digest_challenge(session.allow_legacy_md5_digest, active_chal) else {
         return false;
     }
+    guard session.creds.nonce_counter < 0xFFFFFFFF else { return false; }
 
     var fresh_cnonce: u8[..32] = [];
     defer core::secure_zeroize_slice(fresh_cnonce[..]);
@@ -299,8 +302,16 @@ fn find_auth_header_from_response<B>(
         }
     }
     guard session.creds.has_credentials else { return false; }
+    guard is_same_origin_session_hop(ctx, current_url) else { return false; }
     if try_find_scheme_auth_header(session, ctx, current_url, resp, "Digest", out) {
         return true;
+    }
+    // Never fall back to cleartext Basic if the server offered a Digest challenge that failed.
+    for &e in resp.headers.entries {
+        if http::entry_name(resp.headers, e).eq_ascii_fold("WWW-Authenticate")
+            && has_auth_scheme_prefix(http::entry_value(resp.headers, e), "Digest") {
+            return false;
+        }
     }
     if !ctx.auth_retried {
         return try_find_scheme_auth_header(session, ctx, current_url, resp, "Basic", out);
@@ -355,6 +366,9 @@ fn try_handle_early_data_or_dpop_challenge(
 
     let is_dpop_status = resp.status_code == rfc::STATUS_UNAUTHORIZED || resp.status_code == rfc::STATUS_BAD_REQUEST;
     guard session.dpop.has_key && is_dpop_status else { return false; }
+    guard is_same_origin_session_hop(ctx, current_url) && is_secure_dpop_hop_url(current_url) else {
+        return false;
+    }
     guard auth::extract_dpop_nonce(resp.headers, session.dpop.last_nonce) else { return false; }
     let now_sec = div_euclid(client::effective_clock_us(session), 1000000);
     let htu_no_q, _, _ = current_url.href[..].partition_byte('?');

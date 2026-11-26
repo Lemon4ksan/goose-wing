@@ -428,15 +428,18 @@ fn test_fc_credit_renewal_threshold_and_bounds() {
     let _, need_init = quic::check_conn_window_update(fc);
     assert(!need_init);
 
-    // Receive 20,000 wire bytes (below 50,000 threshold): no update needed
+    // Receive 20,000 wire bytes (unread): no update needed
     let _, ok_recv = quic::record_recv_stream(fc, s, 0, 20000);
     assert(ok_recv);
     let _, need_below = quic::check_conn_window_update(fc);
     assert(!need_below);
 
-    // Receive another 40,000 wire bytes (total 60,000, exceeds 50,000 threshold): update triggers
+    // Receive another 40,000 wire bytes (total 60,000, still unread): no update until app consumes
     let _, ok_recv2 = quic::record_recv_stream(fc, s, 20000, 40000);
     assert(ok_recv2);
+    let _, need_still_unread = quic::check_conn_window_update(fc);
+    assert(!need_still_unread);
+    quic::on_app_read(fc, s, 60000);
     let new_conn_max, need_above = quic::check_conn_window_update(fc);
     assert(need_above);
     assert(new_conn_max == 160000);

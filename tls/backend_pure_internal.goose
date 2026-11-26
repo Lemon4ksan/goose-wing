@@ -293,7 +293,8 @@ fn pure_seal_hs_to_wire(slot: PureTlsSlot&, hs_msg: const u8[:]) -> bool {
 
 // Validates a single RFC 8446 Section 5 middlebox-compatibility ChangeCipherSpec record.
 fn pure_accept_ccs_record(slot: PureTlsSlot&, ver: u16, body: const u8[:]) -> bool {
-    guard slot.ccs_seen < 1 &&
+    guard (!slot.is_server || slot.client_hello_parsed) &&
+        slot.ccs_seen < 1 &&
         slot.hs_plain.len == 0 &&
         ver == rfc::TLS_LEGACY_VERSION_1_2 &&
         tls::validate_change_cipher_spec_record(body) == tls::Alert.CloseNotify else {
@@ -337,6 +338,8 @@ fn pure_fail_with_alert(
 ) -> tls::TlsBackendStatus {
     pure_queue_fatal_alert(slot, alert);
     slot.stage = PureHsStage.Failed;
+    wipe_pure_hs_secrets(slot);
+    release_pure_server_signing_creds(slot);
     return status;
 }
 
@@ -620,7 +623,10 @@ fn pure_install_app_keys(slot: PureTlsSlot&) -> bool {
 fn pure_unseal_one_app_record(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     let rec_total, peek_st = peek_ciphertext_record_len(slot.wire_in[..]);
     if peek_st == tls::SliceUnsealStatus.NeedMore { return tls::TlsBackendStatus.WantRead; }
-    guard peek_st == tls::SliceUnsealStatus.Ok && rec_total > 0 else { return tls::TlsBackendStatus.Error; }
+    guard peek_st == tls::SliceUnsealStatus.Ok && rec_total > 0 else {
+        slot.peer_closed = true;
+        return pure_fail_with_alert(slot, tls::Alert.DecodeError, tls::TlsBackendStatus.Error);
+    }
     slot.app_in.clear();
     slot.app_in_pos = 0;
     let consumed, ust = tls::cipher_slot_unseal_records(slot.cipher_slot, slot.wire_in[..rec_total], slot.app_in);
@@ -629,6 +635,10 @@ fn pure_unseal_one_app_record(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
         slot.peer_closed = true;
         return tls::TlsBackendStatus.Closed;
     }
-    if ust == tls::SliceUnsealStatus.Error { return tls::TlsBackendStatus.Error; }
+    if ust == tls::SliceUnsealStatus.Error {
+        slot.peer_closed = true;
+        slot.stage = PureHsStage.Failed;
+        return tls::TlsBackendStatus.Error;
+    }
     return tls::TlsBackendStatus.Ok;
 }

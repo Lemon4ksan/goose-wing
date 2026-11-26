@@ -196,6 +196,7 @@ struct QuicSrvConnSlot {
     needs_ack_app:               bool                 = false,
     has_path_resp:               bool                 = false,
     pending_path_resp:           u8[8]                = [0; 8],
+    has_path_challenge:          bool                 = false,
     ping_probe_pending:          bool                 = false,
     ping_probe_space:            PnSpaceId            = PnSpaceId.Initial,
     next_tx_pn_init:             u64                  = 0,
@@ -1455,12 +1456,26 @@ inline fn peer_addr_matches_conn(cslot: const QuicSrvConnSlot&, peer_ip: const u
     return peer_port == cslot.peer_port && core::ct_eq_bytes(peer_ip, cslot.peer_ip[..]);
 }
 
-fn update_authenticated_peer_addr(cslot: QuicSrvConnSlot&, peer_ip: const u8[:], peer_port: u16) -> bool {
+fn update_authenticated_peer_addr(
+    cslot:     QuicSrvConnSlot&,
+    peer_ip:   const u8[:],
+    peer_port: u16,
+    dgram_len: u64,
+) -> bool {
     if peer_addr_matches_conn(cslot, peer_ip, peer_port) {
         return true;
     }
+    let tok, ok_tok = generate_path_challenge_token();
+    guard ok_tok else { return false; }
     guard cslot.peer_ip.try_set(peer_ip) else { return false; }
     cslot.peer_port = peer_port;
+    // RFC 9000 Section 9.3.1: Peer Address Change - Reset address validation and AA budget until PATH_RESPONSE.
+    cslot.conn.validated_address = false;
+    cslot.conn.bytes_received = dgram_len;
+    cslot.conn.bytes_sent = 0;
+    let new_addr = new_endpoint_addr(peer_ip, peer_port);
+    start_probing(cslot.conn.migration, new_addr, tok);
+    cslot.has_path_challenge = true;
     return true;
 }
 
@@ -1474,7 +1489,7 @@ fn process_conn_datagram_packets(
     is_new:    bool,
 ) -> bool {
     let cslot .= g_quic_srv_conns[c_idx];
-    if !cslot.conn.validated_address {
+    if !cslot.conn.validated_address && cslot.conn.state != QuicConnState.Established {
         guard peer_addr_matches_conn(cslot, peer_ip, peer_port) else { return false; }
     }
 
@@ -1482,6 +1497,7 @@ fn process_conn_datagram_packets(
     var any_handled = false;
     var saw_1rtt = false;
     var plain: u8[..16384] = [];
+    defer core::secure_zeroize_slice(plain[..]);
     while offset < pkt.len {
         if !step_coalesced_srv_packet(
             eslot, cslot, c_idx, pkt, now_ns, plain, offset, any_handled, saw_1rtt,
@@ -1495,11 +1511,15 @@ fn process_conn_datagram_packets(
         return false;
     }
     if any_handled {
-        cslot.conn.bytes_received = core::add_sat_u64(cslot.conn.bytes_received, pkt.len as u64);
+        let same_peer = peer_addr_matches_conn(cslot, peer_ip, peer_port);
         cslot.last_activity_ns = now_ns;
         cslot.ack_eliciting_sent_since_rx = false;
-        if saw_1rtt {
-            guard update_authenticated_peer_addr(cslot, peer_ip, peer_port) else { return false; }
+        if saw_1rtt && !same_peer {
+            guard update_authenticated_peer_addr(cslot, peer_ip, peer_port, pkt.len as u64) else {
+                return false;
+            }
+        } else {
+            cslot.conn.bytes_received = core::add_sat_u64(cslot.conn.bytes_received, pkt.len as u64);
         }
     }
     return any_handled;
@@ -1892,6 +1912,13 @@ fn encode_app_window_frames(
     if cslot.has_path_resp && core::add_sat_u64(plain.len as u64, 10) <= max_plain {
         if encode_path_response_frame(cslot.pending_path_resp, plain) {
             cslot.has_path_resp = false;
+            ack_el = true;
+        }
+    }
+    if cslot.has_path_challenge && cslot.conn.migration.has_probing_path
+        && core::add_sat_u64(plain.len as u64, 10) <= max_plain {
+        if encode_path_challenge_frame(cslot.conn.migration.probing_path.challenge_data, plain) {
+            cslot.has_path_challenge = false;
             ack_el = true;
         }
     }

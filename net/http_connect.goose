@@ -43,19 +43,20 @@ fn build_http_connect_request(
 //   after: headers contains only [("Host", "example.com")]
 fn sanitize_tunnel_headers_for_origin(headers: http::HeaderMap&) {
     let orig_headers = headers;
-    var write_entry_i: i64 = 0;
-    var write_raw_pos: u16 = 0;
+    var write_entry_i: i64        = 0;
+    var new_raw:       u8[..8192] = [];
+    defer core::secure_zeroize_slice(new_raw[..]);
     let total_entries = orig_headers.entries.len;
     for read_i in total_entries {
         let h_name = http::entry_name(orig_headers, orig_headers.entries[read_i]);
         let drop = http::is_hop_by_hop_header_name(h_name) ||
             net_internal::is_token_in_connection_headers(orig_headers, h_name);
         if !drop {
-            http::compact_kept_entry_in_place(headers, read_i, write_entry_i, write_raw_pos);
+            http::compact_kept_entry_into(headers, read_i, write_entry_i, new_raw);
         }
     }
     if write_entry_i < total_entries {
-        http::finish_in_place_compaction(headers, write_entry_i, write_raw_pos);
+        http::finish_compaction(headers, write_entry_i, new_raw);
     }
 }
 

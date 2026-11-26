@@ -33,17 +33,6 @@ inline fn rsa_be_cmp(a: const u8[:], b: const u8[:]) -> i32 {
     return core::sub_sat_i64(gt, lt) as i32;
 }
 
-// Zeroizes a mutable `u32` limb slice in place using an opaque zeroization barrier.
-// crap:ignore
-inline fn rsa_zeroize_limbs(limbs: u32[:]) {
-    var z_bytes: u8[32] = [0; 32];
-    secure_zeroize_32(z_bytes);
-    let z_word: u32 = z_bytes[0];
-    for i in limbs.len {
-        limbs[i] = z_word;
-    }
-}
-
 // Computes the 32-bit negative modular inverse `-m0^-1 mod 2^32` for an odd limb `m0` via Newton-Raphson.
 // crap:ignore
 inline fn rsa_ninv32(m0: u32) -> u32 {
@@ -117,7 +106,7 @@ inline fn rsa_monty_sub_mask(top_carry: u64, borrow: u64) -> u32 {
 fn rsa_monty_cond_sub(t: u32[:], m: const u32[:], n_limbs: i64, top_carry: u64) {
     guard n_limbs <= 128 else { return; }
     var diff: u32[128] = [0; 128];
-    defer rsa_zeroize_limbs(diff[0..n_limbs]);
+    defer secure_zeroize_u32_slice(diff[0..n_limbs]);
     let borrow = rsa_limbs_sub_borrow(t, m, n_limbs, diff[0..n_limbs]);
     let mask = rsa_monty_sub_mask(top_carry, borrow);
     for j in n_limbs {
@@ -130,7 +119,7 @@ fn rsa_monty_cond_sub(t: u32[:], m: const u32[:], n_limbs: i64, top_carry: u64) 
 fn rsa_monty_mul(a: const u32[:], b: const u32[:], m: const u32[:], m0i: u32, out: u32[..128]&) {
     let n_limbs = m.len;
     var t: u32[130] = [0; 130];
-    defer rsa_zeroize_limbs(t[..]);
+    defer secure_zeroize_u32_slice(t[..]);
     for i in n_limbs {
         var carry1: u64 = 0;
         let ai = a[i] as u64;
@@ -211,10 +200,10 @@ fn rsa_be_mul_mod(a: const u8[:], b: const u8[:], m: const u8[:], out: u8[..512]
     var r2_mod:   u32[..128] = [];
     var a_mont:   u32[..128] = [];
     var prod_raw: u32[..128] = [];
-    defer rsa_zeroize_limbs(a_limbs[..]);
-    defer rsa_zeroize_limbs(b_limbs[..]);
-    defer rsa_zeroize_limbs(a_mont[..]);
-    defer rsa_zeroize_limbs(prod_raw[..]);
+    defer secure_zeroize_u32_slice(a_limbs[..]);
+    defer secure_zeroize_u32_slice(b_limbs[..]);
+    defer secure_zeroize_u32_slice(a_mont[..]);
+    defer secure_zeroize_u32_slice(prod_raw[..]);
     rsa_be_to_limbs(m, m_limbs);
     rsa_be_to_limbs(a, a_limbs);
     rsa_be_to_limbs(b, b_limbs);
@@ -236,8 +225,8 @@ fn rsa_monty_exp_step(
 ) {
     var sq:   u32[..128] = [];
     var prod: u32[..128] = [];
-    defer rsa_zeroize_limbs(sq[..]);
-    defer rsa_zeroize_limbs(prod[..]);
+    defer secure_zeroize_u32_slice(sq[..]);
+    defer secure_zeroize_u32_slice(prod[..]);
     rsa_monty_mul(acc[..], acc[..], m_limbs, m0i, sq);
     rsa_monty_mul(sq[..], base_m, m_limbs, m0i, prod);
     let mask: u32 = ct_barrier_u32(0 - ((b_val & 1) as u32));
@@ -281,10 +270,10 @@ fn rsa_mod_exp_monty_ct(base: const u8[:], exp: const u8[:], m: const u8[:], out
     var base_mont:  u32[..128] = [];
     var acc_mont:   u32[..128] = [];
     var res_limbs:  u32[..128] = [];
-    defer rsa_zeroize_limbs(base_limbs[..]);
-    defer rsa_zeroize_limbs(base_mont[..]);
-    defer rsa_zeroize_limbs(acc_mont[..]);
-    defer rsa_zeroize_limbs(res_limbs[..]);
+    defer secure_zeroize_u32_slice(base_limbs[..]);
+    defer secure_zeroize_u32_slice(base_mont[..]);
+    defer secure_zeroize_u32_slice(acc_mont[..]);
+    defer secure_zeroize_u32_slice(res_limbs[..]);
     rsa_be_to_limbs(m, m_limbs);
     rsa_be_to_limbs(base, base_limbs);
     let m0i = rsa_ninv32(m_limbs[0]);
@@ -413,11 +402,11 @@ fn rsa_limbs_mod_inv(r_limbs: const u32[:], m_limbs: const u32[:], out_inv: u32[
     var u:     u32[128] = [0; 128];
     var v:     u32[128] = [0; 128];
     var u_tmp: u32[128] = [0; 128];
-    defer rsa_zeroize_limbs(a[0..n]);
-    defer rsa_zeroize_limbs(b[0..n]);
-    defer rsa_zeroize_limbs(u[0..n]);
-    defer rsa_zeroize_limbs(v[0..n]);
-    defer rsa_zeroize_limbs(u_tmp[0..n]);
+    defer secure_zeroize_u32_slice(a[0..n]);
+    defer secure_zeroize_u32_slice(b[0..n]);
+    defer secure_zeroize_u32_slice(u[0..n]);
+    defer secure_zeroize_u32_slice(v[0..n]);
+    defer secure_zeroize_u32_slice(u_tmp[0..n]);
     for i in n { a[i] = r_limbs[i]; b[i] = m_limbs[i]; }
     u[0] = 1;
     let total_steps = n * 64;
@@ -477,8 +466,8 @@ fn rsa_mod_exp_blinded_ct(
     var r_e:         u8[..512]  = [];
     var blind_base:  u8[..512]  = [];
     var blind_res:   u8[..512]  = [];
-    defer rsa_zeroize_limbs(r_limbs[..]);
-    defer rsa_zeroize_limbs(r_inv_limbs[..]);
+    defer secure_zeroize_u32_slice(r_limbs[..]);
+    defer secure_zeroize_u32_slice(r_inv_limbs[..]);
     defer secure_zeroize_slice(r_be[0..k]);
     defer secure_zeroize_slice(r_inv_be[..]);
     defer secure_zeroize_slice(r_e[..]);
@@ -573,8 +562,8 @@ fn rsa_mod_exp_exp_blinded(base: const u8[:], exp: const u8[:], m: const u8[:], 
     defer {
         secure_zeroize_32(r_be);
         secure_zeroize_slice(d_plus[0..exp.len + 1]);
-        rsa_zeroize_limbs(base_limbs[..]);
-        rsa_zeroize_limbs(base_inv_limbs[..]);
+        secure_zeroize_u32_slice(base_limbs[..]);
+        secure_zeroize_u32_slice(base_inv_limbs[..]);
         secure_zeroize_slice(base_inv_be[..]);
         secure_zeroize_slice(part1[..]);
         secure_zeroize_slice(part2[..]);
@@ -1023,13 +1012,16 @@ fn encode_pss_for_modulus(
     n_be:   const u8[:],
     out_em: u8[..512]&,
 ) -> bool {
+    guard n_be.len > 0 && n_be.len <= 512 else { return false; }
     if n_be[0] == 1 {
         var sub_em: u8[..512] = [];
+        defer secure_zeroize_slice(sub_em[..]);
         guard encode_emsa_pss(m_hash, salt, n_be.len - 1, 1, sub_em) else { return false; }
         out_em.clear();
-        out_em.push(0x00);
-        out_em.append(sub_em[..]);
-        secure_zeroize_slice(sub_em[..]);
+        guard out_em.try_push(0x00) && out_em.try_append(sub_em[..]) else {
+            out_em.clear();
+            return false;
+        }
         return true;
     }
     return encode_emsa_pss(m_hash, salt, n_be.len, n_be[0], out_em);

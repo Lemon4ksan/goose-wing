@@ -172,7 +172,7 @@ fn endpoint_run_handshake_fd(
 
     let start_inst = core::monotonic_now();
     let slot .= g_backend_transport_slots[slot_id];
-    for _ in 64 {
+    for _ in 32768 {
         let st = tls::tls_endpoint_step_handshake(slot.ep);
         let flushed = endpoint_drain_to_fd(slot.ep, fd);
         if st == tls::TlsBackendStatus.Ok {
@@ -251,6 +251,7 @@ fn pure_open_blocking_server_endpoint(
     slot.is_server = true;
     slot.defer_sni_credentials = false;
     slot.require_client_cert = cfg.require_client_cert;
+    slot.require_alpn_match = cfg.require_alpn_match;
     slot.psk_policy = ServerPskPolicy.AllowResumption;
     slot.cipher_slot = pre_cipher_slot;
     slot.stage = PureHsStage.ServerWaitClientHello;

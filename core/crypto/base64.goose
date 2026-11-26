@@ -10,13 +10,21 @@ import core.math;
 
 // ---- base64url codec (rfc 4648 section 5, unpadded) ------------------------
 
-let BASE64URL_CHARS: const u8[64] = [
-    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
-    'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
-    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
-    'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '-', '_',
-];
+// Constant-time Base64/Base64URL sextet encoder (RFC 4648, zero LUT cache side-channel).
+checkfree inline fn base64_encode_common_sextet(v: u32, ch62: u32, ch63: u32) -> u8 {
+    let x = v & 63;
+    let m_up = 0 - ((x - 26) >> 31);
+    let m_lo = 0 - (((25 - x) & (x - 52)) >> 31);
+    let m_num = 0 - (((51 - x) & (x - 62)) >> 31);
+    let m_62 = 0 - (~((x - 62) | (62 - x)) >> 31);
+    let m_63 = 0 - (~((x - 63) | (63 - x)) >> 31);
+    let res = (m_up & (x + 65)) |
+              (m_lo & (x + 71)) |
+              (m_num & (x - 4)) |
+              (m_62 & ch62) |
+              (m_63 & ch63);
+    return (res & 0xFF) as u8;
+}
 
 fn base64url_encode<B>(data: const u8[:], out: B&) {
     var i = 0;
@@ -24,10 +32,10 @@ fn base64url_encode<B>(data: const u8[:], out: B&) {
         let s = data[i..i + 3];
         let n = ((s[0] as u32) << 16) | ((s[1] as u32) << 8) | (s[2] as u32);
         let chunk: u8[4] = [
-            BASE64URL_CHARS[(n >> 18) & 63],
-            BASE64URL_CHARS[(n >> 12) & 63],
-            BASE64URL_CHARS[(n >> 6) & 63],
-            BASE64URL_CHARS[n & 63],
+            base64_encode_common_sextet(n >> 18, 45, 95),
+            base64_encode_common_sextet(n >> 12, 45, 95),
+            base64_encode_common_sextet(n >> 6, 45, 95),
+            base64_encode_common_sextet(n, 45, 95),
         ];
         out.append(chunk[..]);
         i += 3;
@@ -36,17 +44,17 @@ fn base64url_encode<B>(data: const u8[:], out: B&) {
     if rem == 1 {
         let n = (data[i] as u32) << 16;
         let chunk: u8[2] = [
-            BASE64URL_CHARS[(n >> 18) & 63],
-            BASE64URL_CHARS[(n >> 12) & 63],
+            base64_encode_common_sextet(n >> 18, 45, 95),
+            base64_encode_common_sextet(n >> 12, 45, 95),
         ];
         out.append(chunk[..]);
     } else if rem == 2 {
         let s = data[i..i + 2];
         let n = ((s[0] as u32) << 16) | ((s[1] as u32) << 8);
         let chunk: u8[3] = [
-            BASE64URL_CHARS[(n >> 18) & 63],
-            BASE64URL_CHARS[(n >> 12) & 63],
-            BASE64URL_CHARS[(n >> 6) & 63],
+            base64_encode_common_sextet(n >> 18, 45, 95),
+            base64_encode_common_sextet(n >> 12, 45, 95),
+            base64_encode_common_sextet(n >> 6, 45, 95),
         ];
         out.append(chunk[..]);
     }
@@ -177,24 +185,16 @@ fn is_valid_base64url(src: const u8[:]) -> bool {
 
 // ---- standard base64 codec (rfc 4648 section 4, padded) ---------------------
 
-let BASE64_STD_CHARS: const u8[64] = [
-    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
-    'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
-    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
-    'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '+', '/',
-];
-
 fn base64_encode<B>(data: const u8[:], out: B&) {
     var i = 0;
     while i + 3 <= data.len {
         let s = data[i..i + 3];
         let n = ((s[0] as u32) << 16) | ((s[1] as u32) << 8) | (s[2] as u32);
         let chunk: u8[4] = [
-            BASE64_STD_CHARS[(n >> 18) & 63],
-            BASE64_STD_CHARS[(n >> 12) & 63],
-            BASE64_STD_CHARS[(n >> 6) & 63],
-            BASE64_STD_CHARS[n & 63],
+            base64_encode_common_sextet(n >> 18, 43, 47),
+            base64_encode_common_sextet(n >> 12, 43, 47),
+            base64_encode_common_sextet(n >> 6, 43, 47),
+            base64_encode_common_sextet(n, 43, 47),
         ];
         out.append(chunk[..]);
         i += 3;
@@ -203,8 +203,8 @@ fn base64_encode<B>(data: const u8[:], out: B&) {
     if rem == 1 {
         let n = (data[i] as u32) << 16;
         let chunk: u8[4] = [
-            BASE64_STD_CHARS[(n >> 18) & 63],
-            BASE64_STD_CHARS[(n >> 12) & 63],
+            base64_encode_common_sextet(n >> 18, 43, 47),
+            base64_encode_common_sextet(n >> 12, 43, 47),
             '=',
             '=',
         ];
@@ -213,9 +213,9 @@ fn base64_encode<B>(data: const u8[:], out: B&) {
         let s = data[i..i + 2];
         let n = ((s[0] as u32) << 16) | ((s[1] as u32) << 8);
         let chunk: u8[4] = [
-            BASE64_STD_CHARS[(n >> 18) & 63],
-            BASE64_STD_CHARS[(n >> 12) & 63],
-            BASE64_STD_CHARS[(n >> 6) & 63],
+            base64_encode_common_sextet(n >> 18, 43, 47),
+            base64_encode_common_sextet(n >> 12, 43, 47),
+            base64_encode_common_sextet(n >> 6, 43, 47),
             '=',
         ];
         out.append(chunk[..]);

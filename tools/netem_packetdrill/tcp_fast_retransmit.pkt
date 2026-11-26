@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+//
+// packetdrill script: TCP 3-duplicate-ACK Fast Retransmit and Fast Recovery (RFC 5681 Section 3.2).
+// Verifies immediate retransmission of the lost segment without waiting for RTO.
+
+--tolerance_usecs=100000
+
+0.000 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0.000 setsockopt(3, SOL_SOCKET, SO_REUSEADDR, [1], 4) = 0
++0.000 bind(3, ..., ...) = 0
++0.000 listen(3, 16) = 0
+
++0.010 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0>
++0.000 > S. 0:0(0) ack 1 <mss 1460,sackOK,TS val 200 ecr 100>
++0.010 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 110 ecr 200>
++0.000 accept(3, ..., ...) = 4
+
+// Server transmits 4 MSS segments; segment 1:1461 is lost on the wire
++0.002 write(4, ..., 5840) = 5840
++0.000 > . 1:1461(1460) ack 1 <nop,nop,TS val 210 ecr 110>
++0.000 > . 1461:2921(1460) ack 1 <nop,nop,TS val 210 ecr 110>
++0.000 > . 2921:4381(1460) ack 1 <nop,nop,TS val 210 ecr 110>
++0.000 > P. 4381:5841(1460) ack 1 <nop,nop,TS val 210 ecr 110>
+
+// Peer receives out-of-order segments and emits 3 duplicate ACKs for ack 1
++0.010 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 120 ecr 210,sack 1461:2921>
++0.001 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 121 ecr 210,sack 1461:4381>
++0.001 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 122 ecr 210,sack 1461:5841>
+
+// Server immediately fast-retransmits lost segment 1:1461(1460)
++0.000~+0.015 > . 1:1461(1460) ack 1 <nop,nop,TS val 222 ecr 122>
+
+// Cumulative ACK advances past all 5840 bytes
++0.010 < . 1:1(0) ack 5841 win 65535 <nop,nop,TS val 132 ecr 222>
+
++0.001 close(4) = 0
++0.000 close(3) = 0

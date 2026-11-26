@@ -24,9 +24,9 @@ inline fn ct_select_u8(bit: u8, if_true: u8, if_false: u8) -> u8 {
     return (if_false & (~mask)) | (if_true & mask);
 }
 
-// Constant-time slice equality check: only branches on public length before reading secret bytes.
-fn ct_eq_bytes(bytes_a: const u8[:], bytes_b: const u8[:]) -> bool {
-    guard bytes_a.len == bytes_b.len else { return false; }
+// Constant-time slice equality check returning 1 if equal, 0 otherwise without branching on bytes.
+fn ct_eq_bytes_bit(bytes_a: const u8[:], bytes_b: const u8[:]) -> u8 {
+    guard bytes_a.len == bytes_b.len else { return 0; }
     var diff_accum: u64 = 0;
     var idx = 0;
     while idx + 8 <= bytes_a.len {
@@ -40,7 +40,12 @@ fn ct_eq_bytes(bytes_a: const u8[:], bytes_b: const u8[:]) -> bool {
     }
     let total_diff = diff_accum | tail_accum;
     let non_zero = (total_diff | (0 - total_diff)) >> 63;
-    return non_zero == 0;
+    return (1 - non_zero) as u8;
+}
+
+// Constant-time slice equality check: only branches on public length before reading secret bytes.
+fn ct_eq_bytes(bytes_a: const u8[:], bytes_b: const u8[:]) -> bool {
+    return ct_eq_bytes_bit(bytes_a, bytes_b) == 1;
 }
 
 // Constant-time 16-byte authentication tag comparison returning 1 if equal, 0 otherwise.

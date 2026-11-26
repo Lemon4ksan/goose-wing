@@ -246,7 +246,7 @@ fn update_send_max_data(s: QuicStream&, new_limit: u64) -> bool {
 // Credit is evaluated against effective consumed/received bytes (RFC 9000 §4.1).
 // Returns `(new_max_data, should_send)`.
 fn check_conn_window_update(fc: QuicFlowControl&) -> u64, bool {
-    let consumed = max(fc.bytes_recv_total, fc.bytes_read_total);
+    let consumed = fc.bytes_read_total;
     let available = quic_internal::calc_unspent_credit(fc.max_data_local, consumed);
     let threshold = quic_internal::calc_window_renewal_threshold(fc.local_window_size);
 
@@ -273,7 +273,7 @@ fn check_stream_window_update(s: QuicStream&, stream_window_size: u64) -> u64, b
     guard s.can_recv && s.recv_state == QuicRecvState.Receive && !s.has_recv_final_size else {
         return 0, false;
     }
-    let consumed = max(s.bytes_recv, s.recv_consumed);
+    let consumed = s.recv_consumed;
     let available = quic_internal::calc_unspent_credit(s.recv_max_data, consumed);
     let threshold = quic_internal::calc_window_renewal_threshold(stream_window_size);
 

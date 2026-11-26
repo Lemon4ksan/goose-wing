@@ -235,7 +235,165 @@ inline fn record_expired_conn(dst: i64[:], current_count: i64, slot: i64) -> i64
     return core::add_sat_i64(current_count, 1);
 }
 
+// Returns whether `slot` is within the materialized bounds of the SoA connection table.
+inline fn is_valid_slot(table: const server::SoAConnTable&, slot: i64) -> bool {
+    return slot >= 0 && slot < table.fds.len;
+}
+
+// Returns whether `slot` is in bounds and currently holds an active file descriptor.
+inline fn is_active_slot(table: const server::SoAConnTable&, slot: i64) -> bool {
+    return is_valid_slot(table, slot) && table.fds[slot] > 0;
+}
+
+inline fn soa_free_mark_free(table: server::SoAConnTable&, slot: i64) {
+    guard slot >= 0 else { return; }
+    let l0_idx = slot >> 6;
+    let l0_bit = (slot & 63) as u32;
+    while table.free_l0.len <= l0_idx {
+        table.free_l0.push(0);
+    }
+    table.free_l0[l0_idx] |= (1 as u64) << l0_bit;
+    let l1_idx = l0_idx >> 6;
+    let l1_bit = (l0_idx & 63) as u32;
+    while table.free_l1.len <= l1_idx {
+        table.free_l1.push(0);
+    }
+    table.free_l1[l1_idx] |= (1 as u64) << l1_bit;
+}
+
+inline fn soa_free_mark_used(table: server::SoAConnTable&, slot: i64) {
+    guard slot >= 0 else { return; }
+    let l0_idx = slot >> 6;
+    guard l0_idx < table.free_l0.len else { return; }
+    let l0_bit = (slot & 63) as u32;
+    table.free_l0[l0_idx] &= ~((1 as u64) << l0_bit);
+    if table.free_l0[l0_idx] == 0 {
+        let l1_idx = l0_idx >> 6;
+        let l1_bit = (l0_idx & 63) as u32;
+        if l1_idx < table.free_l1.len {
+            table.free_l1[l1_idx] &= ~((1 as u64) << l1_bit);
+        }
+    }
+}
+
+inline fn soa_free_find_lowest(table: const server::SoAConnTable&, limit: i64) -> i64 {
+    for l1_i in table.free_l1.len {
+        let w1 = table.free_l1[l1_i];
+        guard w1 != 0 else { continue; }
+        let l0_idx = core::add_sat_i64(l1_i << 6, ctz(w1));
+        guard l0_idx < table.free_l0.len else { return -1; }
+        let w0 = table.free_l0[l0_idx];
+        guard w0 != 0 else { return -1; }
+        let slot = core::add_sat_i64(l0_idx << 6, ctz(w0));
+        if slot < limit {
+            return slot;
+        }
+        return -1;
+    }
+    return -1;
+}
+
+inline fn soa_wheel_unlink(table: server::SoAConnTable&, slot: i64) {
+    guard is_valid_slot(table, slot) else { return; }
+    let old_b = table.timeout_ticks[slot] as i64;
+    table.timeout_ticks[slot] = server::SOA_INVALID_TICK;
+    guard old_b >= 0 && old_b < 240 else { return; }
+    let prev_s = table.timer_links[slot].prev;
+    let next_s = table.timer_links[slot].next;
+    if prev_s >= 0 {
+        table.timer_links[prev_s].next = next_s;
+    } else if table.wheel_heads[old_b] == (slot as i32) {
+        table.wheel_heads[old_b] = next_s;
+    }
+    if next_s >= 0 {
+        table.timer_links[next_s].prev = prev_s;
+    }
+    table.timer_links[slot].prev = -1;
+    table.timer_links[slot].next = -1;
+    if table.wheel_heads[old_b] < 0 {
+        let w = old_b >> 6;
+        let bit = (old_b & 63) as u32;
+        table.wheel_mask[w] &= ~((1 as u64) << bit);
+    }
+}
+
+inline fn soa_wheel_link(table: server::SoAConnTable&, slot: i64, new_tick: u8) {
+    guard is_valid_slot(table, slot) else { return; }
+    table.timeout_ticks[slot] = new_tick;
+    let b = new_tick as i64;
+    guard b >= 0 && b < 240 else { return; }
+    let old_head = table.wheel_heads[b];
+    table.timer_links[slot].prev = -1;
+    table.timer_links[slot].next = old_head;
+    if old_head >= 0 {
+        table.timer_links[old_head].prev = slot as i32;
+    }
+    table.wheel_heads[b] = slot as i32;
+    let w = b >> 6;
+    let bit = (b & 63) as u32;
+    table.wheel_mask[w] |= (1 as u64) << bit;
+}
+
+inline fn soa_wheel_relink(table: server::SoAConnTable&, slot: i64, new_tick: u8) {
+    guard is_valid_slot(table, slot) else { return; }
+    guard table.timeout_ticks[slot] != new_tick else { return; }
+    soa_wheel_unlink(table, slot);
+    soa_wheel_link(table, slot, new_tick);
+}
+
+inline fn set_wheel_mask_range(mask: u64[4]&, lo: i64, hi: i64) {
+    guard lo >= 0 && hi >= lo && hi < 240 else { return; }
+    let lo_w = lo >> 6;
+    let hi_w = hi >> 6;
+    for w in lo_w..core::add_sat_i64(hi_w, 1) {
+        let start_bit = if w == lo_w { (lo & 63) as u32 } else { 0 };
+        let end_bit = if w == hi_w { (hi & 63) as u32 } else { 63 };
+        let lo_m = ~(((1 as u64) << start_bit) - 1);
+        let hi_m = if end_bit == 63 { 0xFFFFFFFFFFFFFFFF } else { ((1 as u64) << (end_bit + 1)) - 1 };
+        mask[w] |= lo_m & hi_m;
+    }
+}
+
+inline fn build_elapsed_wheel_mask(wheel: const core::TickTimerWheel&) -> u64[4] {
+    if wheel.last_elapsed >= core::TICK_TIMER_MODULO {
+        return [0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0x0000FFFFFFFFFFFF];
+    }
+    var mask: u64[4] = [0; 4];
+    let mod_n = core::TICK_TIMER_MODULO as i64;
+    let prev = wheel.prev_tick as i64;
+    let el = wheel.last_elapsed as i64;
+    let start = core::rem_euclid_i64(core::add_sat_i64(prev, 1), mod_n);
+    let end = core::rem_euclid_i64(core::add_sat_i64(prev, el), mod_n);
+    if start <= end {
+        set_wheel_mask_range(mask, start, end);
+    } else {
+        set_wheel_mask_range(mask, start, 239);
+        set_wheel_mask_range(mask, 0, end);
+    }
+    return mask;
+}
+
+inline fn collect_wheel_bucket_expired(
+    table:       const server::SoAConnTable&,
+    bucket:      i64,
+    out_expired: i64[:],
+    expired_n:   i64,
+) -> i64 {
+    guard bucket >= 0 && bucket < 240 else { return expired_n; }
+    var count = expired_n;
+    var cur = table.wheel_heads[bucket];
+    while cur >= 0 && count < out_expired.len {
+        let next_s = table.timer_links[cur].next;
+        if is_active_slot(table, cur) && table.timeout_ticks[cur] == (bucket as u8) {
+            count = record_expired_conn(out_expired, count, cur);
+        }
+        cur = next_s;
+    }
+    return count;
+}
+
 fn push_inactive_soa_slot(table: server::SoAConnTable&) {
+    let slot = table.fds.len;
     table.fds.push(server::SOA_INVALID_FD);
     table.timeout_ticks.push(server::SOA_INVALID_TICK);
     table.leftover_lens.push(0);
@@ -250,12 +408,21 @@ fn push_inactive_soa_slot(table: server::SoAConnTable&) {
     table.has_peer_ip.push(false);
     table.peer_ip_hashes.push(0);
     table.peer_ips.push([]);
+    table.timer_links.push(server::SoATimerLink { .. });
+    soa_free_mark_free(table, slot);
 }
 
 // Resets all parallel SoA columns for `slot`.
 inline fn reset_soa_slot_fields(table: server::SoAConnTable&, slot: i64, fd: i64, timeout_tick: u8) {
+    soa_wheel_unlink(table, slot);
     table.fds[slot] = fd;
-    table.timeout_ticks[slot] = timeout_tick;
+    if fd > 0 {
+        soa_free_mark_used(table, slot);
+        soa_wheel_link(table, slot, timeout_tick);
+    } else {
+        soa_free_mark_free(table, slot);
+        table.timeout_ticks[slot] = server::SOA_INVALID_TICK;
+    }
     table.leftover_lens[slot] = 0;
     table.leftover_offs[slot] = -1;
     table.tls_ct_lens[slot] = 0;
@@ -268,16 +435,6 @@ inline fn reset_soa_slot_fields(table: server::SoAConnTable&, slot: i64, fd: i64
     table.has_peer_ip[slot] = false;
     table.peer_ip_hashes[slot] = 0;
     table.peer_ips[slot].clear();
-}
-
-// Returns whether `slot` is within the materialized bounds of the SoA connection table.
-inline fn is_valid_slot(table: const server::SoAConnTable&, slot: i64) -> bool {
-    return slot >= 0 && slot < table.fds.len;
-}
-
-// Returns whether `slot` is in bounds and currently holds an active file descriptor.
-inline fn is_active_slot(table: const server::SoAConnTable&, slot: i64) -> bool {
-    return is_valid_slot(table, slot) && table.fds[slot] > 0;
 }
 
 inline fn trim_soa_high_water_mark(table: server::SoAConnTable&) {

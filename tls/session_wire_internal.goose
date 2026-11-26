@@ -382,9 +382,12 @@ fn sign_certificate_verify<B>(
         }
         return scheme, true;
     }
-    let ed_sig = core::ed25519_sign(priv_seed, cv_msg);
-    guard out_sig.try_set(ed_sig[..]) else { return 0, false; }
-    return rfc::SIG_SCHEME_ED25519, true;
+    if scheme == rfc::SIG_SCHEME_ED25519 {
+        let ed_sig = core::ed25519_sign(priv_seed, cv_msg);
+        guard out_sig.try_set(ed_sig[..]) else { return 0, false; }
+        return rfc::SIG_SCHEME_ED25519, true;
+    }
+    return 0, false;
 }
 
 fn validate_alpn_wire_list(list_bytes: const u8[:]) -> bool {

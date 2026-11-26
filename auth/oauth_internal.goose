@@ -383,5 +383,5 @@ fn parse_introspection_field(
 
 // RFC 7617 Section 2: User-id and password MUST NOT contain ASCII control characters (0x00..0x1F, 0x7F) and MUST be valid UTF-8.
 inline fn is_valid_basic_auth_credential(s: const u8[:]) -> bool {
-    return core::swar_find_ctl(s) == s.len && s.validate_utf8();
+    return core::swar_find_ctl(s) == s.len && !s.contains_byte(0x7F) && s.validate_utf8();
 }

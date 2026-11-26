@@ -332,6 +332,7 @@ import server.prof_hooks;
 import server.router_internal;
 import server.router_l0_internal;
 import server.router;
+import server.packed_router;
 import server.pool;
 import server.edge_filter;
 import server.cache;

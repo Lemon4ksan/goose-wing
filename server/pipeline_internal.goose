@@ -203,8 +203,11 @@ fn evaluate_server_integrity_and_crypto(
     let now_sec = if now_ns > 0 { div_euclid(now_ns, 1000000000) as i64 } else { core::now().wall_sec };
     if cfg.dpop_public_key.len > 0 {
         let dpop_jwt = http::header(req, "DPoP");
+        let auth_hdr = http::header(req, rfc::HEADER_AUTHORIZATION).trim_lws();
+        let dpop_tok_rest, is_dpop_auth = auth_hdr.strip_prefix_fold("dpop ");
+        let access_tok = if is_dpop_auth { dpop_tok_rest.trim_lws() } else { "" };
         let ok_dpop = dpop_jwt.len > 0 && auth::verify_dpop_proof_with_replay_cache(
-            cfg.dpop_replay_cache, dpop_jwt, cfg.dpop_public_key[..], req.method[..], req.url[..], now_sec,
+            cfg.dpop_replay_cache, dpop_jwt, cfg.dpop_public_key[..], req.method[..], req.url[..], now_sec, access_tok,
         );
         if !ok_dpop {
             res.status_code = rfc::STATUS_UNAUTHORIZED;
@@ -329,7 +332,12 @@ fn maybe_store_server_route_cache(
         return;
     }
     let now_ms, _ = core::div_rem_u64(now_ns, 1000000);
-    let _ = stage_server_cache_store(cfg.route_cache, now_ms, res, handler_id, req.url[..]);
+    var cache_key: u8[..256] = [];
+    guard build_route_cache_key(req, cache_key) else {
+        cfg.route_cache.is_updating = false;
+        return;
+    }
+    let _ = stage_server_cache_store(cfg.route_cache, now_ms, res, handler_id, cache_key[..]);
 }
 
 // Dispatches route payloads and headers registered in `cfg.router.static_payloads` for `handler_id`.

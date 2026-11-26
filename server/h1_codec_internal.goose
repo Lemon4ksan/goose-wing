@@ -128,6 +128,68 @@ inline fn validate_connect_authority(target: const u8[:]) -> bool {
     return port_ok && port_num > 0;
 }
 
+// Host reg-name lookup table: 0=invalid, 1=valid reg-name byte, 2=':', 3='%'.
+const HOST_REGNAME_CLASS: u8[256] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 1, 0, 0, 1, 3, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 0, 1, 0, 0,
+    0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1,
+    0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+
+checkfree inline fn validate_optional_host_port(port_slice: const u8[:]) -> bool {
+    if port_slice.len == 0 {
+        return true;
+    }
+    guard port_slice.len <= 5 else { return false; }
+    var acc: i64 = 0;
+    for i in port_slice.len {
+        let pb = port_slice[i];
+        guard pb >= '0' && pb <= '9' else { return false; }
+        acc = (acc * 10) + (pb - '0');
+    }
+    return acc >= 1 && acc <= 65535;
+}
+
+// Single-pass RFC 3986 Section 3.2.2 reg-name Host + optional port validator.
+checkfree fn validate_host_regname_fast(host_val: const u8[:]) -> bool {
+    guard host_val.len > 0 else { return false; }
+    for i in host_val.len {
+        let cls = HOST_REGNAME_CLASS[host_val[i]];
+        guard cls != 0 else { return false; }
+        if cls == 3 {
+            guard i + 2 < host_val.len
+                && core::is_ascii_hexdigit(host_val[i + 1])
+                && core::is_ascii_hexdigit(host_val[i + 2]) else {
+                return false;
+            }
+        } else if cls == 2 {
+            guard i > 0 else { return false; }
+            return validate_optional_host_port(host_val[(i + 1)..]);
+        }
+    }
+    return true;
+}
+
+inline fn validate_host_fast(host_val: const u8[:]) -> bool {
+    guard host_val.len > 0 else { return false; }
+    if host_val[0] == '[' {
+        return validate_host_header_chars(host_val) && server::validate_host_header_structure(host_val);
+    }
+    return validate_host_regname_fast(host_val);
+}
+
 // RFC 3986 Section 3.2.2: Host - reg-name characters and valid pct-encoded triplets
 checkfree fn validate_host_header_chars(host_val: const u8[:]) -> bool {
     for i in host_val.len {

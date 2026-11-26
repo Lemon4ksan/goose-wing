@@ -344,15 +344,24 @@ fn clear_space_keys(space: PnSpaceState&) {
     core::secure_zeroize_slice(space.traffic_secret[..]);
     core::secure_zeroize_slice(space.prev_aead_key[..]);
     core::secure_zeroize_slice(space.prev_aead_iv[..]);
+    core::secure_zeroize_slice(space.next_traffic_secret[..]);
+    core::secure_zeroize_slice(space.next_aead_key[..]);
+    core::secure_zeroize_slice(space.next_aead_iv[..]);
     space.hp_key.clear();
     space.aead_key.clear();
     space.aead_iv.clear();
     space.traffic_secret.clear();
     space.prev_aead_key.clear();
     space.prev_aead_iv.clear();
+    space.next_traffic_secret.clear();
+    space.next_aead_key.clear();
+    space.next_aead_iv.clear();
     space.keys_installed = false;
     space.has_app_secret = false;
     space.has_prev_keys = false;
+    space.has_next_keys = false;
+    space.min_tracked_pn = 0;
+    space.has_min_tracked_pn = false;
     space.loss_time_us = 0;
     space.sent_packets.clear();
 }

@@ -472,6 +472,7 @@ struct ServerHandshakeConfig {
     handshake_timeout_ms: u32              = 5000,
     keylog_file:          u8[..256]        = [],
     require_client_cert:  bool             = false,
+    require_alpn_match:   bool             = false,
     client_trust_store:   TrustAnchorStore = TrustAnchorStore { .. },
 }
 

@@ -43,6 +43,8 @@ var g_reactor_tls_plain_bufs: u8[..32768][>..] = [];
 
 var g_reactor_tls_seal_bufs: u8[..65536][>..] = [];
 
+var g_reactor_tls_rx_bufs: u8[16384][>..] = [];
+
 var g_reactor_conn_pool: server_internal::ReactorConnectionPool = server_internal::ReactorConnectionPool { .. };
 
 var g_reactor_accel: net::ReactorAccelRuntime = net::ReactorAccelRuntime { .. };
@@ -157,6 +159,62 @@ fn slot_transport(table: const SoAConnTable&, slot: i64) -> net::Transport {
     return net::Transport.Tcp { fd: fd };
 }
 
+inline fn resolve_accel_wait_ms(n_ready: i32, wait_ms: i32) -> i32 {
+    guard n_ready <= 0 else { return 0; }
+    if g_reactor_accel.epfd_registered_count > 0 && !g_reactor_accel.uring_epoll_armed {
+        return min(wait_ms, 1);
+    }
+    return wait_ms;
+}
+
+inline fn step_plain_reactor_turn<Stage>(
+    server:         HttpServer&,
+    epfd:           i64,
+    listener_fd:    i64,
+    draining:       bool,
+    table:          SoAConnTable&,
+    leftover_pool:  slice_pool<u8>&,
+    slot_pool:      server_internal::ReactorSlotPool&,
+    timer_wheel:    core::TickTimerWheel&,
+    dummy_tls_cfg:  const tls::ServerHandshakeConfig&,
+    ready_udata:    u64[4096]&,
+    turn_counter:   i64&,
+    last_sweep_sec: i64&,
+    total_served:   i64&,
+    cached_now_ns:  u64&,
+    cached_now_sec: i64&,
+    prev_had_work:  bool&,
+    stage:          Stage&,
+) {
+    let wait_ms = server_internal::reactor_epoll_timeout(server.worker_ring);
+    let n_ready = net::reactor_wait_readiness_events(g_reactor_accel, ready_udata[..], wait_ms);
+    turn_counter = core::add_sat_i64(turn_counter, 1);
+    let poll_hint: i32 = if n_ready > 0 || prev_had_work { 1 } else { 0 };
+    server_internal::reactor_poll_sweep(
+        epfd, table, leftover_pool, slot_pool, timer_wheel, poll_hint, turn_counter,
+        last_sweep_sec, total_served, cached_now_ns, cached_now_sec, server.pipeline.enable_slowloris_timer,
+    );
+    if n_ready > 0 {
+        server_internal::reactor_dispatch_events(
+            server, epfd, listener_fd, table, leftover_pool,
+            slot_pool, timer_wheel, ready_udata[..n_ready], cached_now_ns,
+            g_reactor_chunk, g_reactor_cork_bufs[0], total_served, stage,
+        );
+    }
+    let accel_wait_ms = resolve_accel_wait_ms(n_ready, wait_ms);
+    let n_rio = server_internal::reactor_step_rio_completions(
+        server, draining, dummy_tls_cfg, false, table, leftover_pool,
+        slot_pool, timer_wheel, accel_wait_ms, cached_now_ns,
+        g_reactor_chunk, g_reactor_cork_bufs[0], total_served, stage,
+    );
+    let n_uring = server_internal::reactor_step_uring_completions(
+        server, listener_fd, draining, dummy_tls_cfg, false, accel_wait_ms, table, leftover_pool,
+        slot_pool, timer_wheel, cached_now_ns,
+        g_reactor_chunk, g_reactor_cork_bufs[0], total_served, stage,
+    );
+    prev_had_work = n_ready > 0 || n_rio > 0 || n_uring > 0;
+}
+
 // Executes a share-nothing reactor loop with OS completion/readiness acceleration and a `<Stage>` hook.
 fn serve_reactor_with_stage<Stage>(
     server:          HttpServer&,
@@ -183,6 +241,7 @@ fn serve_reactor_with_stage<Stage>(
     var cached_now_sec:    i64  = 0;
     var draining:          bool = false;
     var drain_deadline_ns: u64  = 0;
+    var prev_had_work:     bool = false;
 
     while max_connections == 0 || total_served < max_connections {
         let epfd = g_reactor_accel.epfd;
@@ -194,31 +253,13 @@ fn serve_reactor_with_stage<Stage>(
                 server.worker_ring, epfd, table, leftover_pool, slot_pool, timer_wheel, total_served,
             );
         }
-        let wait_ms = server_internal::reactor_epoll_timeout(server.worker_ring);
-        let n_ready = net::reactor_wait_readiness_events(g_reactor_accel, ready_udata[..], wait_ms);
-        turn_counter = core::add_sat_i64(turn_counter, 1);
-        server_internal::reactor_poll_sweep(
-            epfd, table, leftover_pool, slot_pool, timer_wheel, n_ready, turn_counter,
-            last_sweep_sec, total_served, cached_now_ns, cached_now_sec, server.pipeline.enable_slowloris_timer,
-        );
-        if n_ready > 0 {
-            server_internal::reactor_dispatch_events(
-                server, epfd, listener_fd, table, leftover_pool,
-                slot_pool, timer_wheel, ready_udata[..n_ready], cached_now_ns,
-                g_reactor_chunk, g_reactor_cork_bufs[0], total_served, stage,
-            );
-        }
-        let _ = server_internal::reactor_step_rio_completions(
-            server, draining, dummy_tls_cfg, false, table, leftover_pool,
-            slot_pool, timer_wheel, wait_ms, cached_now_ns,
-            g_reactor_chunk, g_reactor_cork_bufs[0], total_served, stage,
-        );
-        let _ = server_internal::reactor_step_uring_completions(
-            server, listener_fd, draining, dummy_tls_cfg, false, wait_ms, table, leftover_pool,
-            slot_pool, timer_wheel, cached_now_ns,
-            g_reactor_chunk, g_reactor_cork_bufs[0], total_served, stage,
+        step_plain_reactor_turn(
+            server, epfd, listener_fd, draining, table, leftover_pool, slot_pool, timer_wheel, dummy_tls_cfg,
+            ready_udata, turn_counter, last_sweep_sec, total_served, cached_now_ns, cached_now_sec,
+            prev_had_work, stage,
         );
     }
+    let _ = net::reactor_flush_uring_sqes(g_reactor_accel);
     server_internal::reactor_cleanup_all(g_reactor_accel.epfd, table, leftover_pool, slot_pool);
     return total_served;
 }
@@ -227,6 +268,54 @@ fn serve_reactor_with_stage<Stage>(
 fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
     var noop = wire::NoOpStage {};
     return serve_reactor_with_stage(server, listener_fd, noop, max_connections);
+}
+
+inline fn step_tls_reactor_turn<Stage>(
+    server:         HttpServer&,
+    epfd:           i64,
+    listener_fd:    i64,
+    draining:       bool,
+    table:          SoAConnTable&,
+    leftover_pool:  slice_pool<u8>&,
+    slot_pool:      server_internal::ReactorSlotPool&,
+    timer_wheel:    core::TickTimerWheel&,
+    tls_config:     const tls::ServerHandshakeConfig&,
+    ready_udata:    u64[4096]&,
+    turn_counter:   i64&,
+    last_sweep_sec: i64&,
+    total_served:   i64&,
+    cached_now_ns:  u64&,
+    cached_now_sec: i64&,
+    prev_had_work:  bool&,
+    stage:          Stage&,
+) {
+    let n_ready = net::reactor_wait_readiness_events(g_reactor_accel, ready_udata[..], 10);
+    turn_counter = core::add_sat_i64(turn_counter, 1);
+    let poll_hint: i32 = if n_ready > 0 || prev_had_work { 1 } else { 0 };
+    server_internal::reactor_poll_sweep(
+        epfd, table, leftover_pool, slot_pool, timer_wheel, poll_hint, turn_counter,
+        last_sweep_sec, total_served, cached_now_ns, cached_now_sec, server.pipeline.enable_slowloris_timer,
+    );
+    if n_ready > 0 {
+        server_internal::reactor_dispatch_tls_events(
+            server, epfd, listener_fd, table, leftover_pool,
+            slot_pool, timer_wheel, tls_config, ready_udata[..n_ready as i64],
+            cached_now_ns, g_reactor_chunk, g_reactor_cork_bufs[0], total_served, stage,
+        );
+    }
+    let accel_wait_ms = resolve_accel_wait_ms(n_ready, 10);
+    let n_rio = server_internal::reactor_step_rio_completions(
+        server, draining, tls_config, true, table, leftover_pool,
+        slot_pool, timer_wheel, accel_wait_ms, cached_now_ns,
+        g_reactor_chunk, g_reactor_cork_bufs[0], total_served, stage,
+    );
+    let n_uring = server_internal::reactor_step_uring_completions(
+        server, listener_fd, draining, tls_config, true, accel_wait_ms,
+        table, leftover_pool,
+        slot_pool, timer_wheel, cached_now_ns,
+        g_reactor_chunk, g_reactor_cork_bufs[0], total_served, stage,
+    );
+    prev_had_work = n_ready > 0 || n_rio > 0 || n_uring > 0;
 }
 
 // Executes a TLS 1.3 reactor loop with opportunistic kTLS, completion rings, and a `<Stage>` hook.
@@ -255,6 +344,7 @@ fn serve_reactor_tls_with_stage<Stage>(
     var cached_now_sec:    i64  = 0;
     var draining:          bool = false;
     var drain_deadline_ns: u64  = 0;
+    var prev_had_work:     bool = false;
 
     while max_connections == 0 || total_served < max_connections {
         let epfd = g_reactor_accel.epfd;
@@ -263,32 +353,13 @@ fn serve_reactor_tls_with_stage<Stage>(
         ) {
             break;
         }
-        let n_ready = net::reactor_wait_readiness_events(g_reactor_accel, ready_udata[..], 10);
-        turn_counter = core::add_sat_i64(turn_counter, 1);
-        server_internal::reactor_poll_sweep(
-            epfd, table, leftover_pool, slot_pool, timer_wheel, n_ready, turn_counter,
-            last_sweep_sec, total_served, cached_now_ns, cached_now_sec,
-            server.pipeline.enable_slowloris_timer,
-        );
-        if n_ready > 0 {
-            server_internal::reactor_dispatch_tls_events(
-                server, epfd, listener_fd, table, leftover_pool,
-                slot_pool, timer_wheel, tls_config, ready_udata[..n_ready as i64],
-                cached_now_ns, g_reactor_chunk, g_reactor_cork_bufs[0], total_served, stage,
-            );
-        }
-        let _ = server_internal::reactor_step_rio_completions(
-            server, draining, tls_config, true, table, leftover_pool,
-            slot_pool, timer_wheel, 10, cached_now_ns,
-            g_reactor_chunk, g_reactor_cork_bufs[0], total_served, stage,
-        );
-        let _ = server_internal::reactor_step_uring_completions(
-            server, listener_fd, draining, tls_config, true, 10,
-            table, leftover_pool,
-            slot_pool, timer_wheel, cached_now_ns,
-            g_reactor_chunk, g_reactor_cork_bufs[0], total_served, stage,
+        step_tls_reactor_turn(
+            server, epfd, listener_fd, draining, table, leftover_pool, slot_pool, timer_wheel, tls_config,
+            ready_udata, turn_counter, last_sweep_sec, total_served, cached_now_ns, cached_now_sec,
+            prev_had_work, stage,
         );
     }
+    let _ = net::reactor_flush_uring_sqes(g_reactor_accel);
     server_internal::reactor_cleanup_all(g_reactor_accel.epfd, table, leftover_pool, slot_pool);
     return total_served;
 }

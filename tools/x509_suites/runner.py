@@ -426,12 +426,21 @@ def ext_eku(oids: list[str], critical: bool = False) -> bytes:
     return x509_ext(OID_EKU, der_seq(b"".join(der_oid(o) for o in oids)), critical=critical)
 
 
-def ext_san(dns_names: list[str] | None = None, ips: list[str] | None = None) -> bytes:
+def ext_san(
+    dns_names: list[str] | None = None,
+    ips: list[str] | None = None,
+    emails: list[str] | None = None,
+    uris: list[str] | None = None,
+) -> bytes:
     items = bytearray()
     for d in dns_names or []:
         items += der_tlv(0x82, d.encode("ascii"))
     for ip_s in ips or []:
         items += der_tlv(0x87, ipaddress.ip_address(ip_s).packed)
+    for em in emails or []:
+        items += der_tlv(0x81, em.encode("ascii"))
+    for u in uris or []:
+        items += der_tlv(0x86, u.encode("ascii"))
     return x509_ext(OID_SAN, der_seq(bytes(items)), critical=False)
 
 
@@ -440,20 +449,33 @@ def ext_name_constraints(
     excluded_dns: list[str] | None = None,
     permitted_ips: list[str] | None = None,
     excluded_ips: list[str] | None = None,
+    permitted_emails: list[str] | None = None,
+    excluded_emails: list[str] | None = None,
+    permitted_uris: list[str] | None = None,
+    excluded_uris: list[str] | None = None,
     critical: bool = True,
 ) -> bytes:
-    def _subtrees(dns_list: list[str], ip_list: list[str]) -> bytes:
+    def _subtrees(
+        dns_list: list[str],
+        ip_list: list[str],
+        email_list: list[str],
+        uri_list: list[str],
+    ) -> bytes:
         out = bytearray()
         for d in dns_list:
             out += der_seq(der_tlv(0x82, d.encode("ascii")))
         for cidr in ip_list:
             net = ipaddress.ip_network(cidr, strict=False)
             out += der_seq(der_tlv(0x87, net.network_address.packed + net.netmask.packed))
+        for em in email_list:
+            out += der_seq(der_tlv(0x81, em.encode("ascii")))
+        for u in uri_list:
+            out += der_seq(der_tlv(0x86, u.encode("ascii")))
         return bytes(out)
 
     body = bytearray()
-    perm = _subtrees(permitted_dns or [], permitted_ips or [])
-    excl = _subtrees(excluded_dns or [], excluded_ips or [])
+    perm = _subtrees(permitted_dns or [], permitted_ips or [], permitted_emails or [], permitted_uris or [])
+    excl = _subtrees(excluded_dns or [], excluded_ips or [], excluded_emails or [], excluded_uris or [])
     if perm:
         body += der_ctx(0, perm, constructed=True)
     if excl:
@@ -716,6 +738,8 @@ def make_leaf_cert(
     serial: int,
     dns_sans: list[str] | None = None,
     ip_sans: list[str] | None = None,
+    email_sans: list[str] | None = None,
+    uri_sans: list[str] | None = None,
     eku_oids: list[str] | None = None,
     extra_exts: list[bytes] | None = None,
     not_before: int = DEFAULT_NOW - 86400 * 10,
@@ -731,8 +755,8 @@ def make_leaf_cert(
         ext_key_usage(0x80, 7, critical=True),
         ext_akid(issuer_key.skid),
     ]
-    if dns_sans or ip_sans:
-        exts.append(ext_san(dns_names=dns_sans, ips=ip_sans))
+    if dns_sans or ip_sans or email_sans or uri_sans:
+        exts.append(ext_san(dns_names=dns_sans, ips=ip_sans, emails=email_sans, uris=uri_sans))
     if eku_oids is not None:
         exts.append(ext_eku(eku_oids))
     if extra_exts:
@@ -1183,6 +1207,90 @@ def run_bettertls_local(client: HarnessClient, stats: SuiteStats) -> None:
     _check("bettertls::nc-end-entity-forbidden",
            leaf_with_nc, [int_top], [root], "nc-ee.example.com", False)
 
+    # 15: Excluded DNS mixed-case subtree must still match and reject
+    int_excl_case = make_ca_cert(
+        "BetterTLS Excl Case Int", int1_k, "BetterTLS Root CA", root_k, 214,
+        extra_exts=[ext_name_constraints(excluded_dns=["blocked.example.com"])],
+    )
+    leaf_excl_case = make_leaf_cert(
+        "API.BLOCKED.EXAMPLE.COM", leaf_k, "BetterTLS Excl Case Int", int1_k, 215,
+        dns_sans=["API.BLOCKED.EXAMPLE.COM"],
+    )
+    _check("bettertls::nc-dns-excluded-mixedcase",
+           leaf_excl_case, [int_excl_case], [root], "api.blocked.example.com", False)
+
+    # 16: Excluded DNS subtree intersecting a wildcard SAN must reject
+    leaf_excl_wc = make_leaf_cert(
+        "*.blocked.example.com", leaf_k, "BetterTLS Excl Case Int", int1_k, 216,
+        dns_sans=["*.blocked.example.com"],
+    )
+    _check("bettertls::nc-dns-excluded-wildcard",
+           leaf_excl_wc, [int_excl_case], [root], "v1.blocked.example.com", False)
+
+    # 17: Trailing dot in SAN must not bypass ExcludedSubtree
+    leaf_excl_dot = make_leaf_cert(
+        "sub.blocked.example.com.", leaf_k, "BetterTLS Excl Case Int", int1_k, 217,
+        dns_sans=["sub.blocked.example.com."],
+    )
+    _check("bettertls::nc-dns-excluded-trailing-dot",
+           leaf_excl_dot, [int_excl_case], [root], "sub.blocked.example.com.", False)
+
+    # 18: Excluded email (rfc822Name) subtree with mixed-case local/domain must reject
+    int_excl_email = make_ca_cert(
+        "BetterTLS Excl Email Int", int1_k, "BetterTLS Root CA", root_k, 218,
+        extra_exts=[ext_name_constraints(excluded_emails=["corp.example.com"])],
+    )
+    leaf_excl_email = make_leaf_cert(
+        "mail.example.org", leaf_k, "BetterTLS Excl Email Int", int1_k, 219,
+        dns_sans=["mail.example.org"],
+        email_sans=["Admin@CORP.EXAMPLE.COM"],
+    )
+    _check("bettertls::nc-email-excluded-mixedcase",
+           leaf_excl_email, [int_excl_email], [root], "mail.example.org", False)
+
+    # 19-21: URI NameConstraints (@ smuggling and backslash authority bypass defenses)
+    int_perm_uri = make_ca_cert(
+        "BetterTLS Perm URI Int", int1_k, "BetterTLS Root CA", root_k, 220,
+        extra_exts=[ext_name_constraints(permitted_dns=["example.com"], permitted_uris=[".example.com"])],
+    )
+    leaf_uri_ok = make_leaf_cert(
+        "api.example.com", leaf_k, "BetterTLS Perm URI Int", int1_k, 221,
+        dns_sans=["api.example.com"],
+        uri_sans=["https://api.example.com/v1/resource"],
+    )
+    _check("bettertls::nc-uri-perm-valid-control",
+           leaf_uri_ok, [int_perm_uri], [root], "api.example.com", True)
+
+    leaf_uri_at = make_leaf_cert(
+        "api.example.com", leaf_k, "BetterTLS Perm URI Int", int1_k, 222,
+        dns_sans=["api.example.com"],
+        uri_sans=["https://evil.org@api.example.com/path"],
+    )
+    _check("bettertls::nc-uri-at-smuggling-reject",
+           leaf_uri_at, [int_perm_uri], [root], "api.example.com", False)
+
+    leaf_uri_bs = make_leaf_cert(
+        "api.example.com", leaf_k, "BetterTLS Perm URI Int", int1_k, 223,
+        dns_sans=["api.example.com"],
+        uri_sans=["https://evil.org\\@api.example.com/path"],
+    )
+    _check("bettertls::nc-uri-backslash-authority-reject",
+           leaf_uri_bs, [int_perm_uri], [root], "api.example.com", False)
+
+    # 22-23: CVE-2026-89133 style 3-cert transitive NC chain (Root -> Int1(NC) -> Int2(no NC) -> Leaf)
+    int_mid_no_nc = make_ca_cert("BetterTLS Mid NoNC Int", int2_k, "BetterTLS DNS NC CA", int1_k, 224)
+    leaf_3c_evil = make_leaf_cert(
+        "evil.org", leaf_k, "BetterTLS Mid NoNC Int", int2_k, 225, dns_sans=["evil.org"]
+    )
+    _check("bettertls::nc-3cert-cve-2026-89133-evil",
+           leaf_3c_evil, [int_mid_no_nc, int_dns_nc], [root], "evil.org", False)
+
+    leaf_3c_good = make_leaf_cert(
+        "sub.example.com", leaf_k, "BetterTLS Mid NoNC Int", int2_k, 226, dns_sans=["sub.example.com"]
+    )
+    _check("bettertls::nc-3cert-cve-2026-89133-good",
+           leaf_3c_good, [int_mid_no_nc, int_dns_nc], [root], "sub.example.com", True)
+
 
 # ---- NIST PKITS Suite (RFC 5280 Chain, CRL, OCSP + --pkits-dir Corpus) ------
 
@@ -1391,7 +1499,7 @@ def main() -> None:
                 run_limbo_document(client, build_local_limbo_document(), stats)
 
         if args.suite in ("all", "bettertls"):
-            print("\nExecuting BetterTLS NameConstraints & Path-Building suite (14 vectors)...")
+            print("\nExecuting BetterTLS NameConstraints & Path-Building suite (23 vectors)...")
             run_bettertls_local(client, stats)
 
         if args.suite in ("all", "pkits"):

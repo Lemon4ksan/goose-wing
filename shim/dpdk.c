@@ -135,9 +135,23 @@ int32_t wing_dpdk_rx_burst_read_one(uint16_t port_id, uint16_t queue_id, wing_dp
         rte_pktmbuf_free(m);
         return -1;
     }
-    const void *src = rte_pktmbuf_mtod(m, const void *);
-    memcpy(dst.data, src, (size_t)plen);
+    uint32_t copied = 0;
+    for (struct rte_mbuf *seg = m; seg != NULL; seg = seg->next) {
+        uint32_t seg_len = rte_pktmbuf_data_len(seg);
+        if (seg_len > plen - copied) {
+            rte_pktmbuf_free(m);
+            return -1;
+        }
+        if (seg_len > 0) {
+            const void *src = rte_pktmbuf_mtod(seg, const void *);
+            memcpy(dst.data + copied, src, (size_t)seg_len);
+            copied += seg_len;
+        }
+    }
     rte_pktmbuf_free(m);
+    if (copied != plen) {
+        return -1;
+    }
     return (int32_t)plen;
 }
 

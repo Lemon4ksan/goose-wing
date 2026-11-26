@@ -478,6 +478,12 @@ fn stage_server_auth_jwt(
         http::set_header(res, rfc::HEADER_WWW_AUTHENTICATE, "Bearer error=\"invalid_token\"");
         return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_UNAUTHORIZED as u16 };
     }
+    // RFC 9449 Section 7.2: DPoP-bound access tokens MUST NOT be accepted as plain Bearer tokens.
+    guard out_claims.cnf_jkt.len == 0 else {
+        res.status_code = rfc::STATUS_UNAUTHORIZED;
+        http::set_header(res, rfc::HEADER_WWW_AUTHENTICATE, "DPoP error=\"invalid_token\"");
+        return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_UNAUTHORIZED as u16 };
+    }
     let _ = ext.auth_subject.try_set(out_claims.sub[..min(out_claims.sub.len, 64)]);
     ext.jwt_claims = out_claims;
     ext.populated_entries |= ENTRY_SECURITY;

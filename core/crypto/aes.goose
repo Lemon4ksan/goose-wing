@@ -219,12 +219,7 @@ struct Aes256KeySchedule {
 // Zeroizes an AES-256 round key schedule in place.
 // crap:ignore
 inline fn zeroize_aes256_ks(ks: Aes256KeySchedule&) {
-    var z_bytes: u8[32] = [0; 32];
-    secure_zeroize_32(z_bytes);
-    let z_word: u32 = z_bytes[0];
-    for i in 60 {
-        ks.round_keys[i] = z_word;
-    }
+    secure_zeroize_u32_slice(ks.round_keys[..]);
 }
 
 fn aes256_key_schedule(key: const u8[32]&) -> Aes256KeySchedule {
@@ -415,12 +410,7 @@ struct Aes128KeySchedule {
 // Zeroizes an AES-128 round key schedule in place.
 // crap:ignore
 inline fn zeroize_aes128_ks(ks: Aes128KeySchedule&) {
-    var z_bytes: u8[16] = [0; 16];
-    secure_zeroize_16(z_bytes);
-    let z_word: u32 = z_bytes[0];
-    for i in 44 {
-        ks.round_keys[i] = z_word;
-    }
+    secure_zeroize_u32_slice(ks.round_keys[..]);
 }
 
 fn aes128_key_schedule(key: const u8[16]&) -> Aes128KeySchedule {
@@ -636,7 +626,6 @@ fn aes_gcm_open_small<B>(
     }
     guard crypto_buf_has_room(out_plaintext, ciphertext.len) else {
         secure_zeroize_slice(tmp[..ciphertext.len]);
-        out_plaintext.clear();
         return false;
     }
     let start_len = out_plaintext.len;
@@ -644,7 +633,10 @@ fn aes_gcm_open_small<B>(
     secure_zeroize_slice(tmp[..ciphertext.len]);
     let expected_len = add_sat_i64(start_len, ciphertext.len);
     if out_plaintext.len != expected_len {
-        out_plaintext.clear();
+        if out_plaintext.len > start_len {
+            secure_zeroize_slice(out_plaintext[start_len..]);
+            out_plaintext.resize(start_len);
+        }
         return false;
     }
     return true;
@@ -749,7 +741,6 @@ fn aes256_gcm_open<B>(
     guard crypto_buf_has_room(out_plaintext, ciphertext.len) else {
         zeroize_aes256_ks(ks);
         zeroize_aes_gcm_blocks(h, enc_j0, computed_tag);
-        out_plaintext.clear();
         return false;
     }
 
@@ -771,7 +762,10 @@ fn aes256_gcm_open<B>(
     zeroize_aes_gcm_blocks(h, enc_j0, computed_tag);
     zeroize_aes256_ks(ks);
     if out_plaintext.len - start_len != ciphertext.len {
-        out_plaintext.clear();
+        if out_plaintext.len > start_len {
+            secure_zeroize_slice(out_plaintext[start_len..]);
+            out_plaintext.resize(start_len);
+        }
         return false;
     }
     return true;
@@ -876,7 +870,6 @@ fn aes128_gcm_open<B>(
     guard crypto_buf_has_room(out_plaintext, ciphertext.len) else {
         zeroize_aes128_ks(ks);
         zeroize_aes_gcm_blocks(h, enc_j0, computed_tag);
-        out_plaintext.clear();
         return false;
     }
 
@@ -898,7 +891,10 @@ fn aes128_gcm_open<B>(
     zeroize_aes_gcm_blocks(h, enc_j0, computed_tag);
     zeroize_aes128_ks(ks);
     if out_plaintext.len - start_len != ciphertext.len {
-        out_plaintext.clear();
+        if out_plaintext.len > start_len {
+            secure_zeroize_slice(out_plaintext[start_len..]);
+            out_plaintext.resize(start_len);
+        }
         return false;
     }
     return true;

@@ -67,19 +67,37 @@ checkfree fn evict_oldest_entry(dt: http2::DynamicTable&) {
     }
 }
 
-// RFC 7541 Section 2.3.2: Dynamic Table - O(1)-amortized FIFO boundary eviction.
-checkfree fn evict_overlapping_arena_range(dt: http2::DynamicTable&, write_start: u32, write_end: u32) {
-    while dt.count > 0 {
-        let head_i = (dt.head & HPACK_RING_MASK) as i64;
-        guard head_i >= 0 && head_i < 128 else { return; }
-        let entry .= dt.entries[head_i];
-        let old_start = entry.name_off;
-        let old_end = core::add_sat_u32(entry.val_off, entry.val_len);
-        let overlaps = (old_start < write_end) &&
-            (old_end > write_start || (old_end == old_start && old_start >= write_start));
-        guard overlaps else { return; }
-        evict_oldest_entry(dt);
+checkfree inline fn hpack_arena_shift_left(dt: http2::DynamicTable&, dst_off: i64, src_off: i64, nbytes: i64) {
+    guard dst_off < src_off && dst_off >= 0 && nbytes > 0 else { return; }
+    guard dst_off + nbytes <= 4096 && src_off + nbytes <= 4096 else { return; }
+    for j in nbytes {
+        let di = dst_off + j;
+        let si = src_off + j;
+        guard di >= 0 && di < 4096 && si >= 0 && si < 4096 else { return; }
+        dt.arena[di] = dt.arena[si];
     }
+}
+
+// RFC 7541 Section 2.3.2: Dynamic Table - Compacts surviving ring entries left without evicting live data.
+checkfree fn compact_hpack_arena(dt: http2::DynamicTable&) {
+    var new_pos: i64 = 0;
+    for k in dt.count {
+        let idx = ((dt.head + k) & HPACK_RING_MASK) as i64;
+        guard idx >= 0 && idx < 128 else { break; }
+        let old_n = dt.entries[idx].name_off as i64;
+        let n_len = dt.entries[idx].name_len as i64;
+        let old_v = dt.entries[idx].val_off as i64;
+        let v_len = dt.entries[idx].val_len as i64;
+        guard new_pos >= 0 && new_pos + n_len + v_len <= 4096 else { break; }
+        hpack_arena_shift_left(dt, new_pos, old_n, n_len);
+        dt.entries[idx].name_off = new_pos as u32;
+        new_pos += n_len;
+        hpack_arena_shift_left(dt, new_pos, old_v, v_len);
+        dt.entries[idx].val_off = new_pos as u32;
+        new_pos += v_len;
+    }
+    dt.arena_write_pos = new_pos as u32;
+    dt.arena_tail = 0;
 }
 
 checkfree inline fn pack_header_into_arena(dt: http2::DynamicTable&, name: const u8[:], val: const u8[:]) -> u32, u32 {

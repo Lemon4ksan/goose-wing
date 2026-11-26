@@ -182,18 +182,31 @@ fn evaluate_cors<Req, Res>(policy: const CorsPolicy&, req: const Req&, res: Res&
     guard validate_cors_policy(policy) else { return CorsResult.InvalidConfig; }
     guard is_origin_allowed(policy, origin) else { return CorsResult.RejectedOrigin; }
 
-    let req_method_hdr = req.headers.find_header(rfc::HEADER_ACCESS_CONTROL_REQUEST_METHOD).trim_lws();
-    let is_preflight = req.method[..] == rfc::METHOD_OPTIONS && req_method_hdr.len > 0;
+    let req_method_hdr, acrm_unique = security_internal::find_unique_cors_header(
+        req.headers, rfc::HEADER_ACCESS_CONTROL_REQUEST_METHOD,
+    );
+    guard acrm_unique else { return CorsResult.RejectedPreflightMethod; }
+    var has_acrm = false;
+    for &e in req.headers.entries {
+        if req.headers.entry_name(e).eq_ascii_fold(rfc::HEADER_ACCESS_CONTROL_REQUEST_METHOD) {
+            has_acrm = true;
+            break;
+        }
+    }
+    let is_preflight = req.method[..] == rfc::METHOD_OPTIONS && has_acrm;
     if is_preflight {
         let allow_wild = !policy.allow_credentials;
-        guard security_internal::is_valid_cors_token(req_method_hdr) &&
+        guard req_method_hdr.len > 0 && security_internal::is_valid_cors_token(req_method_hdr) &&
             security_internal::header_list_has_token(policy.allowed_methods[..], req_method_hdr, allow_wild) else {
             return CorsResult.RejectedPreflightMethod;
         }
-        let req_hdrs_raw = req.headers.find_header(rfc::HEADER_ACCESS_CONTROL_REQUEST_HEADERS);
-        if req_hdrs_raw.len > 0 &&
-            !are_cors_request_headers_allowed(policy.allowed_headers[..], req_hdrs_raw, allow_wild) {
-            return CorsResult.RejectedPreflightHeaders;
+        for &e in req.headers.entries {
+            guard req.headers.entry_name(e).eq_ascii_fold(rfc::HEADER_ACCESS_CONTROL_REQUEST_HEADERS) else { continue; }
+            let hdr_line = req.headers.entry_value(e).trim_lws();
+            if hdr_line.len > 0 &&
+                !are_cors_request_headers_allowed(policy.allowed_headers[..], hdr_line, allow_wild) {
+                return CorsResult.RejectedPreflightHeaders;
+            }
         }
     }
 

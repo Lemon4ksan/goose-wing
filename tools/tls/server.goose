@@ -264,15 +264,79 @@ fn try_handle_shutdown_request(
     return true, true;
 }
 
+fn shift_wire_buf(in_buf: u8[>..]&, consumed: i64, rem: u8[>..]&) {
+    rem.clear();
+    rem.append(in_buf[consumed..]);
+    in_buf.clear();
+    in_buf.append(rem[..]);
+}
+
+// Reassembles one or more plaintext TLS handshake records (`0x16`) into `hs_buf`.
+// Returns: 1 = complete handshake message (or non-handshake single record in `out_ct`/`in_buf`),
+//          0 = need more TCP bytes, -1 = protocol violation (alert already sent).
+fn collect_initial_tls_handshake(
+    conn:     i64,
+    in_buf:   u8[>..]&,
+    hs_buf:   u8[..16384]&,
+    rem:      u8[>..]&,
+    out_ct:   u8&,
+    out_rlen: i64&,
+) -> i32 {
+    while in_buf.len >= 5 {
+        let ct = in_buf[0];
+        let rec_ver = core::read_be_u16(in_buf[..], 1);
+        let rlen = core::read_be_u16(in_buf[..], 3) as i64;
+        guard rlen > 0 && rlen <= 16384 else {
+            send_fatal_tls_alert(conn, TLS_ALERT_ILLEGAL_PARAMETER);
+            return -1;
+        }
+        let tot = core::add_sat_i64(5, rlen);
+        if in_buf.len < tot { return 0; }
+
+        if ct != 0x16 {
+            if hs_buf.len > 0 {
+                send_fatal_tls_alert(conn, TLS_ALERT_UNEXPECTED_MESSAGE);
+                return -1;
+            }
+            out_ct = ct;
+            out_rlen = rlen;
+            return 2;
+        }
+
+        // RFC 8446 Section 5.1: Record Layer - Initial ClientHello legacy_record_version MUST be 0x0301 or 0x0303.
+        guard rec_ver == 0x0301 || rec_ver == 0x0303 else {
+            send_fatal_tls_alert(conn, TLS_ALERT_PROTOCOL_VERSION);
+            return -1;
+        }
+        guard hs_buf.try_append(in_buf[5..tot]) else {
+            send_fatal_tls_alert(conn, TLS_ALERT_DECODE_ERROR);
+            return -1;
+        }
+        shift_wire_buf(in_buf, tot, rem);
+        if hs_buf.len >= 4 {
+            let msg_len = core::read_be_u24(hs_buf[..], 1) as i64;
+            guard msg_len <= 16380 else {
+                send_fatal_tls_alert(conn, TLS_ALERT_DECODE_ERROR);
+                return -1;
+            }
+            if hs_buf.len >= core::add_sat_i64(4, msg_len) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 fn handle_tls_connection(
     conn:    i64,
     server:  server::HttpServer&,
     tls_cfg: const tls::ServerHandshakeConfig&,
 ) -> bool {
-    var in_buf:   u8[>..]    = [];
-    var out_wire: u8[..256]  = [];
-    var rem:      u8[>..]    = [];
-    var chunk:    u8[..4096] = [];
+    var in_buf:   u8[>..]     = [];
+    var hs_buf:   u8[..16384] = [];
+    var out_wire: u8[..256]   = [];
+    var rem:      u8[>..]     = [];
+    var chunk:    u8[..4096]  = [];
 
     while true {
         chunk.clear();
@@ -281,25 +345,27 @@ fn handle_tls_connection(
         if recvd <= 0 { break; }
         in_buf.append(chunk[..recvd]);
 
-        let is_sd, sd_done = try_handle_shutdown_request(conn, server, in_buf[..], out_wire);
-        if sd_done { return false; }
-        if is_sd { continue; }
-        if in_buf.len < 5 { continue; }
+        if hs_buf.len == 0 {
+            let is_sd, sd_done = try_handle_shutdown_request(conn, server, in_buf[..], out_wire);
+            if sd_done { return false; }
+            if is_sd { continue; }
+        }
 
-        let content_type = in_buf[0];
-        let record_len = core::read_be_u16(in_buf[..], 3) as i64;
-        let total_record_len = core::add_sat_i64(5, record_len);
-        if in_buf.len < total_record_len { continue; }
-
-        let should_break = dispatch_first_tls_record(
-            conn, server, tls_cfg, content_type, in_buf[5..total_record_len],
-        );
+        var ct:   u8  = 0;
+        var rlen: i64 = 0;
+        let st = collect_initial_tls_handshake(conn, in_buf, hs_buf, rem, ct, rlen);
+        if st < 0 { break; }
+        if st == 0 { continue; }
+        if st == 2 {
+            let tot = core::add_sat_i64(5, rlen);
+            let should_break = dispatch_first_tls_record(conn, server, tls_cfg, ct, in_buf[5..tot]);
+            if should_break { break; }
+            shift_wire_buf(in_buf, tot, rem);
+            continue;
+        }
+        let should_break = dispatch_first_tls_record(conn, server, tls_cfg, 0x16, hs_buf[..]);
+        hs_buf.clear();
         if should_break { break; }
-
-        rem.clear();
-        rem.append(in_buf[total_record_len..]);
-        in_buf.clear();
-        in_buf.append(rem[..]);
     }
     return true;
 }
@@ -376,7 +442,7 @@ fn drive_sni_endpoint_handshake(
     var out_wire: u8[..256] = [];
     var checked_shutdown = false;
 
-    for _ in 128 {
+    for _ in 2048 {
         let st = tls::tls_endpoint_step_handshake(ep);
         guard drain_ep_wire(conn, ep) else { return false, true; }
         if st == tls::TlsBackendStatus.Ok || tls::tls_endpoint_is_established(ep) {
@@ -431,7 +497,7 @@ fn serve_sni_echo_session(conn: i64, ep: tls::TlsEndpoint&) {
     var req_buf: u8[..4096] = [];
     let sni = tls::tls_endpoint_client_sni(ep);
 
-    for _ in 64 {
+    for _ in 4096 {
         let n, rst = tls::tls_endpoint_read_app(ep, app_rx[..]);
         if n > 0 {
             guard req_buf.try_append(app_rx[..n]) else { return; }
@@ -454,6 +520,7 @@ fn handle_sni_endpoint_connection(conn: i64, server: server::HttpServer&) -> boo
         is_server:              true,
         defer_sni_credentials:  true,
         enable_session_tickets: false,
+        require_alpn_match:     true,
         ..
     };
     guard ep_cfg.alpn_wire.try_set("\x02h2\x08http/1.1") else { return true; }
@@ -652,7 +719,8 @@ fn main() {
     var cert_der: u8[..2048] = [];
     let _ = tls::build_test_ed25519_cert_der(seed, "goose-wing.local", "goose-wing.local", "127.0.0.1", cert_der);
     var tls_cfg = tls::ServerHandshakeConfig {
-        priv_seed: seed,
+        priv_seed:          seed,
+        require_alpn_match: true,
         ..
     };
     tls_cfg.cert_der.append(cert_der[..]);

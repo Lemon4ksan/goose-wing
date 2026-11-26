@@ -15,7 +15,8 @@ import .oauth_internal;
 fn encode_token_endpoint_form<B>(token: const u8[:], hint: TokenTypeHint, out: B&) -> bool {
     var committed = false;
     defer if !committed { out.resize(0); };
-    guard token.len > 0 && core::swar_find_ctl(token) == token.len && token.validate_utf8() else {
+    guard token.len > 0 && core::swar_find_ctl(token) == token.len && !token.contains_byte(0x7F) &&
+        token.validate_utf8() else {
         return false;
     }
     out.clear();

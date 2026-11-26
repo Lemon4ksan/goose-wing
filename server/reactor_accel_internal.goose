@@ -116,7 +116,7 @@ fn reactor_accept_rio_tls_fd<Stage>(
     if slot < 0 {
         slot = reactor_evict_stale_slot(epfd, table, leftover_pool, slot_pool, timer_wheel, total_served);
     }
-    guard slot >= 0 && slot < net::REACTOR_ACCEL_SLOTS else {
+    guard slot >= 0 && slot < net::REACTOR_RIO_SLOTS else {
         net::tcp_close(client_fd);
         total_served = core::add_sat_i64(total_served, 1);
         return;
@@ -267,6 +267,88 @@ fn reactor_step_rio_completions<Stage>(
     return n;
 }
 
+inline fn reactor_dispatch_uring_tls_recv_cqe<Stage>(
+    server:        server::HttpServer&,
+    epfd:          i64,
+    table:         server::SoAConnTable&,
+    leftover_pool: slice_pool<u8>&,
+    slot:          i64,
+    has_buf:       bool,
+    bid:           u16,
+    cqe_res:       i32,
+    slot_pool:     ReactorSlotPool&,
+    timer_wheel:   core::TickTimerWheel&,
+    now_ns:        u64,
+    chunk:         ReactorIngressBuf&,
+    cork_wire:     u8[..65536]&,
+    total_served:  i64&,
+    stage:         Stage&,
+) {
+    let rx_tmp .= reactor_tls_rx_scratch();
+    var copied: i32 = 0;
+    if has_buf {
+        copied = net_internal::uring_read_pbuf(server::g_reactor_accel.uring_pbuf, bid, cqe_res, rx_tmp[..]);
+        net_internal::uring_recycle_pbuf(server::g_reactor_accel.uring_pbuf, bid);
+    }
+    if copied > 0 {
+        reactor_handle_completed_rx(
+            server, epfd, table, leftover_pool, slot, rx_tmp[..copied],
+            slot_pool, timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
+        );
+    }
+}
+
+inline fn reactor_dispatch_uring_plain_recv_cqe<Stage>(
+    server:        server::HttpServer&,
+    epfd:          i64,
+    table:         server::SoAConnTable&,
+    leftover_pool: slice_pool<u8>&,
+    slot:          i64,
+    has_buf:       bool,
+    bid:           u16,
+    cqe_res:       i32,
+    slot_pool:     ReactorSlotPool&,
+    timer_wheel:   core::TickTimerWheel&,
+    now_ns:        u64,
+    chunk:         ReactorIngressBuf&,
+    cork_wire:     u8[..65536]&,
+    total_served:  i64&,
+    stage:         Stage&,
+) {
+    let conn = table.fds[slot];
+    guard conn > 0 else {
+        if has_buf {
+            net_internal::uring_recycle_pbuf(server::g_reactor_accel.uring_pbuf, bid);
+        }
+        return;
+    }
+    if server.pipeline.enable_slowloris_timer {
+        table.soa_table_touch(slot, core::tick_timer_arm(timer_wheel, 15));
+    }
+    chunk.len = 0;
+    reactor_load_leftover(table, leftover_pool, slot, chunk);
+    if has_buf {
+        let can_fit = chunk.len < REACTOR_INGRESS_CAP && chunk.len < chunk.bytes.len;
+        if !can_fit {
+            net_internal::uring_recycle_pbuf(server::g_reactor_accel.uring_pbuf, bid);
+            reactor_close_and_inc(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
+            return;
+        }
+        let copied = net_internal::uring_read_pbuf(
+            server::g_reactor_accel.uring_pbuf, bid, cqe_res, chunk.bytes[chunk.len..REACTOR_INGRESS_CAP],
+        );
+        net_internal::uring_recycle_pbuf(server::g_reactor_accel.uring_pbuf, bid);
+        if copied > 0 {
+            chunk.len = core::add_sat_i64(chunk.len, copied);
+        }
+    }
+    if chunk.len > 0 {
+        reactor_process_slot_plaintext(
+            server, epfd, table, leftover_pool, slot, conn, slot_pool, now_ns, chunk, cork_wire, total_served, stage,
+        );
+    }
+}
+
 fn reactor_dispatch_uring_recv_cqe<Stage>(
     server:        server::HttpServer&,
     cqe:           const net_internal::UringCqe&,
@@ -289,28 +371,31 @@ fn reactor_dispatch_uring_recv_cqe<Stage>(
         }
         return;
     }
+    let epfd = server::g_reactor_accel.epfd;
     if cqe.res <= 0 {
         if has_buf {
             net_internal::uring_recycle_pbuf(server::g_reactor_accel.uring_pbuf, bid);
         }
-        reactor_request_slot_close(
-            server, server::g_reactor_accel.epfd, table, leftover_pool, slot, slot_pool, total_served,
-        );
+        reactor_request_slot_close(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
         return;
     }
 
-    var rx_tmp: u8[4096] = [0; 4096];
-    var copied: i32      = 0;
-    if has_buf {
-        copied = net_internal::uring_read_pbuf(server::g_reactor_accel.uring_pbuf, bid, cqe.res, rx_tmp[..]);
-        net_internal::uring_recycle_pbuf(server::g_reactor_accel.uring_pbuf, bid);
-    }
-    if copied > 0 {
-        reactor_handle_completed_rx(
-            server, server::g_reactor_accel.epfd, table, leftover_pool, slot, rx_tmp[..copied],
+    let is_tls = slot < table.has_tls.len
+        && slot < table.tls_slots.len
+        && table.has_tls[slot]
+        && table.tls_slots[slot] != 0xFFFF;
+    if is_tls {
+        reactor_dispatch_uring_tls_recv_cqe(
+            server, epfd, table, leftover_pool, slot, has_buf, bid, cqe.res,
+            slot_pool, timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
+        );
+    } else {
+        reactor_dispatch_uring_plain_recv_cqe(
+            server, epfd, table, leftover_pool, slot, has_buf, bid, cqe.res,
             slot_pool, timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
         );
     }
+
     if (cqe.flags & net_internal::URING_CQE_F_MORE) == 0 &&
         is_active_slot(table, slot) &&
         !server::g_reactor_accel.slot_close_after_tx[slot] {
@@ -426,6 +511,8 @@ fn reactor_dispatch_single_uring_cqe<Stage>(
             server, cqe, table, leftover_pool, slot_pool,
             timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
         );
+    } else if kind == net::REACTOR_URING_TAG_EPOLL {
+        server::g_reactor_accel.uring_epoll_armed = false;
     } else if kind == net::REACTOR_URING_TAG_RECV {
         reactor_dispatch_uring_recv_cqe(
             server, cqe, table, leftover_pool, slot_pool,
@@ -455,12 +542,14 @@ fn reactor_step_uring_completions<Stage>(
         server::g_reactor_accel.uring_fd >= 0 else {
         return 0;
     }
-    var cqes: net_internal::UringCqe[64] = [net_internal::UringCqe { .. }; 64];
+    net::reactor_arm_uring_epoll_poll(server::g_reactor_accel);
+    let _ = net::reactor_stage_uring_sqes(server::g_reactor_accel);
+    var cqes: net_internal::UringCqe[256] = [net_internal::UringCqe { .. }; 256];
     let min_c: u32 = if timeout_ms > 0 { 1 } else { 0 };
     let timeout_ns = net_internal::timeout_ms_to_ns(timeout_ms);
     let n = net_internal::uring_wait_cqes(server::g_reactor_accel.uring_fd, cqes[..], min_c, timeout_ns);
     guard n > 0 else { return 0; }
-    let limit = min(n as i64, 64);
+    let limit = min(n as i64, 256);
     for i in limit {
         reactor_dispatch_single_uring_cqe(
             server, listener_fd, draining, tls_config, is_tls, cqes[i], table,

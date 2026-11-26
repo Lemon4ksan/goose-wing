@@ -116,13 +116,6 @@ fn handle_peer_extended_control_frame(conn: http3::Connection&, frame_type: u64,
     return handle_peer_origin_or_glitch(conn, frame_type, payload);
 }
 
-inline fn record_bounded_stream_id<A>(arr: A&, id: u64) {
-    if !arr.try_push(id) && arr.len > 0 {
-        arr.remove_at(0);
-        let _ = arr.try_push(id);
-    }
-}
-
 fn has_opened_push_id(conn: const http3::Connection&, push_id: u64) -> bool {
     for id in conn.opened_push_ids {
         if id == push_id {
@@ -177,8 +170,17 @@ fn handle_push_stream_open(
         return 0, rfc::H3_ERR_ID_ERROR;
     }
 
-    record_bounded_stream_id(conn.opened_push_ids, push_id);
-    record_bounded_stream_id(conn.push_uni_streams, stream_id);
+    guard conn.opened_push_ids.len < conn.opened_push_ids.cap
+        && conn.push_uni_streams.len < conn.push_uni_streams.cap else {
+        conn.state = http3::ConnState.Closed;
+        conn.error_code = rfc::H3_ERR_EXCESSIVE_LOAD;
+        return 0, rfc::H3_ERR_EXCESSIVE_LOAD;
+    }
+    guard conn.opened_push_ids.try_push(push_id) && conn.push_uni_streams.try_push(stream_id) else {
+        conn.state = http3::ConnState.Closed;
+        conn.error_code = rfc::H3_ERR_EXCESSIVE_LOAD;
+        return 0, rfc::H3_ERR_EXCESSIVE_LOAD;
+    }
     return rem_off, rfc::H3_ERR_NO_ERROR;
 }
 
@@ -598,7 +600,11 @@ fn register_peer_uni_stream(
     }
 
     // RFC 9114 Section 6.2: Unidirectional Streams - The recipient MUST NOT consider unknown stream types to be a connection error of any kind.
-    record_bounded_stream_id(conn.ignored_uni_streams, stream_id);
+    guard conn.ignored_uni_streams.try_push(stream_id) else {
+        conn.state = http3::ConnState.Closed;
+        conn.error_code = rfc::H3_ERR_EXCESSIVE_LOAD;
+        return 0, rfc::H3_ERR_EXCESSIVE_LOAD;
+    }
     return 0, rfc::H3_ERR_NO_ERROR;
 }
 

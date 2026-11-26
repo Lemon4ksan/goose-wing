@@ -164,6 +164,8 @@ fn parse_server_client_hello(
     psk_policy:          ServerPskPolicy        = ServerPskPolicy.AllowResumption,
     alpn_policy:         ServerAlpnPolicy       = ServerAlpnPolicy.Optional,
     quic_mode:           tls::QuicExtensionMode = tls::QuicExtensionMode.Tcp,
+    has_hrr_prefix:      bool                   = false,
+    hrr_prefix_tr:       const tls::Transcript  = tls::Transcript { .. },
 ) -> bool {
     zeroize_server_ch_choice(out);
     var committed = false;
@@ -196,7 +198,8 @@ fn parse_server_client_hello(
     let psk_ext, has_psk = tls::find_extension(entries, rfc::TLS_EXT_PRE_SHARED_KEY);
     if has_psk && psk_policy == ServerPskPolicy.AllowResumption {
         let psk_matched, psk_ok = eval_client_hello_psk_entry(
-            entries, payload, psk_ext, sel_cs, out.psk_secret, out.selected_psk_id, require_client_cert,
+            entries, payload, psk_ext, sel_cs, out.psk_secret, out.selected_psk_id,
+            require_client_cert, out.client_sni[..], has_hrr_prefix, hrr_prefix_tr,
         );
         guard psk_ok else { return false; }
         out.psk_resumed = psk_matched;

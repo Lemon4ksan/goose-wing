@@ -13,6 +13,11 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
+
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
 
 #if defined(_MSC_VER)
 #define WING_ALIGN64 __declspec(align(64))
@@ -60,12 +65,28 @@ int32_t wing_spsc_create(uint32_t min_capacity, uint64_t *out_handle, uint32_t *
     uint32_t cap = next_pow2_u32(min_capacity);
     if (cap < 16) cap = 16;
 
-    wing_spsc_ring_t *ring = (wing_spsc_ring_t *)calloc(1, sizeof(wing_spsc_ring_t));
+    wing_spsc_ring_t *ring = NULL;
+#if defined(_WIN32)
+    ring = (wing_spsc_ring_t *)_aligned_malloc(sizeof(wing_spsc_ring_t), WING_CACHE_LINE);
+    if (ring) memset(ring, 0, sizeof(wing_spsc_ring_t));
+#elif defined(__wasm__)
+    ring = (wing_spsc_ring_t *)calloc(1, sizeof(wing_spsc_ring_t));
+#else
+    if (posix_memalign((void **)&ring, WING_CACHE_LINE, sizeof(wing_spsc_ring_t)) != 0) {
+        ring = NULL;
+    } else {
+        memset(ring, 0, sizeof(wing_spsc_ring_t));
+    }
+#endif
     if (!ring) return -2;
 
     ring->buffer = (uint64_t *)calloc(cap, sizeof(uint64_t));
     if (!ring->buffer) {
+#if defined(_WIN32)
+        _aligned_free(ring);
+#else
         free(ring);
+#endif
         return -3;
     }
 
@@ -88,7 +109,11 @@ void wing_spsc_destroy(uint64_t handle) {
         free(ring->buffer);
         ring->buffer = NULL;
     }
+#if defined(_WIN32)
+    _aligned_free(ring);
+#else
     free(ring);
+#endif
 }
 
 int32_t wing_spsc_push(uint64_t handle, uint64_t value) {
@@ -97,9 +122,8 @@ int32_t wing_spsc_push(uint64_t handle, uint64_t value) {
     if (!ring || !ring->buffer) return -2;
 
 #if defined(_MSC_VER)
-    uint64_t tail = ring->tail;
-    uint64_t head = ring->head;
-    _ReadWriteBarrier();
+    uint64_t tail = (uint64_t)ring->tail;
+    uint64_t head = (uint64_t)InterlockedOr64((volatile LONG64 *)&ring->head, 0);
 #else
     uint64_t tail = __atomic_load_n(&ring->tail, __ATOMIC_RELAXED);
     uint64_t head = __atomic_load_n(&ring->head, __ATOMIC_ACQUIRE);
@@ -112,8 +136,7 @@ int32_t wing_spsc_push(uint64_t handle, uint64_t value) {
     ring->buffer[tail & ring->mask] = value;
 
 #if defined(_MSC_VER)
-    _ReadWriteBarrier();
-    ring->tail = tail + 1;
+    (void)InterlockedExchange64((volatile LONG64 *)&ring->tail, (LONG64)(tail + 1));
 #else
     __atomic_store_n(&ring->tail, tail + 1, __ATOMIC_RELEASE);
 #endif
@@ -127,9 +150,8 @@ int32_t wing_spsc_pop(uint64_t handle, uint64_t *out_value) {
     if (!ring || !ring->buffer) return -2;
 
 #if defined(_MSC_VER)
-    uint64_t head = ring->head;
-    uint64_t tail = ring->tail;
-    _ReadWriteBarrier();
+    uint64_t head = (uint64_t)ring->head;
+    uint64_t tail = (uint64_t)InterlockedOr64((volatile LONG64 *)&ring->tail, 0);
 #else
     uint64_t head = __atomic_load_n(&ring->head, __ATOMIC_RELAXED);
     uint64_t tail = __atomic_load_n(&ring->tail, __ATOMIC_ACQUIRE);
@@ -142,8 +164,7 @@ int32_t wing_spsc_pop(uint64_t handle, uint64_t *out_value) {
     *out_value = ring->buffer[head & ring->mask];
 
 #if defined(_MSC_VER)
-    _ReadWriteBarrier();
-    ring->head = head + 1;
+    (void)InterlockedExchange64((volatile LONG64 *)&ring->head, (LONG64)(head + 1));
 #else
     __atomic_store_n(&ring->head, head + 1, __ATOMIC_RELEASE);
 #endif
@@ -157,8 +178,8 @@ uint32_t wing_spsc_count(uint64_t handle) {
     if (!ring) return 0;
 
 #if defined(_MSC_VER)
-    uint64_t tail = ring->tail;
-    uint64_t head = ring->head;
+    uint64_t tail = (uint64_t)InterlockedOr64((volatile LONG64 *)&ring->tail, 0);
+    uint64_t head = (uint64_t)InterlockedOr64((volatile LONG64 *)&ring->head, 0);
 #else
     uint64_t tail = __atomic_load_n(&ring->tail, __ATOMIC_RELAXED);
     uint64_t head = __atomic_load_n(&ring->head, __ATOMIC_RELAXED);

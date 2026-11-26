@@ -411,8 +411,7 @@ fn mlkem768_decapsulate(
     core::ct_copy_bytes(ek_arr[..], ek);
     var ct_re = k_pke_encrypt(ek_arr, pke_m, r_coins);
     defer core::secure_zeroize_slice(ct_re[..]);
-    let pke_matches = core::ct_eq_bytes(ct, ct_re[..]);
-    let pke_bit: u8 = if pke_matches { 1 } else { 0 };
+    let pke_bit = core::ct_eq_bytes_bit(ct, ct_re[..]);
 
     var k_bar = ml_kem_j(z, ct);
     defer core::secure_zeroize_32(k_bar);
@@ -429,13 +428,15 @@ fn compute_kpke_encrypt_u_col(
     col_idx: u8,
 ) -> Poly256 {
     var u_hat_j = Poly256 { .. };
+    defer zeroize_poly256(u_hat_j);
     let a0 = sample_ntt(rho, col_idx, 0);
     let a1 = sample_ntt(rho, col_idx, 1);
     let a2 = sample_ntt(rho, col_idx, 2);
     poly_basemul_acc(u_hat_j, a0, r_hat[0]);
     poly_basemul_acc(u_hat_j, a1, r_hat[1]);
     poly_basemul_acc(u_hat_j, a2, r_hat[2]);
-    let u_inv = poly_invntt(u_hat_j);
+    var u_inv = poly_invntt(u_hat_j);
+    defer zeroize_poly256(u_inv);
     return poly_add(u_inv, e1_j);
 }
 
@@ -504,6 +505,7 @@ fn compute_kpke_keygen_row(
     row_idx: u8,
 ) -> Poly256 {
     var t_hat_i = Poly256 { .. };
+    defer zeroize_poly256(t_hat_i);
     let a0 = sample_ntt(rho, 0, row_idx);
     let a1 = sample_ntt(rho, 1, row_idx);
     let a2 = sample_ntt(rho, 2, row_idx);
@@ -603,6 +605,7 @@ fn verify_ek1024_poly_modulus(ek: const u8[:]) -> bool {
 // FIPS 203 Section 7.2 Algorithm 17: ML-KEM-768 Encapsulation (ML-KEM.Encaps_internal).
 // Performs the FIPS 203 encapsulation key modulus check on `ek[0..1152]` before encapsulating.
 fn mlkem768_encapsulate(ek: const u8[1184]&, m_rand: const u8[32]&) -> u8[1088], u8[32], bool {
+    defer core::secure_scrub_stack();
     var ct_zero: u8[1088] = [0; 1088];
     var ss_zero: u8[32]   = [0; 32];
     guard verify_ek768_poly_modulus(ek[..]) else {
@@ -611,15 +614,15 @@ fn mlkem768_encapsulate(ek: const u8[1184]&, m_rand: const u8[32]&) -> u8[1088],
 
     let h_ek = ml_kem_h(ek[..]);
     var g_out = ml_kem_g(m_rand[..], h_ek[..]);
+    defer core::secure_zeroize_64(g_out);
 
     var k_shared: u8[32] = [0; 32];
     var r_coins:  u8[32] = [0; 32];
+    defer core::secure_zeroize_32(r_coins);
     core::ct_copy_bytes(k_shared[..], g_out[0..32]);
     core::ct_copy_bytes(r_coins[..], g_out[32..64]);
 
     let ct = k_pke_encrypt(ek, m_rand, r_coins);
-    core::secure_zeroize_64(g_out);
-    core::secure_zeroize_32(r_coins);
     return ct, k_shared, true;
 }
 

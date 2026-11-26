@@ -60,7 +60,7 @@ inline fn is_noop_server_stage<Stage>(stage: const Stage&) -> bool {
 }
 
 inline fn can_try_fast_l0_static<Stage>(server: const server::HttpServer&, stage: const Stage&) -> bool {
-    guard is_noop_server_stage(stage) && !server.omit_server_header && !server.omit_date_header else {
+    guard server::allows_fast_l0_static(stage) && !server.omit_server_header && !server.omit_date_header else {
         return false;
     }
     guard server.pipeline.router.l0_table.count > 0 && server.pipeline.router.static_payloads.len > 0 else {
@@ -74,7 +74,7 @@ inline fn can_try_fast_l0_static<Stage>(server: const server::HttpServer&, stage
 }
 
 // Validates a `Host` header slice, optionally memoizing the last valid value on `pipeline`.
-fn validate_fast_host_slice(
+inline fn validate_fast_host_slice(
     pipeline: server::ServerPipelineConfig&,
     host_val: const u8[:],
     memoize:  bool = false,
@@ -83,7 +83,7 @@ fn validate_fast_host_slice(
     if memoize && pipeline.has_valid_host && host_val == pipeline.last_valid_host[..] {
         return true;
     }
-    guard validate_host_header_chars(host_val) && server::validate_host_header_structure(host_val) else {
+    guard validate_host_fast(host_val) else {
         return false;
     }
     if memoize && pipeline.last_valid_host.try_set(host_val) {
@@ -133,7 +133,7 @@ inline fn eval_fast_l0_known_header(
 // Example:
 //   rest = "Host: localhost\r\n\r\n", cursor = 0
 //   returns: true, cursor = 17, has_host = true
-fn scan_fast_l0_static_header_line(
+inline fn scan_fast_l0_static_header_line(
     server:    server::HttpServer&,
     rest:      const u8[:],
     cursor:    i64&,
@@ -254,7 +254,7 @@ inline fn is_valid_fast_static_path(path: const u8[:]) -> bool {
 // Example:
 //   header_bytes = "GET /plaintext HTTP/1.1\r\nHost: a\r\n\r\n"
 //   returns: "/plaintext", rest_offset = 25, ok = true
-fn parse_fast_l0_get_request_line(header_bytes: const u8[:]) -> const u8[:], i64, bool {
+inline fn parse_fast_l0_get_request_line(header_bytes: const u8[:]) -> const u8[:], i64, bool {
     guard core::read_le_u32(header_bytes, 0) == rfc::METHOD_GET_U32 else { return "", 0, false; }
     let sp2 = swar_find_space(header_bytes, 4);
     let rest_offset = core::add_sat_i64(sp2, 11);
@@ -270,7 +270,7 @@ fn parse_fast_l0_get_request_line(header_bytes: const u8[:]) -> const u8[:], i64
 }
 
 // Matches `path` in `server.pipeline.router.l0_table` and returns the static payload index if eligible.
-fn match_fast_l0_static_payload(server: const server::HttpServer&, path: const u8[:]) -> i32 {
+inline fn match_fast_l0_static_payload(server: const server::HttpServer&, path: const u8[:]) -> i32 {
     let l0_slot = match_l0(path, 0, server.pipeline.router.l0_table);
     guard l0_slot >= 0 else { return -1; }
     let slot_idx = l0_slot as i64;
@@ -373,6 +373,19 @@ inline fn is_incomplete_l0_prefix(server: const server::HttpServer&, stream: con
     return stream.len <= hdr_limit && is_possible_http_method_prefix(stream);
 }
 
+// Checks whether `stream` starts with a short `GET /...` prefix eligible for L0 routing
+// before scanning the full header block for `\r\n\r\n`.
+//
+// Example:
+//   stream = "GET /api/v1/users/1001 HTTP/1.1\r\nHost: x\r\n\r\n"
+//   returns: false
+inline fn has_fast_l0_get_prefix(stream: const u8[:]) -> bool {
+    guard stream.len >= 21 else { return true; }
+    guard core::read_le_u32(stream, 0) == rfc::METHOD_GET_U32 && stream[4] == '/' else { return false; }
+    let sp2 = swar_find_space(stream, 4);
+    return sp2 >= 5 && sp2 <= 20;
+}
+
 fn drain_fast_l0_static_stream<B>(
     server:           server::HttpServer&,
     stream_in:        const u8[:],
@@ -388,6 +401,9 @@ fn drain_fast_l0_static_stream<B>(
         stream = strip_pipelined_crlf(stream, total_consumed);
         if stream.len == 0 {
             return stream, true;
+        }
+        guard has_fast_l0_get_prefix(stream) else {
+            return stream, false;
         }
         let _pf = server_prof::lit_prof_enter("http1.framing");
         let hdr_end = core::fast_find_crlfcrlf(stream);

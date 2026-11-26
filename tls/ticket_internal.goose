@@ -127,13 +127,14 @@ fn store_server_session_ticket(
 }
 
 // Looks up a server-issued TLS 1.3 session ticket by opaque ticket identity bytes.
-// Enforces server-only table isolation, cipher-suite hash-length match, and mTLS authentication binding.
+// Enforces server-only table isolation, SNI binding, cipher-suite hash-length match, and mTLS binding.
 fn lookup_server_ticket_by_identity(
     ticket_id:           const u8[:],
     require_client_cert: bool,
     out_psk:             u8[..48]&,
     out_cipher_suite:    u16&,
-    now_ms:              i64 = 0,
+    now_ms:              i64         = 0,
+    server_name:         const u8[:] = "",
 ) -> bool {
     var committed = false;
     defer if !committed {
@@ -149,6 +150,7 @@ fn lookup_server_ticket_by_identity(
         if entry.in_use && core::ct_eq_bytes(entry.ticket[..], ticket_id) {
             let expected_hlen = rfc::tls13_cipher_suite_hash_len(entry.cipher_suite) as i64;
             guard is_cached_ticket_fresh(entry, cur_ms) &&
+                entry.server_name[..].eq_ascii_fold(server_name) &&
                 (!require_client_cert || entry.client_authenticated) &&
                 entry.psk.len == expected_hlen &&
                 out_psk.try_set(entry.psk[..]) else {

@@ -251,6 +251,39 @@ inline fn read_unique_jwt_str<B>(
     if !core::read_json_string_into(reader, dst) { had_error = true; }
 }
 
+// Parses an RFC 9449 Section 6.1 `cnf` confirmation claim object, extracting unique `cnf.jkt`.
+//
+// Example:
+//   reader at "{\"jkt\":\"0ZcO...\"}", seen_cnf = false
+//   sets: claims.cnf_jkt = "0ZcO...", seen_cnf = true
+inline fn parse_jwt_cnf_claim(
+    reader:    json::Reader&,
+    claims:    auth::JwtClaims&,
+    seen_cnf:  bool&,
+    had_error: bool&,
+) {
+    if seen_cnf || json::peek(reader) != '{' {
+        json::skip(reader);
+        had_error = true;
+        return;
+    }
+    seen_cnf = true;
+    var seen_jkt = false;
+    json::each_member(reader) { sub_key =>
+        if sub_key != "jkt" {
+            json::skip(reader);
+        } else if seen_jkt || json::peek(reader) != '"' {
+            json::skip(reader);
+            had_error = true;
+        } else {
+            seen_jkt = true;
+            if !core::read_json_string_into(reader, claims.cnf_jkt) || claims.cnf_jkt.len == 0 {
+                had_error = true;
+            }
+        }
+    };
+}
+
 // Parses registered RFC 7519 §4.1 claims (`iss`, `sub`, `aud`, `jti`, `exp`, `nbf`, `iat`).
 //
 // Example:

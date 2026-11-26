@@ -163,6 +163,7 @@ fn get(
     partition_key: const u8[:]   = "",
 ) -> const u8[:] {
     let parsed_url = parse_canonical_cookie_url(req_url);
+    guard parsed_url.host.len > 0 else { return ""; }
     var best_idx: i64  = 0;
     var has_best: bool = false;
     for &cookie_val, idx in jar.cookies {
@@ -308,6 +309,7 @@ fn set_cookie_header(
     partition_key:  const u8[:] = "",
 ) -> bool {
     let parsed_url = parse_canonical_cookie_url(req_url);
+    guard parsed_url.host.len > 0 else { return false; }
     var def_path: u8[..256] = [];
     compute_default_path(parsed_url.path[..], def_path);
 
@@ -385,6 +387,7 @@ fn build_cookie_header<B>(
     out:           B&,
 ) {
     let parsed_url = parse_canonical_cookie_url(req_url);
+    guard parsed_url.host.len > 0 else { return; }
     var matched_indices: u16[..180] = [];
     jar.get_canonical_cookies_for_request(
         parsed_url.host[..],
@@ -409,6 +412,7 @@ fn build_request_cookie_header<B>(
     out:           B&,
 ) {
     let parsed_url = parse_canonical_cookie_url(req_url);
+    guard parsed_url.host.len > 0 else { return; }
     var matched_indices: u16[..180] = [];
     jar.get_canonical_cookies_for_request(
         parsed_url.host[..],
@@ -434,6 +438,10 @@ fn get_canonical_cookies_for_request(
     access:        AccessOptions = AccessOptions { .. },
 ) {
     let parsed_url = parse_canonical_cookie_url(req_url);
+    guard parsed_url.host.len > 0 else {
+        out_indices.clear();
+        return;
+    }
     jar.get_canonical_cookies_for_request(
         parsed_url.host[..],
         parsed_url.path[..],
@@ -823,9 +831,13 @@ fn cookie_internal::find_canonical_cookie_collision_index(
         if existing.host_only != new_cookie.host_only { continue; }
         if existing.path[..] != new_cookie.path[..] { continue; }
         if existing.partition_key[..] != new_cookie.partition_key[..] { continue; }
-        let port_match = existing.source_port == -1 || new_cookie.source_port == -1
+        let secure_upgrades_non_secure = new_cookie.source_scheme == cookie::SourceScheme.Secure
+            && existing.source_scheme == cookie::SourceScheme.NonSecure;
+        let port_match = secure_upgrades_non_secure
+            || existing.source_port == -1 || new_cookie.source_port == -1
             || existing.source_port == new_cookie.source_port;
-        let scheme_match = existing.source_scheme == cookie::SourceScheme.Unset
+        let scheme_match = secure_upgrades_non_secure
+            || existing.source_scheme == cookie::SourceScheme.Unset
             || new_cookie.source_scheme == cookie::SourceScheme.Unset
             || existing.source_scheme == new_cookie.source_scheme;
         if !port_match || !scheme_match { continue; }

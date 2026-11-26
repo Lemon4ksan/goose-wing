@@ -80,6 +80,11 @@ inline fn u256_in_order_bit(a: U256) -> u8 {
     return ((u256_nonzero_bit(a) as u32) & (borrow as u32)) as u8;
 }
 
+// Returns true iff big-endian `priv_key` encodes a valid P-256 scalar `1 <= d < n` (SEC 1 Section 3.2.1).
+fn is_valid_p256_private_key(priv_key: const u8[32]&) -> bool {
+    return u256_in_order_bit(u256_from_be(priv_key)) == 1;
+}
+
 // Branchless constant-time 256-bit comparison: returns -1 if a < b, 0 if a == b, 1 if a > b.
 // crap:ignore
 inline fn u256_cmp(a: U256, b: const u32[8]&) -> i32 {
@@ -160,9 +165,7 @@ inline fn u256_select(bit: u32, if_true: U256, if_false: U256) -> U256 {
 // Zeroizes a 256-bit secret scalar in place.
 // crap:ignore
 inline fn zeroize_u256(val: U256&) {
-    var z_bytes: u8[32] = [0; 32];
-    secure_zeroize_32(z_bytes);
-    val = u256_from_be(z_bytes);
+    secure_zeroize_u32_slice(val.v[..]);
 }
 
 // 32-bit CIOS Montgomery multiplication step on 8-limb U256: `(a * b * R^-1) mod m` where `R = 2^256`.
@@ -949,9 +952,7 @@ inline fn u384_select(bit: u32, if_true: U384, if_false: U384) -> U384 {
 // Zeroizes a 384-bit secret scalar in place.
 // crap:ignore
 inline fn zeroize_u384(val: U384&) {
-    var z_bytes: u8[48] = [0; 48];
-    secure_zeroize_48(z_bytes);
-    val = u384_from_be(z_bytes);
+    secure_zeroize_u32_slice(val.v[..]);
 }
 
 // 32-bit CIOS Montgomery multiplication step on 12-limb U384: `(a * b * R^-1) mod m` where `R = 2^384`.

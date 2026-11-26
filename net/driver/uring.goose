@@ -42,6 +42,7 @@ extern fn native_uring_peek_cqe(
     res_out:       i32&,
     flags_out:     u32&,
 ) -> i32 = "wing_uring_peek_cqe";
+extern fn native_uring_stage_sqes(ring_fd: i64, sqes: const UringSqe[:]) -> i32 = "wing_uring_stage_sqes";
 extern fn native_uring_submit_sqes(ring_fd: i64, sqes: const UringSqe[:]) -> i32 = "wing_uring_submit_sqes";
 extern fn native_uring_wait_cqes(
     ring_fd:      i64,

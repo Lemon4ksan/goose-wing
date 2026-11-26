@@ -206,9 +206,7 @@ inline fn complete_server_stream_response(
     let c_idx, c_found = http2::find_stream_idx(sess.conn, target_stream_id);
     if c_found {
         sess.conn.streams[c_idx].state = http2::StreamState.Closed;
-        sess.conn.streams[c_idx].active = false;
-        let _ = core::flat_index_remove(sess.conn.stream_index[..], target_stream_id);
-        sess.conn.active_stream_count = core::sub_sat_u32(sess.conn.active_stream_count, 1);
+        http2::release_active_stream_slot(sess.conn, c_idx, target_stream_id);
         http2::sync_stream_urgency_node(sess.conn, c_idx);
     }
 }

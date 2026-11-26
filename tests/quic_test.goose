@@ -1344,14 +1344,17 @@ fn test_window_update_thresholds(t: lit::T&) {
     let _, need_update3 = quic::check_conn_window_update(fc);
     t.assert_false(need_update3, "subsequent check does not re-trigger without more reads");
 
-    // RFC 9000 §4.1: Received bytes trigger MAX_DATA update preventing deadlock without app reads
+    // RFC 9000 §4.1: Unread received bytes alone must NOT trigger MAX_DATA update until app reads them.
     var fc_rx = quic::new_flow_control(65536, 65536);
     var s_rx = quic::new_stream(0, 65536);
     let _, ok_rx = quic::record_recv_stream(fc_rx, s_rx, 0, 35000);
     t.assert_true(ok_rx, "record receive 35000 bytes ok");
+    let _, need_unread = quic::check_conn_window_update(fc_rx);
+    t.assert_false(need_unread, "unread buffered bytes must not trigger MAX_DATA window update");
+    quic::on_app_read(fc_rx, s_rx, 35000);
     let new_max_rx, need_update_rx = quic::check_conn_window_update(fc_rx);
-    t.assert_true(need_update_rx, "MAX_DATA update triggered by received bytes preventing deadlock");
-    t.assert_eq(new_max_rx, 100536, "new MAX_DATA calculated from received bytes (35000 + 65536)");
+    t.assert_true(need_update_rx, "MAX_DATA update triggered after app consumes 35000 bytes");
+    t.assert_eq(new_max_rx, 100536, "new MAX_DATA calculated from consumed bytes (35000 + 65536)");
 
     // Stream window update threshold test
     var s_up = quic::new_stream(0, 1000);

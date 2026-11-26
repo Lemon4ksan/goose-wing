@@ -1337,28 +1337,20 @@ fn set_inline(map: HeaderMap&, id: WellKnownHeader, value: const u8[:]) -> bool 
     return map.insert_header(name, value);
 }
 
-fn compact_kept_entry_in_place(map: HeaderMap&, read_i: i64, write_entry_i: i64&, write_raw_pos: u16&) {
+fn compact_kept_entry_into(
+    map:           HeaderMap&,
+    read_i:        i64,
+    write_entry_i: i64&,
+    new_raw:       u8[..8192]&,
+) {
     var e = map.entries[read_i];
     let has_comma = map.header_contains_comma[read_i];
     if e.reserved == HEADER_SRC_STACK && e.values_end <= map.raw_buf.len {
-        let n_len = e.name_end - e.name_begin;
-        let v_len = e.values_end - e.values_begin;
-        let old_n_begin = e.name_begin;
-        let old_v_begin = e.values_begin;
-        let new_n_begin = write_raw_pos;
-        if new_n_begin != old_n_begin {
-            for k in (n_len as i64) {
-                map.raw_buf[new_n_begin + k] = map.raw_buf[old_n_begin + k];
-            }
-        }
-        let new_n_end = new_n_begin + n_len;
-        if new_n_end != old_v_begin {
-            for k in (v_len as i64) {
-                map.raw_buf[new_n_end + k] = map.raw_buf[old_v_begin + k];
-            }
-        }
-        let new_v_end = new_n_end + v_len;
-        write_raw_pos = new_v_end;
+        let new_n_begin = new_raw.len as u16;
+        let _ = new_raw.try_append(map.raw_buf[e.name_begin..e.name_end]);
+        let new_n_end = new_raw.len as u16;
+        let _ = new_raw.try_append(map.raw_buf[e.values_begin..e.values_end]);
+        let new_v_end = new_raw.len as u16;
         e.name_begin = new_n_begin;
         e.name_end = new_n_end;
         e.values_begin = new_n_end;
@@ -1370,19 +1362,18 @@ fn compact_kept_entry_in_place(map: HeaderMap&, read_i: i64, write_entry_i: i64&
     write_entry_i += 1;
 }
 
-fn finish_in_place_compaction(
+fn finish_compaction(
     map:           HeaderMap&,
     write_entry_i: i64,
-    write_raw_pos: u16,
+    new_raw:       u8[..8192]&,
     spill_raw:     const u8[:] = "",
 ) {
     map.entries.resize(write_entry_i);
     map.header_contains_comma.resize(write_entry_i);
-    let target_raw_len = write_raw_pos as i64;
-    if target_raw_len < map.raw_buf.len {
-        core::secure_zeroize_slice(map.raw_buf[target_raw_len..]);
-    }
-    map.raw_buf.resize(target_raw_len);
+    core::secure_zeroize_slice(map.raw_buf[..]);
+    let _ = map.raw_buf.try_set(new_raw[..]);
+    core::secure_zeroize_slice(new_raw[..]);
+    new_raw.clear();
     http_internal::rebuild_inline_slots_and_chains(map, spill_raw);
 }
 
@@ -1424,8 +1415,9 @@ fn compact_arena_spill_raw(map: HeaderMap&, arena: OverflowArena&, kept_map_coun
 
 fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
     var found = false;
-    var write_entry_i: i64 = 0;
-    var write_raw_pos: u16 = 0;
+    var write_entry_i: i64        = 0;
+    var new_raw:       u8[..8192] = [];
+    defer core::secure_zeroize_slice(new_raw[..]);
     let total_entries = map.entries.len;
 
     for read_i in total_entries {
@@ -1438,26 +1430,27 @@ fn remove_header(map: HeaderMap&, name: const u8[:]) -> bool {
             found = true;
             continue;
         }
-        compact_kept_entry_in_place(map, read_i, write_entry_i, write_raw_pos);
+        compact_kept_entry_into(map, read_i, write_entry_i, new_raw);
     }
 
     if found {
-        finish_in_place_compaction(map, write_entry_i, write_raw_pos);
+        finish_compaction(map, write_entry_i, new_raw);
     }
     return found;
 }
 
 fn remove_header_spill(map: HeaderMap&, arena: OverflowArena&, name: const u8[:]) -> bool {
     var found = false;
-    var write_entry_i: i64 = 0;
-    var write_raw_pos: u16 = 0;
+    var write_entry_i: i64        = 0;
+    var new_raw:       u8[..8192] = [];
+    defer core::secure_zeroize_slice(new_raw[..]);
     for read_i in map.entries.len {
         let e .= map.entries[read_i];
         if entry_name_spill(map, arena, e).eq_ascii_fold(name) {
             found = true;
             continue;
         }
-        compact_kept_entry_in_place(map, read_i, write_entry_i, write_raw_pos);
+        compact_kept_entry_into(map, read_i, write_entry_i, new_raw);
     }
     var spill_write: i64 = 0;
     for si in arena.spill_entries.len {
@@ -1472,7 +1465,7 @@ fn remove_header_spill(map: HeaderMap&, arena: OverflowArena&, name: const u8[:]
     if found {
         arena.spill_entries.resize(spill_write);
         compact_arena_spill_raw(map, arena, write_entry_i);
-        finish_in_place_compaction(map, write_entry_i, write_raw_pos, arena.spill_raw[..]);
+        finish_compaction(map, write_entry_i, new_raw, arena.spill_raw[..]);
     }
     return found;
 }
@@ -1572,8 +1565,9 @@ fn append_all_headers(src: const HeaderMap&, dst: HeaderMap&) {
 
 fn remove_sensitive_headers(map: HeaderMap&) {
     var found = false;
-    var write_entry_i: i64 = 0;
-    var write_raw_pos: u16 = 0;
+    var write_entry_i: i64        = 0;
+    var new_raw:       u8[..8192] = [];
+    defer core::secure_zeroize_slice(new_raw[..]);
     let total_entries = map.entries.len;
 
     for read_i in total_entries {
@@ -1586,11 +1580,11 @@ fn remove_sensitive_headers(map: HeaderMap&) {
             found = true;
             continue;
         }
-        compact_kept_entry_in_place(map, read_i, write_entry_i, write_raw_pos);
+        compact_kept_entry_into(map, read_i, write_entry_i, new_raw);
     }
 
     if found {
-        finish_in_place_compaction(map, write_entry_i, write_raw_pos);
+        finish_compaction(map, write_entry_i, new_raw);
     }
 }
 

@@ -280,7 +280,7 @@ fn execute_live_network_hop(
     if !proxy_chain.is_direct {
         net::sanitize_tunnel_headers_for_origin(ctx.headers);
     }
-    if has_h3 && is_https && proxy_chain.is_direct && session.enable_protocol_racing &&
+    if has_h3 && !is_https && proxy_chain.is_direct && session.enable_protocol_racing &&
         try_race_live_h3_hop(session, ctx, current_url, origin_buf, h3_ep, now_sec, resp) {
         return http::Error { .. };
     }
@@ -315,7 +315,7 @@ fn execute_mock_or_echo_hop(
 
     var candidate_h3_ep = http::AltSvcEndpoint { .. };
     var has_h3 = false;
-    if session.enable_altsvc && is_https {
+    if session.enable_altsvc {
         has_h3 = http::lookup_h3(session.altsvc, origin_buf[..], now_sec, candidate_h3_ep);
     }
     let race_dns_h3 = !has_h3 && is_https && session.enable_protocol_racing
@@ -325,7 +325,7 @@ fn execute_mock_or_echo_hop(
         let dns_ep, ok_dns_h3 = lookup_dns_https_h3_endpoint(
             session.dns_cache, current_url.hostname(), port_num, now_sec,
         );
-        if ok_dns_h3 {
+        if ok_dns_h3 && !is_ssrf_blocked_port(session.ssrf_guard, dns_ep.port) {
             candidate_h3_ep = dns_ep;
             has_h3 = true;
         }

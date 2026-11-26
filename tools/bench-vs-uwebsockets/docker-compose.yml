@@ -14,6 +14,8 @@ services:
       - ./pipeline.lua:/app/pipeline.lua
       - ./pipeline_64.lua:/app/pipeline_64.lua
       - ./pipeline_128.lua:/app/pipeline_128.lua
+      - ./wrk_report.lua:/app/wrk_report.lua
+      - ./route_api.lua:/app/route_api.lua
     ports:
       - "8080:8080"   # Web Benchmark Dashboard
       - "3001:3001"   # goose-wing Server

@@ -92,12 +92,15 @@ fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> boo
     var seen_exp = false;
     var seen_nbf = false;
     var seen_iat = false;
+    var seen_cnf = false;
     var seen_custom: auth_internal::SeenCustomKey[..64] = [];
     var had_error = false;
     json::each_member(reader) { key =>
         if key.contains('\\') {
             had_error = true;
             json::skip(reader);
+        } else if key == "cnf" {
+            auth_internal::parse_jwt_cnf_claim(reader, claims, seen_cnf, had_error);
         } else if !auth_internal::parse_jwt_standard_claim(
             key,
             reader,
@@ -217,7 +220,7 @@ fn sign_jwt_es256<B>(
     priv_key: const u8[32]&,
     out:      B&,
 ) -> bool {
-    guard header.alg == JwtAlg.ES256 && auth_internal::has_nonzero_byte_32(priv_key) else { return false; }
+    guard header.alg == JwtAlg.ES256 && core::is_valid_p256_private_key(priv_key) else { return false; }
 
     if auth_internal::jwt_fits_stack_4096(header, claims) {
         var token_buf: u8[..4096] = [];

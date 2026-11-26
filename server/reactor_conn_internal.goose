@@ -275,6 +275,13 @@ inline fn reactor_tls_seal_scratch() -> u8[..65536]& {
     return server::g_reactor_tls_seal_bufs[0];
 }
 
+inline fn reactor_tls_rx_scratch() -> u8[16384]& {
+    if server::g_reactor_tls_rx_bufs.len == 0 {
+        server::g_reactor_tls_rx_bufs.push([0; 16384]);
+    }
+    return server::g_reactor_tls_rx_bufs[0];
+}
+
 fn alloc_reactor_conn_slot(pool: ReactorSlotPool&, table: server::SoAConnTable&) -> i64 {
     if pool.free_slots.len > 0 {
         let top_idx = core::sub_sat_i64(pool.free_slots.len, 1);
@@ -514,15 +521,7 @@ inline fn reactor_init_slot_record(
     net::reactor_reset_accel_slot(server::g_reactor_accel, slot);
     reactor_free_slot_leftover(table, leftover_pool, slot);
     reactor_free_slot_tls_ct(table, leftover_pool, slot);
-    table.fds[slot] = client_fd;
-    table.timeout_ticks[slot] = core::tick_timer_arm(timer_wheel, 15);
-    table.is_h2[slot] = false;
-    table.h2_slot_map[slot] = -1;
-    table.has_tls[slot] = false;
-    table.tls_slots[slot] = 0xFFFF;
-    table.has_peer_ip[slot] = false;
-    table.peer_ip_hashes[slot] = 0;
-    table.peer_ips[slot].clear();
+    server_internal::reset_soa_slot_fields(table, slot, client_fd, core::tick_timer_arm(timer_wheel, 15));
     table.count = advance_high_water_mark(table.count, slot);
     table.conn_slots[slot] = server_internal::alloc_connection_slot(
         server::g_reactor_conn_pool, client_fd, 0,

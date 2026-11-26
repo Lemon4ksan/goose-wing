@@ -110,10 +110,17 @@ fn sync_digest_stale_challenge(
 ) -> bool {
     guard stored.valid && incoming.valid && incoming.stale else { return false; }
     guard creds.username.len > 0 && incoming.nonce.len > 0 else { return false; }
+    if stored.realm.len > 0 && incoming.realm.len > 0 && incoming.realm[..] != stored.realm[..] {
+        return false;
+    }
+    if stored.userhash && !incoming.userhash {
+        return false;
+    }
 
     let resolved_algo, algo_ok = auth_internal::resolve_stale_digest_algo(stored.algorithm[..], incoming);
     // RFC 7616 Section 5: Reject stale-challenge qop downgrade from auth-int to auth-only.
-    if qop_list_has_token(stored.qop[..], rfc::DIGEST_QOP_AUTH_INT)
+    let stored_is_auth_int = auth_internal::resolve_active_qop(stored.qop[..]) == rfc::DIGEST_QOP_AUTH_INT;
+    if stored_is_auth_int
         && incoming.qop.len > 0
         && !qop_list_has_token(incoming.qop[..], rfc::DIGEST_QOP_AUTH_INT) {
         return false;
@@ -124,7 +131,11 @@ fn sync_digest_stale_challenge(
     guard auth_internal::sync_opt_buf(next.opaque, incoming.opaque[..]) else { return false; }
     guard auth_internal::sync_opt_buf(next.realm, incoming.realm[..]) else { return false; }
     guard auth_internal::sync_opt_buf(next.domain, incoming.domain[..]) else { return false; }
-    guard auth_internal::sync_opt_buf(next.qop, incoming.qop[..]) else { return false; }
+    if stored_is_auth_int {
+        guard next.qop.try_set(rfc::DIGEST_QOP_AUTH_INT) else { return false; }
+    } else {
+        guard auth_internal::sync_opt_buf(next.qop, incoming.qop[..]) else { return false; }
+    }
     next.userhash = incoming.userhash;
     next.stale = false;
     next.valid = true;
