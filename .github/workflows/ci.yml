@@ -11,6 +11,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PYTHONUNBUFFERED: "1"
+
 jobs:
   changes:
     name: Detect changes
@@ -39,6 +42,7 @@ jobs:
   lint-and-licensing:
     name: Lint and license check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -76,6 +80,7 @@ jobs:
   c-shims:
     name: Compile C shims
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -116,6 +121,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -264,7 +270,7 @@ jobs:
             chmod +x "$LIT_BIN"
           else
             curl -sSL --retry 5 --retry-delay 2 --retry-connrefused -o "$LIT_DIR/lit.zip" https://github.com/Lemon4ksan/goose-lit/releases/download/v0.1.0/goose-lit-v0.1.0-windows-x64.zip
-            python -c "import zipfile; zipfile.ZipFile('$LIT_DIR/lit.zip').extractall('$LIT_DIR')"
+            python -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$LIT_DIR/lit.zip" "$LIT_DIR"
             LIT_BIN="$LIT_DIR/goose-lit.exe"
           fi
           "$LIT_BIN" tests/lit/verify_prerelease_fixes.goose
@@ -278,6 +284,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.goose == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -308,6 +315,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.goose == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -338,7 +346,7 @@ jobs:
 
       - name: Run LIT verification suites
         run: |
-          goose-lit tests/
+          goose-lit tests/lit/ -j 2
 
       - name: Enforce G-CRAP hardware complexity gate and ratchet
         run: |
@@ -359,6 +367,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.goose == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -420,6 +429,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.goose == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

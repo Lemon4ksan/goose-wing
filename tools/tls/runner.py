@@ -708,7 +708,7 @@ def run_edge_interop_matrix(server_exe: Path) -> tuple[int, int]:
                     "ECDSA P-256 fullchain + exact SNI a.edge.test (default groups)",
                     "a.edge.test",
                     None,
-                    "ecdsa_secp256r1_sha256",
+                    ("ecdsa_secp256r1_sha256", "ecdsa"),
                     (),
                     "a.edge.test",
                     "CELL_EC_DEFAULT",
@@ -717,7 +717,7 @@ def run_edge_interop_matrix(server_exe: Path) -> tuple[int, int]:
                     "ECDSA P-256 fullchain + exact SNI a.edge.test (-groups P-256)",
                     "a.edge.test",
                     "P-256",
-                    "ecdsa_secp256r1_sha256",
+                    ("ecdsa_secp256r1_sha256", "ecdsa"),
                     ("prime256v1", "secp256r1", "p-256"),
                     "a.edge.test",
                     "CELL_EC_P256",
@@ -726,7 +726,7 @@ def run_edge_interop_matrix(server_exe: Path) -> tuple[int, int]:
                     "ECDSA P-256 fullchain + exact SNI a.edge.test (HRR secp384r1:X25519)",
                     "a.edge.test",
                     "secp384r1:X25519",
-                    "ecdsa_secp256r1_sha256",
+                    ("ecdsa_secp256r1_sha256", "ecdsa"),
                     ("x25519",),
                     "a.edge.test",
                     "CELL_EC_HRR_X25519",
@@ -735,7 +735,7 @@ def run_edge_interop_matrix(server_exe: Path) -> tuple[int, int]:
                     "ECDSA P-256 fullchain + exact SNI a.edge.test (HRR secp384r1:P-256)",
                     "a.edge.test",
                     "secp384r1:P-256",
-                    "ecdsa_secp256r1_sha256",
+                    ("ecdsa_secp256r1_sha256", "ecdsa"),
                     ("prime256v1", "secp256r1", "p-256"),
                     "a.edge.test",
                     "CELL_EC_HRR_P256",
@@ -744,7 +744,7 @@ def run_edge_interop_matrix(server_exe: Path) -> tuple[int, int]:
                     "RSA-2048 fullchain + wildcard SNI sub.b.edge.test (default groups)",
                     "sub.b.edge.test",
                     None,
-                    "rsa_pss_rsae_sha256",
+                    ("rsa_pss_rsae_sha256", "rsa-pss"),
                     (),
                     "*.b.edge.test",
                     "CELL_RSA_WILDCARD",
@@ -753,7 +753,7 @@ def run_edge_interop_matrix(server_exe: Path) -> tuple[int, int]:
                     "RSA-2048 fullchain + wildcard SNI sub.b.edge.test (-groups P-256)",
                     "sub.b.edge.test",
                     "P-256",
-                    "rsa_pss_rsae_sha256",
+                    ("rsa_pss_rsae_sha256", "rsa-pss"),
                     ("prime256v1", "secp256r1", "p-256"),
                     "*.b.edge.test",
                     "CELL_RSA_P256",
@@ -762,7 +762,7 @@ def run_edge_interop_matrix(server_exe: Path) -> tuple[int, int]:
                     "RSA-2048 fullchain + wildcard SNI sub.b.edge.test (HRR secp384r1:P-256)",
                     "sub.b.edge.test",
                     "secp384r1:P-256",
-                    "rsa_pss_rsae_sha256",
+                    ("rsa_pss_rsae_sha256", "rsa-pss"),
                     ("prime256v1", "secp256r1", "p-256"),
                     "*.b.edge.test",
                     "CELL_RSA_HRR_P256",
@@ -771,7 +771,7 @@ def run_edge_interop_matrix(server_exe: Path) -> tuple[int, int]:
                     "Ed25519 fullchain + exact SNI ed.edge.test (default groups)",
                     "ed.edge.test",
                     None,
-                    "ed25519",
+                    ("ed25519",),
                     (),
                     "ed.edge.test",
                     "CELL_ED25519_DEFAULT",
@@ -780,7 +780,7 @@ def run_edge_interop_matrix(server_exe: Path) -> tuple[int, int]:
                     "Ed25519 fullchain + exact SNI ed.edge.test (HRR secp384r1:X25519)",
                     "ed.edge.test",
                     "secp384r1:X25519",
-                    "ed25519",
+                    ("ed25519",),
                     ("x25519",),
                     "ed.edge.test",
                     "CELL_ED25519_HRR_X25519",
@@ -796,6 +796,11 @@ def run_edge_interop_matrix(server_exe: Path) -> tuple[int, int]:
                     for line in out.splitlines()
                     if "peer signature type:" in line.lower()
                 ]
+                digest_lines = [
+                    line.lower()
+                    for line in out.splitlines()
+                    if "peer signing digest:" in line.lower()
+                ]
                 kex_lines = [
                     line.lower()
                     for line in out.splitlines()
@@ -810,7 +815,14 @@ def run_edge_interop_matrix(server_exe: Path) -> tuple[int, int]:
                     and "1 s:" in out
                     and "Goose Wing Test Intermediate CA" in out
                 )
-                ok_sig = any(expect_sig.lower() in line for line in sig_lines)
+                ok_sig_type = any(s in line for line in sig_lines for s in expect_sig)
+                needs_sha256 = "sha256" in expect_sig[0]
+                ok_digest = (
+                    not needs_sha256
+                    or any("sha256" in line for line in sig_lines)
+                    or any("sha256" in line for line in digest_lines)
+                )
+                ok_sig = ok_sig_type and ok_digest
                 ok_kex = not expect_kex or any(
                     k in line for line in kex_lines for k in expect_kex
                 )

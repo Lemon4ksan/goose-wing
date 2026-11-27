@@ -232,6 +232,7 @@ void wing_ct_copy_bytes(wing_bytes_rw dst, wing_bytes_ro src) {
 #define WING_CAP_AVX2 (1 << 2)
 #define WING_CAP_VPCLMUL (1 << 3)
 
+#if defined(__x86_64__) || defined(_M_X64)
 static inline int wing_compress_cpu_caps(void) {
 #if defined(__GNUC__) || defined(__clang__)
     static int cached = -1;
@@ -287,6 +288,7 @@ static inline int wing_compress_cpu_caps(void) {
     return 0;
 #endif
 }
+#endif
 
 /* Reflected GF(2) folding constants for IEEE 802.3 CRC-32 (0xEDB88320):
  * P(x) = 0x104C11DB7, rk(n) = bit_reflect(x^n mod P(x), 33) */
@@ -668,6 +670,7 @@ uint32_t wing_simd_adler32_update(uint32_t initial, wing_bytes_ro slice) {
  * SIMD-Accelerated Deflate Level-1 Fast Encoder (RFC 1951 Fixed + Stored)
  * ========================================================================= */
 
+#if defined(__x86_64__) || defined(_M_X64)
 static uint16_t wing_fix_lit_pack[288];
 static uint32_t wing_fix_len_pack[259];
 static uint32_t wing_fix_dist_fast[513];
@@ -815,7 +818,6 @@ static inline void wing_emit_dist_fast(uint32_t dist, uint64_t *bits, int *bc, u
     wing_bw_put(bits, bc, comb, (int)(5U + eb), dst, out_idx);
 }
 
-#if defined(__x86_64__) || defined(_M_X64)
 #if defined(__GNUC__) || defined(__clang__)
 #define WING_SIMD_TARGET_AVX2_BMI __attribute__((target("avx2,bmi")))
 #else
@@ -1032,6 +1034,8 @@ int64_t wing_simd_deflate_l1_chunk(wing_bytes_ro src, int64_t chunk_start, int64
         return wing_deflate_l1_chunk_avx2(src.data, chunk_start, chunk_end, is_final, head.data, head.len,
                                           bit_state.data, dst.data, dst.len);
     }
+#else
+    (void)is_final;
 #endif
     return -2;
 }
