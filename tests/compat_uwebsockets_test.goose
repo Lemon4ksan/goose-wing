@@ -6,6 +6,7 @@
 // RUN: goose build -o %t.exe %s
 // RUN: %t.exe
 import std;
+import os;
 import wing from "..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
@@ -1657,9 +1658,17 @@ fn test_usock_101_windows_exclusive_port_defense(t: lit::T&) {
     let port = net_internal::native_tcp_getsockname_port(s1);
     t.assert_true(port > 0, "Listener bound to dynamic port");
 
-    // Second bind attempt on the same address & port: MUST be rejected
+    // Second bind attempt on the same address & port:
+    // On Windows (SO_EXCLUSIVEADDRUSE), duplicate bind MUST fail (-1).
+    // On POSIX with SO_REUSEPORT (same-UID multi-worker reactors), duplicate bind succeeds.
+    var os_buf: u8[>..] = [];
+    let is_windows = env("OS", os_buf) && os_buf[..] == "Windows_NT";
     let s2 = net_internal::native_tcp_listen("127.0.0.1", port, 128);
-    t.assert_eq(s2, -1, "Second listener on exact same port MUST fail (-1)");
+    if is_windows {
+        t.assert_eq(s2, -1, "Second listener on exact same port MUST fail (-1)");
+    } else {
+        t.assert_true(s2 > 0, "POSIX SO_REUSEPORT allows same-UID multi-worker listener");
+    }
 
     net_internal::native_tcp_close(s1);
     if s2 > 0 {

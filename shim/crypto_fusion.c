@@ -35,6 +35,10 @@ typedef struct {
 #define WING_NOINLINE
 #endif
 
+void wing_ct_declassify(wing_slice s);
+uint8_t wing_ct_declassify_u8(uint8_t v);
+
+#if defined(__x86_64__) || defined(_M_X64)
 // Zeroize sensitive stack buffers and unauthenticated plaintext without Dead Store Elimination (DSE).
 static inline void wing_fusion_zeroize(volatile void *ptr, size_t len) {
     size_t i = 0;
@@ -55,7 +59,6 @@ static inline void wing_fusion_zeroize(volatile void *ptr, size_t len) {
 #endif
 }
 
-#if defined(__x86_64__) || defined(_M_X64)
 // Overwrites dead callee stack spills left behind by vectorized AES-GCM / ChaCha20 / Poly1305 frames.
 WING_NOINLINE
 static void wing_scrub_stack_1024(void) {
@@ -82,18 +85,13 @@ static void wing_zero_xmm_regs(void) {
 #else
 static inline void wing_zero_xmm_regs(void) {}
 #endif
-#else
-static inline void wing_zero_xmm_regs(void) {}
-#endif
-
-void wing_ct_declassify(wing_slice s);
-uint8_t wing_ct_declassify_u8(uint8_t v);
 
 static inline uint8_t wing_ct_nonzero_public_bit(uint8_t diff) {
     uint32_t d = (uint32_t)diff;
     uint8_t bit = (uint8_t)((d | (0u - d)) >> 31);
     return wing_ct_declassify_u8(bit);
 }
+#endif
 
 // Returns 1 if [src, src+len) and [dst, dst+len) partially overlap (exact in-place src == dst is allowed).
 static inline int wing_slices_partial_overlap(const uint8_t *src, const uint8_t *dst, int64_t len) {

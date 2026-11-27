@@ -149,10 +149,9 @@ def build_fuzzer(
     cc_cmd.extend([str(c_out), str(driver_obj)])
     for shim in SHIM_SOURCES:
         cc_cmd.append(str(root / shim))
-    for lit_shim in ("profiler.c", "alloc_count.c", "proc.c"):
-        cand = lit_root / "shim" / lit_shim
-        if cand.exists():
-            cc_cmd.append(str(cand))
+    profiler_c = lit_root / "shim" / "profiler.c"
+    if profiler_c.exists():
+        cc_cmd.append(str(profiler_c))
 
     if os.name == "nt":
         cc_cmd.extend(["-lws2_32", "-lmswsock", "-lbcrypt"])

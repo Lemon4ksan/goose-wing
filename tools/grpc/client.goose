@@ -126,12 +126,17 @@ fn main() {
     let ok2 = run_h2_metadata_echo(s);
     print(if ok2 { "GRPC_H2_METADATA_ECHO: PASS\n" } else { "GRPC_H2_METADATA_ECHO: FAIL\n" });
 
+    // Close the pooled unauthenticated connection before opening an Authorization-isolated
+    // connection so the sequential grpc::serve_listener loop immediately accepts it.
+    client::close(s);
     let ok3 = run_h2_unauthenticated(s);
     print(if ok3 { "GRPC_H2_UNAUTHENTICATED: PASS\n" } else { "GRPC_H2_UNAUTHENTICATED: FAIL\n" });
+    client::close(s);
 
     let ok4 = run_h2_permission_denied(s);
     print(if ok4 { "GRPC_H2_PERMISSION_DENIED: PASS\n" } else { "GRPC_H2_PERMISSION_DENIED: FAIL\n" });
 
     let ok5 = run_h2_large_32kb_payload(s);
     print(if ok5 { "GRPC_H2_LARGE_32KB: PASS\n" } else { "GRPC_H2_LARGE_32KB: FAIL\n" });
+    client::close(s);
 }

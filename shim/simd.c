@@ -1127,7 +1127,7 @@ int32_t wing_os_random_bytes(wing_bytes_rw dst) {
 #endif
 }
 
-#if defined(__GNUC__) || defined(__clang__)
+#if !defined(_WIN32) && (defined(__GNUC__) || defined(__clang__))
 #define WING_WEAK __attribute__((weak))
 #else
 #define WING_WEAK
