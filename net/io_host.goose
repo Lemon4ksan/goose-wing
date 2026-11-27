@@ -64,6 +64,15 @@ fn close_host(host: Host&) {
             net_internal::release_host_slot(host, i);
         }
     }
+    if host.rio_cq != 0 {
+        var drain_res: net_internal::RioResult[..64] = [];
+        for _ in 64 {
+            let n = net_internal::rio_drain_completions(host.rio_cq, drain_res);
+            if n <= 0 {
+                break;
+            }
+        }
+    }
     if host.rio_buf_id != 0 {
         net_internal::native_rio_deregister_buffer(host.rio_buf_id);
         host.rio_buf_id = 0;

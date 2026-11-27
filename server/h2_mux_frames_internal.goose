@@ -21,6 +21,35 @@ import .pipeline_internal;
 import .router_internal;
 import .h2_mux_types_internal;
 
+const MAX_H2_CONN_SPILL_SLABS: i64 = 4;
+
+inline fn count_active_conn_spill_slabs(sess: const H2ServerSession&) -> i64 {
+    var count: i64 = 0;
+    for &st in sess.streams {
+        if st.active && st.spill_slab_idx >= 0 {
+            count = core::add_sat_i64(count, 1);
+        }
+    }
+    return count;
+}
+
+// Emits RST_STREAM while debiting `sess.conn.reset_limiter` (MadeYouReset defense).
+// Sends GOAWAY(ENHANCE_YOUR_CALM) and returns false when the reset budget is exhausted.
+fn emit_rate_limited_rst_stream<B>(
+    sess:       H2ServerSession&,
+    stream_id:  u32,
+    error_code: u32,
+    out_wire:   B&,
+) -> bool {
+    let now_ms = sess.conn.reset_limiter.last_refill_ms;
+    guard core::token_bucket_consume(sess.conn.reset_limiter, now_ms) else {
+        emit_goaway(sess, rfc::H2_ERR_ENHANCE_YOUR_CALM, out_wire);
+        return false;
+    }
+    emit_rst_stream(stream_id, error_code, out_wire);
+    return true;
+}
+
 inline fn validate_request_pseudo_headers(
     pseudo:                  const http2::PseudoHeaders&,
     end_stream:              bool,
@@ -57,12 +86,12 @@ fn process_ingress_window_update<B>(
     let wu_err = http2::apply_window_update(sess.conn, hdr.stream_id, inc);
     guard wu_err != rfc::H2_ERR_NO_ERROR else { return true; }
     if hdr.stream_id == 0 || http2::is_conn_error_on_window_update(sess.conn, hdr.stream_id) {
-        emit_goaway(sess.conn.last_peer_stream_id, wu_err, out_wire);
+        emit_goaway(sess, wu_err, out_wire);
         return false;
     }
-    emit_rst_stream(hdr.stream_id, wu_err, out_wire);
+    let ok_rst = emit_rate_limited_rst_stream(sess, hdr.stream_id, wu_err, out_wire);
     terminate_server_stream(sess, pipeline, hdr.stream_id);
-    return true;
+    return ok_rst;
 }
 
 inline fn apply_header_table_size_setting(sess: H2ServerSession&, param_val: u32) {
@@ -251,14 +280,14 @@ inline fn apply_h2_trailer_block<B>(
     dec_headers:  const http::HeaderMap&,
     is_cancelled: bool,
     out_wire:     B&,
-) {
-    guard !is_cancelled else { return; }
+) -> bool {
+    guard !is_cancelled else { return true; }
     let s_idx, found = find_server_stream_idx(sess, stream_id);
-    guard found else { return; }
+    guard found else { return true; }
     guard validate_decoded_map_bounds(dec_headers) else {
-        emit_rst_stream(stream_id, rfc::H2_ERR_INTERNAL_ERROR, out_wire);
+        let ok_rst = emit_rate_limited_rst_stream(sess, stream_id, rfc::H2_ERR_INTERNAL_ERROR, out_wire);
         terminate_server_stream(sess, pipeline, stream_id);
-        return;
+        return ok_rst;
     }
     http::append_all_headers(dec_headers, sess.streams[s_idx].trailers);
     sess.streams[s_idx].body_received = true;
@@ -268,6 +297,7 @@ inline fn apply_h2_trailer_block<B>(
         sess.conn.streams[c_idx].trailers_received = true;
         sess.conn.streams[c_idx].state = http2::StreamState.HalfClosedRemote;
     }
+    return true;
 }
 
 struct H2HeaderCommitFlags {
@@ -285,16 +315,16 @@ inline fn apply_h2_request_block<B>(
     dec_headers: const http::HeaderMap&,
     flags:       H2HeaderCommitFlags,
     out_wire:    B&,
-) {
+) -> bool {
     guard validate_request_pseudo_headers(pseudo, flags.end_stream, sess.conn.enable_connect_protocol) else {
         // RFC 9113 Section 8.1.1: Malformed Messages - Invalid pseudo-headers trigger PROTOCOL_ERROR.
-        emit_rst_stream(stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
+        let ok_rst = emit_rate_limited_rst_stream(sess, stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
         terminate_server_stream(sess, pipeline, stream_id);
-        return;
+        return ok_rst;
     }
     guard !flags.is_cancelled else {
         terminate_server_stream(sess, pipeline, stream_id);
-        return;
+        return true;
     }
     let s_idx, found = find_or_alloc_stream(sess, stream_id);
     guard found else {
@@ -302,14 +332,14 @@ inline fn apply_h2_request_block<B>(
             && !(sess.conn.goaway_received || sess.conn.goaway_sent) {
             sess.conn.last_peer_stream_id = stream_id;
         }
-        emit_rst_stream(stream_id, rfc::H2_ERR_REFUSED_STREAM, out_wire);
+        let ok_rst = emit_rate_limited_rst_stream(sess, stream_id, rfc::H2_ERR_REFUSED_STREAM, out_wire);
         terminate_server_stream(sess, pipeline, stream_id);
-        return;
+        return ok_rst;
     }
     guard validate_decoded_map_bounds(dec_headers) && apply_decoded_pseudo_to_stream(sess.streams[s_idx], pseudo) else {
-        emit_rst_stream(stream_id, rfc::H2_ERR_INTERNAL_ERROR, out_wire);
+        let ok_rst = emit_rate_limited_rst_stream(sess, stream_id, rfc::H2_ERR_INTERNAL_ERROR, out_wire);
         terminate_server_stream(sess, pipeline, stream_id);
-        return;
+        return ok_rst;
     }
     http::append_all_headers(dec_headers, sess.streams[s_idx].headers);
     apply_request_priority_header(sess.conn, stream_id, dec_headers);
@@ -322,6 +352,7 @@ inline fn apply_h2_request_block<B>(
         sess.streams[s_idx].body_received = true;
         sess.streams[s_idx].phase = H2StreamPhase.HalfClosedRemote;
     }
+    return true;
 }
 
 fn commit_decoded_h2_header_block<B>(
@@ -345,22 +376,20 @@ fn commit_decoded_h2_header_block<B>(
     if flags.clear_accum { clear_h2_header_accumulator(sess); }
     let rej_err = sess.header_accum_rejected_err;
     sess.header_accum_rejected_err = 0;
-    if dec_err == rfc::H2_ERR_COMPRESSION_ERROR {
-        emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_COMPRESSION_ERROR, out_wire);
+    if dec_err == rfc::H2_ERR_COMPRESSION_ERROR || dec_err == rfc::H2_ERR_ENHANCE_YOUR_CALM {
+        emit_goaway(sess, dec_err, out_wire);
         return false;
     }
     let stream_err = if rej_err != 0 { rej_err } else { dec_err };
     guard stream_err == rfc::H2_ERR_NO_ERROR else {
-        emit_rst_stream(stream_id, stream_err, out_wire);
+        let ok_rst = emit_rate_limited_rst_stream(sess, stream_id, stream_err, out_wire);
         terminate_server_stream(sess, pipeline, stream_id);
-        return true;
+        return ok_rst;
     }
     if flags.is_trailer {
-        apply_h2_trailer_block(sess, pipeline, stream_id, dec_headers, flags.is_cancelled, out_wire);
-    } else {
-        apply_h2_request_block(sess, pipeline, stream_id, pseudo, dec_headers, flags, out_wire);
+        return apply_h2_trailer_block(sess, pipeline, stream_id, dec_headers, flags.is_cancelled, out_wire);
     }
-    return true;
+    return apply_h2_request_block(sess, pipeline, stream_id, pseudo, dec_headers, flags, out_wire);
 }
 
 fn process_ingress_headers<B>(
@@ -441,6 +470,7 @@ const H2_SLAB_WINDOW_INCREMENT: u32 = 57344;
 // Example:
 //   sess.streams[s_idx].spill_slab_idx = -1, payload.len = 16384, stream_id = 1
 //   returns: true, promoted to slab with WINDOW_UPDATE emitted
+// Returns (stream_ok, conn_ok): conn_ok=false means rate limit triggered GOAWAY.
 fn process_stream_data_ingress<B>(
     sess:      H2ServerSession&,
     pool:      SpillSlabPool&,
@@ -448,30 +478,34 @@ fn process_stream_data_ingress<B>(
     payload:   const u8[:],
     stream_id: u32,
     out_wire:  B&,
-) -> bool {
+) -> bool, bool {
     let st_idx = s_idx as i64;
-    guard st_idx >= 0 && st_idx < sess.streams.len else { return false; }
+    guard st_idx >= 0 && st_idx < sess.streams.len else { return false, true; }
 
     let total_inline = core::add_sat_i64(sess.streams[st_idx].body.len, payload.len);
     if sess.streams[st_idx].spill_slab_idx < 0 && total_inline <= sess.streams[st_idx].body.cap {
         sess.streams[st_idx].body.append(payload);
-        return true;
+        return true, true;
     }
 
     if sess.streams[st_idx].spill_slab_idx < 0 {
         guard total_inline <= 65536 else {
-            emit_rst_stream(stream_id, rfc::H2_ERR_CANCEL, out_wire);
-            return false;
+            let ok_rst = emit_rate_limited_rst_stream(sess, stream_id, rfc::H2_ERR_CANCEL, out_wire);
+            return false, ok_rst;
+        }
+        guard count_active_conn_spill_slabs(sess) < MAX_H2_CONN_SPILL_SLABS else {
+            let ok_rst = emit_rate_limited_rst_stream(sess, stream_id, rfc::H2_ERR_REFUSED_STREAM, out_wire);
+            return false, ok_rst;
         }
         let slab_idx = acquire_spill_slab(pool);
         guard slab_idx >= 0 else {
-            emit_rst_stream(stream_id, rfc::H2_ERR_REFUSED_STREAM, out_wire);
-            return false;
+            let ok_rst = emit_rate_limited_rst_stream(sess, stream_id, rfc::H2_ERR_REFUSED_STREAM, out_wire);
+            return false, ok_rst;
         }
         sess.streams[st_idx].spill_slab_idx = slab_idx;
         sess.streams[st_idx].slab_lease_deadline_ns = core::add_sat_u64(core::monotonic_now().as_nanos(), 3000000000);
         let slab_slot = slab_idx as i64;
-        guard slab_slot >= 0 && slab_slot < pool.slabs.len else { return false; }
+        guard slab_slot >= 0 && slab_slot < pool.slabs.len else { return false, true; }
         pool.slabs[slab_slot].data.append(sess.streams[st_idx].body[..]);
         sess.streams[st_idx].body.clear();
         emit_window_update(stream_id, H2_SLAB_WINDOW_INCREMENT, out_wire);
@@ -479,17 +513,17 @@ fn process_stream_data_ingress<B>(
 
     let now_ns = core::monotonic_now().as_nanos();
     if now_ns > sess.streams[st_idx].slab_lease_deadline_ns {
-        emit_rst_stream(stream_id, rfc::H2_ERR_CANCEL, out_wire);
-        return false;
+        let ok_rst = emit_rate_limited_rst_stream(sess, stream_id, rfc::H2_ERR_CANCEL, out_wire);
+        return false, ok_rst;
     }
 
     let slab_slot = sess.streams[st_idx].spill_slab_idx as i64;
-    guard slab_slot >= 0 && slab_slot < pool.slabs.len else { return false; }
+    guard slab_slot >= 0 && slab_slot < pool.slabs.len else { return false, true; }
     guard pool.slabs[slab_slot].data.try_append(payload) else {
-        emit_rst_stream(stream_id, rfc::H2_ERR_CANCEL, out_wire);
-        return false;
+        let ok_rst = emit_rate_limited_rst_stream(sess, stream_id, rfc::H2_ERR_CANCEL, out_wire);
+        return false, ok_rst;
     }
-    return true;
+    return true, true;
 }
 
 inline fn replenish_closed_stream_conn_window<B>(
@@ -601,12 +635,13 @@ inline fn finalize_h2_data_end_stream<B>(
         sess.streams[s_idx].body.len
     };
     if dec_cl >= 0 && dec_cl != actual_len {
-        emit_rst_stream(stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
+        let ok_rst = emit_rate_limited_rst_stream(sess, stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
         terminate_server_stream(sess, pipeline, stream_id);
-        return;
+        return ok_rst;
     }
     sess.streams[s_idx].body_received = true;
     sess.streams[s_idx].phase = H2StreamPhase.HalfClosedRemote;
+    return true;
 }
 
 inline fn handle_h2_data_flow_error<B>(
@@ -617,12 +652,13 @@ inline fn handle_h2_data_flow_error<B>(
     out_wire: B&,
 ) -> bool {
     if flow_err == rfc::H2_ERR_STREAM_CLOSED || flow_err == rfc::H2_ERR_PROTOCOL_ERROR {
-        emit_rst_stream(hdr.stream_id, flow_err, out_wire);
+        let ok_rst = emit_rate_limited_rst_stream(sess, hdr.stream_id, flow_err, out_wire);
         terminate_server_stream(sess, pipeline, hdr.stream_id);
+        guard ok_rst else { return false; }
         replenish_conn_window_direct(sess, hdr.length, out_wire);
         return true;
     }
-    emit_goaway(sess.conn.last_peer_stream_id, flow_err, out_wire);
+    emit_goaway(sess, flow_err, out_wire);
     terminate_server_stream(sess, pipeline, hdr.stream_id);
     return false;
 }
@@ -637,17 +673,17 @@ inline fn resolve_open_h2_data_stream<B>(
     if !found {
         if (hdr.stream_id & 1) == 1 && hdr.stream_id <= sess.conn.last_peer_stream_id {
             guard replenish_closed_stream_conn_window(sess, hdr.length, out_wire) else { return -1, false, false; }
-            emit_rst_stream(hdr.stream_id, rfc::H2_ERR_STREAM_CLOSED, out_wire);
-            return -1, false, true;
+            let ok_rst = emit_rate_limited_rst_stream(sess, hdr.stream_id, rfc::H2_ERR_STREAM_CLOSED, out_wire);
+            return -1, false, ok_rst;
         }
-        emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
+        emit_goaway(sess, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
         return -1, false, false;
     }
     if sess.streams[s_idx].body_received {
         terminate_server_stream(sess, pipeline, hdr.stream_id);
         guard replenish_closed_stream_conn_window(sess, hdr.length, out_wire) else { return -1, false, false; }
-        emit_rst_stream(hdr.stream_id, rfc::H2_ERR_STREAM_CLOSED, out_wire);
-        return -1, false, true;
+        let ok_rst = emit_rate_limited_rst_stream(sess, hdr.stream_id, rfc::H2_ERR_STREAM_CLOSED, out_wire);
+        return -1, false, ok_rst;
     }
     return s_idx, true, true;
 }
@@ -681,16 +717,22 @@ fn process_ingress_data<B>(
     }
 
     let had_slab = sess.streams[s_idx].spill_slab_idx >= 0;
-    if d_len > 0 && !process_stream_data_ingress(sess, pipeline.slab_pool, s_idx, data_slice, hdr.stream_id, out_wire) {
-        terminate_server_stream(sess, pipeline, hdr.stream_id);
-        replenish_conn_window_direct(sess, hdr.length, out_wire);
-        return true;
+    if d_len > 0 {
+        let data_ok, data_conn_ok = process_stream_data_ingress(
+            sess, pipeline.slab_pool, s_idx, data_slice, hdr.stream_id, out_wire,
+        );
+        if !data_ok {
+            terminate_server_stream(sess, pipeline, hdr.stream_id);
+            guard data_conn_ok else { return false; }
+            replenish_conn_window_direct(sess, hdr.length, out_wire);
+            return true;
+        }
     }
     let promoted_now = !had_slab && sess.streams[s_idx].spill_slab_idx >= 0;
     let is_end_stream = (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0;
     replenish_ingress_data_windows(sess, s_idx, hdr.stream_id, hdr.length, promoted_now || is_end_stream, out_wire);
     if is_end_stream {
-        finalize_h2_data_end_stream(sess, pipeline, s_idx, hdr.stream_id, out_wire);
+        return finalize_h2_data_end_stream(sess, pipeline, s_idx, hdr.stream_id, out_wire);
     }
     return true;
 }

@@ -470,14 +470,36 @@ inline fn is_all_digits_or_dots(host: const u8[:]) -> bool {
     return true;
 }
 
-inline fn has_hex_prefix(host: const u8[:]) -> bool {
-    guard host.len >= 2 else { return false; }
-    let limit = core::sub_sat_i64(host.len, 1);
-    for i in limit {
-        let next_i = core::add_sat_i64(i, 1);
-        if host[i] == '0' && (host[next_i] == 'x' || host[next_i] == 'X') { return true; }
+inline fn is_ipv4_numeric_or_hex_segment(seg: const u8[:]) -> bool {
+    if seg.len >= 2 && seg[0] == '0' && (seg[1] == 'x' || seg[1] == 'X') {
+        guard seg.len > 2 else { return false; }
+        for b in seg[2..] {
+            guard core::is_ascii_hexdigit(b) else { return false; }
+        }
+        return true;
     }
-    return false;
+    guard seg.len > 0 else { return false; }
+    for b in seg {
+        guard core::is_ascii_digit(b) else { return false; }
+    }
+    return true;
+}
+
+inline fn has_hex_prefix(host: const u8[:]) -> bool {
+    guard host.len >= 3 else { return false; }
+    var saw_hex = false;
+    var seg_count: i64 = 0;
+    var tok = core::make_byte_tokenizer(host, '.');
+    loop {
+        let seg, ok = core::token_next(tok);
+        guard ok else { break; }
+        seg_count = core::add_sat_i64(seg_count, 1);
+        guard seg_count <= 4 && is_ipv4_numeric_or_hex_segment(seg) else { return false; }
+        if seg.len >= 2 && seg[0] == '0' && (seg[1] == 'x' || seg[1] == 'X') {
+            saw_hex = true;
+        }
+    }
+    return saw_hex && seg_count >= 1;
 }
 
 inline fn is_invalid_ipv4_octet_state(octet_len: i64, first_zero: bool, octet_val: i64) -> bool {

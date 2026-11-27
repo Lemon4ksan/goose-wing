@@ -71,14 +71,65 @@ fn cookie_internal::validate_and_lowercase_psl_domain(domain: const u8[:]) -> u8
 //   domain = "foo.ck"  -> returns true (*.ck wildcard)
 //   domain = "www.ck"  -> returns false (!www.ck exception)
 //   domain = ".com"    -> returns false (leading dot rejected)
+const cookie_internal::PSL_FALLBACK_ICANN_SUFFIXES: const u8[:][36] = [
+    "com.au", "net.au", "org.au", "edu.au", "gov.au", "asn.au", "id.au",
+    "co.uk", "org.uk", "gov.uk", "ac.uk", "me.uk", "net.uk", "ltd.uk", "plc.uk",
+    "co.jp", "ne.jp", "or.jp", "ac.jp", "ad.jp", "ed.jp", "go.jp", "gr.jp", "lg.jp",
+    "com.br", "org.br", "net.br", "gov.br", "com.cn", "net.cn", "org.cn", "gov.cn",
+    "co.nz", "co.za", "co.kr", "com.sg",
+];
+
+const cookie_internal::PSL_FALLBACK_PRIVATE_SUFFIXES: const u8[:][26] = [
+    "s3.amazonaws.com", "compute.amazonaws.com", "amazonaws.com",
+    "pages.dev", "workers.dev", "r2.dev", "netlify.app", "web.app",
+    "firebaseapp.com", "eu.org", "herokuapp.com", "herokudns.com",
+    "github.io", "gitlab.io", "appspot.com", "cloudfront.net",
+    "fly.dev", "vercel.app", "blogspot.com", "wordpress.com",
+    "azurewebsites.net", "ondigitalocean.app", "onrender.com",
+    "railway.app", "trycloudflare.com", "ngrok-free.app",
+];
+
+fn cookie_internal::psl_find_fallback_multi_label_suffix(
+    norm: const u8[:],
+) -> const u8[:], bool, bool {
+    var best_len: i64 = 0;
+    var best_icann = false;
+    var found = false;
+    for sfx in cookie_internal::PSL_FALLBACK_ICANN_SUFFIXES {
+        if (norm == sfx || core::ends_with_dot_suffix(norm, sfx)) && sfx.len > best_len {
+            best_len = sfx.len;
+            best_icann = true;
+            found = true;
+        }
+    }
+    for sfx in cookie_internal::PSL_FALLBACK_PRIVATE_SUFFIXES {
+        if (norm == sfx || core::ends_with_dot_suffix(norm, sfx)) && sfx.len > best_len {
+            best_len = sfx.len;
+            best_icann = false;
+            found = true;
+        }
+    }
+    guard found && best_len <= norm.len else { return norm[0..0], false, false; }
+    let start = core::sub_sat_i64(norm.len, best_len);
+    return norm[start..], true, best_icann;
+}
+
 fn is_public_suffix(domain: const u8[:]) -> bool {
-    let norm, ok = cookie_internal::validate_and_lowercase_psl_domain(domain);
+    let norm_buf, ok = cookie_internal::validate_and_lowercase_psl_domain(domain);
     guard ok else { return false; }
-    let suffix, matched, _, _ = cookie_internal::dafsa_find_public_suffix(norm[..]);
+    let norm = norm_buf[..];
+    var suffix, matched, _, is_exc = cookie_internal::dafsa_find_public_suffix(norm);
+    if matched && is_exc {
+        return suffix.len == norm.len;
+    }
+    let fb_suf, fb_matched, _ = cookie_internal::psl_find_fallback_multi_label_suffix(norm);
+    if fb_matched && (!matched || fb_suf.len > suffix.len) {
+        return fb_suf.len == norm.len;
+    }
     if matched {
         return suffix.len == norm.len;
     }
-    return !norm[..].contains_byte('.');
+    return !norm.contains_byte('.');
 }
 
 enum PslRuleType {
@@ -99,8 +150,8 @@ struct PslRule {
 }
 
 struct PslDatabase {
-    use_dafsa: bool          = false,
-    rules:     PslRule[..64] = [],
+    use_dafsa: bool           = false,
+    rules:     PslRule[..256] = [],
 }
 
 struct cookie_internal::PslMatch {
@@ -208,10 +259,7 @@ fn cookie_internal::psl_match_normal(pat: const u8[:], norm: const u8[:]) -> i64
 
 fn cookie_internal::psl_match_wildcard(pat: const u8[:], norm: const u8[:]) -> i64, i32, bool {
     let dots = pat.count_byte('.');
-    if norm == pat {
-        return 0, core::add_sat_i64(dots, 1) as i32, true;
-    }
-    if !core::ends_with_dot_suffix(norm, pat) {
+    guard norm != pat && core::ends_with_dot_suffix(norm, pat) else {
         return 0, 0, false;
     }
     let n_len = norm.len;
@@ -308,17 +356,21 @@ fn cookie_internal::psl_find_known_suffix(
         return dafsa_suf, true, dafsa_icann;
     }
     let best_start, best_sec, has_rule = cookie_internal::psl_find_best_rule(db, norm);
-    if has_rule {
-        let custom_suf = norm[best_start..];
-        if dafsa_matched && dafsa_suf.len > custom_suf.len {
-            return dafsa_suf, true, dafsa_icann;
-        }
-        return custom_suf, true, (best_sec == cookie::PslSection.Icann);
+    var best_suf = if has_rule { norm[best_start..] } else { norm[0..0] };
+    var best_matched = has_rule;
+    var best_icann = (best_sec == cookie::PslSection.Icann);
+    if dafsa_matched && (!best_matched || dafsa_suf.len > best_suf.len) {
+        best_suf = dafsa_suf;
+        best_matched = true;
+        best_icann = dafsa_icann;
     }
-    if dafsa_matched {
-        return dafsa_suf, true, dafsa_icann;
+    let fb_suf, fb_ok, fb_icann = cookie_internal::psl_find_fallback_multi_label_suffix(norm);
+    if fb_ok && (!best_matched || fb_suf.len > best_suf.len) {
+        best_suf = fb_suf;
+        best_matched = true;
+        best_icann = fb_icann;
     }
-    return norm[0..0], false, false;
+    return best_suf, best_matched, best_icann;
 }
 
 // Evaluates `domain` against `db` and returns a `PslMatch` distinguishing explicitly listed
@@ -458,8 +510,8 @@ fn is_public_suffix_domain(domain: const u8[:]) -> bool {
 fn domain_match(host: const u8[:], cookie_domain: const u8[:]) -> bool {
     guard host.len > 0 && cookie_domain.len > 0 else { return false; }
 
-    let clean_host = host.trim_byte('.').trim_byte('[').trim_byte(']');
-    let clean_domain = cookie_domain.trim_byte('.').trim_byte('[').trim_byte(']');
+    let clean_host = host.trim_start_byte('.').trim_byte('[').trim_byte(']');
+    let clean_domain = cookie_domain.trim_start_byte('.').trim_byte('[').trim_byte(']');
     guard clean_host.len > 0 && clean_domain.len > 0 else { return false; }
 
     if clean_host.eq_ascii_fold(clean_domain) {
@@ -544,7 +596,8 @@ fn parse_rule_line(line: const u8[:], sec: PslSection) -> PslRule, bool {
             pat = wild_rest;
         }
     }
-    guard pat.len > 0 && pat.len <= 64 && !cookie_internal::is_invalid_psl_domain_syntax(pat) else {
+    guard pat.len > 0 && pat.len <= 64 && !pat.contains_byte('*')
+        && !cookie_internal::is_invalid_psl_domain_syntax(pat) else {
         return PslRule { .. }, false;
     }
 
@@ -554,7 +607,8 @@ fn parse_rule_line(line: const u8[:], sec: PslSection) -> PslRule, bool {
 }
 
 // Ingests official Mozilla public suffix list format, preserving ICANN vs Private sections.
-fn update_with_list(db: PslDatabase&, psl_text: const u8[:]) {
+// Returns `false` if rule storage capacity is exceeded.
+fn update_with_list(db: PslDatabase&, psl_text: const u8[:]) -> bool {
     var current_section = PslSection.Icann;
     var tok = core::make_byte_tokenizer(psl_text, '\n');
     loop {
@@ -568,8 +622,9 @@ fn update_with_list(db: PslDatabase&, psl_text: const u8[:]) {
         } else {
             let rule, rule_ok = parse_rule_line(line, current_section);
             if rule_ok {
-                let _ = db.rules.try_push(rule);
+                guard db.rules.try_push(rule) else { return false; }
             }
         }
     }
+    return true;
 }

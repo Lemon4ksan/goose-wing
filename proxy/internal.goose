@@ -643,7 +643,12 @@ fn exchange_prepared_wire_impl(
         conn.rx_buf.clear();
     }
 
-    var dummy_req = http::new_request(method, "/");
+    var parsed_req = http::new_request(method, "/");
+    let crlf_end = core::fast_find_crlfcrlf(wire_req);
+    if crlf_end >= 0 {
+        let hdr_end = core::add_sat_i64(crlf_end, 4);
+        let _ = http::parse_request_headers(wire_req[..hdr_end], parsed_req.headers);
+    }
     // RFC 9110 Section 15.2: Informational 1xx - cap consecutive 1xx interim responses to 5.
     for interim_step in 6 {
         guard interim_step < 5 else { return proxy::WireReuse.Close, false; }
@@ -656,9 +661,15 @@ fn exchange_prepared_wire_impl(
         let is_interim = sc >= 100 && sc < 200 && sc != 101;
         guard is_interim else {
             let ok_body, keep_alive = wing::pump_response_body(
-                conn, dummy_req, out_resp, rx[leftover_start..], timeout_ms,
+                conn, parsed_req, out_resp, rx[leftover_start..], timeout_ms,
             );
-            let reuse = if keep_alive { proxy::WireReuse.KeepAlive } else { proxy::WireReuse.Close };
+            let is_tunnel_or_upgrade = (sc == 101) ||
+                (method.eq_ascii_fold("CONNECT") && sc >= 200 && sc < 300);
+            let reuse = if keep_alive && !is_tunnel_or_upgrade {
+                proxy::WireReuse.KeepAlive
+            } else {
+                proxy::WireReuse.Close
+            };
             return reuse, ok_body;
         }
         // RFC 9112 Section 6.3: Message Body Length - 1xx responses MUST NOT carry Transfer-Encoding or Content-Length.

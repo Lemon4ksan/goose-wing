@@ -19,32 +19,69 @@
 #include <malloc.h>
 #endif
 
-#if defined(_MSC_VER)
-#define WING_ALIGN64 __declspec(align(64))
+#if defined(_MSC_VER) && !defined(__clang__)
+#define WING_ALIGN_CACHE __declspec(align(128))
 #include <windows.h>
 #else
-#define WING_ALIGN64 __attribute__((aligned(64)))
+#define WING_ALIGN_CACHE __attribute__((aligned(128)))
 #if __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_ATOMICS__)
 #include <stdatomic.h>
 #endif
 #endif
 
-#define WING_CACHE_LINE 64
+#define WING_CACHE_LINE 128
 
 typedef struct {
     // Producer cache line (only written by producer thread)
-    WING_ALIGN64 volatile uint64_t tail;
-    uint8_t pad_tail[WING_CACHE_LINE - sizeof(uint64_t)];
+    WING_ALIGN_CACHE volatile uint64_t tail;
+    uint64_t cached_head;
+    uint8_t pad_tail[WING_CACHE_LINE - 2 * sizeof(uint64_t)];
 
     // Consumer cache line (only written by consumer thread)
-    WING_ALIGN64 volatile uint64_t head;
-    uint8_t pad_head[WING_CACHE_LINE - sizeof(uint64_t)];
+    WING_ALIGN_CACHE volatile uint64_t head;
+    uint64_t cached_tail;
+    uint8_t pad_head[WING_CACHE_LINE - 2 * sizeof(uint64_t)];
 
     // Read-only configuration cache line
-    WING_ALIGN64 uint32_t capacity;
+    WING_ALIGN_CACHE uint32_t capacity;
     uint32_t mask;
     uint64_t *buffer;
 } wing_spsc_ring_t;
+
+static inline uint64_t spsc_load_relaxed(const volatile uint64_t *p) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    return *p;
+#else
+    return __atomic_load_n(p, __ATOMIC_RELAXED);
+#endif
+}
+
+static inline uint64_t spsc_load_acquire(const volatile uint64_t *p) {
+#if defined(_MSC_VER) && !defined(__clang__)
+#if defined(_M_ARM64)
+    return (uint64_t)__ldar64((const volatile unsigned __int64 *)p);
+#else
+    uint64_t v = *p;
+    _ReadWriteBarrier();
+    return v;
+#endif
+#else
+    return __atomic_load_n(p, __ATOMIC_ACQUIRE);
+#endif
+}
+
+static inline void spsc_store_release(volatile uint64_t *p, uint64_t v) {
+#if defined(_MSC_VER) && !defined(__clang__)
+#if defined(_M_ARM64)
+    __stlr64((volatile unsigned __int64 *)p, v);
+#else
+    _ReadWriteBarrier();
+    *p = v;
+#endif
+#else
+    __atomic_store_n(p, v, __ATOMIC_RELEASE);
+#endif
+}
 
 static uint32_t next_pow2_u32(uint32_t n) {
     if (n <= 2) return 2;
@@ -93,7 +130,9 @@ int32_t wing_spsc_create(uint32_t min_capacity, uint64_t *out_handle, uint32_t *
     ring->capacity = cap;
     ring->mask = cap - 1;
     ring->tail = 0;
+    ring->cached_head = 0;
     ring->head = 0;
+    ring->cached_tail = 0;
 
     *out_handle = (uint64_t)(uintptr_t)ring;
     *out_capacity = cap;
@@ -121,25 +160,16 @@ int32_t wing_spsc_push(uint64_t handle, uint64_t value) {
     wing_spsc_ring_t *ring = (wing_spsc_ring_t *)(uintptr_t)handle;
     if (!ring || !ring->buffer) return -2;
 
-#if defined(_MSC_VER)
-    uint64_t tail = (uint64_t)ring->tail;
-    uint64_t head = (uint64_t)InterlockedOr64((volatile LONG64 *)&ring->head, 0);
-#else
-    uint64_t tail = __atomic_load_n(&ring->tail, __ATOMIC_RELAXED);
-    uint64_t head = __atomic_load_n(&ring->head, __ATOMIC_ACQUIRE);
-#endif
-
-    if (tail - head >= ring->capacity) {
-        return -3; // Queue is full
+    uint64_t tail = spsc_load_relaxed(&ring->tail);
+    if (tail - ring->cached_head >= ring->capacity) {
+        ring->cached_head = spsc_load_acquire(&ring->head);
+        if (tail - ring->cached_head >= ring->capacity) {
+            return -3; // Queue is full
+        }
     }
 
     ring->buffer[tail & ring->mask] = value;
-
-#if defined(_MSC_VER)
-    (void)InterlockedExchange64((volatile LONG64 *)&ring->tail, (LONG64)(tail + 1));
-#else
-    __atomic_store_n(&ring->tail, tail + 1, __ATOMIC_RELEASE);
-#endif
+    spsc_store_release(&ring->tail, tail + 1);
 
     return 0; // Success
 }
@@ -149,25 +179,16 @@ int32_t wing_spsc_pop(uint64_t handle, uint64_t *out_value) {
     wing_spsc_ring_t *ring = (wing_spsc_ring_t *)(uintptr_t)handle;
     if (!ring || !ring->buffer) return -2;
 
-#if defined(_MSC_VER)
-    uint64_t head = (uint64_t)ring->head;
-    uint64_t tail = (uint64_t)InterlockedOr64((volatile LONG64 *)&ring->tail, 0);
-#else
-    uint64_t head = __atomic_load_n(&ring->head, __ATOMIC_RELAXED);
-    uint64_t tail = __atomic_load_n(&ring->tail, __ATOMIC_ACQUIRE);
-#endif
-
-    if (head == tail) {
-        return -3; // Queue is empty
+    uint64_t head = spsc_load_relaxed(&ring->head);
+    if (head == ring->cached_tail) {
+        ring->cached_tail = spsc_load_acquire(&ring->tail);
+        if (head == ring->cached_tail) {
+            return -3; // Queue is empty
+        }
     }
 
     *out_value = ring->buffer[head & ring->mask];
-
-#if defined(_MSC_VER)
-    (void)InterlockedExchange64((volatile LONG64 *)&ring->head, (LONG64)(head + 1));
-#else
-    __atomic_store_n(&ring->head, head + 1, __ATOMIC_RELEASE);
-#endif
+    spsc_store_release(&ring->head, head + 1);
 
     return 0; // Success
 }
@@ -177,15 +198,10 @@ uint32_t wing_spsc_count(uint64_t handle) {
     wing_spsc_ring_t *ring = (wing_spsc_ring_t *)(uintptr_t)handle;
     if (!ring) return 0;
 
-#if defined(_MSC_VER)
-    uint64_t tail = (uint64_t)InterlockedOr64((volatile LONG64 *)&ring->tail, 0);
-    uint64_t head = (uint64_t)InterlockedOr64((volatile LONG64 *)&ring->head, 0);
-#else
-    uint64_t tail = __atomic_load_n(&ring->tail, __ATOMIC_RELAXED);
-    uint64_t head = __atomic_load_n(&ring->head, __ATOMIC_RELAXED);
-#endif
+    uint64_t tail = spsc_load_acquire(&ring->tail);
+    uint64_t head = spsc_load_acquire(&ring->head);
 
-    return (tail >= head) ? (uint32_t)(tail - head) : 0;
+    return (uint32_t)(tail - head);
 }
 
 uint32_t wing_spsc_available(uint64_t handle) {

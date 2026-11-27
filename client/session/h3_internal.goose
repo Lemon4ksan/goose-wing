@@ -37,9 +37,11 @@ fn encode_h3_request<B>(
     defer if !committed { out.clear(); h3_conn = copy(saved_conn); };
     out.clear();
 
+    var auth_buf: u8[..300] = [];
+    core::format_outgoing_host(current_url, auth_buf);
     let has_body = ctx.body.len > 0;
     guard http3::send_request_headers(
-        h3_conn, sid, ctx.current_method[..], current_url.scheme(), current_url.host(),
+        h3_conn, sid, ctx.current_method[..], current_url.scheme(), auth_buf[..],
         path_buf[..], ctx.headers, !has_body, out,
     ) else { return false; }
 
@@ -91,14 +93,21 @@ fn execute_live_h3_hop(
 
     let target_host = if h3_ep.host.len > 0 { h3_ep.host[..] } else { current_url.hostname() };
     let target_port = if h3_ep.port > 0 { h3_ep.port } else { current_url.effective_port() as u16 };
-    if session.ssrf_guard.enabled {
-        let blk_priv = session.ssrf_guard.deny_local_network && security::is_private_or_reserved_ip(target_host);
-        if blk_priv || security::is_cloud_metadata_or_reserved_ip(target_host) ||
-            security::is_dangerous_service_port(target_port) {
-            return false;
-        }
-    }
-    let udp_fd = net::udp_bind("0.0.0.0", 0);
+    guard !is_ssrf_blocked_ip(session.ssrf_guard, target_host) else { return false; }
+    guard !is_ssrf_blocked_port(session.ssrf_guard, target_port) else { return false; }
+
+    var dns_candidates: net::DnsCandidate[..32] = [];
+    var unused_ech:     u8[..512]               = [];
+    let dns_err = resolve_and_validate_live_host(
+        session, target_host, target_port, now_sec, dns_candidates, unused_ech, false,
+    );
+    guard http::ok(dns_err) && dns_candidates.len > 0 else { return false; }
+    let chosen_ip = dns_candidates[0].ip[..];
+    let _, ok_ip = core::parse_ip_addr(chosen_ip);
+    guard ok_ip else { return false; }
+
+    let is_v6 = chosen_ip.contains_byte(':');
+    let udp_fd = if is_v6 { net::udp_open_dual("::", 0, 2) } else { net::udp_bind("0.0.0.0", 0) };
     guard udp_fd > 0 else { return false; }
     defer net::tcp_close(udp_fd);
 
@@ -108,7 +117,7 @@ fn execute_live_h3_hop(
     guard ok_s else { return false; }
     var req_wire: u8[..4096] = [];
     guard encode_h3_request(h3_conn, sid, ctx, current_url, req_wire) else { return false; }
-    let sent = net_internal::native_udp_sendto(udp_fd, req_wire[..], target_host, target_port);
+    let sent = net::udp_sendto_dual(udp_fd, req_wire[..], chosen_ip, target_port);
     guard sent > 0 else { return false; }
     var rx_buf:    u8[1472] = [0; 1472];
     var peer_ip4:  u32      = 0;

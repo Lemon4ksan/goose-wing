@@ -522,6 +522,11 @@ fn pump_response_body(
         (resp.protocol == "HTTP/1.1" || resp.protocol == "h1");
 
     let is_upgrade = resp.status_code == rfc::STATUS_SWITCHING_PROTOCOLS;
+    if is_upgrade {
+        let req_upgrades = headers_have_connection_token(req.headers, "upgrade") &&
+            req.headers.find_header("Upgrade").trim_lws().len > 0;
+        guard req_upgrades else { return false, false; }
+    }
     let is_connect_2xx = req.method[..].eq_ascii_fold("CONNECT") &&
         resp.status_code >= rfc::STATUS_OK && resp.status_code < 300;
     if req.method[..].eq_ascii_fold("HEAD") || is_connect_2xx || is_upgrade ||
@@ -532,11 +537,13 @@ fn pump_response_body(
             let appended = !ok_ka || leftover.len == 0 || conn.rx_buf.try_append(leftover);
             return true, ok_ka && appended;
         }
-        let can_preserve = keep_alive || is_upgrade || is_connect_2xx;
+        // RFC 9110 §9.3.6 / §15.2.2: 101 Switching Protocols and CONNECT 2xx leave HTTP/1.1 framing.
+        let eff_keep_alive = keep_alive && !is_upgrade && !is_connect_2xx;
+        let can_preserve = eff_keep_alive || is_upgrade || is_connect_2xx;
         if can_preserve && leftover.len > 0 {
             guard conn.rx_buf.try_append(leftover) else { return false, false; }
         }
-        return true, can_preserve;
+        return true, eff_keep_alive;
     }
 
     if http::has_header(resp.headers, "Transfer-Encoding") {

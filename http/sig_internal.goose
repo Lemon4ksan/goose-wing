@@ -230,19 +230,25 @@ fn extract_combined_header_value<B>(headers: const http::HeaderMap&, name: const
 //   req has method "GET", comp = "@method"
 //   returns: true, out populated with "GET"
 fn extract_component_value<B>(req: const http::Request&, comp: const u8[:], out: B&) -> bool {
-    guard is_valid_component_name(comp) else {
+    let _, has_req = strip_req_component_suffix(comp);
+    guard !has_req && is_valid_component_name(comp) else {
         out.clear();
         return false;
     }
     if comp == "@method" {
-        guard out.try_set(req.method[..]) else {
+        guard req.method.len > 0 &&
+              http::is_valid_token_swar(req.method[..]) &&
+              out.try_set(req.method[..]) else {
             out.clear();
             return false;
         }
         return true;
     }
     if comp == "@target-uri" {
-        guard out.try_set(req.url[..]) else {
+        let view, _ = core::parse_url_view(req.url[..]);
+        guard view.valid &&
+              core::swar_find_ctl(req.url[..]) == req.url.len &&
+              out.try_set(req.url[..]) else {
             out.clear();
             return false;
         }
@@ -347,6 +353,8 @@ fn build_signature_base_from_params_line<B>(
     defer if !committed { out.clear(); };
     for idx in components.len {
         let comp = components[idx][..];
+        let _, has_req = strip_req_component_suffix(comp);
+        guard !has_req else { return false; }
         var val: u8[..4096] = [];
         guard extract_component_value(req, comp, val) else { return false; }
         guard out.try_push('"' as u8) &&
@@ -455,7 +463,7 @@ inline fn resolve_sig_verify_now_sec(now_sec: i64) -> i64 {
 
 // Structural timestamp sanity check used at signing time (no wall-clock enforcement).
 fn validate_sign_params_timestamps(params: const http::SignatureParams&) -> bool {
-    guard params.created >= 0 && params.expires >= 0 else { return false; }
+    guard params.created >= 0 && params.expires >= 0 && params.max_age_sec >= 0 else { return false; }
     if params.created > 0 && params.expires > 0 {
         guard params.created < params.expires else { return false; }
     }
@@ -463,8 +471,16 @@ fn validate_sign_params_timestamps(params: const http::SignatureParams&) -> bool
 }
 
 // RFC 9421 Section 2.3: Signature Parameters - Enforce created/expires bounds including wire expires=0 (AUTH-07).
-fn validate_wire_signature_timestamps(ts: const SigWireTimestamps&, now_sec: i64) -> bool {
-    guard ts.created >= 0 && ts.expires >= 0 else { return false; }
+fn validate_wire_signature_timestamps(
+    ts:                 const SigWireTimestamps&,
+    now_sec:            i64,
+    max_age_sec:        i64  = 0,
+    require_timestamps: bool = false,
+) -> bool {
+    guard ts.created >= 0 && ts.expires >= 0 && max_age_sec >= 0 else { return false; }
+    if require_timestamps || max_age_sec > 0 {
+        guard ts.has_created && ts.created > 0 else { return false; }
+    }
     if ts.has_created && ts.has_expires {
         guard ts.created < ts.expires else { return false; }
     }
@@ -475,6 +491,9 @@ fn validate_wire_signature_timestamps(ts: const SigWireTimestamps&, now_sec: i64
     guard eff_now > 0 else { return false; }
     if ts.has_created {
         guard core::add_sat_i64(eff_now, 60) >= ts.created else { return false; }
+        if max_age_sec > 0 {
+            guard core::sub_sat_i64(eff_now, ts.created) <= max_age_sec else { return false; }
+        }
     }
     if ts.has_expires {
         guard core::sub_sat_i64(eff_now, 60) <= ts.expires else { return false; }
@@ -724,7 +743,12 @@ fn validate_and_decode_signature_headers(
     ) else {
         return false;
     }
-    guard validate_wire_signature_timestamps(wire_ts, now_sec) else {
+    guard validate_wire_signature_timestamps(
+        wire_ts,
+        now_sec,
+        params.max_age_sec,
+        params.require_timestamps,
+    ) else {
         out_sig_params.clear();
         return false;
     }

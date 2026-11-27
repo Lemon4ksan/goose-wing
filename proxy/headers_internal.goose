@@ -202,9 +202,8 @@ fn should_forward_header_slices(
         // RFC 9110 Section 7.6.1: Connection - TE may only be forwarded if the value is trailers.
         return name.eq_ascii_fold("te") && val.trim_lws().eq_ascii_fold("trailers");
     }
-
-    if http::entries_have_connection_token(in_headers.entries[..], in_headers.raw_buf[..], spill_raw, name) ||
-       http::entries_have_connection_token(spill_entries, in_headers.raw_buf[..], spill_raw, name) {
+    if header_map_has_token_slices(in_headers, spill_entries, spill_raw, "connection", name)
+        && !http::is_protected_end_to_end_header(name) {
         return false;
     }
 
@@ -738,7 +737,11 @@ fn filter_single_upstream_response_header<B>(
     if name.starts_with_fold("x-accel-") {
         return proxy::parse_x_accel_control_header(name, val, accel);
     }
-    if http::is_hop_by_hop_header_name(name) || http::is_token_in_connection_header_map(in_headers, name) {
+    if http::is_hop_by_hop_header_name(name) {
+        return true;
+    }
+    if http::is_token_in_connection_header_map(in_headers, name)
+        && !http::is_protected_end_to_end_header(name) {
         return true;
     }
     if name.eq_ascii_fold("content-length") {

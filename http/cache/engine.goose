@@ -28,6 +28,7 @@ import http.cache.store_internal;
 struct CacheOptions {
     shared:                bool     = false,
     cache_private:         bool     = false,
+    cache_set_cookie:      bool     = false,
     heuristic_fraction:    i64      = 10,
     immutable_min_ttl_sec: i64      = 31536000,
     ignore_cargo_cult:     bool     = true,
@@ -286,11 +287,19 @@ fn lookup(
 
     let is_get = req.method[..].eq_ascii_fold("GET");
     let is_head = req.method[..].eq_ascii_fold("HEAD");
-    guard is_get || is_head else {
+    guard (is_get || is_head) && !http_internal::is_fat_get_or_head_request(req) else {
         cache.total_misses = core::add_sat_i64(cache.total_misses, 1);
         dec.kind = LookupResultKind.Miss;
         return dec;
     }
+
+    var canon_buf: u8[..2048] = [];
+    guard http_internal::canonicalize_cache_url(req.url[..], canon_buf) else {
+        cache.total_misses = core::add_sat_i64(cache.total_misses, 1);
+        dec.kind = LookupResultKind.Miss;
+        return dec;
+    }
+    let canon_url = canon_buf[..];
 
     let req_cc = parse_cache_control_headers(
         req.headers,
@@ -303,8 +312,8 @@ fn lookup(
         return dec;
     }
 
-    let req_hash = http_internal::hash_fnv1a(req.url[..]);
-    let matched_idx = http_internal::find_matching_entry(cache.entries[..], req.url[..], req_hash, req.headers, is_get);
+    let req_hash = http_internal::hash_fnv1a(canon_url);
+    let matched_idx = http_internal::find_matching_entry(cache.entries[..], canon_url, req_hash, req.headers, is_get);
 
     if matched_idx < 0 {
         cache.total_misses = core::add_sat_i64(cache.total_misses, 1);
@@ -313,7 +322,7 @@ fn lookup(
             dec.status_code = rfc::STATUS_GATEWAY_TIMEOUT;
             return dec;
         }
-        let _, _ = cache.writers.start_writer_or_join(req.url[..]);
+        let _, _ = cache.writers.start_writer_or_join(canon_url);
         let _ = cache.writers.acquire(req_hash);
         dec.kind = LookupResultKind.Miss;
         return dec;
@@ -323,7 +332,7 @@ fn lookup(
     http_internal::lru_touch(cache, matched_idx);
 
     let matched_entry .= cache.entries[matched_idx];
-    let eval_dec = http_internal::evaluate_matched_cache_entry(
+    var eval_dec = http_internal::evaluate_matched_cache_entry(
         matched_entry,
         cache.options,
         req,
@@ -333,10 +342,15 @@ fn lookup(
         cur_mono_ns,
     );
     if eval_dec.kind == LookupResultKind.Hit {
+        if eval_dec.revalidate_in_background {
+            let _, is_leader = cache.writers.start_writer_or_join(canon_url);
+            let got_lock = is_leader && cache.writers.acquire(req_hash);
+            eval_dec.revalidate_in_background = got_lock;
+        }
         cache.total_hits = core::add_sat_i64(cache.total_hits, 1);
     } else if eval_dec.kind == LookupResultKind.Revalidate {
         cache.total_revalidations = core::add_sat_i64(cache.total_revalidations, 1);
-        let _, _ = cache.writers.start_writer_or_join(req.url[..]);
+        let _, _ = cache.writers.start_writer_or_join(canon_url);
         let _ = cache.writers.acquire(req_hash);
     } else {
         cache.total_misses = core::add_sat_i64(cache.total_misses, 1);
@@ -393,6 +407,14 @@ fn freshen_cached_entry_304(
         target_cc,
         CacheControlParseOptions { is_request: false, ignore_cargo_cult: cache.options.ignore_cargo_cult },
     );
+    let evicted_by_cc = entry.cc.is_no_store() ||
+        (cache.options.shared && entry.cc.is_private() && !cache.options.cache_private &&
+         entry.cc.private_fields.len == 0);
+    if evicted_by_cc {
+        entry.is_valid = false;
+        entry.security_zeroed = true;
+        http_internal::lru_detach(cache, revalidate_entry_idx as i32);
+    }
 
     let etag_raw = entry.headers.get_header("etag");
     if etag_raw.len > 0 {
@@ -435,11 +457,14 @@ fn on_response(
     revalidate_entry_idx: i64 = -1,
 ) -> ResponseDecision {
     var dec = ResponseDecision { response: copy(resp), .. };
+    var canon_buf: u8[..2048] = [];
+    let has_canon = http_internal::canonicalize_cache_url(req.url[..], canon_buf);
+    let writer_url = if has_canon { canon_buf[..] } else { req.url[..] };
     var writer_stored = false;
     defer http_internal::finalize_inflight_cache_writer(
         cache.writers,
         req.method[..],
-        req.url[..],
+        writer_url,
         writer_stored,
         resp.status_code,
     );
@@ -467,7 +492,7 @@ fn on_response(
         return dec;
     }
 
-    guard is_get || is_head else {
+    guard (is_get || is_head) && !http_internal::is_fat_get_or_head_request(req) && has_canon else {
         dec.kind = ResponseDecisionKind.PassThrough;
         return dec;
     }
@@ -488,13 +513,15 @@ fn on_response(
         CacheControlParseOptions { is_request: false, ignore_cargo_cult: cache.options.ignore_cargo_cult },
     );
 
-    guard req.url.len <= 2048 && req.method.len <= 16 &&
+    guard req.method.len <= 16 &&
           http_internal::is_response_cacheable(cache.options, req_cc, req.headers, resp, resp_cc) else {
         dec.kind = ResponseDecisionKind.PassThrough;
         return dec;
     }
 
-    writer_stored = http_internal::store_cacheable_response(cache, req, resp, resp_headers, resp_cc, ts, is_head, dec);
+    writer_stored = http_internal::store_cacheable_response(
+        cache, req, writer_url, resp, resp_headers, resp_cc, ts, is_head, dec,
+    );
     return dec;
 }
 
@@ -522,27 +549,35 @@ fn invalidate_matching_url(cache: Cache&, target_url: const u8[:]) -> i64 {
 // Invalidates stored responses on unsafe method completion (POST, PUT, DELETE, PATCH).
 // Invalidates the request URI and any same-origin Location and Content-Location URIs (RFC 9111 §4.4).
 fn check_invalidation(cache: Cache&, req: const Request&, resp: const Response&) -> i64 {
-    var count = cache.invalidate_matching_url(req.url[..]);
+    var canon_buf: u8[..2048] = [];
+    let target_url = if http_internal::canonicalize_cache_url(req.url[..], canon_buf) {
+        canon_buf[..]
+    } else {
+        req.url[..]
+    };
+    var count = cache.invalidate_matching_url(target_url);
 
-    var base_orig = core::Origin { .. };
-    let parsed_base, err_base = core::parse_url(req.url[..]);
-    if err_base == core::UrlParseError.None && parsed_base.valid {
-        base_orig = core::origin_from_url(parsed_base);
-        count += http_internal::invalidate_target_if_same_origin(
-            cache, resp.header("Location"), parsed_base, base_orig,
-        );
-        count += http_internal::invalidate_target_if_same_origin(
-            cache, resp.header("Content-Location"), parsed_base, base_orig,
-        );
+    let parsed_base, err_base = core::parse_url(target_url);
+    guard err_base == core::UrlParseError.None && parsed_base.valid else {
+        cache.total_invalidations += count;
+        return count;
     }
+    let base_orig = core::origin_from_url(parsed_base);
+    count += http_internal::invalidate_target_if_same_origin(
+        cache, resp.header("Location"), parsed_base, base_orig,
+    );
+    count += http_internal::invalidate_target_if_same_origin(
+        cache, resp.header("Content-Location"), parsed_base, base_orig,
+    );
 
-    // RFC 9875 §3: Cache-Group-Invalidation is ignored for safe-method responses (on_response only
-    // reaches this path for unsafe methods); group purges do not cascade (RFC 9875 §2.2.1).
-    var group_tags: CacheGroupTag[..32] = [];
-    if parse_cache_group_list(resp.header("Cache-Group-Invalidation"), group_tags) {
-        let group_base_url = if err_base == core::UrlParseError.None && parsed_base.valid { req.url[..] } else { "" };
-        for &tag in group_tags {
-            count = core::add_sat_i64(count, cache.invalidate_group(tag.name[..], group_base_url));
+    // RFC 9875 §3: Cache-Group-Invalidation is scoped to the resolved origin (fail-closed otherwise).
+    for &e in resp.headers.entries {
+        guard resp.headers.entry_name(e).eq_ascii_fold("cache-group-invalidation") else { continue; }
+        var group_tags: CacheGroupTag[..32] = [];
+        if parse_cache_group_list(resp.headers.entry_value(e), group_tags) {
+            for &tag in group_tags {
+                count = core::add_sat_i64(count, cache.invalidate_group(tag.name[..], target_url));
+            }
         }
     }
 
@@ -583,10 +618,17 @@ fn lookup(
     var dec = LookupDecision { .. };
     let is_get = req.method[..].eq_ascii_fold("GET");
     let is_head = req.method[..].eq_ascii_fold("HEAD");
-    guard is_get || is_head else {
+    guard (is_get || is_head) && !http_internal::is_fat_get_or_head_request(req) else {
         dec.kind = LookupResultKind.Miss;
         return dec;
     }
+
+    var canon_buf: u8[..2048] = [];
+    guard http_internal::canonicalize_cache_url(req.url[..], canon_buf) else {
+        dec.kind = LookupResultKind.Miss;
+        return dec;
+    }
+    let canon_url = canon_buf[..];
 
     let req_cc = parse_cache_control_headers(
         req.headers,
@@ -597,8 +639,8 @@ fn lookup(
         return dec;
     }
 
-    let req_hash = http_internal::hash_fnv1a(req.url[..]);
-    let matched_idx = http_internal::find_matching_entry(cache.entries[..], req.url[..], req_hash, req.headers, is_get);
+    let req_hash = http_internal::hash_fnv1a(canon_url);
+    let matched_idx = http_internal::find_matching_entry(cache.entries[..], canon_url, req_hash, req.headers, is_get);
     if matched_idx < 0 {
         if req_cc.is_only_if_cached() {
             dec.kind = LookupResultKind.Fail504;
@@ -629,9 +671,13 @@ fn store_response(
 ) -> bool {
     let is_get = req.method[..].eq_ascii_fold("GET");
     let is_head = req.method[..].eq_ascii_fold("HEAD");
-    guard is_get || is_head else { return false; }
+    guard (is_get || is_head) && !http_internal::is_fat_get_or_head_request(req) else { return false; }
     guard resp.body.len <= cache.max_body_cap else { return false; }
-    guard req.url.len <= 2048 && req.method.len <= 16 else { return false; }
+    guard req.method.len <= 16 else { return false; }
+
+    var canon_buf: u8[..2048] = [];
+    guard http_internal::canonicalize_cache_url(req.url[..], canon_buf) else { return false; }
+    let canon_url = canon_buf[..];
 
     let req_cc = parse_cache_control_headers(
         req.headers,
@@ -656,7 +702,7 @@ fn store_response(
         ..
     };
     var entry = CachedEntry {
-        url_hash:        http_internal::hash_fnv1a(req.url[..]),
+        url_hash:        http_internal::hash_fnv1a(canon_url),
         status_code:     resp.status_code,
         headers:         sanitized,
         cc:              resp_cc,
@@ -668,7 +714,7 @@ fn store_response(
     };
     guard http_internal::refresh_entry_vary_and_nvs(entry, req.headers) else { return false; }
     http_internal::populate_entry_validators(entry);
-    entry.url.append(req.url[..]);
+    entry.url.append(canon_url);
     entry.method.append(req.method[..]);
     entry.body.append(resp.body[..]);
     return http_internal::upsert_scalable_cache_entry(cache, entry, req.headers);

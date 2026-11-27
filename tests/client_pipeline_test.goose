@@ -1675,7 +1675,10 @@ fn test_chromium_multi_component_pipeline_integration(t: lit::T&) {
         var b64_chal: u8[..384] = [];
         security::encode_padded_base64url(raw_chal[..], b64_chal);
 
+        let tok_key_bytes = "issuer_public_key_bytes_for_test";
+        let tok_key_hash = core::sha256(tok_key_bytes);
         var dummy_tok = security::Token { .. };
+        let _ = dummy_tok.token_key_id.try_set(tok_key_hash[..]);
         let ok_put = security::put_private_token(
             cli.private_token_cache,
             chal,
@@ -1686,8 +1689,12 @@ fn test_chromium_multi_component_pipeline_integration(t: lit::T&) {
         );
         sub.assert_true(ok_put, "Stored single-spend PrivateToken in session cache");
 
+        var b64_tok_key: u8[..128] = [];
+        security::encode_padded_base64url(tok_key_bytes, b64_tok_key);
         var www_auth_hdr: u8[..512] = "PrivateToken challenge=\"";
         www_auth_hdr.append(b64_chal[..]);
+        www_auth_hdr.append("\", token-key=\"");
+        www_auth_hdr.append(b64_tok_key[..]);
         www_auth_hdr.push('"');
 
         cli.mock_route("GET", "https://api.example.com/protected-token", 401, "need-token");

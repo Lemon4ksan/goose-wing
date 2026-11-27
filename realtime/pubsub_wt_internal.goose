@@ -141,14 +141,16 @@ fn sse_clean_token_len(s: const u8[:]) -> i64 {
     return s.len;
 }
 
-fn sse_format_data_lines<B>(out: B&, data: const u8[:]) {
+fn sse_format_data_lines<B>(out: B&, data: const u8[:]) -> bool {
     var start: i64 = 0;
     var i:     i64 = 0;
     while i < data.len {
         if data[i] == '\r' || data[i] == '\n' {
-            out.append("data: ");
-            out.append(data[start..i]);
-            out.push('\n');
+            guard out.try_append("data: ") &&
+                out.try_append(data[start..i]) &&
+                out.try_push('\n') else {
+                return false;
+            }
             let next_i = core::add_sat_i64(i, 1);
             if data[i] == '\r' && next_i < data.len && data[next_i] == '\n' {
                 i = core::add_sat_i64(i, 2);
@@ -160,9 +162,7 @@ fn sse_format_data_lines<B>(out: B&, data: const u8[:]) {
             i = core::add_sat_i64(i, 1);
         }
     }
-    out.append("data: ");
-    out.append(data[start..]);
-    out.push('\n');
+    return out.try_append("data: ") && out.try_append(data[start..]) && out.try_push('\n');
 }
 
 // ---- TopicTree Internal Helpers (OASIS MQTT v5.0 §4.7) -------------------

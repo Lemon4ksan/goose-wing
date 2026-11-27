@@ -415,6 +415,76 @@ fn append_userinfo_to_url(out_url: Url&, userinfo: const u8[:]) -> bool {
     return out_url.href.try_push('@');
 }
 
+// Parses a WHATWG IPv4 number component in decimal, octal, or 0x hex (WHATWG URL §3.5).
+//
+// Example:
+//   part = "0x7f"
+//   returns: 127, true
+fn parse_whatwg_ipv4_number(part: const u8[:]) -> u64, bool {
+    guard part.len > 0 else { return 0, false; }
+    var base:  u64 = 10;
+    var start: i64 = 0;
+    if part.len >= 2 && part[0] == '0' && (part[1] == 'x' || part[1] == 'X') {
+        base = 16;
+        start = 2;
+        if part.len == 2 { return 0, true; }
+    } else if part.len > 1 && part[0] == '0' {
+        base = 8;
+        start = 1;
+    }
+    var val: u64 = 0;
+    for i in start..part.len {
+        let d = hex_digit_to_val(part[i]);
+        guard d >= 0 && (d as u64) < base else { return 0, false; }
+        val = val * base + (d as u64);
+        guard val <= 0xFFFFFFFF else { return 0, false; }
+    }
+    return val, true;
+}
+
+fn canonicalize_whatwg_ipv4_host(raw_host: u8[..256]&) -> UrlParseError {
+    guard raw_host.len > 0 && raw_host[0] != '[' else { return UrlParseError.None; }
+    let trimmed, _ = strip_suffix(raw_host[..], ".");
+    guard trimmed.len > 0 else { return UrlParseError.None; }
+
+    let last_dot = last_index_of_byte(trimmed, '.');
+    let last_label = if last_dot >= 0 { trimmed[last_dot + 1..] } else { trimmed };
+    let _, ends_in_num = parse_whatwg_ipv4_number(last_label);
+    guard ends_in_num else { return UrlParseError.None; }
+
+    var parts: u64[..4] = [];
+    var tok = make_byte_tokenizer(trimmed, '.');
+    loop {
+        let part, ok = token_next(tok);
+        guard ok else { break; }
+        let num, ok_n = parse_whatwg_ipv4_number(part);
+        guard ok_n && parts.try_push(num) else { return UrlParseError.InvalidHost; }
+    }
+    guard parts.len >= 1 else { return UrlParseError.InvalidHost; }
+    let count = parts.len;
+    for idx in 0..(count - 1) {
+        guard parts[idx] <= 255 else { return UrlParseError.InvalidHost; }
+    }
+    let shift = 8 * (5 - count);
+    let max_last = (1 as u64) << (shift as u64);
+    guard parts[count - 1] < max_last else { return UrlParseError.InvalidHost; }
+
+    var ipv4 = parts[count - 1];
+    for idx in 0..(count - 1) {
+        let byte_shift = (8 * (3 - idx)) as u64;
+        ipv4 += parts[idx] << byte_shift;
+    }
+    raw_host.clear();
+    ((ipv4 >> 24) & 0xFF).format_u64_dec(raw_host);
+    raw_host.push('.');
+    ((ipv4 >> 16) & 0xFF).format_u64_dec(raw_host);
+    raw_host.push('.');
+    ((ipv4 >> 8) & 0xFF).format_u64_dec(raw_host);
+    raw_host.push('.');
+    (ipv4 & 0xFF).format_u64_dec(raw_host);
+    return UrlParseError.None;
+}
+
 fn apply_canonical_host_and_port(
     out_url:        Url&,
     scheme_str:     const u8[:],
@@ -447,6 +517,13 @@ fn apply_canonical_host_and_port(
     };
     if is_file && (port_val >= 0 || has_file_colon) {
         return UrlParseError.InvalidPort;
+    }
+
+    if is_spec && !is_file {
+        let ipv4_err = canonicalize_whatwg_ipv4_host(raw_host);
+        guard ipv4_err == UrlParseError.None else {
+            return ipv4_err;
+        }
     }
 
     to_lower(raw_host[..]);

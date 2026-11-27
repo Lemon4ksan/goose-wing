@@ -246,7 +246,8 @@ inline fn process_request_header(
         return grpc::StatusCode.InvalidArgument;
     }
     if n.eq_ascii_fold("content-type") {
-        if v.len == 0 || grpc::is_content_type(v) { return grpc::StatusCode.Ok; }
+        let trimmed = v.trim_lws();
+        if trimmed.len > 0 && grpc::is_content_type(trimmed) { return grpc::StatusCode.Ok; }
         return grpc::StatusCode.InvalidArgument;
     }
     if n.eq_ascii_fold("accept") {
@@ -322,9 +323,15 @@ fn extract_server_context_status(
         return grpc::StatusCode.Unimplemented;
     }
 
+    var ct_count: i64 = 0;
     for &e in req.headers.entries {
+        let h_name = http::entry_name(req.headers, e);
+        if h_name.eq_ascii_fold("content-type") {
+            ct_count = core::add_sat_i64(ct_count, 1);
+            guard ct_count == 1 else { return grpc::StatusCode.InvalidArgument; }
+        }
         let hdr_st = process_request_header(
-            http::entry_name(req.headers, e),
+            h_name,
             http::entry_value(req.headers, e),
             ctx,
             now_mono_ns,
@@ -393,9 +400,10 @@ fn decode_and_validate_single_lpm(
         return false;
     }
 
+    let max_msg = if d.max_message_size > 0 { d.max_message_size } else { rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE };
     if is_compressed {
         var decomp_buf: u8[>..] = [];
-        let ok_gz, gz_err = core::gzip_decompress_with_limit(tmp_payload[..], decomp_buf, d.max_message_size);
+        let ok_gz, gz_err = core::gzip_decompress_with_limit(tmp_payload[..], decomp_buf, max_msg);
         guard ok_gz else {
             let is_overflow = gz_err == core::CompressError.OutputBufferOverflow;
             let code = if is_overflow {
@@ -415,7 +423,7 @@ fn decode_and_validate_single_lpm(
         tmp_payload.append(decomp_buf[..]);
     }
 
-    if (tmp_payload.len as u32) > d.max_message_size {
+    if (tmp_payload.len as u32) > max_msg {
         build_trailers_only_response(
             grpc::StatusCode.ResourceExhausted, "Received message exceeds max configured message size", ctx, res,
         );

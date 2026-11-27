@@ -445,9 +445,9 @@ fn reactor_cleanup_slot(
         let prev_reg = server::g_reactor_accel.epfd_registered_count;
         server::g_reactor_accel.epfd_registered_count = max(0, core::sub_sat_i64(prev_reg, 1)) as i32;
     }
-    net::reactor_reset_accel_slot(server::g_reactor_accel, slot_idx);
     var tr = table.slot_transport(slot_idx);
     tr.close();
+    let accel_freed = net::reactor_quarantine_or_reset_slot(server::g_reactor_accel, slot_idx);
     let h2_i = table.h2_slot_map[slot_idx] as i64;
     if h2_i >= 0 && h2_i < server::REACTOR_MAX_H2_SESSIONS {
         server::g_default_reactor.h2_in_use[h2_i] = false;
@@ -456,7 +456,9 @@ fn reactor_cleanup_slot(
         server_internal::free_connection_slot(server::g_reactor_conn_pool, table.conn_slots[slot_idx]);
     }
     table.soa_table_free(slot_idx);
-    free_reactor_conn_slot(slot_pool, slot_idx);
+    if accel_freed {
+        free_reactor_conn_slot(slot_pool, slot_idx);
+    }
 }
 
 // 1-second Tick Wheel Connection Timeout Sweeper (Slowloris defense & slot reclamation).

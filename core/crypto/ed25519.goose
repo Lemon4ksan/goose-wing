@@ -527,6 +527,7 @@ fn ed25519_sign(seed: const u8[32]&, message: const u8[:]) -> u8[64] {
     }
 
     zeroize_sha512_ctx(r_ctx);
+    zeroize_sha512_ctx(k_ctx);
     secure_zeroize_64(h);
     secure_zeroize_32(s);
     secure_zeroize_32(prefix);
@@ -535,6 +536,10 @@ fn ed25519_sign(seed: const u8[32]&, message: const u8[:]) -> u8[64] {
     secure_zeroize_64(k_hash);
     secure_zeroize_32(k);
     secure_zeroize_32(s_scalar);
+    if !ed25519_verify(a_bytes, message, sig) {
+        secure_zeroize_64(sig);
+        return [0; 64];
+    }
     return sig;
 }
 

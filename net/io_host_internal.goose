@@ -50,6 +50,7 @@ enum LinkSlotState {
     Connecting,
     Listening,
     Open,
+    Closing,
 }
 
 enum LinkKind {
@@ -77,8 +78,15 @@ struct IoLinkSlot {
     is_rio:           bool          = false,
     is_b_end:         bool          = false,
     rx_paused:        bool          = false,
+    rx_inflight:      bool          = false,
+    rx_armed:         bool          = false,
+    rx_canceling:     bool          = false,
     want_write:       bool          = false,
     tx_inflight:      bool          = false,
+    tx_notif_pending: bool          = false,
+    accept_armed:     bool          = false,
+    connect_armed:    bool          = false,
+    poll_w_armed:     bool          = false,
     eof_received:     bool          = false,
     write_shut:       bool          = false,
     virtual_eof_sent: bool          = false,
@@ -123,6 +131,18 @@ inline fn host_match_link(host: const net::Host&, link: core::IoLink) -> i64, bo
     return slot, true;
 }
 
+inline fn host_match_any_link(host: const net::Host&, link: core::IoLink) -> i64, bool, bool {
+    guard host.is_open && core::io_link_is_valid(link) else { return -1, false, false; }
+    let slot = core::io_link_slot(link);
+    guard slot >= 0 && slot < host.links.len else { return -1, false, false; }
+    let is_active = host.links[slot].in_use;
+    let is_closing = host.links[slot].state == LinkSlotState.Closing;
+    guard (is_active || is_closing) && host.links[slot].gen == core::io_link_gen(link) else {
+        return -1, false, false;
+    }
+    return slot, is_closing, true;
+}
+
 inline fn host_uring_tag(op: u64, gen: u16, slot: i64) -> u64 {
     let hi = core::shl_sat_u64(op, HOST_URING_OP_SHIFT);
     let mid = core::shl_sat_u64(gen, HOST_URING_GEN_SHIFT);
@@ -137,6 +157,20 @@ inline fn host_match_uring_tag(host: const net::Host&, user_data: u64) -> u64, i
     guard slot >= 0 && slot < host.links.len else { return 0, -1, false; }
     guard host.links[slot].in_use && host.links[slot].gen == gen && gen != 0 else { return 0, -1, false; }
     return op, slot, true;
+}
+
+inline fn host_match_any_uring_tag(host: const net::Host&, user_data: u64) -> u64, i64, bool, bool {
+    guard user_data != HOST_URING_CANCEL_TAG else { return 0, -1, false, false; }
+    let op = (user_data >> HOST_URING_OP_SHIFT) & 0xFFFF;
+    let gen = ((user_data >> HOST_URING_GEN_SHIFT) & 0xFFFF) as u16;
+    let slot = (user_data & 0xFFFFFFFF) as i64;
+    guard slot >= 0 && slot < host.links.len else { return 0, -1, false, false; }
+    let is_active = host.links[slot].in_use;
+    let is_closing = host.links[slot].state == LinkSlotState.Closing;
+    guard (is_active || is_closing) && host.links[slot].gen == gen && gen != 0 else {
+        return 0, -1, false, false;
+    }
+    return op, slot, is_closing, true;
 }
 
 inline fn host_rio_rx_offset(slot: i64) -> u32 {
@@ -317,53 +351,67 @@ inline fn queue_kq_diff(
     }
 }
 
+inline fn cancel_uring_op_tag(uring_fd: i64, op: u64, gen: u16, slot: i64) {
+    var sqe = UringSqe { .. };
+    uring_prep_cancel(sqe, host_uring_tag(op, gen, slot));
+    sqe.user_data = HOST_URING_CANCEL_TAG;
+    var b: UringSqe[1] = [sqe];
+    let _ = uring_submit_sqes(uring_fd, b[..]);
+}
+
 fn sync_uring_slot_interest(host: net::Host&, slot: i64, new_mask: u32) {
     let gen = host.links[slot].gen;
     let fd = host.links[slot].fd as i32;
     let old_mask = host.links[slot].epoll_mask;
     if host.links[slot].state == LinkSlotState.Listening {
-        if (old_mask & net::EPOLL_READ) == 0 {
+        if (old_mask & net::EPOLL_READ) == 0 && !host.links[slot].accept_armed {
             var sqe = UringSqe { .. };
             uring_prep_accept_multishot(sqe, fd, host_uring_tag(HOST_URING_OP_ACCEPT, gen, slot));
             var b: UringSqe[1] = [sqe];
-            let _ = uring_submit_sqes(host.uring_fd, b[..]);
+            if uring_submit_sqes(host.uring_fd, b[..]) > 0 {
+                host.links[slot].accept_armed = true;
+            }
         }
         host.links[slot].epoll_mask = net::EPOLL_READ;
         return;
     }
     if host.links[slot].state == LinkSlotState.Connecting {
-        if (old_mask & net::EPOLL_WRITE) == 0 {
+        if (old_mask & net::EPOLL_WRITE) == 0 && !host.links[slot].connect_armed {
             var sqe = UringSqe { .. };
             uring_prep_poll_add(sqe, fd, 4, host_uring_tag(HOST_URING_OP_CONNECT, gen, slot));
             var b: UringSqe[1] = [sqe];
-            let _ = uring_submit_sqes(host.uring_fd, b[..]);
+            if uring_submit_sqes(host.uring_fd, b[..]) > 0 {
+                host.links[slot].connect_armed = true;
+            }
         }
         host.links[slot].epoll_mask = net::EPOLL_WRITE;
         return;
     }
     let want_r = (new_mask & net::EPOLL_READ) != 0;
-    let had_r = (old_mask & net::EPOLL_READ) != 0;
-    if want_r && !had_r {
+    if want_r && !host.links[slot].rx_armed && !host.links[slot].rx_canceling {
         var sqe = UringSqe { .. };
         uring_prep_sqe_recv_multishot(
             sqe, fd, HOST_URING_PBUF_BGID, host_uring_tag(HOST_URING_OP_RECV, gen, slot),
         );
         var b: UringSqe[1] = [sqe];
-        let _ = uring_submit_sqes(host.uring_fd, b[..]);
-    } else if !want_r && had_r {
-        var sqe = UringSqe { .. };
-        uring_prep_cancel(sqe, host_uring_tag(HOST_URING_OP_RECV, gen, slot));
-        sqe.user_data = HOST_URING_CANCEL_TAG;
-        var b: UringSqe[1] = [sqe];
-        let _ = uring_submit_sqes(host.uring_fd, b[..]);
+        if uring_submit_sqes(host.uring_fd, b[..]) > 0 {
+            host.links[slot].rx_armed = true;
+        }
+    } else if !want_r && host.links[slot].rx_armed && !host.links[slot].rx_canceling {
+        cancel_uring_op_tag(host.uring_fd, HOST_URING_OP_RECV, gen, slot);
+        host.links[slot].rx_canceling = true;
     }
     let want_w = (new_mask & net::EPOLL_WRITE) != 0;
-    let had_w = (old_mask & net::EPOLL_WRITE) != 0;
-    if want_w && !had_w && !host.links[slot].tx_inflight {
+    if want_w && !host.links[slot].poll_w_armed && !host.links[slot].tx_inflight &&
+        !host.links[slot].tx_notif_pending {
         var sqe = UringSqe { .. };
         uring_prep_poll_add(sqe, fd, 4, host_uring_tag(HOST_URING_OP_POLL_W, gen, slot));
         var b: UringSqe[1] = [sqe];
-        let _ = uring_submit_sqes(host.uring_fd, b[..]);
+        if uring_submit_sqes(host.uring_fd, b[..]) > 0 {
+            host.links[slot].poll_w_armed = true;
+        }
+    } else if !want_w && host.links[slot].poll_w_armed {
+        cancel_uring_op_tag(host.uring_fd, HOST_URING_OP_POLL_W, gen, slot);
     }
     host.links[slot].epoll_mask = new_mask;
 }
@@ -469,10 +517,29 @@ fn sync_slot_interest(host: net::Host&, slot: i64) {
     sync_epoll_slot_interest(host, slot, fd, old_mask, new_mask);
 }
 
+inline fn host_slot_has_inflight_ops(s: const IoLinkSlot&) -> bool {
+    return s.rx_inflight || s.rx_armed || s.tx_inflight || s.tx_notif_pending ||
+        s.accept_armed || s.connect_armed || s.poll_w_armed;
+}
+
+inline fn cancel_closing_uring_ops(host: net::Host&, slot: i64) {
+    let gen = host.links[slot].gen;
+    if host.links[slot].tx_inflight || host.links[slot].tx_notif_pending {
+        cancel_uring_op_tag(host.uring_fd, HOST_URING_OP_SEND, gen, slot);
+    }
+    if host.links[slot].accept_armed {
+        cancel_uring_op_tag(host.uring_fd, HOST_URING_OP_ACCEPT, gen, slot);
+    }
+    if host.links[slot].connect_armed {
+        cancel_uring_op_tag(host.uring_fd, HOST_URING_OP_CONNECT, gen, slot);
+    }
+}
+
 fn release_os_link_resources(host: net::Host&, slot: i64) {
     let fd = host.links[slot].fd;
     if host.uring_fd >= 0 {
         sync_uring_slot_interest(host, slot, 0);
+        cancel_closing_uring_ops(host, slot);
     } else if host.kq_fd >= 0 && fd > 0 {
         queue_kq_diff(host, fd, 0, host.links[slot].epoll_mask, 0);
     } else if host.links[slot].in_epfd && !host.links[slot].is_rio {
@@ -483,6 +550,7 @@ fn release_os_link_resources(host: net::Host&, slot: i64) {
     }
     if fd > 0 {
         net::tcp_close(fd);
+        host.links[slot].fd = -1;
     }
 }
 
@@ -511,16 +579,7 @@ inline fn virt_link_remove(host: net::Host&, slot: i64) {
     host.links[slot].virt_next = -1;
 }
 
-fn release_host_slot(host: net::Host&, slot: i64) {
-    guard slot >= 0 && slot < host.links.len && host.links[slot].in_use else { return; }
-    if host.links[slot].kind == LinkKind.Virtual {
-        virt_link_remove(host, slot);
-        if host.links[slot].virtual_pair >= 0 {
-            net::virtual_pipe_close(host.links[slot].virtual_pair as u16, host.links[slot].is_b_end);
-        }
-    } else {
-        release_os_link_resources(host, slot);
-    }
+inline fn finalize_host_slot(host: net::Host&, slot: i64) {
     let next_gen = next_link_gen(host.links[slot].gen);
     host.links[slot] = IoLinkSlot {
         next_free: host.free_link_head,
@@ -528,24 +587,60 @@ fn release_host_slot(host: net::Host&, slot: i64) {
         ..
     };
     host.free_link_head = slot as i32;
+}
+
+fn finalize_closing_host_slot(host: net::Host&, slot: i64) {
+    guard slot >= 0 && slot < host.links.len &&
+        host.links[slot].state == LinkSlotState.Closing &&
+        !host_slot_has_inflight_ops(host.links[slot]) else {
+        return;
+    }
+    finalize_host_slot(host, slot);
+}
+
+fn release_host_slot(host: net::Host&, slot: i64) {
+    guard slot >= 0 && slot < host.links.len && host.links[slot].in_use else { return; }
+    if host.links[slot].kind == LinkKind.Virtual {
+        virt_link_remove(host, slot);
+        if host.links[slot].virtual_pair >= 0 {
+            net::virtual_pipe_close(host.links[slot].virtual_pair as u16, host.links[slot].is_b_end);
+        }
+        finalize_host_slot(host, slot);
+    } else {
+        release_os_link_resources(host, slot);
+        let needs_quarantine = (host.uring_fd >= 0 || host.links[slot].is_rio) &&
+            host_slot_has_inflight_ops(host.links[slot]);
+        if needs_quarantine {
+            host.links[slot].in_use = false;
+            host.links[slot].state = LinkSlotState.Closing;
+        } else {
+            finalize_host_slot(host, slot);
+        }
+    }
     if host.active_links > 0 {
         host.active_links = core::sub_sat_i64(host.active_links, 1);
     }
 }
 
 inline fn post_rio_slot_recv(host: net::Host&, slot: i64) -> bool {
-    guard slot >= 0 && slot < NET_HOST_ACCEL_SLOTS && host.links[slot].rio_rq != 0 else { return false; }
-    return native_rio_post_recv(
+    guard slot >= 0 && slot < NET_HOST_ACCEL_SLOTS && host.links[slot].rio_rq != 0 &&
+        !host.links[slot].rx_inflight && host.links[slot].state == LinkSlotState.Open else {
+        return false;
+    }
+    let rc = native_rio_post_recv(
         host.links[slot].rio_rq,
         host.rio_buf_id,
         host_rio_rx_offset(slot),
         NET_HOST_ACCEL_CHUNK as u32,
         HOST_RIO_REQ_RX,
-    ) == 0;
+    );
+    guard rc == 0 else { return false; }
+    host.links[slot].rx_inflight = true;
+    return true;
 }
 
 inline fn send_accel_slab_tx(host: net::Host&, slot: i64, data: const u8[:]) -> i32, core::IoError {
-    if host.links[slot].tx_inflight {
+    if host.links[slot].tx_inflight || host.links[slot].tx_notif_pending {
         host.links[slot].want_write = true;
         return 0, core::IoError.WouldBlock;
     }

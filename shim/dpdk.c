@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#pragma pack(push, 1)
 typedef struct {
     const void *data;
     int64_t len;
@@ -18,6 +19,13 @@ typedef struct {
     void *data;
     int64_t len;
 } wing_dpdk_rw_slice;
+#pragma pack(pop)
+
+_Static_assert(sizeof(wing_dpdk_ro_slice) == sizeof(const void *) + sizeof(int64_t),
+               "wing_dpdk_ro_slice must be packed");
+_Static_assert(offsetof(wing_dpdk_ro_slice, len) == sizeof(const void *), "wing_dpdk_ro_slice.len must follow data");
+_Static_assert(sizeof(wing_dpdk_rw_slice) == sizeof(void *) + sizeof(int64_t), "wing_dpdk_rw_slice must be packed");
+_Static_assert(offsetof(wing_dpdk_rw_slice, len) == sizeof(void *), "wing_dpdk_rw_slice.len must follow data");
 
 #ifdef WING_ENABLE_DPDK
 #include <rte_eal.h>
@@ -49,6 +57,9 @@ int32_t wing_dpdk_eal_init(void) {
 }
 
 uint64_t wing_dpdk_pktmbuf_pool_create(uint32_t n_elements, uint32_t element_size, int32_t socket_id) {
+    if (n_elements == 0 || element_size == 0 || element_size > 65535U) {
+        return 0;
+    }
     if (!g_dpdk_eal_ready && wing_dpdk_eal_init() != 0) {
         return 0;
     }
@@ -59,11 +70,23 @@ uint64_t wing_dpdk_pktmbuf_pool_create(uint32_t n_elements, uint32_t element_siz
     return (uint64_t)(uintptr_t)g_dpdk_mbuf_pool;
 }
 
+void wing_dpdk_pktmbuf_free(uint64_t mbuf_ptr) {
+    if (mbuf_ptr != 0) {
+        rte_pktmbuf_free((struct rte_mbuf *)(uintptr_t)mbuf_ptr);
+    }
+}
+
 int32_t wing_dpdk_eth_dev_configure(uint16_t port_id, uint16_t rx_queues, uint16_t tx_queues, uint16_t rx_ring_size,
                                     uint16_t tx_ring_size, int32_t promiscuous) {
-    (void)rx_ring_size;
-    (void)tx_ring_size;
+    if (rx_queues == 0 || tx_queues == 0) {
+        return -1;
+    }
     if (!g_dpdk_eal_ready && wing_dpdk_eal_init() != 0) {
+        return -1;
+    }
+    int32_t sock_id = rte_eth_dev_socket_id(port_id);
+    if (sock_id < 0) sock_id = 0;
+    if (g_dpdk_mbuf_pool == NULL && wing_dpdk_pktmbuf_pool_create(8192, 2048, sock_id) == 0) {
         return -1;
     }
     struct rte_eth_conf port_conf;
@@ -71,6 +94,16 @@ int32_t wing_dpdk_eth_dev_configure(uint16_t port_id, uint16_t rx_queues, uint16
     int rc = rte_eth_dev_configure(port_id, rx_queues, tx_queues, &port_conf);
     if (rc < 0) {
         return rc;
+    }
+    uint16_t rx_desc = rx_ring_size > 0 ? rx_ring_size : 1024;
+    uint16_t tx_desc = tx_ring_size > 0 ? tx_ring_size : 1024;
+    for (uint16_t q = 0; q < rx_queues; q++) {
+        rc = rte_eth_rx_queue_setup(port_id, q, rx_desc, (unsigned int)sock_id, NULL, g_dpdk_mbuf_pool);
+        if (rc < 0) return rc;
+    }
+    for (uint16_t q = 0; q < tx_queues; q++) {
+        rc = rte_eth_tx_queue_setup(port_id, q, tx_desc, (unsigned int)sock_id, NULL);
+        if (rc < 0) return rc;
     }
     if (promiscuous) {
         rte_eth_promiscuous_enable(port_id);
@@ -86,14 +119,38 @@ uint16_t wing_dpdk_rx_burst(uint16_t port_id, uint16_t queue_id, uint64_t *pkts_
     if (!pkts_out || nb_pkts == 0) {
         return 0;
     }
-    return rte_eth_rx_burst(port_id, queue_id, (struct rte_mbuf **)pkts_out, nb_pkts);
+    struct rte_mbuf *bufs[64];
+    uint16_t total = 0;
+    while (total < nb_pkts) {
+        uint16_t batch = (uint16_t)(nb_pkts - total);
+        if (batch > 64) batch = 64;
+        uint16_t got = rte_eth_rx_burst(port_id, queue_id, bufs, batch);
+        for (uint16_t i = 0; i < got; i++) {
+            pkts_out[total + i] = (uint64_t)(uintptr_t)bufs[i];
+        }
+        total = (uint16_t)(total + got);
+        if (got < batch) break;
+    }
+    return total;
 }
 
 uint16_t wing_dpdk_tx_burst(uint16_t port_id, uint16_t queue_id, const uint64_t *pkts_in, uint16_t nb_pkts) {
     if (!pkts_in || nb_pkts == 0) {
         return 0;
     }
-    return rte_eth_tx_burst(port_id, queue_id, (struct rte_mbuf **)(uintptr_t)pkts_in, nb_pkts);
+    struct rte_mbuf *bufs[64];
+    uint16_t total = 0;
+    while (total < nb_pkts) {
+        uint16_t batch = (uint16_t)(nb_pkts - total);
+        if (batch > 64) batch = 64;
+        for (uint16_t i = 0; i < batch; i++) {
+            bufs[i] = (struct rte_mbuf *)(uintptr_t)pkts_in[total + i];
+        }
+        uint16_t sent = rte_eth_tx_burst(port_id, queue_id, bufs, batch);
+        total = (uint16_t)(total + sent);
+        if (sent < batch) break;
+    }
+    return total;
 }
 
 int32_t wing_dpdk_tx_packet_push(uint16_t port_id, uint16_t queue_id, wing_dpdk_ro_slice frame) {
@@ -144,7 +201,7 @@ int32_t wing_dpdk_rx_burst_read_one(uint16_t port_id, uint16_t queue_id, wing_dp
         }
         if (seg_len > 0) {
             const void *src = rte_pktmbuf_mtod(seg, const void *);
-            memcpy(dst.data + copied, src, (size_t)seg_len);
+            memcpy((uint8_t *)dst.data + copied, src, (size_t)seg_len);
             copied += seg_len;
         }
     }
@@ -207,7 +264,7 @@ int32_t wing_dpdk_eal_init(void) {
 
 uint64_t wing_dpdk_pktmbuf_pool_create(uint32_t n_elements, uint32_t element_size, int32_t socket_id) {
     (void)socket_id;
-    if (n_elements == 0 || element_size == 0) {
+    if (n_elements == 0 || element_size == 0 || element_size > 65535U) {
         return 0;
     }
     if (!g_dpdk_eal_initialized) {
@@ -217,6 +274,8 @@ uint64_t wing_dpdk_pktmbuf_pool_create(uint32_t n_elements, uint32_t element_siz
     g_dpdk_next_pool_handle += 0x1000ULL;
     return h;
 }
+
+void wing_dpdk_pktmbuf_free(uint64_t mbuf_ptr) { (void)mbuf_ptr; }
 
 int32_t wing_dpdk_eth_dev_configure(uint16_t port_id, uint16_t rx_queues, uint16_t tx_queues, uint16_t rx_ring_size,
                                     uint16_t tx_ring_size, int32_t promiscuous) {

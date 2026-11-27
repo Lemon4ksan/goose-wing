@@ -1929,6 +1929,43 @@ fn is_hop_by_hop_header_name(name: const u8[:]) -> bool {
     return false;
 }
 
+const PROTECTED_E2E_HEADER_NAMES: const u8[:][57] = [
+    "host", "content-length", "content-type", "authorization", "cookie",
+    "set-cookie", "set-cookie2", "origin", "referer", "vary",
+    "cache-control", "date", "etag", "location", "content-encoding",
+    "content-range", "range", "if-match", "if-none-match",
+    "if-modified-since", "if-unmodified-since", "content-digest",
+    "repr-digest", "want-content-digest", "want-repr-digest", "digest",
+    "signature", "signature-input", "dpop", "dpop-nonce",
+    "www-authenticate", "forwarded", "x-forwarded-for", "x-forwarded-host",
+    "x-forwarded-proto", "x-forwarded-port", "x-forwarded-ssl",
+    "x-forwarded-scheme", "x-real-ip", "true-client-ip", "cf-connecting-ip",
+    "x-client-ip", "fastly-client-ip", "x-cluster-client-ip", "client-cert",
+    "client-cert-chain", "x-ssl-client-cert", "x-client-cert",
+    "x-authenticated-user", "x-api-key", "x-frame-options",
+    "x-content-type-options", "x-csrf-token", "x-xsrf-token",
+    "x-request-id", "strict-transport-security", "x-webkit-csp",
+];
+
+// RFC 9110 Section 7.6.1: Protects framing, security, and forwarding headers
+// from client-supplied Connection header stripping.
+fn is_protected_end_to_end_header(name: const u8[:]) -> bool {
+    if name.starts_with_fold("access-control-")
+        || name.starts_with_fold("content-security-policy")
+        || name.starts_with_fold("cross-origin-") {
+        return true;
+    }
+    if name.starts_with_fold("sec-") && !name.starts_with_fold("sec-websocket-") {
+        return true;
+    }
+    for hdr in PROTECTED_E2E_HEADER_NAMES {
+        if name.eq_ascii_fold(hdr) {
+            return true;
+        }
+    }
+    return false;
+}
+
 fn collect_connection_tokens(src: const HeaderMap&, out_tokens: u8[..64][..32]&) {
     for &entry in src.entries {
         let name = src.raw_buf[entry.name_begin..entry.name_end];
@@ -1981,8 +2018,7 @@ fn is_token_in_connection_header_map(src: const HeaderMap&, target_name: const u
     return entries_have_connection_token(src.entries[..], src.raw_buf[..], "", target_name);
 }
 
-// Copies headers from src to dst, omitting standard hop-by-hop headers and
-// any header listed in a Connection header token (RFC 9110 Section 7.6.1).
+// Copies headers from src to dst, omitting standard hop-by-hop headers (RFC 9110 Section 7.6.1).
 fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
     dst.reset_for_keep_alive();
 
@@ -1999,8 +2035,7 @@ fn strip_hop_by_hop_headers(src: const HeaderMap&, dst: HeaderMap&) {
             }
             continue;
         }
-
-        if is_token_in_connection_header_map(src, name) {
+        if is_token_in_connection_header_map(src, name) && !is_protected_end_to_end_header(name) {
             continue;
         }
 

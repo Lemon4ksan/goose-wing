@@ -582,6 +582,9 @@ int32_t wing_uring_submit_sqes(int64_t ring_fd, wing_sqes_ro sqes) {
     __atomic_store_n(ctx->sq_tail, tail, __ATOMIC_RELEASE);
     int32_t rc = flush_sq_ring(ctx);
     if (rc < 0) {
+        if (total_submitted > 0 && (rc == -EAGAIN || rc == -EBUSY)) {
+            return total_submitted;
+        }
         return rc;
     }
     return total_submitted;
@@ -853,6 +856,33 @@ int32_t wing_uring_alloc_pbuf_ring(int64_t ring_fd, uint16_t bgid, uint32_t entr
     return 0;
 }
 
+#ifndef IORING_OP_ASYNC_CANCEL
+#define IORING_OP_ASYNC_CANCEL 14
+#endif
+#ifndef IORING_ASYNC_CANCEL_ALL
+#define IORING_ASYNC_CANCEL_ALL (1U << 0)
+#endif
+#ifndef IORING_ASYNC_CANCEL_ANY
+#define IORING_ASYNC_CANCEL_ANY (1U << 2)
+#endif
+
+static void free_pbuf_slot_internal(wing_pbuf_slot *ps, int ignore_busy) {
+    struct wing_uring_buf_reg reg;
+    __builtin_memset(&reg, 0, sizeof(reg));
+    reg.bgid = ps->bgid;
+    int32_t rc = wing_uring_register(ps->ring_fd, IORING_UNREGISTER_PBUF_RING, &reg, 1);
+    if (rc == -EBUSY && !ignore_busy) {
+        __atomic_store_n(&ps->active, 2, __ATOMIC_RELEASE);
+        return;
+    }
+
+    if (ps->slab_ptr) munmap(ps->slab_ptr, ps->slab_map_sz);
+    if (ps->ring_ptr) munmap(ps->ring_ptr, ps->ring_map_sz);
+    size_t zero_off = offsetof(wing_pbuf_slot, ring_fd);
+    __builtin_memset((uint8_t *)ps + zero_off, 0, sizeof(*ps) - zero_off);
+    __atomic_store_n(&ps->active, 0, __ATOMIC_RELEASE);
+}
+
 void wing_uring_free_pbuf_ring(uint64_t handle) {
     if (handle == 0 || handle > WING_URING_MAX_PBUF_RINGS) return;
     wing_pbuf_slot *ps = &g_pbuf_rings[handle - 1];
@@ -860,17 +890,7 @@ void wing_uring_free_pbuf_ring(uint64_t handle) {
     if (!__atomic_compare_exchange_n(&ps->active, &expected, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
         return;
     }
-
-    struct wing_uring_buf_reg reg;
-    __builtin_memset(&reg, 0, sizeof(reg));
-    reg.bgid = ps->bgid;
-    (void)wing_uring_register(ps->ring_fd, IORING_UNREGISTER_PBUF_RING, &reg, 1);
-
-    if (ps->slab_ptr) munmap(ps->slab_ptr, ps->slab_map_sz);
-    if (ps->ring_ptr) munmap(ps->ring_ptr, ps->ring_map_sz);
-    size_t zero_off = offsetof(wing_pbuf_slot, ring_fd);
-    __builtin_memset((uint8_t *)ps + zero_off, 0, sizeof(*ps) - zero_off);
-    __atomic_store_n(&ps->active, 0, __ATOMIC_RELEASE);
+    free_pbuf_slot_internal(ps, 0);
 }
 
 int32_t wing_uring_read_pbuf(uint64_t handle, uint16_t bid, int32_t len, wing_uring_bytes_rw dst) {
@@ -906,24 +926,72 @@ void wing_uring_recycle_pbuf(uint64_t handle, uint16_t bid) {
 }
 
 void wing_uring_close(int64_t ring_fd) {
-    if (ring_fd >= 0) {
-        for (int i = 0; i < WING_URING_MAX_PBUF_RINGS; i++) {
-            if (__atomic_load_n(&g_pbuf_rings[i].active, __ATOMIC_ACQUIRE) == 2 && g_pbuf_rings[i].ring_fd == ring_fd) {
-                wing_uring_free_pbuf_ring((uint64_t)(i + 1));
-            }
+    if (ring_fd < 0) return;
+
+    wing_uring_mmap_ctx *closing_ctx = NULL;
+    for (int i = 0; i < WING_URING_MAX_RINGS; i++) {
+        int32_t expected = 2;
+        if (__atomic_load_n(&g_uring_rings[i].active, __ATOMIC_ACQUIRE) == 2 && g_uring_rings[i].ring_fd == ring_fd &&
+            __atomic_compare_exchange_n(&g_uring_rings[i].active, &expected, 1, 0, __ATOMIC_ACQ_REL,
+                                        __ATOMIC_RELAXED)) {
+            closing_ctx = &g_uring_rings[i];
+            break;
         }
-        for (int i = 0; i < WING_URING_MAX_RINGS; i++) {
-            int32_t expected = 2;
-            if (__atomic_load_n(&g_uring_rings[i].active, __ATOMIC_ACQUIRE) == 2 &&
-                g_uring_rings[i].ring_fd == ring_fd &&
-                __atomic_compare_exchange_n(&g_uring_rings[i].active, &expected, 1, 0, __ATOMIC_ACQ_REL,
-                                            __ATOMIC_RELAXED)) {
-                (void)__atomic_add_fetch(&g_uring_close_gen, 1, __ATOMIC_ACQ_REL);
-                unmap_uring_ctx(&g_uring_rings[i]);
-                break;
-            }
+    }
+
+    if (closing_ctx != NULL && closing_ctx->sqes_ptr != NULL && closing_ctx->sqes_ptr != MAP_FAILED) {
+        uint32_t tail = *closing_ctx->sq_tail;
+        uint32_t head = load_sq_head(closing_ctx);
+        uint32_t ring_entries = *closing_ctx->sq_ring_entries;
+        if ((tail - head) >= ring_entries) {
+            (void)flush_sq_ring(closing_ctx);
+            head = load_sq_head(closing_ctx);
         }
-        close((int)ring_fd);
+        if ((tail - head) < ring_entries) {
+            uint32_t idx = tail & (*closing_ctx->sq_ring_mask);
+            struct io_uring_sqe *sqe = &closing_ctx->sqes_ptr[idx];
+            __builtin_memset(sqe, 0, sizeof(*sqe));
+            sqe->opcode = IORING_OP_ASYNC_CANCEL;
+            sqe->rw_flags = IORING_ASYNC_CANCEL_ANY | IORING_ASYNC_CANCEL_ALL;
+            closing_ctx->sq_array[idx] = idx;
+            __atomic_store_n(closing_ctx->sq_tail, tail + 1, __ATOMIC_RELEASE);
+            (void)flush_sq_ring(closing_ctx);
+        }
+        WING_URING_CQE drain_buf[64];
+        for (int pass = 0; pass < 8; pass++) {
+            int32_t drained = drain_cqes_nonblocking(closing_ctx, drain_buf, 64);
+            if (drained <= 0) break;
+        }
+    }
+
+    for (int i = 0; i < WING_URING_MAX_PBUF_RINGS; i++) {
+        if (__atomic_load_n(&g_pbuf_rings[i].active, __ATOMIC_ACQUIRE) == 2 && g_pbuf_rings[i].ring_fd == ring_fd) {
+            struct wing_uring_buf_reg reg;
+            __builtin_memset(&reg, 0, sizeof(reg));
+            reg.bgid = g_pbuf_rings[i].bgid;
+            (void)wing_uring_register(ring_fd, IORING_UNREGISTER_PBUF_RING, &reg, 1);
+        }
+    }
+
+    // Close the ring fd before unmapping SQ/CQ/SQE rings and PBUF_RING slabs so the
+    // kernel tears down internal ring references first.
+    close((int)ring_fd);
+
+    for (int i = 0; i < WING_URING_MAX_PBUF_RINGS; i++) {
+        int32_t expected = 2;
+        if (__atomic_load_n(&g_pbuf_rings[i].active, __ATOMIC_ACQUIRE) == 2 && g_pbuf_rings[i].ring_fd == ring_fd &&
+            __atomic_compare_exchange_n(&g_pbuf_rings[i].active, &expected, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            if (g_pbuf_rings[i].slab_ptr) munmap(g_pbuf_rings[i].slab_ptr, g_pbuf_rings[i].slab_map_sz);
+            if (g_pbuf_rings[i].ring_ptr) munmap(g_pbuf_rings[i].ring_ptr, g_pbuf_rings[i].ring_map_sz);
+            size_t zero_off = offsetof(wing_pbuf_slot, ring_fd);
+            __builtin_memset((uint8_t *)&g_pbuf_rings[i] + zero_off, 0, sizeof(g_pbuf_rings[i]) - zero_off);
+            __atomic_store_n(&g_pbuf_rings[i].active, 0, __ATOMIC_RELEASE);
+        }
+    }
+
+    if (closing_ctx != NULL) {
+        (void)__atomic_add_fetch(&g_uring_close_gen, 1, __ATOMIC_ACQ_REL);
+        unmap_uring_ctx(closing_ctx);
     }
 }
 

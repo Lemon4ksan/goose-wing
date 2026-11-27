@@ -462,10 +462,22 @@ fn poll_events(
 
 // ---- Dynamic io_uring Readiness Poller (unbounded fd scale for Linux) ------
 
+const URING_POLL_FD_MASK:   u64 = 0xFFFFFFFF;
+const URING_POLL_GEN_SHIFT: u32 = 32;
+const URING_POLL_GEN_MASK:  u64 = 0xFFFFFFFF;
+
+inline fn next_uring_watch_gen(prev: u32) -> u32 {
+    if prev >= 0x7FFFFFFF || prev == 0 {
+        return 1;
+    }
+    return prev + 1;
+}
+
 struct UringWatchSlot {
     fd:     i32  = -1,
     events: u32  = 0,
     udata:  u64  = 0,
+    gen:    u32  = 1,
     active: bool = false,
 }
 
@@ -505,13 +517,19 @@ fn uring_poll_add(up: UringPoller&, fd: i64, events: u32, udata: u64) -> bool {
     while up.watches.len <= fd {
         up.watches.push(UringWatchSlot { .. });
     }
+    if up.watches[fd].active {
+        let old_tag = core::shl_sat_u64(up.watches[fd].gen, URING_POLL_GEN_SHIFT) | (fd as u64);
+        net_internal::poller_submit_uring_poll_remove(up.ring_fd, old_tag);
+    }
+    let gen = next_uring_watch_gen(up.watches[fd].gen);
     up.watches[fd] = UringWatchSlot {
         fd:     fd as i32,
         events: events,
         udata:  udata,
+        gen:    gen,
         active: true,
     };
-    net_internal::uring_submit_fd_poll(up.ring_fd, fd as i32, events);
+    net_internal::uring_submit_fd_poll(up.ring_fd, fd as i32, events, gen);
     return true;
 }
 
@@ -519,18 +537,23 @@ fn uring_poll_mod(up: UringPoller&, fd: i64, events: u32, udata: u64) -> bool {
     guard up.ring_fd >= 0 && fd >= 0 && fd < up.watches.len && up.watches[fd].active else {
         return uring_poll_add(up, fd, events, udata);
     }
-    net_internal::poller_submit_uring_poll_remove(up.ring_fd, fd as u64);
+    let old_tag = core::shl_sat_u64(up.watches[fd].gen, URING_POLL_GEN_SHIFT) | (fd as u64);
+    net_internal::poller_submit_uring_poll_remove(up.ring_fd, old_tag);
+    let gen = next_uring_watch_gen(up.watches[fd].gen);
     up.watches[fd].events = events;
     up.watches[fd].udata = udata;
-    net_internal::uring_submit_fd_poll(up.ring_fd, up.watches[fd].fd, events);
+    up.watches[fd].gen = gen;
+    net_internal::uring_submit_fd_poll(up.ring_fd, up.watches[fd].fd, events, gen);
     return true;
 }
 
 fn uring_poll_del(up: UringPoller&, fd: i64) -> bool {
     guard up.ring_fd >= 0 && fd >= 0 && fd < up.watches.len else { return false; }
     if up.watches[fd].active {
-        net_internal::poller_submit_uring_poll_remove(up.ring_fd, fd as u64);
+        let old_tag = core::shl_sat_u64(up.watches[fd].gen, URING_POLL_GEN_SHIFT) | (fd as u64);
+        net_internal::poller_submit_uring_poll_remove(up.ring_fd, old_tag);
         up.watches[fd].active = false;
+        up.watches[fd].gen = next_uring_watch_gen(up.watches[fd].gen);
     }
     return true;
 }

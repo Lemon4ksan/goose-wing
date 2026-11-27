@@ -92,14 +92,18 @@ def ensure_client_binary(force_rebuild: bool = False) -> Path:
 
 
 class NativeHttp3Server:
-    def __init__(self, binary_path: Path):
+    def __init__(self, binary_path: Path, enable_test_hooks: bool = True):
         self.binary_path = binary_path
+        self.enable_test_hooks = enable_test_hooks
         self.proc: subprocess.Popen | None = None
         self.port: int = 0
 
     def start(self, timeout: float = 5.0) -> int:
+        cmd = [str(self.binary_path)]
+        if self.enable_test_hooks:
+            cmd.append("--enable-test-hooks")
         self.proc = subprocess.Popen(
-            [str(self.binary_path)],
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

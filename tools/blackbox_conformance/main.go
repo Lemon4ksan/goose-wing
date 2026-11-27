@@ -95,6 +95,7 @@ func startManagedServer(name, exe string, args []string, extraEnv []string, shut
 				}
 			}
 		}
+		_ = sc.Err()
 		errCh <- "stdout closed before READY_PORT"
 	}()
 	go func() {
@@ -107,6 +108,7 @@ func startManagedServer(name, exe string, args []string, extraEnv []string, shut
 			}
 			ms.mu.Unlock()
 		}
+		_ = sc.Err()
 	}()
 
 	select {
@@ -175,7 +177,9 @@ func main() {
 		flagLogDir   = flag.String("log-dir", "", "optional directory to write results.log / round2_results.log")
 		flagProbe    = flag.Bool("probe", false, "run deep diagnostic wire probes")
 		flagRound2   = flag.Bool("round2", false, "run Round 2 (2025-2026 CVE matrix)")
-		flagAll      = flag.Bool("all", false, "run both Round 1 and Round 2 suites")
+		flagLegacy   = flag.Bool("legacy", false, "run non-duplicate Internet & Legacy semi-valid packet suite")
+		flagLegacyR2 = flag.Bool("legacy-r2", false, "run Round 2 stateful FSM, boundary geometry & differential blackbox suite")
+		flagAll      = flag.Bool("all", false, "run Round 1, Round 2, and Internet/Legacy R1+R2 suites")
 	)
 	flag.Parse()
 
@@ -228,8 +232,20 @@ func main() {
 		runDeepProbes(pki)
 		return
 	}
-	if *flagRound2 && !*flagAll {
+	if *flagRound2 && !*flagAll && !*flagLegacy && !*flagLegacyR2 {
 		runRound2Suite(pki)
+		return
+	}
+	if *flagLegacy && !*flagRound2 && !*flagAll && !*flagLegacyR2 {
+		if runInternetLegacySuite(pki) > 0 {
+			os.Exit(1)
+		}
+		return
+	}
+	if *flagLegacyR2 && !*flagRound2 && !*flagAll && !*flagLegacy {
+		if runInternetLegacyR2Suite(pki) > 0 {
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -366,7 +382,17 @@ func main() {
 		_ = os.WriteFile(logPath, []byte(logBuf.String()), 0600)
 		fmt.Printf("\n[+] Full wire log written to %s\n", logPath)
 	}
-	if *flagAll {
+	legacyFails := 0
+	if *flagAll || *flagRound2 {
 		runRound2Suite(pki)
+	}
+	if *flagAll || *flagLegacy {
+		legacyFails += runInternetLegacySuite(pki)
+	}
+	if *flagAll || *flagLegacyR2 {
+		legacyFails += runInternetLegacyR2Suite(pki)
+	}
+	if len(fails) > 0 || legacyFails > 0 {
+		os.Exit(1)
 	}
 }

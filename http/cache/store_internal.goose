@@ -110,6 +110,7 @@ fn has_explicit_cacheability(
 fn is_shared_cache_permitted(
     options:     const http::CacheOptions&,
     req_headers: const http::HeaderMap&,
+    resp:        const http::Response&,
     resp_cc:     const http::CacheControl&,
 ) -> bool {
     guard options.shared else { return true; }
@@ -117,6 +118,10 @@ fn is_shared_cache_permitted(
         (resp_cc.private_overflow || resp_cc.private_fields.len == 0) &&
         !options.cache_private;
     if priv_blocked { return false; }
+    let has_set_cookie = resp.header("Set-Cookie").len > 0 || resp.header("Set-Cookie2").len > 0;
+    if has_set_cookie && !resp_cc.is_public() && !options.cache_set_cookie {
+        return false;
+    }
     if request_has_authorization(req_headers) {
         return resp_cc.is_public() || resp_cc.is_must_revalidate() || resp_cc.has_s_maxage();
     }
@@ -143,7 +148,7 @@ fn is_response_cacheable(
     if !rfc::is_heuristically_cacheable_status(resp.status_code) && !has_explicit_cacheability(options, resp, resp_cc) {
         return false;
     }
-    guard is_shared_cache_permitted(options, req_headers, resp_cc) else { return false; }
+    guard is_shared_cache_permitted(options, req_headers, resp, resp_cc) else { return false; }
     guard resp.body.len <= 4096 else { return false; }
     return resp.body.len <= options.max_entry_size;
 }
@@ -262,6 +267,7 @@ fn try_serve_stale_on_gateway_error(
 fn store_cacheable_response(
     cache:        http::Cache&,
     req:          const http::Request&,
+    canon_url:    const u8[:],
     resp:         const http::Response&,
     resp_headers: const http::HeaderMap&,
     resp_cc:      const http::CacheControl&,
@@ -301,7 +307,7 @@ fn store_cacheable_response(
     }
 
     var entry = http::CachedEntry {
-        url_hash:          hash_fnv1a(req.url[..]),
+        url_hash:          hash_fnv1a(canon_url),
         status_code:       resp.status_code,
         headers:           sanitized,
         cc:                resp_cc,
@@ -315,7 +321,7 @@ fn store_cacheable_response(
         is_valid:          true,
         ..
     };
-    entry.url.append(req.url[..]);
+    entry.url.append(canon_url);
     entry.method.append(req.method[..]);
     entry.body.append(resp.body[..]);
 
@@ -492,8 +498,10 @@ fn invalidate_scalable_matching_url(cache: http::ScalableCache&, target_url: con
 }
 
 fn invalidate_scalable_on_unsafe(cache: http::ScalableCache&, req: const http::Request&, resp: const http::Response&) {
-    invalidate_scalable_matching_url(cache, req.url[..]);
-    let base_url, err_b = core::parse_url(req.url[..]);
+    var canon_buf: u8[..2048] = [];
+    let target_url = if canonicalize_cache_url(req.url[..], canon_buf) { canon_buf[..] } else { req.url[..] };
+    invalidate_scalable_matching_url(cache, target_url);
+    let base_url, err_b = core::parse_url(target_url);
     guard err_b == core::UrlParseError.None && base_url.valid else { return; }
     let base_orig = core::origin_from_url(base_url);
     let loc_hdr = resp.header("Location");
@@ -536,8 +544,12 @@ inline fn freshen_scalable_304_entry(
         resolve_target_cache_name(cache.options),
         http::CacheControlParseOptions { is_request: false, ignore_cargo_cult: cache.options.ignore_cargo_cult },
     );
-    if !refresh_entry_vary_and_nvs(entry, req.headers) {
+    let evicted_by_cc = entry.cc.is_no_store() ||
+        (cache.options.shared && entry.cc.is_private() && !cache.options.cache_private &&
+         entry.cc.private_fields.len == 0);
+    if !refresh_entry_vary_and_nvs(entry, req.headers) || evicted_by_cc {
         entry.is_valid = false;
+        entry.security_zeroed = true;
         detach_scalable_lru(cache, entry_idx as i32);
     }
     entry.timestamps = ts;

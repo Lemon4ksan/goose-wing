@@ -1412,7 +1412,8 @@ fn inflate_ex(
                 out.resize(last_out_len);
                 return err, last_block_pos;
             }
-            return err, r.pos;
+            out.resize(out_start_pos);
+            return err, 0;
         }
     }
 
@@ -1436,8 +1437,11 @@ fn inflate_ex<B>(
     };
     var tmp: u8[>..] = [];
     let err, consumed = inflate_ex(src, tmp, dict, eff_limit, max_window_dist);
+    if err != CompressError.None && err != CompressError.InputBufferTruncated {
+        return err, 0;
+    }
     if tmp.len > 0 {
-        guard out.try_append(tmp[..]) else { return CompressError.OutputBufferOverflow, consumed; }
+        guard out.try_append(tmp[..]) else { return CompressError.OutputBufferOverflow, 0; }
     }
     return err, consumed;
 }

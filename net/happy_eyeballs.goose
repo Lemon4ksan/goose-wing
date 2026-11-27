@@ -84,6 +84,11 @@ fn extract_https_svcb_metadata(
     if rec.priority == 0 {
         // RFC 9460 Section 2.4.2: AliasMode - TargetName "." indicates service is not available
         guard !is_root_target else { return meta, default_port; }
+        let clean_target, _ = rec.target_name[..].strip_suffix(".");
+        let clean_owner, _ = owner_name.strip_suffix(".");
+        guard clean_owner.len == 0 || !clean_target.eq_ascii_fold(clean_owner) else {
+            return meta, default_port;
+        }
         meta.mode = SvcbMode.AliasMode;
         let _ = meta.alias_target.try_append(rec.target_name[..]);
         return meta, default_port;

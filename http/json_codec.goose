@@ -75,6 +75,185 @@ fn encode_json_struct<T>(obj: const T&, out: u8[>..]&) {
     out.push('}');
 }
 
+const MAX_JSON_NESTING_DEPTH:    i64 = 64;
+const MAX_JSON_NUMBER_TOKEN_LEN: i64 = 128;
+
+inline fn is_json_num_byte(b: u8) -> bool {
+    return core::is_ascii_digit(b) || b == '-' || b == '+' || b == '.' || b == 'e' || b == 'E';
+}
+
+// Scans and validates a quoted JSON string starting at opening '"' and advances `pos` past '"'.
+// Leaves `pos` unchanged on invalid UTF-8 or escape syntax.
+//
+// Example:
+//   raw = "\"ok\",1", pos = 0
+//   returns: true, pos = 4
+inline fn scan_and_validate_json_string(raw: const u8[:], pos: i64&) -> bool {
+    let start = core::add_sat_i64(pos, 1);
+    let end, escaped = json::scan_string(raw, start);
+    guard end >= 0 else { return false; }
+    if escaped {
+        guard json::valid_escapes(raw, start, end) &&
+            core::validate_json_string_body(raw, start, end) else {
+            return false;
+        }
+    } else {
+        guard core::validate_utf8(raw[start..end]) else { return false; }
+    }
+    pos = core::add_sat_i64(end, 1);
+    return true;
+}
+
+// Validates JSON depth (<= 64), number token length (<= 128), and UTF-8/surrogate string hygiene.
+fn prevalidate_json_document(raw: const u8[:]) -> bool {
+    var depth: i64 = 0;
+    var pos:   i64 = 0;
+    while pos < raw.len {
+        let b = raw[pos];
+        if b == '"' {
+            guard scan_and_validate_json_string(raw, pos) else { return false; }
+            continue;
+        }
+        if b == '{' || b == '[' {
+            depth += 1;
+            guard depth <= MAX_JSON_NESTING_DEPTH else { return false; }
+            pos += 1;
+            continue;
+        }
+        if b == '}' || b == ']' {
+            guard depth > 0 else { return false; }
+            depth -= 1;
+            pos += 1;
+            continue;
+        }
+        if b == '-' || core::is_ascii_digit(b) {
+            let start = pos;
+            while pos < raw.len && is_json_num_byte(raw[pos]) {
+                pos += 1;
+            }
+            guard pos - start <= MAX_JSON_NUMBER_TOKEN_LEN else { return false; }
+            continue;
+        }
+        pos += 1;
+    }
+    return depth == 0;
+}
+
+fn check_json_number_token_len(r: json::Reader&) -> bool {
+    let at = json::skip_space(r.text, r.pos);
+    r.pos = at;
+    var pos = at;
+    while pos < r.text.len && is_json_num_byte(r.text[pos]) {
+        pos = core::add_sat_i64(pos, 1);
+    }
+    guard core::sub_sat_i64(pos, at) <= MAX_JSON_NUMBER_TOKEN_LEN else {
+        json::fail(r, "number token exceeds limit");
+        return false;
+    }
+    return true;
+}
+
+fn skip_json_value_strict(r: json::Reader&) {
+    let c = json::peek(r);
+    if c == '"' {
+        let start = core::add_sat_i64(r.pos, 1);
+        let end, escaped = json::scan_string(r.text, start);
+        guard end >= 0 else {
+            json::fail(r, "bad string");
+            return;
+        }
+        if escaped {
+            guard json::valid_escapes(r.text, start, end) &&
+                core::validate_json_string_body(r.text, start, end) else {
+                json::fail(r, "invalid utf-8 or escape");
+                return;
+            }
+        } else {
+            guard core::validate_utf8(r.text[start..end]) else {
+                json::fail(r, "invalid utf-8");
+                return;
+            }
+        }
+        r.pos = core::add_sat_i64(end, 1);
+        return;
+    }
+    if c == '-' || core::is_ascii_digit(c) {
+        guard check_json_number_token_len(r) else { return; }
+        let fv = json::read_number(r);
+        if r.error.len == 0 && fv - fv != 0.0 {
+            json::fail(r, "non-finite float");
+        }
+        return;
+    }
+    if c == '{' || c == '[' {
+        let start_pos = r.pos;
+        json::skip(r);
+        if r.error.len == 0 && !prevalidate_json_document(r.text[start_pos..r.pos]) {
+            json::fail(r, "invalid skipped container");
+        }
+        return;
+    }
+    json::skip(r);
+}
+
+fn json_obj_begin(r: json::Reader&) -> bool, bool {
+    if json::peek(r) != '{' {
+        json::fail(r, "expected '{'");
+        return false, false;
+    }
+    r.pos = core::add_sat_i64(r.pos, 1);
+    if json::peek(r) == '}' {
+        r.pos = core::add_sat_i64(r.pos, 1);
+        return false, true;
+    }
+    return true, true;
+}
+
+fn json_obj_next_or_end(r: json::Reader&) -> bool, bool {
+    if r.error.len > 0 { return false, false; }
+    let c = json::peek(r);
+    if c == ',' {
+        r.pos = core::add_sat_i64(r.pos, 1);
+        return true, true;
+    }
+    if c == '}' {
+        r.pos = core::add_sat_i64(r.pos, 1);
+        return false, true;
+    }
+    json::fail(r, "expected ',' or '}'");
+    return false, false;
+}
+
+fn json_obj_read_key(r: json::Reader&, key_out: u8[>..]&) -> bool {
+    guard core::read_json_string_growable(r, key_out) else { return false; }
+    if json::peek(r) != ':' {
+        json::fail(r, "expected ':'");
+        return false;
+    }
+    r.pos = core::add_sat_i64(r.pos, 1);
+    return true;
+}
+
+fn record_unique_json_key(blob: u8[>..]&, key: const u8[:]) -> bool {
+    var off: i64 = 0;
+    while off + 4 <= blob.len {
+        let klen = core::read_le_u32(blob[..], off) as i64;
+        off += 4;
+        guard off + klen <= blob.len else { return false; }
+        if klen == key.len && blob[off..off + klen] == key {
+            return false;
+        }
+        off += klen;
+    }
+    let l32 = key.len as u32;
+    blob.push((l32 & 0xFF) as u8);
+    blob.push(((l32 >> 8) & 0xFF) as u8);
+    blob.push(((l32 >> 16) & 0xFF) as u8);
+    blob.push(((l32 >> 24) & 0xFF) as u8);
+    blob.append(key);
+    return true;
+}
+
 // ---- Recursive JSON decoder with slice-tag dispatch ------------------------
 
 struct ByteBufTag {}
@@ -156,15 +335,8 @@ fn json_decode(dst: u64&, r: json::Reader&) {
 }
 
 fn json_decode(dst: i32&, r: json::Reader&) {
-    let c = json::peek(r);
-    guard (c >= '0' && c <= '9') || c == '-' else {
-        json::fail(r, "expected integer");
-        return;
-    }
-    let v = json::read_int(r);
-    if r.error.len == 0 {
-        dst = core::clamp_i64(v, -2147483648, 2147483647) as i32;
-    }
+    let v, ok = read_checked_json_int(r, -2147483648, 2147483647);
+    if ok { dst = v as i32; }
 }
 
 fn json_decode(dst: u32&, r: json::Reader&) {
@@ -198,7 +370,14 @@ fn json_decode(dst: f64&, r: json::Reader&) {
         json::fail(r, "expected number");
         return;
     }
-    dst = json::read_number(r);
+    guard check_json_number_token_len(r) else { return; }
+    let v = json::read_number(r);
+    guard r.error.len == 0 else { return; }
+    guard v - v == 0.0 else {
+        json::fail(r, "non-finite float");
+        return;
+    }
+    dst = v;
 }
 
 // Decodes a JSON value from `r` into `dst` via receiver-namespace UFCS.
@@ -229,12 +408,7 @@ fn core::json_decode<T>(dst: core::Opt<T>&, r: json::Reader&) {
 // Example:
 //   r positioned at `"wing"` -> dst = "wing"
 fn decode_tagged(_t: ByteBufTag, dst: u8[>..]&, r: json::Reader&) {
-    dst.clear();
-    var scratch: u8[>..] = [];
-    let val = json::read_string(r, scratch);
-    if r.error.len == 0 {
-        dst.append(val);
-    }
+    let _ = core::read_json_string_growable(r, dst);
 }
 
 // Decodes a JSON string into bounded byte buffer `dst`, failing `r` on capacity overflow.
@@ -296,7 +470,7 @@ fn to_json<T>(val: const T&, out: u8[>..]&) {
 // Example:
 //   raw = "[{\"slot\":1}]", out: NestedTag[>..]& -> returns true, out.len = 1
 fn from_json<T>(raw: const u8[:], out: T&) -> bool {
-    guard raw.len > 0 else { return false; }
+    guard raw.len > 0 && prevalidate_json_document(raw) else { return false; }
     let saved = copy(out);
     var committed = false;
     defer if !committed { out = copy(saved); };
@@ -308,23 +482,35 @@ fn from_json<T>(raw: const u8[:], out: T&) -> bool {
 }
 
 // Decodes a JSON object from `r` into struct `out` via `const for` reflection.
-// Unknown JSON keys are skipped cleanly.
+// Unescapes `\uXXXX` member keys, rejects duplicate keys, and skips unknown values strictly.
 //
 // Example:
 //   r positioned at `{"id":7}` -> out.id = 7
 fn decode_json_struct<T>(out: T&, r: json::Reader&) {
-    json::each_member(r) { key =>
+    var has_more, ok_b = json_obj_begin(r);
+    guard ok_b && has_more else { return; }
+    var key_buf:   u8[>..] = [];
+    var seen_blob: u8[>..] = [];
+    loop {
+        key_buf.clear();
+        guard json_obj_read_key(r, key_buf) else { return; }
+        guard record_unique_json_key(seen_blob, key_buf[..]) else {
+            json::fail(r, "duplicate object key");
+            return;
+        }
         var matched = false;
         const for <Name, Acc> in fields<T> {
-            if !matched && key == Name {
+            if !matched && key_buf[..] == Name {
                 out.Acc.json_decode(r);
                 matched = true;
             }
         }
         if !matched {
-            json::skip(r);
+            skip_json_value_strict(r);
         }
-    };
+        let more, ok_n = json_obj_next_or_end(r);
+        guard ok_n && more else { return; }
+    }
 }
 
 // ---- Reflective query/param/header scalar parsers & formatters -------------

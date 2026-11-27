@@ -134,16 +134,27 @@ fn read_lenient_i64(r: json::Reader&) -> i64, bool {
     let at = json::skip_space(r.text, r.pos);
     r.pos = at;
     guard at < r.text.len && is_json_num_start(r.text[at]) else {
-        json::skip(r);
+        skip_json_value_strict(r);
         return 0, false;
     }
+    guard check_json_number_token_len(r) else { return 0, false; }
     var scan = if r.text[at] == '-' { core::add_sat_i64(at, 1) } else { at };
     while scan < r.text.len && core::is_ascii_digit(r.text[scan]) {
         scan = core::add_sat_i64(scan, 1);
     }
-    let is_flt = scan < r.text.len && (r.text[scan] == '.' || r.text[scan] == 'e' || r.text[scan] == 'E');
-    let val = if is_flt { json::read_number(r) as i64 } else { json::read_int(r) };
-    return val, r.error.len == 0;
+    let is_flt = scan < r.text.len &&
+        (r.text[scan] == '.' || r.text[scan] == 'e' || r.text[scan] == 'E');
+    if !is_flt {
+        let iv = json::read_int(r);
+        return iv, r.error.len == 0;
+    }
+    let fv = json::read_number(r);
+    guard r.error.len == 0 else { return 0, false; }
+    guard fv - fv == 0.0 && fv >= -9223372036854774784.0 && fv <= 9223372036854774784.0 else {
+        json::fail(r, "non-finite or out-of-range float");
+        return 0, false;
+    }
+    return fv as i64, true;
 }
 
 fn json_decode_lenient(dst: bool&, r: json::Reader&) {
@@ -206,10 +217,17 @@ fn json_decode_lenient(dst: u8&, r: json::Reader&) {
 
 fn json_decode_lenient(dst: f64&, r: json::Reader&) {
     if is_json_num_start(json::peek(r)) {
-        dst = json::read_number(r);
+        guard check_json_number_token_len(r) else { return; }
+        let v = json::read_number(r);
+        guard r.error.len == 0 else { return; }
+        guard v - v == 0.0 else {
+            json::fail(r, "non-finite float");
+            return;
+        }
+        dst = v;
         return;
     }
-    json::skip(r);
+    skip_json_value_strict(r);
 }
 
 // Dispatches lenient JSON decoding via UFCS for any struct field type `T`.
@@ -243,9 +261,7 @@ fn decode_lenient_tagged(_t: ByteBufTag, dst: u8[>..]&, r: json::Reader&) {
     dst.clear();
     let c = json::peek(r);
     if c == '"' {
-        var scratch: u8[>..] = [];
-        let val = json::read_string(r, scratch);
-        if r.error.len == 0 { dst.append(val); }
+        let _ = core::read_json_string_growable(r, dst);
         return;
     }
     if is_json_num_start(c) {
@@ -253,7 +269,7 @@ fn decode_lenient_tagged(_t: ByteBufTag, dst: u8[>..]&, r: json::Reader&) {
         if ok { format(dst, v); }
         return;
     }
-    json::skip(r);
+    skip_json_value_strict(r);
 }
 
 // Decodes a JSON string or integer into bounded `u8[..N]` `dst`, truncating cleanly on UTF-8 boundaries.
@@ -265,9 +281,8 @@ fn decode_lenient_tagged<B>(_t: ByteBufTag, dst: B&, r: json::Reader&) {
     let c = json::peek(r);
     if c == '"' {
         var scratch: u8[>..] = [];
-        let val = json::read_string(r, scratch);
-        if r.error.len == 0 {
-            let _ = dst.try_set(truncate_utf8_safe(val, dst.cap));
+        if core::read_json_string_growable(r, scratch) {
+            let _ = dst.try_set(truncate_utf8_safe(scratch[..], dst.cap));
         }
         return;
     }
@@ -280,7 +295,7 @@ fn decode_lenient_tagged<B>(_t: ByteBufTag, dst: B&, r: json::Reader&) {
         }
         return;
     }
-    json::skip(r);
+    skip_json_value_strict(r);
 }
 
 // Decodes a JSON array leniently into resizable `E[>..]` `dst`.
@@ -329,28 +344,90 @@ fn json_decode_lenient<B>(arr: B&, r: json::Reader&) {
     decode_lenient_tagged(arr_tag(arr[..]), arr, r);
 }
 
+struct SeenLenientSpan {
+    field_idx: i64 = -1,
+    key_off:   i64 = 0,
+    key_len:   i64 = 0,
+    val_start: i64 = 0,
+    val_end:   i64 = 0,
+}
+
+fn check_lenient_member_conflict(
+    text:      const u8[:],
+    seen:      SeenLenientSpan[>..]&,
+    key_blob:  u8[>..]&,
+    field_idx: i64,
+    key:       const u8[:],
+    val_start: i64,
+    val_end:   i64,
+) -> bool {
+    let cur_val = core::trim_ascii_space(text[val_start..val_end]);
+    for &s in seen {
+        let same_target = if field_idx >= 0 {
+            s.field_idx == field_idx
+        } else {
+            s.field_idx < 0 && s.key_len == key.len &&
+                key_blob[s.key_off..s.key_off + s.key_len] == key
+        };
+        if same_target {
+            let prev_val = core::trim_ascii_space(text[s.val_start..s.val_end]);
+            guard prev_val == cur_val else { return false; }
+        }
+    }
+    let k_off = key_blob.len;
+    key_blob.append(key);
+    seen.push(SeenLenientSpan {
+        field_idx: field_idx,
+        key_off:   k_off,
+        key_len:   key.len,
+        val_start: val_start,
+        val_end:   val_end,
+    });
+    return true;
+}
+
 // Decodes a JSON object leniently into `out` via `const for` reflection.
-// Matches keys case- and underscore-insensitively and preserves defaults on `null`.
+// Matches keys case- and underscore-insensitively, unescapes keys, and rejects conflicting duplicates.
 //
 // Example:
 //   r at `{"Discipline":"Math","Items":null}` -> out.discipline = "Math", out.items = []
 fn decode_json_struct_lenient<T>(out: T&, r: json::Reader&) {
     guard json::peek(r) == '{' else {
-        json::skip(r);
+        skip_json_value_strict(r);
         return;
     }
-    json::each_member(r) { key =>
-        var matched = false;
+    var has_more, ok_b = json_obj_begin(r);
+    guard ok_b && has_more else { return; }
+    var key_buf:  u8[>..]              = [];
+    var key_blob: u8[>..]              = [];
+    var seen:     SeenLenientSpan[>..] = [];
+    loop {
+        key_buf.clear();
+        guard json_obj_read_key(r, key_buf) else { return; }
+        let val_start = json::skip_space(r.text, r.pos);
+        var matched_idx:  i64 = -1;
+        var field_cursor: i64 = 0;
         const for <Name, Acc> in fields<T> {
-            if !matched && eq_json_key_loose(key, Name) {
+            if matched_idx < 0 && eq_json_key_loose(key_buf[..], Name) {
                 out.Acc.json_decode_lenient(r);
-                matched = true;
+                matched_idx = field_cursor;
             }
+            field_cursor += 1;
         }
-        if !matched {
-            json::skip(r);
+        if matched_idx < 0 {
+            skip_json_value_strict(r);
         }
-    };
+        guard r.error.len == 0 else { return; }
+        let val_end = r.pos;
+        guard check_lenient_member_conflict(
+            r.text, seen, key_blob, matched_idx, key_buf[..], val_start, val_end,
+        ) else {
+            json::fail(r, "conflicting duplicate key");
+            return;
+        }
+        let more, ok_n = json_obj_next_or_end(r);
+        guard ok_n && more else { return; }
+    }
 }
 
 // Leniently decodes a JSON document `raw` into `out`, rolling back `out` on syntax error.
@@ -358,7 +435,7 @@ fn decode_json_struct_lenient<T>(out: T&, r: json::Reader&) {
 // Example:
 //   raw = "[{\"TypeWork\":null,\"Semester\":5}]" -> out.len = 1, returns true
 fn from_json_lenient<T>(raw: const u8[:], out: T&) -> bool {
-    guard raw.len > 0 else { return false; }
+    guard raw.len > 0 && prevalidate_json_document(raw) else { return false; }
     let saved = copy(out);
     var committed = false;
     defer if !committed { out = copy(saved); };

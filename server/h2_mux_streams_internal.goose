@@ -81,15 +81,16 @@ inline fn process_ingress_priority<B>(
 ) -> bool {
     guard frame_payload.len == 5 else {
         // RFC 9113 §6.3: PRIORITY with length other than 5 is stream error FRAME_SIZE_ERROR
-        emit_rst_stream(hdr.stream_id, rfc::H2_ERR_FRAME_SIZE_ERROR, out_wire);
+        let ok_rst = emit_rate_limited_rst_stream(sess, hdr.stream_id, rfc::H2_ERR_FRAME_SIZE_ERROR, out_wire);
         terminate_server_stream(sess, pipeline, hdr.stream_id);
-        return true;
+        return ok_rst;
     }
     let dep_raw = core::read_be_u32(frame_payload, 0) & 0x7FFFFFFF;
     if !sess.conn.no_rfc7540_priorities && dep_raw == hdr.stream_id {
         // RFC 9113 §5.3.1: Stream cannot depend on itself -> stream error PROTOCOL_ERROR
-        emit_rst_stream(hdr.stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
+        let ok_rst = emit_rate_limited_rst_stream(sess, hdr.stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
         terminate_server_stream(sess, pipeline, hdr.stream_id);
+        return ok_rst;
     }
     return true;
 }
@@ -118,13 +119,22 @@ inline fn process_ingress_priority_update<B>(
     frame_payload: const u8[:],
     out_wire:      B&,
 ) -> bool {
+    let now_ms = sess.conn.reset_limiter.last_refill_ms;
+    guard core::token_bucket_consume(sess.conn.reset_limiter, now_ms) else {
+        emit_goaway(sess, rfc::H2_ERR_ENHANCE_YOUR_CALM, out_wire);
+        return false;
+    }
     let prio_stream_id, prio_param, prio_err = http2::parse_priority_update_payload(frame_payload, false);
     if prio_err != rfc::H2_ERR_NO_ERROR || (prio_stream_id & 1) == 0 {
         let final_err = if prio_err != rfc::H2_ERR_NO_ERROR { prio_err } else { rfc::H2_ERR_PROTOCOL_ERROR };
-        emit_goaway(sess.conn.last_peer_stream_id, final_err, out_wire);
+        emit_goaway(sess, final_err, out_wire);
         return false;
     }
-    http2::apply_priority_update(sess.conn, prio_stream_id, prio_param);
+    let ap_err = http2::apply_priority_update(sess.conn, prio_stream_id, prio_param);
+    guard ap_err == rfc::H2_ERR_NO_ERROR else {
+        emit_goaway(sess, ap_err, out_wire);
+        return false;
+    }
     return true;
 }
 
@@ -223,6 +233,13 @@ fn flush_pending_server_stream<B>(
 
     let has_trailers = sess.streams[stream_idx].pending_has_trailers;
     if sess.streams[stream_idx].spill_slab_idx >= 0 {
+        let now_ns = core::monotonic_now().as_nanos();
+        let deadline = sess.streams[stream_idx].slab_lease_deadline_ns;
+        if deadline > 0 && now_ns > deadline {
+            let _ = emit_rate_limited_rst_stream(sess, target_stream_id, rfc::H2_ERR_CANCEL, out_wire);
+            terminate_server_stream(sess, pipeline, target_stream_id);
+            return;
+        }
         let s_slot = sess.streams[stream_idx].spill_slab_idx as i64;
         guard s_slot >= 0 && s_slot < pipeline.slab_pool.slabs.len else { return; }
         let sent = emit_response_data(
@@ -273,10 +290,13 @@ inline fn stash_pending_response_body(
     if sess.streams[stream_idx].body.try_set(rem_slice) {
         return true;
     }
+    guard count_active_conn_spill_slabs(sess) < MAX_H2_CONN_SPILL_SLABS else { return false; }
     let slab_idx = acquire_spill_slab(pipeline.slab_pool);
     guard slab_idx >= 0 else { return false; }
     if pipeline.slab_pool.slabs[slab_idx].data.try_set(rem_slice) {
+        let deadline_ns = core::add_sat_u64(core::monotonic_now().as_nanos(), 3000000000);
         sess.streams[stream_idx].spill_slab_idx = slab_idx;
+        sess.streams[stream_idx].slab_lease_deadline_ns = deadline_ns;
         return true;
     }
     release_spill_slab(pipeline.slab_pool, slab_idx);
@@ -294,7 +314,7 @@ inline fn buffer_unsent_response_tail<B>(
     out_wire:         B&,
 ) {
     if !stash_pending_response_body(sess, pipeline, stream_idx, rem_slice) {
-        emit_rst_stream(target_stream_id, rfc::H2_ERR_INTERNAL_ERROR, out_wire);
+        let _ = emit_rate_limited_rst_stream(sess, target_stream_id, rfc::H2_ERR_INTERNAL_ERROR, out_wire);
         terminate_server_stream(sess, pipeline, target_stream_id);
         return;
     }
@@ -566,8 +586,8 @@ inline fn decompress_rejected_headers_frame<B>(
     let dec_err = http2::decode_hpack_to_map(
         sess.conn.hpack_dec, frag, dummy_pseudo, dummy_headers, sess.conn.max_header_list_size, false,
     );
-    guard dec_err != rfc::H2_ERR_COMPRESSION_ERROR else {
-        emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_COMPRESSION_ERROR, out_wire);
+    guard dec_err != rfc::H2_ERR_COMPRESSION_ERROR && dec_err != rfc::H2_ERR_ENHANCE_YOUR_CALM else {
+        emit_goaway(sess, dec_err, out_wire);
         return false;
     }
     return true;
@@ -623,8 +643,9 @@ fn handle_ingress_header_error<B>(
         && !(sess.conn.goaway_received || sess.conn.goaway_sent) {
         sess.conn.last_peer_stream_id = hdr.stream_id;
     }
-    emit_rst_stream(hdr.stream_id, err, out_wire);
+    let ok_rst = emit_rate_limited_rst_stream(sess, hdr.stream_id, err, out_wire);
     terminate_server_stream(sess, pipeline, hdr.stream_id);
+    guard ok_rst else { return false; }
     offset = core::add_sat_i64(offset, total_frame_len);
     return true;
 }

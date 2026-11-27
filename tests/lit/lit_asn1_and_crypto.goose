@@ -325,14 +325,14 @@ fn test_f005_aes_gcm_open_cork_rollback() {
     var cb = core::new_cork_buffer();
     cb.len = 16380;
     let ok_open256 = core::aes256_gcm_open(key32, nonce, ct256[..], "aad", tag256, cb);
-    assert(!ok_open256 && cb.len == 0);
+    assert(!ok_open256 && cb.len == 16380);
 
     var ct128: u8[16] = [0; 16];
     let tag128, _, ok_s128 = core::aes128_gcm_seal(key16, nonce, pt, "aad", ct128[..]);
     assert(ok_s128);
     cb.len = 16380;
     let ok_open128 = core::aes128_gcm_open(key16, nonce, ct128[..], "aad", tag128, cb);
-    assert(!ok_open128 && cb.len == 0);
+    assert(!ok_open128 && cb.len == 16380);
     print("F005_AES_OPEN_PREFIX_PRESERVED: 1");
 }
 

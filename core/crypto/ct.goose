@@ -5,6 +5,7 @@
 namespace core;
 
 import std;
+import core.io.cork;
 
 // ---- constant-time branchless primitives -----------------------------------
 
@@ -168,6 +169,18 @@ inline fn crypto_buf_has_room<A>(arr: const A&, needed: i64) -> bool {
 
 inline fn crypto_buf_has_room(arr: const u8[>..]&, needed: i64) -> bool {
     return needed >= 0;
+}
+
+inline fn secure_zeroize_buf_tail<A>(arr: A&, start_len: i64) {
+    if start_len >= 0 && start_len < arr.len {
+        secure_zeroize_slice(arr[start_len..]);
+    }
+}
+
+inline fn secure_zeroize_buf_tail(cb: CorkBuffer&, start_len: i64) {
+    if start_len >= 0 && start_len < cb.len && cb.len <= CORK_BUFFER_CAP {
+        secure_zeroize_slice(cb.storage[start_len..cb.len]);
+    }
 }
 
 // KeySlot encapsulates a 256-bit cryptographic master key with rotation metadata.

@@ -347,6 +347,63 @@ fn response_headers_to_map(resp: const http::Response&) -> http::HeaderMap {
     return map;
 }
 
+inline fn has_unsafe_target_encoding(raw_url: const u8[:]) -> bool {
+    for i in raw_url.len {
+        let b = raw_url[i];
+        if b <= 0x1F || b == 0x7F { return true; }
+        if b == '%' && core::add_sat_i64(i, 2) < raw_url.len {
+            let hi = raw_url[core::add_sat_i64(i, 1)];
+            let lo = raw_url[core::add_sat_i64(i, 2)];
+            if hi == '0' && (lo == '0' || lo == '9' || lo == 'a' || lo == 'A' || lo == 'd' || lo == 'D') {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn canonicalize_cache_url(raw_url: const u8[:], out: u8[..2048]&) -> bool {
+    out.clear();
+    guard raw_url.len > 0 && raw_url.len <= 2048 && !has_unsafe_target_encoding(raw_url) else {
+        return false;
+    }
+    if core::contains(raw_url, "://") {
+        let parsed, err = core::parse_url(raw_url);
+        guard err == core::UrlParseError.None && parsed.valid else { return false; }
+        guard !core::pathname(parsed).contains_byte(';') else { return false; }
+        let full = core::href(parsed);
+        let clean = if parsed.hash_start >= 0 && parsed.hash_start <= full.len {
+            full[..parsed.hash_start]
+        } else {
+            full
+        };
+        return out.try_set(clean);
+    }
+    if raw_url[0] == '/' && (raw_url.len < 2 || raw_url[1] != '/') {
+        let base_u, err_b = core::parse_url("http://cache.invalid");
+        guard err_b == core::UrlParseError.None && base_u.valid else { return false; }
+        let rel_u, err_r = core::parse_url_with_base(raw_url, base_u);
+        guard err_r == core::UrlParseError.None && rel_u.valid else { return false; }
+        let path_part = core::pathname(rel_u);
+        guard !path_part.contains_byte(';') else { return false; }
+        return out.try_append(path_part) && out.try_append(core::search(rel_u));
+    }
+    guard !raw_url.contains_byte(';') else { return false; }
+    return out.try_set(raw_url);
+}
+
+inline fn is_fat_get_or_head_request(req: const http::Request&) -> bool {
+    if req.body.len > 0 || http::has_header(req.headers, rfc::HEADER_TRANSFER_ENCODING) {
+        return true;
+    }
+    if http::has_header(req.headers, rfc::HEADER_CONTENT_LENGTH) {
+        let cl_raw = req.headers.get_header("content-length");
+        let cl_val, ok_cl = http::validate_content_length_value(cl_raw);
+        return !ok_cl || cl_val > 0;
+    }
+    return false;
+}
+
 // Checks if request contains Authorization or Proxy-Authorization.
 fn request_has_authorization(req_headers: const http::HeaderMap&) -> bool {
     return req_headers.has_header("authorization") || req_headers.has_header("proxy-authorization");

@@ -34,9 +34,21 @@ struct OhttpKeyConfig {
 // which serves as the response KDF salt (RFC 9458 Section 4.3 step 4,
 // Section 4.4 step 3).
 struct OhttpSession {
-    ctx:     security::HpkeContext = security::HpkeContext { .. },
-    enc:     u8[..32]              = [],
-    enc_len: i32                   = 0,
+    ctx:             security::HpkeContext = security::HpkeContext { .. },
+    enc:             u8[..32]              = [],
+    enc_len:         i32                   = 0,
+    response_sealed: bool                  = false,
+}
+
+const OHTTP_REPLAY_CACHE_CAP: i64 = 64;
+
+// Bounded ring-buffer replay cache of SHA-256(`enc`) digests with TTL (RFC 9458 §6.5.2).
+struct OhttpReplayCache {
+    enc_hashes: u8[32][64] = [[0; 32]; 64],
+    timestamps: i64[64]    = [0; 64],
+    occupied:   bool[64]   = [false; 64],
+    head:       i64        = 0,
+    ttl_sec:    i64        = 300,
 }
 
 // ---- shared helpers ---------------------------------------------------------
@@ -166,6 +178,7 @@ fn ohttp_seal_request(
 
     let _ = session.enc.try_set(enc[..]);
     session.enc_len = 32;
+    session.response_sealed = false;
     out_len = out.len as i32;
     return true;
 }
@@ -184,6 +197,7 @@ fn ohttp_open_request(
     out_len:     i32&,
     session:     OhttpSession&,
 ) -> bool {
+    out_len = 0;
     guard skR.len == 32 else { return false; }
     guard enc_request.len >= rfc::OHTTP_HDR_LEN + 32 + rfc::OHTTP_AEAD_TAG_LEN else { return false; }
     let kem_id = ((enc_request[1] as u16) << 8) | enc_request[2];
@@ -212,15 +226,52 @@ fn ohttp_open_request(
         security::zeroize_hpke_context(session.ctx);
         session.enc.clear();
         session.enc_len = 0;
+        session.response_sealed = false;
         return false;
     }
     let _ = session.enc.try_set(enc[..]);
     session.enc_len = 32;
+    session.response_sealed = false;
     out_len = out.len as i32;
     return true;
 }
 
+// Opens an Encapsulated Request at the Oblivious Gateway Resource and rejects
+// replayed `enc` values within `cache.ttl_sec` (RFC 9458 Section 6.5.2).
+//
+// Example:
+//   cache = OhttpReplayCache { ttl_sec: 300, .. }, now_sec = 1700000000
+//   returns: ok = true on first `enc`; ok = false on duplicate `enc` within TTL
+fn ohttp_open_request_checked(
+    cache:       OhttpReplayCache&,
+    skR:         const u8[:],
+    enc_request: const u8[:],
+    now_sec:     i64,
+    out:         u8[..8192]&,
+    out_len:     i32&,
+    session:     OhttpSession&,
+) -> bool {
+    out_len = 0;
+    guard now_sec >= 0 && cache.ttl_sec > 0 else { return false; }
+    guard enc_request.len >= rfc::OHTTP_HDR_LEN + 32 + rfc::OHTTP_AEAD_TAG_LEN else { return false; }
+    let enc_slice = enc_request[rfc::OHTTP_HDR_LEN..rfc::OHTTP_HDR_LEN + 32];
+    let enc_hash = core::sha256(enc_slice);
+    guard !http_internal::ohttp_replay_cache_has(cache, enc_hash, now_sec) else { return false; }
+    guard ohttp_open_request(skR, enc_request, out, out_len, session) else { return false; }
+    http_internal::ohttp_replay_cache_insert(cache, enc_hash, now_sec);
+    return true;
+}
+
 // ---- response encapsulation (RFC 9458 Section 4.4) -------------------------
+
+// Zeroizes retained HPKE context secrets and `enc` in `session`.
+fn zeroize_ohttp_session(session: OhttpSession&) {
+    security::zeroize_hpke_context(session.ctx);
+    core::secure_zeroize_slice(session.enc[..]);
+    session.enc.clear();
+    session.enc_len = 0;
+    session.response_sealed = false;
+}
 
 // Seals a binary HTTP response into an Encapsulated Response:
 // enc_response = response_nonce || ct. Uses Export + HKDF re-derivation
@@ -237,6 +288,8 @@ fn ohttp_seal_response(
     out:            u8[..8192]&,
     out_len:        i32&,
 ) -> bool {
+    out_len = 0;
+    guard session.ctx.role == security::HpkeRole.Recipient && !session.response_sealed else { return false; }
     guard response_nonce.len + response.len + rfc::OHTTP_AEAD_TAG_LEN <= out.cap else { return false; }
 
     var key:   u8[32] = [0; 32];
@@ -273,6 +326,37 @@ fn ohttp_seal_response(
     return true;
 }
 
+// Seals a single response on a gateway `OhttpSession` and marks `session.response_sealed`
+// so the same `enc` / exported secret cannot be reused with a second response_nonce.
+fn ohttp_seal_response_once(
+    session:        OhttpSession&,
+    response_nonce: const u8[:],
+    response:       const u8[:],
+    out:            u8[..8192]&,
+    out_len:        i32&,
+) -> bool {
+    guard ohttp_seal_response(session, response_nonce, response, out, out_len) else { return false; }
+    session.response_sealed = true;
+    return true;
+}
+
+// Seals a single response using a fresh CSPRNG-generated `response_nonce` of length `max(Nn, Nk)`.
+fn ohttp_seal_response_random(
+    session:  OhttpSession&,
+    response: const u8[:],
+    out:      u8[..8192]&,
+    out_len:  i32&,
+) -> bool {
+    out_len = 0;
+    guard session.ctx.role == security::HpkeRole.Recipient && !session.response_sealed else { return false; }
+    let exp_len = max(session.ctx.key_len, session.ctx.nonce_len) as i64;
+    guard exp_len > 0 && exp_len <= 32 else { return false; }
+    var nonce_buf: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(nonce_buf);
+    guard core::csprng_fill(nonce_buf[..exp_len]) else { return false; }
+    return ohttp_seal_response_once(session, nonce_buf[..exp_len], response, out, out_len);
+}
+
 // Opens an Encapsulated Response at the client (RFC 9458 Section 4.4):
 // same Export + HKDF derivation using the retained sending context.
 //
@@ -285,6 +369,8 @@ fn ohttp_open_response(
     out:          u8[..8192]&,
     out_len:      i32&,
 ) -> bool {
+    out_len = 0;
+    guard session.ctx.role == security::HpkeRole.Sender else { return false; }
     let nk = session.ctx.key_len;
     let nn = session.ctx.nonce_len;
     let exp_len = max(nk, nn);

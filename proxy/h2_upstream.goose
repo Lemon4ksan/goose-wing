@@ -700,10 +700,14 @@ fn should_skip_h2_req_header(
     if low_name == "te" {
         return true;
     }
-    if rfc::is_connection_specific_header(low_name) {
+    if rfc::is_connection_specific_header(low_name) || http::is_hop_by_hop_header_name(low_name) {
         return true;
     }
-    return http::is_token_in_connection_header_map(raw_hdrs, low_name);
+    if http::is_token_in_connection_header_map(raw_hdrs, low_name)
+        && !http::is_protected_end_to_end_header(low_name) {
+        return true;
+    }
+    return false;
 }
 
 fn calc_up_request_list_size(

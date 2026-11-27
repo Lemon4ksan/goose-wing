@@ -9,6 +9,7 @@ import core;
 import rfc.http;
 import rfc.h2;
 import rfc.ws;
+import security.cors;
 import http.headers;
 import http.request;
 import http.response;
@@ -60,7 +61,8 @@ fn inflate_ws_pmd_frame(
     pmd.rx_comp_buf.append(payload);
     pmd.rx_comp_buf.append(tail[..]);
 
-    let rx_win = pmd_window_bits_to_bytes(ws.client_max_window_bits);
+    let rx_bits = if ws.is_client { ws.server_max_window_bits } else { ws.client_max_window_bits };
+    let rx_win = pmd_window_bits_to_bytes(rx_bits);
     let reset_rx = realtime::ws_should_reset_decompressor(ws);
     let dict = if reset_rx { "" } else { pmd.rx_history[..] };
 
@@ -92,7 +94,8 @@ fn send_ws_pmd_echo<OutBuf>(
     guard ws.permessage_deflate && !ws.is_closed && !ws.close_sent && !ws.close_received else {
         return false;
     }
-    let tx_win = pmd_window_bits_to_bytes(ws.server_max_window_bits);
+    let tx_bits = if ws.is_client { ws.client_max_window_bits } else { ws.server_max_window_bits };
+    let tx_win = pmd_window_bits_to_bytes(tx_bits);
     let reset_tx = realtime::ws_should_reset_compressor(ws);
     let dict = if reset_tx { "" } else { pmd.tx_history[..] };
     pmd.tx_comp_buf.clear();
@@ -638,12 +641,28 @@ fn req_has_valid_ws_subprotocols(req: const http::Request&) -> bool {
     return true;
 }
 
-fn validate_ws_upgrade_headers(req: const http::Request&, out_resp: http::Response&) -> const u8[:], bool {
+fn validate_ws_upgrade_headers(
+    req:            const http::Request&,
+    out_resp:       http::Response&,
+    allowed_origin: const u8[:] = "",
+) -> const u8[:], bool {
     guard req_has_ws_host_authority(req) &&
         req_has_header_token(req, "upgrade", "websocket") &&
         req_has_header_token(req, "connection", "upgrade") else {
         out_resp.status_code = rfc::STATUS_BAD_REQUEST;
         return "", false;
+    }
+    let origin_cnt = req_count_header(req, "origin");
+    guard origin_cnt <= 1 else {
+        out_resp.status_code = rfc::STATUS_BAD_REQUEST;
+        return "", false;
+    }
+    if allowed_origin.len > 0 {
+        let origin_val = req.headers.find_header("Origin").trim_lws();
+        guard origin_cnt == 1 && security::match_cors_origin_pattern(origin_val, allowed_origin) else {
+            out_resp.status_code = rfc::STATUS_FORBIDDEN;
+            return "", false;
+        }
     }
     guard req_count_header(req, "sec-websocket-version") == 1 &&
         req_count_header(req, "sec-websocket-key") == 1 &&

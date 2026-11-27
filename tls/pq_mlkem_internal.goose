@@ -576,7 +576,43 @@ fn mlkem768_keygen(d_seed: const u8[32]&, z_seed: const u8[32]&) -> u8[1184], u8
 
     core::secure_zeroize_64(g_out);
     core::secure_zeroize_32(sigma);
+    if !mlkem768_verify_pct(ek, dk) {
+        core::secure_zeroize_slice(ek[..]);
+        core::secure_zeroize_slice(dk[..]);
+    }
     return ek, dk;
+}
+
+// FIPS 203 Pairwise Consistency Test (PCT): validates `ek` modulus, `H(ek) == dk[2336..2368]`,
+// and an encapsulate/decapsulate shared-secret round-trip.
+fn mlkem768_verify_pct(ek: const u8[1184]&, dk: const u8[2400]&) -> bool {
+    defer core::secure_scrub_stack();
+    guard verify_ek768_poly_modulus(ek[..]) else { return false; }
+    let h_ek = ml_kem_h(ek[..]);
+    guard core::ct_eq_bytes(dk[2336..2368], h_ek[..]) else { return false; }
+
+    var m_pct = ml_kem_h(h_ek[..]);
+    defer core::secure_zeroize_32(m_pct);
+    var ct, ss_enc, ok_enc = mlkem768_encapsulate(ek, m_pct);
+    defer core::secure_zeroize_slice(ct[..]);
+    defer core::secure_zeroize_32(ss_enc);
+    guard ok_enc else { return false; }
+
+    var ss_dec: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(ss_dec);
+    guard mlkem768_decapsulate(ct[..], dk[..], ss_dec[..]) else { return false; }
+    return core::ct_eq_bytes(ss_enc[..], ss_dec[..]);
+}
+
+// Generates an ML-KEM-768 keypair and verifies Pairwise Consistency Test (PCT) before returning.
+fn mlkem768_keygen_checked(d_seed: const u8[32]&, z_seed: const u8[32]&) -> u8[1184], u8[2400], bool {
+    var ek, dk = mlkem768_keygen(d_seed, z_seed);
+    if !mlkem768_verify_pct(ek, dk) {
+        core::secure_zeroize_slice(ek[..]);
+        core::secure_zeroize_slice(dk[..]);
+        return ek, dk, false;
+    }
+    return ek, dk, true;
 }
 
 fn verify_ek_poly_modulus(ek_slice: const u8[:]) -> bool {

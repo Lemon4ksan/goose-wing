@@ -50,6 +50,16 @@ fn encode_single_h3_extra_header<B1, B2>(
     var lower_name: u8[..256] = [];
     guard raw_name.len > 0 && raw_name.len <= lower_name.cap else { return false; }
     raw_name.to_lower_ascii(lower_name);
+    let is_sens = http::is_sensitive(entry) ||
+        lower_name[..] == "authorization" ||
+        lower_name[..] == "proxy-authorization" ||
+        lower_name[..] == "cookie" ||
+        lower_name[..] == "set-cookie";
+    if is_sens {
+        return http3::encode_qpack_field(
+            body_fields, lower_name[..], val, false, http3::QpackIndexingPolicy.NeverIndex,
+        );
+    }
     return http3::encode_qpack_field_dynamic(
         tbl, stream_id, base, lower_name[..], val,
         body_fields, enc_stream, max_dyn_abs, used_any_dyn, false,

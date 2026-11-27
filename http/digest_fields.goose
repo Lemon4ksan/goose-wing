@@ -87,6 +87,7 @@ fn verify_digest_field(header_val: const u8[:], data: const u8[:]) -> bool {
 
     var matched_any = false;
     for &entry in entries {
+        guard !entry.is_inner_list && entry.item.kind == SfType.Binary else { return false; }
         let is_sha256 = entry.key[..].eq_ascii_fold(rfc::DIGEST_ALG_SHA256);
         let is_sha512 = entry.key[..].eq_ascii_fold(rfc::DIGEST_ALG_SHA512);
         if is_sha256 || is_sha512 {

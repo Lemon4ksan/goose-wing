@@ -17,13 +17,15 @@ import http.sig_internal;
 // ---- RFC 9421 Constants --------------------------------------------------
 
 struct SignatureParams {
-    label:      u8[..32]       = "sig1",
-    key_id:     u8[..64]       = [],
-    alg:        u8[..32]       = "hmac-sha256",
-    created:    i64            = 0,
-    expires:    i64            = 0,
-    nonce:      u8[..64]       = [],
-    components: u8[..32][..16] = [],
+    label:              u8[..32]       = "sig1",
+    key_id:             u8[..64]       = [],
+    alg:                u8[..32]       = "hmac-sha256",
+    created:            i64            = 0,
+    expires:            i64            = 0,
+    nonce:              u8[..64]       = [],
+    components:         u8[..32][..16] = [],
+    max_age_sec:        i64            = 0,
+    require_timestamps: bool           = false,
 }
 
 // ---- Helper Functions & Port Inspection -----------------------------------

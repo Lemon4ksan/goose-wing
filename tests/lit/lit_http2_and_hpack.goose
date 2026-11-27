@@ -1438,21 +1438,21 @@ fn verify_hpack_rfc7541_vectors_and_ring() {
     http2::insert_header(g_dt_wrap, "x-wrap-0", pad120[..], false);
     // Entry 1 at [128..256)
     http2::insert_header(g_dt_wrap, "x-wrap-1", pad120[..], false);
-    // Move arena_write_pos to 4020 to simulate arena boundary approach while Entry 0 & Entry 1 live at 0 and 128
+    // Compact boundary approach while preserving live Entry 0 & Entry 1 at [0..256),
+    // then insert Entry 2 ("x-wrap-2", val92) at [256..356), keeping count == 3.
     g_dt_wrap.arena_write_pos = 4020;
-    // Insert a 100-byte raw header (4020 + 100 = 4120 > 4096 -> wraps to 0, evicts Entry 0 at [0..128),
-    // leaving Entry 1 as oldest live entry at arena_tail = 128, and new entry at arena_head = 0).
     var val92: u8[..96] = [];
     for _ in 92 {
         val92.push('z');
     }
     http2::insert_header(g_dt_wrap, "x-wrap-2", val92[..], false);
-    assert(g_dt_wrap.arena_head == 0 && g_dt_wrap.arena_tail == 128);
+    assert(g_dt_wrap.arena_head == 256 && g_dt_wrap.arena_tail == 0 && g_dt_wrap.count == 3);
     print("WING_HPACK_RING_LINEARIZED: head=", g_dt_wrap.arena_head, ", tail=", g_dt_wrap.arena_tail);
 
     let hit_idx, hit_match = h2_internal::hpack_hash_lookup(g_dt_wrap, "x-wrap-2", val92[..]);
     assert(hit_match && hit_idx == 62);
-    // Evicted Entry 0 must NOT hit in hash table (generation invalidated)
+    // Shrink target size to evict older entries and verify evicted Entry 0 generation invalidation
+    http2::evict_until(g_dt_wrap, 100);
     let _, stale_hit = h2_internal::hpack_hash_lookup(g_dt_wrap, "x-wrap-0", pad120[..]);
     assert(!stale_hit);
     print("WING_HPACK_HASH_HIT: slot=42, match=", hit_match);
@@ -1570,7 +1570,7 @@ fn run_11_verify_hpack_ring() {
     verify_rfc9842_dictionary_transport();
 }
 
-// CHECK: WING_HPACK_RING_LINEARIZED: head=0, tail=128
+// CHECK: WING_HPACK_RING_LINEARIZED: head=256, tail=0
 // CHECK-NEXT: WING_HPACK_HASH_HIT: slot=42, match=true
 // CHECK: WING_SCHEDULER_ACTIVE_MASK: 0x01
 // CHECK: WING_BURST_QUANTUM_YIELD: urgency=0, frames=16
@@ -1681,7 +1681,8 @@ fn test_hpack_huffman_and_indexing_policy() {
     // H2HPACK-03: Adaptive Header Indexing Policy
     assert(http2::select_hpack_indexing("authorization", "Bearer secret-token-value", 4096) == http2::HpackIndexing.NeverIndexed);
     assert(http2::select_hpack_indexing("cookie", "sid=123", 4096) == http2::HpackIndexing.NeverIndexed);
-    assert(http2::select_hpack_indexing("cookie", "session_id=0123456789abcdef0123456789", 4096) == http2::HpackIndexing.Incremental);
+    assert(http2::select_hpack_indexing("cookie", "session_id=0123456789abcdef0123456789", 4096) == http2::HpackIndexing.NeverIndexed);
+    assert(http2::select_hpack_indexing("set-cookie", "sid=abc; HttpOnly", 4096) == http2::HpackIndexing.NeverIndexed);
     assert(http2::select_hpack_indexing("content-length", "42", 4096) == http2::HpackIndexing.None);
     assert(http2::select_hpack_indexing("etag", "\"v1\"", 4096) == http2::HpackIndexing.None);
     assert(http2::select_hpack_indexing("x-large", "012345678901234567890123456789", 48) == http2::HpackIndexing.None);

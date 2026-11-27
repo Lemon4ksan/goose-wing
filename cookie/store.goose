@@ -17,42 +17,48 @@ import .engine;
 // ---- chromium sqlite v24 query generator -----------------------------------
 
 // Serializes a CanonicalCookie into a SQLite V24 INSERT OR REPLACE statement.
-fn generate_sqlite_insert_sql<B>(cookie_val: const CanonicalCookie&, out: B&) {
+// Rejects NUL bytes in string fields without mutating `out`.
+fn generate_sqlite_insert_sql<B>(cookie_val: const CanonicalCookie&, out: B&) -> bool {
+    guard cookie_internal::has_valid_sqlite_cookie_fields(cookie_val) else { return false; }
     out.append("INSERT OR REPLACE INTO cookies (creation_utc, top_frame_site_key, host_key, name, ");
     out.append("value, encrypted_value, path, expires_utc, is_secure, is_httponly, ");
     out.append("last_access_utc, has_expires, is_persistent, priority, samesite, source_scheme, ");
     out.append("source_port, last_update_utc, source_type, has_cross_site_ancestor) VALUES (");
     cookie_val.creation_utc.format_i64_dec(out);
     out.append(", ");
-    cookie_internal::append_sql_escaped_string(cookie_val.partition_key[..], out);
+    let _ = cookie_internal::append_sql_escaped_string(cookie_val.partition_key[..], out);
     out.append(", ");
-    cookie_internal::append_sqlite_host_key(cookie_val, out);
+    let _ = cookie_internal::append_sqlite_host_key(cookie_val, out);
     out.append(", ");
-    cookie_internal::append_sql_escaped_string(cookie_val.name[..], out);
+    let _ = cookie_internal::append_sql_escaped_string(cookie_val.name[..], out);
     out.append(", ");
-    cookie_internal::append_sql_escaped_string(cookie_val.value[..], out);
+    let _ = cookie_internal::append_sql_escaped_string(cookie_val.value[..], out);
     out.append(", '', ");
-    cookie_internal::append_sql_escaped_string(cookie_val.path[..], out);
+    let _ = cookie_internal::append_sql_escaped_string(cookie_val.path[..], out);
     out.append(", ");
     cookie_val.expires_utc.format_i64_dec(out);
     cookie_internal::append_sqlite_insert_tail(cookie_val, out);
+    return true;
 }
 
 // Serializes a CanonicalCookie deletion into a SQLite V24 DELETE statement.
-fn generate_sqlite_delete_sql<B>(cookie_val: const CanonicalCookie&, out: B&) {
+// Rejects NUL bytes in string fields without mutating `out`.
+fn generate_sqlite_delete_sql<B>(cookie_val: const CanonicalCookie&, out: B&) -> bool {
+    guard cookie_internal::has_valid_sqlite_cookie_fields(cookie_val) else { return false; }
     out.append("DELETE FROM cookies WHERE top_frame_site_key = ");
-    cookie_internal::append_sql_escaped_string(cookie_val.partition_key[..], out);
+    let _ = cookie_internal::append_sql_escaped_string(cookie_val.partition_key[..], out);
     out.append(" AND host_key = ");
-    cookie_internal::append_sqlite_host_key(cookie_val, out);
+    let _ = cookie_internal::append_sqlite_host_key(cookie_val, out);
     out.append(" AND name = ");
-    cookie_internal::append_sql_escaped_string(cookie_val.name[..], out);
+    let _ = cookie_internal::append_sql_escaped_string(cookie_val.name[..], out);
     out.append(" AND path = ");
-    cookie_internal::append_sql_escaped_string(cookie_val.path[..], out);
+    let _ = cookie_internal::append_sql_escaped_string(cookie_val.path[..], out);
     out.append(" AND source_scheme = ");
     cookie_internal::source_scheme_sqlite_code(cookie_val.source_scheme).format_i64_dec(out);
     out.append(" AND source_port = ");
     (cookie_val.source_port as i64).format_i64_dec(out);
     out.append(";\n");
+    return true;
 }
 
 // ---- write-back mutation batcher -------------------------------------------
@@ -525,7 +531,13 @@ fn cookie_internal::append_sqlite_insert_tail<B>(
     out.append(", 0, 0);\n");
 }
 
-inline fn cookie_internal::append_sql_escaped_body<B>(sql_str: const u8[:], out: B&) {
+inline fn cookie_internal::has_valid_sqlite_cookie_fields(c: const cookie::CanonicalCookie&) -> bool {
+    return !c.partition_key[..].contains_byte(0) && !c.domain[..].contains_byte(0)
+        && !c.name[..].contains_byte(0) && !c.value[..].contains_byte(0) && !c.path[..].contains_byte(0);
+}
+
+inline fn cookie_internal::append_sql_escaped_body<B>(sql_str: const u8[:], out: B&) -> bool {
+    guard !sql_str.contains_byte(0) else { return false; }
     for char_byte in sql_str {
         if char_byte == '\'' {
             out.append("''");
@@ -533,24 +545,29 @@ inline fn cookie_internal::append_sql_escaped_body<B>(sql_str: const u8[:], out:
             out.push(char_byte);
         }
     }
+    return true;
 }
 
-fn cookie_internal::append_sql_escaped_string<B>(sql_str: const u8[:], out: B&) {
+fn cookie_internal::append_sql_escaped_string<B>(sql_str: const u8[:], out: B&) -> bool {
+    guard !sql_str.contains_byte(0) else { return false; }
     out.push('\'');
-    cookie_internal::append_sql_escaped_body(sql_str, out);
+    guard cookie_internal::append_sql_escaped_body(sql_str, out) else { return false; }
     out.push('\'');
+    return true;
 }
 
 fn cookie_internal::append_sqlite_host_key<B>(
     cookie_val: const cookie::CanonicalCookie&,
     out:        B&,
-) {
+) -> bool {
+    guard !cookie_val.domain[..].contains_byte(0) else { return false; }
     out.push('\'');
     if !cookie_val.host_only && (cookie_val.domain.len == 0 || cookie_val.domain[0] != '.') {
         out.push('.');
     }
-    cookie_internal::append_sql_escaped_body(cookie_val.domain[..], out);
+    guard cookie_internal::append_sql_escaped_body(cookie_val.domain[..], out) else { return false; }
     out.push('\'');
+    return true;
 }
 
 fn cookie_internal::coalesce_store_mutation(

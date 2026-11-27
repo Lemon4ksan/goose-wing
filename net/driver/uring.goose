@@ -107,6 +107,11 @@ const URING_CQE_F_MORE:          u32 = 1 << 1;
 const URING_CQE_F_SOCK_NONEMPTY: u32 = 1 << 2;
 const URING_CQE_F_NOTIF:         u32 = 1 << 3; // IORING_CQE_F_NOTIF (zero-copy DMA unpin notification)
 
+const URING_ASYNC_CANCEL_ALL: u32 = 1 << 0;
+const URING_ASYNC_CANCEL_FD:  u32 = 1 << 1;
+const URING_ERR_ENOBUFS:      i32 = -105;
+const URING_ERR_ECANCELED:    i32 = -125;
+
 // io_uring submission queue entry (SQE)
 struct UringSqe {
     opcode:    u8  = URING_OP_NOP,

@@ -10,6 +10,7 @@ import rfc.http;
 import http.headers;
 import http.request;
 import http.response;
+import http.cache.cache_control;
 import http.negotiate;
 import http.digest_fields;
 import http.server_timing;
@@ -324,10 +325,14 @@ fn maybe_store_server_route_cache(
     handler_id:  i32,
     egress_mask: u64,
 ) {
-    let has_auth = (req.presence_mask & http::HDR_PRESENCE_AUTHORIZATION) != 0
-        || http::has_header(req.headers, rfc::HEADER_AUTHORIZATION);
+    let req_cc = http::parse_cache_control_headers(
+        req.headers,
+        http::CacheControlParseOptions { is_request: true, ignore_cargo_cult: true },
+    );
     guard (egress_mask & wire::STAGE_SRV_OUT_CACHE_STORE) != 0 &&
-          handler_id >= 0 && req.method[..] == "GET" && !has_auth else {
+          handler_id >= 0 && req.method[..] == "GET" &&
+          !has_route_cache_blocking_request_headers(req) &&
+          !req_cc.is_no_store() else {
         cfg.route_cache.is_updating = false;
         return;
     }

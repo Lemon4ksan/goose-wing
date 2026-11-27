@@ -81,7 +81,8 @@ fn dispatch_connect_unary_get<HandlerFn: fn(u16, grpc::ServerContext&, const u8[
         build_connect_unary_get_response(q_err, "", "json", ctx, res);
         return true;
     }
-    if (req_payload.len as u32) > d.max_message_size {
+    let max_msg = if d.max_message_size > 0 { d.max_message_size } else { rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE };
+    if (req_payload.len as u32) > max_msg {
         let sz_err = grpc::error(grpc::StatusCode.ResourceExhausted, "Message exceeds max size");
         build_connect_unary_get_response(sz_err, "", params.encoding[..], ctx, res);
         return true;
@@ -104,6 +105,11 @@ fn prepare_method_dispatch(
     init_context_transport(req, ctx);
     if !req.method[..].eq_ascii_fold("POST") {
         build_trailers_only_response(grpc::StatusCode.Internal, "HTTP method must be POST", ctx, res);
+        return 0, false;
+    }
+    let ct_hdr = req.header("content-type").trim_lws();
+    if ct_hdr.len == 0 || !grpc::is_content_type(ct_hdr) {
+        build_trailers_only_response(grpc::StatusCode.InvalidArgument, "Invalid Content-Type header", ctx, res);
         return 0, false;
     }
     let ctx_st = extract_server_context_status(req, ctx, now_mono_ns, req_start_mono_ns);
@@ -184,6 +190,7 @@ fn validate_and_decompress_client_stream(
     ctx:      const grpc::ServerContext&,
     res:      http::Response&,
 ) -> bool {
+    let eff_max = if max_size > 0 { max_size } else { rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE };
     let enc = grpc::get_metadata(ctx, rfc::HEADER_GRPC_ENCODING).trim_lws();
     guard is_supported_encoding(enc) else {
         build_trailers_only_response(grpc::StatusCode.Unimplemented, "Unsupported grpc-encoding", ctx, res);
@@ -193,7 +200,7 @@ fn validate_and_decompress_client_stream(
     for &span in reader.spans {
         if span.compressed {
             any_compressed = true;
-        } else if span.len > max_size {
+        } else if span.len > eff_max {
             build_trailers_only_response(
                 grpc::StatusCode.ResourceExhausted, "Received message exceeds max configured message size", ctx, res,
             );
@@ -213,7 +220,7 @@ fn validate_and_decompress_client_stream(
     for i in reader.spans.len {
         let span = reader.spans[i];
         let raw_msg = grpc::get_client_stream_message(reader, i);
-        guard append_decompressed_stream_span(raw_msg, span, max_size, ctx, res, new_wire, new_spans) else {
+        guard append_decompressed_stream_span(raw_msg, span, eff_max, ctx, res, new_wire, new_spans) else {
             return false;
         }
     }
@@ -264,7 +271,12 @@ fn execute_server_unary<
     var future = server_internal::new_inline_handler_future(0);
     let outcome = server::execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
-    if outcome == server::PipelineOutcome.RouteNotFound {
+    let needs_grpc_dispatch = outcome == server::PipelineOutcome.RouteNotFound ||
+        (outcome == server::PipelineOutcome.Handled &&
+            res.status_code == rfc::STATUS_OK &&
+            res.body.len == 0 &&
+            is_request(req));
+    if needs_grpc_dispatch {
         let _ = grpc::dispatch_unary(d, req, now_ns, res, HandlerFn);
     }
 }

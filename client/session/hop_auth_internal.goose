@@ -233,6 +233,52 @@ fn compute_401_basic_header<B>(session: const client::Client&, out: B&) -> bool 
     return out.try_append("Basic ") && out.try_append(b64_user_pass[..]);
 }
 
+fn privacypass_origin_info_matches(current_url: const core::Url&, origin_info: const u8[:]) -> bool {
+    if origin_info.len == 0 { return true; }
+    let req_host = current_url.hostname();
+    let req_port = current_url.effective_port();
+    var tok = core::make_byte_tokenizer(origin_info, ',');
+    loop {
+        let raw_item, ok = core::token_next(tok);
+        guard ok else { break; }
+        let item = raw_item.trim_lws();
+        guard item.len > 0 else { continue; }
+        var probe: u8[..272] = "https://";
+        guard probe.try_append(item) else { continue; }
+        let p, _ = core::parse_url(probe[..]);
+        if p.valid && p.hostname().eq_ascii_fold(req_host) &&
+            (p.port < 0 || p.effective_port() == req_port) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn redeem_matching_private_token<B>(
+    cache:   security::PrivateTokenCache&,
+    chal:    const security::TokenChallenge&,
+    tok_key: const u8[:],
+    now_sec: i64,
+    out_raw: B&,
+) -> bool {
+    let digest = security::compute_challenge_digest(chal);
+    let key_hash = if tok_key.len > 0 { core::sha256(tok_key) } else { [0 as u8; 32] };
+    for &entry in cache.entries {
+        if entry.used { continue; }
+        if entry.expires_at_sec > 0 && now_sec >= entry.expires_at_sec { continue; }
+        guard core::ct_eq_tag32(entry.challenge_digest, digest) else { continue; }
+        if tok_key.len > 0 {
+            let match_hash = core::ct_eq_bytes(entry.token.token_key_id[..], key_hash[..]);
+            let match_raw = core::ct_eq_bytes(entry.token.token_key_id[..], tok_key);
+            guard match_hash || match_raw else { continue; }
+        }
+        guard out_raw.try_set(entry.raw_token[..]) else { return false; }
+        entry.used = true;
+        return true;
+    }
+    return false;
+}
+
 fn compute_401_auth_header<B>(
     session:     client::Client&,
     ctx:         RequestExecutionContext&,
@@ -251,11 +297,17 @@ fn compute_401_auth_header<B>(
     if has_auth_scheme_prefix(www_auth, rfc::SCHEME_PRIVATE_TOKEN) {
         var tok_key: u8[..512] = [];
         let chal, _, ok_ch = security::parse_private_token_challenge(www_auth, tok_key);
-        guard ok_ch else { return false; }
+        guard ok_ch && privacypass_origin_info_matches(current_url, chal.origin_info[..]) else {
+            return false;
+        }
         var raw_tok: u8[..512] = [];
         let now_sec = div_euclid(client::effective_clock_us(session), 1000000);
-        let _, ok_tok = security::get_private_token(session.private_token_cache, chal, now_sec, raw_tok);
-        guard ok_tok && security::format_private_token_authorization(raw_tok[..], out) else { return false; }
+        let ok_tok = redeem_matching_private_token(
+            session.private_token_cache, chal, tok_key[..], now_sec, raw_tok,
+        );
+        guard ok_tok && security::format_private_token_authorization(raw_tok[..], out) else {
+            return false;
+        }
         committed = true;
         return true;
     }

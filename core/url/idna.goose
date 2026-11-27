@@ -118,10 +118,35 @@ fn punycode_step_non_basic(
     return true;
 }
 
+fn punycode_encode_non_ascii_cps(cps: const u64[:], out_ace: u8[..63]&) -> bool {
+    out_ace.clear();
+    guard out_ace.try_append("xn--") else { return false; }
+    let basic_count, ok_basic = punycode_copy_basic_codepoints(cps, out_ace);
+    guard ok_basic else { return false; }
+
+    var n = PUNYCODE_INITIAL_N;
+    var delta: u64 = 0;
+    var bias = PUNYCODE_INITIAL_BIAS;
+    var h = basic_count;
+    let total_cp = cps.len as u64;
+    while h < total_cp {
+        let m = punycode_find_next_min_cp(cps, n);
+        delta = add_sat_u64(delta, mul_sat_u64(m - n, h + 1));
+        guard delta <= 0xFFFFFFFF else { return false; }
+        n = m;
+        guard punycode_step_non_basic(cps, n, basic_count, delta, bias, h, out_ace) else {
+            return false;
+        }
+        delta += 1;
+        n += 1;
+    }
+    return true;
+}
+
 // Encodes a single UTF-8 domain label into an ASCII/ACE Punycode label (`xn--...`, RFC 3492).
 //
 // Example:
-//   utf8_label = "\xE4\xB8\xAD\xE5\x9B\xBD" ("中国"), out_ace = []
+//   utf8_label = "\xE4\xB8\xAD\xE5\x9B\xBD", out_ace = []
 //   returns: true, out_ace = "xn--fiqs8s"
 fn punycode_encode_label(utf8_label: const u8[:], out_ace: u8[..63]&) -> bool {
     out_ace.clear();
@@ -135,25 +160,7 @@ fn punycode_encode_label(utf8_label: const u8[:], out_ace: u8[..63]&) -> bool {
         }
         return true;
     }
-    guard out_ace.try_append("xn--") else { return false; }
-    let basic_count, ok_basic = punycode_copy_basic_codepoints(cps[..], out_ace);
-    guard ok_basic else { return false; }
-
-    var n = PUNYCODE_INITIAL_N;
-    var delta: u64 = 0;
-    var bias = PUNYCODE_INITIAL_BIAS;
-    var h = basic_count;
-    let total_cp = cps.len as u64;
-    while h < total_cp {
-        let m = punycode_find_next_min_cp(cps[..], n);
-        delta = add_sat_u64(delta, mul_sat_u64(m - n, h + 1));
-        guard delta <= 0xFFFFFFFF else { return false; }
-        n = m;
-        guard punycode_step_non_basic(cps[..], n, basic_count, delta, bias, h, out_ace) else { return false; }
-        delta += 1;
-        n += 1;
-    }
-    return true;
+    return punycode_encode_non_ascii_cps(cps[..], out_ace);
 }
 
 // Scans forward in `domain` from `start` to the next '.' delimiter (or `domain.len`).
@@ -200,7 +207,8 @@ fn punycode_base36_digit(b: u8) -> i32 {
 
 fn is_valid_punycode_basic_prefix(prefix: const u8[:]) -> bool {
     for b in prefix {
-        guard is_ascii_alphanumeric(b) || b == '-' else { return false; }
+        let is_low = (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '-';
+        guard is_low else { return false; }
     }
     return true;
 }
@@ -253,8 +261,37 @@ fn punycode_decode_delta(
     return true;
 }
 
-// Validates that `ace_body` (after `xn--`) is a well-formed RFC 3492 Bootstring encoding
-// producing at least one non-ASCII Unicode scalar value in `[U+00A0, U+10FFFF]`.
+inline fn is_valid_decoded_non_ascii_scalar(cp: u64) -> bool {
+    guard cp > 0x9F && cp <= 0x10FFFF && (cp < 0xD800 || cp > 0xDFFF) else { return false; }
+    guard (cp & 0xFFFE) != 0xFFFE && !(cp >= 0xFDD0 && cp <= 0xFDEF) else { return false; }
+    guard cp != 0x00AD && cp != 0xFFFD && cp != 0xFEFF else { return false; }
+    return !(cp == 0x200B || (cp >= 0x200E && cp <= 0x200F) ||
+        (cp >= 0x202A && cp <= 0x202E) || (cp >= 0x2060 && cp <= 0x206F));
+}
+
+inline fn insert_punycode_cp(u_cps: u64[..63]&, idx: i64, cp: u64) -> bool {
+    guard idx >= 0 && idx <= u_cps.len && u_cps.len < 63 else { return false; }
+    guard u_cps.try_push(0) else { return false; }
+    var k = u_cps.len - 1;
+    while k > idx {
+        u_cps[k] = u_cps[k - 1];
+        k -= 1;
+    }
+    u_cps[idx] = cp;
+    return true;
+}
+
+fn push_punycode_basic_cps(prefix: const u8[:], u_cps: u64[..63]&) -> bool {
+    guard is_valid_punycode_basic_prefix(prefix) else { return false; }
+    for b in prefix {
+        guard u_cps.try_push(b as u64) else { return false; }
+    }
+    return true;
+}
+
+// Validates that `ace_body` (after `xn--`) is a canonical RFC 3492 Bootstring encoding
+// whose decoded U-label contains at least one valid non-ASCII scalar, no uppercase ASCII,
+// no controls or disallowed format chars, valid hyphen placement, and matches roundtrip encoding.
 //
 // Example:
 //   ace_body = "bcher-kva"
@@ -263,10 +300,13 @@ fn is_valid_punycode_ace_body(ace_body: const u8[:]) -> bool {
     let body_len = ace_body.len;
     guard body_len > 0 else { return false; }
     let delim = last_index_of_byte(ace_body, '-');
-    // RFC 3492 Section 3.1: Delimiter '-' MUST NOT appear at index 0 with empty basic-char prefix (e.g. "xn---a").
+    // RFC 3492 Section 3.1: Delimiter '-' MUST NOT appear at index 0 with empty basic-char prefix.
     guard delim != 0 else { return false; }
     let basic_len = max(0, delim) as u64;
-    guard delim <= 0 || is_valid_punycode_basic_prefix(ace_body[..delim]) else { return false; }
+    var u_cps: u64[..63] = [];
+    if delim > 0 {
+        guard push_punycode_basic_cps(ace_body[..delim], u_cps) else { return false; }
+    }
     var pos = max(0, delim + 1);
     guard pos < body_len else { return false; }
 
@@ -284,25 +324,34 @@ fn is_valid_punycode_ace_body(ace_body: const u8[:]) -> bool {
         let q_n = i / next_len;
         guard q_n <= 0x10FFFF - n else { return false; }
         n += q_n;
-        guard n > 0x9F && (n < 0xD800 || n > 0xDFFF) else { return false; }
+        guard is_valid_decoded_non_ascii_scalar(n) else { return false; }
+        let ins_idx = (i % next_len) as i64;
+        guard insert_punycode_cp(u_cps, ins_idx, n) else { return false; }
         i = (i % next_len) + 1;
         out_len = next_len;
     }
-    return out_len > basic_len;
+    guard out_len > basic_len && u_cps.len > 0 else { return false; }
+    let hyphen = '-' as u64;
+    guard u_cps[0] != hyphen && u_cps[u_cps.len - 1] != hyphen else { return false; }
+    if u_cps.len >= 4 && u_cps[2] == hyphen && u_cps[3] == hyphen {
+        return false;
+    }
+    var re_ace: u8[..63] = [];
+    guard punycode_encode_non_ascii_cps(u_cps[..], re_ace) else { return false; }
+    return re_ace.len == 4 + body_len && re_ace[4..].eq_ascii_fold(ace_body);
 }
 
 // CVE-2026-39821 defense: Validates an ACE / Punycode label starting with "xn--"
-// and enforces RFC 952 / RFC 1123 LDH label rules on all labels.
-// Per RFC 3492 / RFC 5891 Section 4.2.3, a Punycode label MUST encode at least one non-ASCII code point.
+// and enforces RFC 952 / RFC 1123 STD3 LDH + CheckHyphens rules on all labels.
 fn validate_punycode_label(label: const u8[:]) -> bool {
     guard label.len > 0 && label.len <= 63 else { return false; }
     guard label[0] != '-' && label[label.len - 1] != '-' else { return false; }
     for b in label {
-        guard is_ascii_alphanumeric(b) || b == '-' || b == '_' else { return false; }
+        guard is_ascii_alphanumeric(b) || b == '-' else { return false; }
     }
     guard label.len >= 4 && label[2] == '-' && label[3] == '-' else { return true; }
     let ace_body, is_xn = strip_prefix_fold(label, "xn--");
-    guard is_xn && !contains_byte(ace_body, '_') else { return false; }
+    guard is_xn else { return false; }
     return is_valid_punycode_ace_body(ace_body);
 }
 
@@ -322,8 +371,8 @@ fn validate_idna_domain_bounds(domain: const u8[:]) -> bool {
     return true;
 }
 
-// Go #78760 / CVE-2026-39821 & CVE-2026-97044: Reject invalid ACE/Punycode labels that contain no
-// non-ASCII delta, and enforce RFC 1035 DNS label (<= 63B) and total domain (<= 253B) length limits.
+// Go #78760 / CVE-2026-39821 & CVE-2026-97044: Reject invalid ACE/Punycode labels and
+// enforce STD3 LDH + CheckHyphens + RFC 1035 DNS label (<= 63B) and total domain (<= 253B) limits.
 fn validate_host_punycode_labels(host_str: const u8[:]) -> bool {
     if host_str.len == 0 { return true; }
     let trimmed, _ = strip_suffix(host_str, ".");
@@ -333,15 +382,8 @@ fn validate_host_punycode_labels(host_str: const u8[:]) -> bool {
     var start: i64 = 0;
     while start < total {
         let dot_pos = scan_domain_label_end(trimmed, start);
-        guard dot_pos > start else { return false; }
-        let label = trimmed[start..dot_pos];
-        guard label.len <= 63 else { return false; }
-        let ace_body, is_xn = strip_prefix_fold(label, "xn--");
-        if is_xn {
-            guard label[0] != '-' && label[label.len - 1] != '-' && !contains_byte(ace_body, '_') else {
-                return false;
-            }
-            guard is_valid_punycode_ace_body(ace_body) else { return false; }
+        guard dot_pos > start && validate_punycode_label(trimmed[start..dot_pos]) else {
+            return false;
         }
         if dot_pos == total { break; }
         start = dot_pos + 1;

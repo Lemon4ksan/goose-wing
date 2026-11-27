@@ -66,18 +66,35 @@ fn reactor_dispatch_single_rio_result<Stage>(
     total_served:  i64&,
     stage:         Stage&,
 ) {
-    let slot, ok_tok = net::reactor_accel_match_token(server::g_reactor_accel, res.socket_context);
-    guard ok_tok && is_active_slot(table, slot) else { return; }
+    let slot, ok_tok, is_quarantined = net::reactor_accel_match_any_token(
+        server::g_reactor_accel, res.socket_context,
+    );
+    guard ok_tok else { return; }
     let epfd = server::g_reactor_accel.epfd;
 
     if res.request_context == net::REACTOR_REQ_TX_TAG {
         server::g_reactor_accel.slot_tx_inflight[slot] = false;
+        if is_quarantined {
+            if net::reactor_finalize_quarantined_slot(server::g_reactor_accel, slot) {
+                free_reactor_conn_slot(slot_pool, slot);
+            }
+            return;
+        }
+        guard is_active_slot(table, slot) else { return; }
         if res.status != 0 || server::g_reactor_accel.slot_close_after_tx[slot] {
             reactor_close_and_inc(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
         }
         return;
     }
     guard res.request_context == net::REACTOR_REQ_RX_TAG else { return; }
+    server::g_reactor_accel.slot_rx_inflight[slot] = false;
+    if is_quarantined {
+        if net::reactor_finalize_quarantined_slot(server::g_reactor_accel, slot) {
+            free_reactor_conn_slot(slot_pool, slot);
+        }
+        return;
+    }
+    guard is_active_slot(table, slot) else { return; }
     if res.status != 0 || res.bytes_transferred == 0 {
         reactor_request_slot_close(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
         return;
@@ -144,9 +161,13 @@ fn reactor_accept_rio_tls_fd<Stage>(
         rx_off, tx_off, net::REACTOR_ACCEL_BUF_SIZE as u32, tok,
     );
     let tls_slot, ok_hs = tls::server_handshake(client_fd, tls_config);
+    let hs_rx_inflight = net_internal::native_rio_hs_is_rx_inflight() != 0;
     var hs_leftover: u8[4096] = [0; 4096];
     let hs_rem = net_internal::native_rio_hs_end(hs_leftover[..]);
     guard ok_hs else {
+        if hs_rx_inflight {
+            server::g_reactor_accel.slot_rx_inflight[slot] = true;
+        }
         reactor_cleanup_slot(epfd, table, leftover_pool, slot, slot_pool);
         total_served = core::add_sat_i64(total_served, 1);
         return;
@@ -223,6 +244,56 @@ fn reactor_flush_rio_tx_closes(
     server::g_reactor_accel.rio_tx_close_queue.clear();
 }
 
+fn reactor_release_finished_rio_quarantine(slot_pool: ReactorSlotPool&) {
+    for q in net::REACTOR_RIO_SLOTS {
+        if server::g_reactor_accel.slot_quarantined[q] &&
+            net::reactor_finalize_quarantined_slot(server::g_reactor_accel, q) {
+            free_reactor_conn_slot(slot_pool, q);
+        }
+    }
+}
+
+fn reactor_handle_corrupt_rio_cq(
+    server:        server::HttpServer&,
+    table:         server::SoAConnTable&,
+    leftover_pool: slice_pool<u8>&,
+    slot_pool:     ReactorSlotPool&,
+    total_served:  i64&,
+) {
+    let epfd = server::g_reactor_accel.epfd;
+    for s in net::REACTOR_RIO_SLOTS {
+        if is_active_slot(table, s) && server::g_reactor_accel.slot_rio_rq[s] != 0 {
+            server::g_reactor_accel.slot_rx_inflight[s] = false;
+            server::g_reactor_accel.slot_tx_inflight[s] = false;
+            reactor_close_and_inc(server, epfd, table, leftover_pool, s, slot_pool, total_served);
+        } else if server::g_reactor_accel.slot_quarantined[s] {
+            net::reactor_reset_accel_slot(server::g_reactor_accel, s);
+            free_reactor_conn_slot(slot_pool, s);
+        }
+    }
+    if server::g_reactor_accel.rio_buf_id != 0 {
+        net_internal::native_rio_deregister_buffer(server::g_reactor_accel.rio_buf_id);
+        server::g_reactor_accel.rio_buf_id = 0;
+    }
+    if server::g_reactor_accel.rio_cq != 0 {
+        net_internal::native_rio_close_cq(server::g_reactor_accel.rio_cq);
+        server::g_reactor_accel.rio_cq = 0;
+    }
+    if server::g_reactor_accel.rio_tx_cq != 0 {
+        net_internal::native_rio_close_cq(server::g_reactor_accel.rio_tx_cq);
+        server::g_reactor_accel.rio_tx_cq = 0;
+    }
+}
+
+inline fn reactor_has_quarantined_rio_slot() -> bool {
+    for q in net::REACTOR_RIO_SLOTS {
+        if server::g_reactor_accel.slot_quarantined[q] {
+            return true;
+        }
+    }
+    return false;
+}
+
 fn reactor_step_rio_completions<Stage>(
     server:        server::HttpServer&,
     draining:      bool,
@@ -247,14 +318,29 @@ fn reactor_step_rio_completions<Stage>(
         server, draining, tls_config, is_tls, timeout_ms,
         table, leftover_pool, slot_pool, timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
     );
-    guard server::g_reactor_accel.active_accel_slots > 0 else { return 0; }
+    guard server::g_reactor_accel.active_accel_slots > 0 || reactor_has_quarantined_rio_slot() else {
+        return 0;
+    }
     let tx_n = net::reactor_drain_rio_tx_cq(server::g_reactor_accel);
     reactor_flush_rio_tx_closes(server, table, leftover_pool, slot_pool, total_served);
+    reactor_release_finished_rio_quarantine(slot_pool);
+    if tx_n < 0 {
+        reactor_handle_corrupt_rio_cq(server, table, leftover_pool, slot_pool, total_served);
+        return 0;
+    }
     var rio_results: net_internal::RioResult[..64] = [];
     var n = net_internal::rio_drain_completions(server::g_reactor_accel.rio_cq, rio_results);
-    if n == 0 && tx_n == 0 && timeout_ms > 0 {
-        let _ = net_internal::rio_wait_cq(server::g_reactor_accel.rio_cq, min(timeout_ms, 5));
-        n = net_internal::rio_drain_completions(server::g_reactor_accel.rio_cq, rio_results);
+    if n == 0 && tx_n == 0 && timeout_ms > 0 && server::g_reactor_accel.active_accel_slots > 0 {
+        let wait_rc = net_internal::rio_wait_cq(server::g_reactor_accel.rio_cq, min(timeout_ms, 5));
+        if wait_rc < 0 {
+            n = -1;
+        } else {
+            n = net_internal::rio_drain_completions(server::g_reactor_accel.rio_cq, rio_results);
+        }
+    }
+    if n < 0 {
+        reactor_handle_corrupt_rio_cq(server, table, leftover_pool, slot_pool, total_served);
+        return 0;
     }
     for i in rio_results.len {
         reactor_dispatch_single_rio_result(
@@ -262,9 +348,13 @@ fn reactor_step_rio_completions<Stage>(
             timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
         );
     }
-    let _ = net::reactor_drain_rio_tx_cq(server::g_reactor_accel);
+    if net::reactor_drain_rio_tx_cq(server::g_reactor_accel) < 0 {
+        reactor_handle_corrupt_rio_cq(server, table, leftover_pool, slot_pool, total_served);
+        return n as u32;
+    }
     reactor_flush_rio_tx_closes(server, table, leftover_pool, slot_pool, total_served);
-    return n;
+    reactor_release_finished_rio_quarantine(slot_pool);
+    return n as u32;
 }
 
 inline fn reactor_dispatch_uring_tls_recv_cqe<Stage>(
@@ -364,14 +454,44 @@ fn reactor_dispatch_uring_recv_cqe<Stage>(
 ) {
     let has_buf = (cqe.flags & net_internal::URING_CQE_F_BUFFER) != 0;
     let bid = ((cqe.flags >> 16) & 0xFFFF) as u16;
-    let slot, ok_tok = net::reactor_accel_match_token(server::g_reactor_accel, cqe.user_data);
-    guard ok_tok && is_active_slot(table, slot) else {
+    let slot, ok_tok, is_quarantined = net::reactor_accel_match_any_token(
+        server::g_reactor_accel, cqe.user_data,
+    );
+    guard ok_tok else {
+        if has_buf {
+            net_internal::uring_recycle_pbuf(server::g_reactor_accel.uring_pbuf, bid);
+        }
+        return;
+    }
+    if (cqe.flags & net_internal::URING_CQE_F_MORE) == 0 {
+        server::g_reactor_accel.slot_rx_armed[slot] = false;
+        server::g_reactor_accel.slot_rx_canceling[slot] = false;
+    }
+    if is_quarantined {
+        if has_buf {
+            net_internal::uring_recycle_pbuf(server::g_reactor_accel.uring_pbuf, bid);
+        }
+        if net::reactor_finalize_quarantined_slot(server::g_reactor_accel, slot) {
+            free_reactor_conn_slot(slot_pool, slot);
+        }
+        return;
+    }
+    guard is_active_slot(table, slot) else {
         if has_buf {
             net_internal::uring_recycle_pbuf(server::g_reactor_accel.uring_pbuf, bid);
         }
         return;
     }
     let epfd = server::g_reactor_accel.epfd;
+    if cqe.res == net_internal::URING_ERR_ENOBUFS || cqe.res == net_internal::URING_ERR_ECANCELED {
+        if has_buf {
+            net_internal::uring_recycle_pbuf(server::g_reactor_accel.uring_pbuf, bid);
+        }
+        if (cqe.flags & net_internal::URING_CQE_F_MORE) == 0 && !server::g_reactor_accel.slot_close_after_tx[slot] {
+            net::reactor_arm_uring_slot_rx(server::g_reactor_accel, slot, table.fds[slot]);
+        }
+        return;
+    }
     if cqe.res <= 0 {
         if has_buf {
             net_internal::uring_recycle_pbuf(server::g_reactor_accel.uring_pbuf, bid);
@@ -441,11 +561,37 @@ fn reactor_dispatch_uring_send_cqe(
     slot_pool:     ReactorSlotPool&,
     total_served:  i64&,
 ) {
-    let slot, ok_tok = net::reactor_accel_match_token(server::g_reactor_accel, cqe.user_data);
-    guard ok_tok && is_active_slot(table, slot) else { return; }
-    if (cqe.flags & net_internal::URING_CQE_F_NOTIF) != 0 { return; }
-    server::g_reactor_accel.slot_tx_inflight[slot] = false;
-    if cqe.res <= 0 || server::g_reactor_accel.slot_close_after_tx[slot] {
+    let slot, ok_tok, is_quarantined = net::reactor_accel_match_any_token(
+        server::g_reactor_accel, cqe.user_data,
+    );
+    guard ok_tok else { return; }
+    let is_notif = (cqe.flags & net_internal::URING_CQE_F_NOTIF) != 0;
+    if is_notif {
+        server::g_reactor_accel.slot_tx_notif_pending[slot] = false;
+    } else {
+        server::g_reactor_accel.slot_tx_inflight[slot] = false;
+        if (cqe.flags & net_internal::URING_CQE_F_MORE) != 0 {
+            server::g_reactor_accel.slot_tx_notif_pending[slot] = true;
+        }
+    }
+    if is_quarantined {
+        if net::reactor_finalize_quarantined_slot(server::g_reactor_accel, slot) {
+            free_reactor_conn_slot(slot_pool, slot);
+        }
+        return;
+    }
+    guard is_active_slot(table, slot) else { return; }
+    if is_notif {
+        if server::g_reactor_accel.slot_close_after_tx[slot] &&
+            !server::g_reactor_accel.slot_tx_inflight[slot] {
+            reactor_close_and_inc(
+                server, server::g_reactor_accel.epfd, table, leftover_pool, slot, slot_pool, total_served,
+            );
+        }
+        return;
+    }
+    if (cqe.res <= 0 || server::g_reactor_accel.slot_close_after_tx[slot]) &&
+        !server::g_reactor_accel.slot_tx_notif_pending[slot] {
         reactor_close_and_inc(
             server, server::g_reactor_accel.epfd, table, leftover_pool, slot, slot_pool, total_served,
         );
@@ -465,9 +611,25 @@ fn reactor_dispatch_uring_poll_cqe<Stage>(
     total_served:  i64&,
     stage:         Stage&,
 ) {
-    let slot, ok_tok = net::reactor_accel_match_token(server::g_reactor_accel, cqe.user_data);
-    guard ok_tok && is_active_slot(table, slot) else { return; }
+    let slot, ok_tok, is_quarantined = net::reactor_accel_match_any_token(
+        server::g_reactor_accel, cqe.user_data,
+    );
+    guard ok_tok else { return; }
+    if (cqe.flags & net_internal::URING_CQE_F_MORE) == 0 {
+        server::g_reactor_accel.slot_rx_armed[slot] = false;
+        server::g_reactor_accel.slot_rx_canceling[slot] = false;
+    }
+    if is_quarantined {
+        if net::reactor_finalize_quarantined_slot(server::g_reactor_accel, slot) {
+            free_reactor_conn_slot(slot_pool, slot);
+        }
+        return;
+    }
+    guard is_active_slot(table, slot) else { return; }
     let epfd = server::g_reactor_accel.epfd;
+    if cqe.res == net_internal::URING_ERR_ECANCELED {
+        return;
+    }
     if cqe.res < 0 {
         reactor_close_and_inc(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
         return;
@@ -791,18 +953,18 @@ fn serve_h3_af_xdp(
         }
         let now_ns = core::monotonic_now().as_nanos();
         let pkt_id = (ip_seq & 0xFFFF) as u16;
-        if process_h3_l2_frame(server, ep, cfg.local_ep, rx_frame[..], pkt_id, now_ns, tx_frame) {
-            if net_internal::af_xdp_umem_write(xsk, desc.addr, tx_frame[..]) {
-                let tx_desc = net_internal::XdpDesc { addr: desc.addr, len: tx_frame.len as u32, options: 0 };
-                let _ = net_internal::af_xdp_tx_submit(xsk, tx_desc);
-                served = core::add_sat_i64(served, 1);
-            } else {
-                let _ = net_internal::af_xdp_fill_push(xsk, desc.addr);
-            }
+        ip_seq = core::add_sat_u64(ip_seq, 1);
+        let built = process_h3_l2_frame(server, ep, cfg.local_ep, rx_frame[..], pkt_id, now_ns, tx_frame);
+        guard built && net_internal::af_xdp_umem_write(xsk, desc.addr, tx_frame[..]) else {
+            let _ = net_internal::af_xdp_fill_push(xsk, desc.addr);
+            continue;
+        }
+        let tx_desc = net_internal::XdpDesc { addr: desc.addr, len: tx_frame.len as u32, options: 0 };
+        if net_internal::af_xdp_tx_submit(xsk, tx_desc) {
+            served = core::add_sat_i64(served, 1);
         } else {
             let _ = net_internal::af_xdp_fill_push(xsk, desc.addr);
         }
-        ip_seq = core::add_sat_u64(ip_seq, 1);
     }
     return served;
 }

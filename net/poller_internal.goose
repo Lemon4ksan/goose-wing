@@ -15,7 +15,8 @@ import .internal;
 // ---- Reactor Accelerator Helpers -------------------------------------------
 
 inline fn reactor_cancel_uring_slot(accel: net::ReactorAccelRuntime&, slot: i64) {
-    guard accel.slot_accel[slot] && accel.mode == net::ReactorAccelMode.IoUring && accel.uring_fd >= 0 else { return; }
+    guard (accel.slot_accel[slot] || accel.slot_quarantined[slot]) &&
+        accel.mode == net::ReactorAccelMode.IoUring && accel.uring_fd >= 0 else { return; }
     let tok = net::reactor_accel_slot_token(accel, slot);
     let rx_tag = if accel.slot_ktls_rx[slot] {
         net::REACTOR_URING_TAG_POLL | tok
@@ -23,15 +24,19 @@ inline fn reactor_cancel_uring_slot(accel: net::ReactorAccelRuntime&, slot: i64)
         net::REACTOR_URING_TAG_RECV | tok
     };
     var cancel_sqes: UringSqe[..2] = [];
-    var rx_cancel = UringSqe { .. };
-    uring_prep_cancel(rx_cancel, rx_tag);
-    let _ = cancel_sqes.try_push(rx_cancel);
-    if accel.slot_tx_inflight[slot] {
+    if accel.slot_rx_armed[slot] && !accel.slot_rx_canceling[slot] {
+        var rx_cancel = UringSqe { .. };
+        uring_prep_cancel(rx_cancel, rx_tag);
+        let _ = cancel_sqes.try_push(rx_cancel);
+    }
+    if accel.slot_tx_inflight[slot] || accel.slot_tx_notif_pending[slot] {
         var tx_cancel = UringSqe { .. };
         uring_prep_cancel(tx_cancel, net::REACTOR_URING_TAG_SEND | tok);
         let _ = cancel_sqes.try_push(tx_cancel);
     }
-    let _ = uring_submit_sqes(accel.uring_fd, cancel_sqes[..]);
+    if cancel_sqes.len > 0 {
+        let _ = uring_submit_sqes(accel.uring_fd, cancel_sqes[..]);
+    }
 }
 
 fn reactor_try_open_uring(accel: net::ReactorAccelRuntime&, listener_fd: i64) -> bool {
@@ -537,9 +542,26 @@ fn poller_collect_uring_events(
 
 inline fn poller_drain_rio_cq(p: net::Poller&, out_events: core::PollReadyEvent[..64]&) {
     var rio_results: RioResult[..64] = [];
-    if rio_drain_completions(p.rio_cq_id, rio_results) > 0 {
+    let n = rio_drain_completions(p.rio_cq_id, rio_results);
+    if n > 0 {
         let _ = rio_map_completions_to_events(p, rio_results[..], out_events);
+        return;
     }
+    guard n < 0 else { return; }
+    for i in p.registrations.len {
+        guard out_events.len < out_events.cap else { break; }
+        guard p.registrations[i].in_use else { continue; }
+        let _ = out_events.try_push(core::PollReadyEvent {
+            tag:             p.registrations[i].tag,
+            fd:              p.registrations[i].fd,
+            events:          core::POLL_ERROR,
+            bytes_available: 0,
+            is_eof:          true,
+            is_timer:        false,
+        });
+    }
+    native_rio_close_cq(p.rio_cq_id);
+    p.rio_cq_id = 0;
 }
 
 inline fn poller_poll_native_drivers(
@@ -592,7 +614,9 @@ fn reactor_wait_rio_slot_tx(accel: net::ReactorAccelRuntime&, slot: i64) -> bool
     guard slot >= 0 && slot < net::REACTOR_RIO_SLOTS && accel.rio_tx_cq != 0 else { return false; }
     var spins: i32 = 0;
     while accel.slot_tx_inflight[slot] && spins < 500 {
-        let _ = net::reactor_drain_rio_tx_cq(accel);
+        if net::reactor_drain_rio_tx_cq(accel) < 0 {
+            return false;
+        }
         if !accel.slot_tx_inflight[slot] {
             break;
         }
@@ -603,7 +627,10 @@ fn reactor_wait_rio_slot_tx(accel: net::ReactorAccelRuntime&, slot: i64) -> bool
 }
 
 fn reactor_submit_rio_tx(accel: net::ReactorAccelRuntime&, slot: i64, wire: const u8[:]) -> bool {
-    guard slot >= 0 && slot < net::REACTOR_RIO_SLOTS && accel.slot_rio_rq[slot] != 0 else { return false; }
+    guard slot >= 0 && slot < net::REACTOR_RIO_SLOTS && accel.slot_rio_rq[slot] != 0 &&
+        !accel.slot_quarantined[slot] else {
+        return false;
+    }
     net::ensure_reactor_accel_slab(accel);
     let tx_off_u32 = (core::shl_sat_u64(slot as u64, 13) as u32) | 4096;
     let tx_off = tx_off_u32 as i64;
@@ -683,11 +710,12 @@ fn uring_events_to_poll_mask(events: u32) -> u32 {
     return mask;
 }
 
-inline fn uring_submit_fd_poll(ring_fd: i64, fd: i32, events: u32) {
+inline fn uring_submit_fd_poll(ring_fd: i64, fd: i32, events: u32, gen: u32) {
     let mask = uring_events_to_poll_mask(events);
     guard mask != 0 else { return; }
+    let tag = core::shl_sat_u64(gen, net::URING_POLL_GEN_SHIFT) | ((fd as u64) & net::URING_POLL_FD_MASK);
     var sqe = UringSqe { .. };
-    uring_prep_poll_add(sqe, fd, mask, fd as u64);
+    uring_prep_poll_add(sqe, fd, mask, tag);
     var batch: UringSqe[1] = [sqe];
     let _ = uring_submit_sqes(ring_fd, batch[..]);
 }
@@ -712,12 +740,14 @@ inline fn uring_consume_poll_cqe(
     guard cqe.user_data != URING_INTERNAL_CANCEL_TAG &&
         cqe.res >= 0 &&
         (cqe.flags & URING_CQE_F_NOTIF) == 0 else { return; }
-    let fd = cqe.user_data as i64;
-    guard fd >= 0 && fd < up.watches.len && up.watches[fd].active else { return; }
+    let fd = (cqe.user_data & net::URING_POLL_FD_MASK) as i64;
+    let gen = ((cqe.user_data >> net::URING_POLL_GEN_SHIFT) & net::URING_POLL_GEN_MASK) as u32;
+    guard fd >= 0 && fd < up.watches.len && up.watches[fd].active && gen != 0 &&
+        up.watches[fd].gen == gen else { return; }
     guard ready >= 0 && ready < out_udata.len && ready < out_events.len else { return; }
 
     let w = up.watches[fd];
-    uring_submit_fd_poll(up.ring_fd, w.fd, w.events);
+    uring_submit_fd_poll(up.ring_fd, w.fd, w.events, w.gen);
     let mask = uring_poll_mask_to_events(cqe.res as u32);
     guard mask != 0 else { return; }
 

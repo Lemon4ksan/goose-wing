@@ -715,6 +715,11 @@ fn ecdsa_p256_sign(priv_key: const u8[32]&, message: const u8[:]) -> u8[64] {
         sig[i] = r_be[i];
         sig[32 + i] = s_be[i];
     }
+    let q_pt = p256_scalar_mul(g, d);
+    if !ecdsa_p256_verify_raw_pt(q_pt, z, sig) {
+        secure_zeroize_64(sig);
+        return [0; 64];
+    }
     return sig;
 }
 
@@ -1418,6 +1423,11 @@ fn ecdsa_p384_sign(priv_key: const u8[48]&, message: const u8[:]) -> u8[96] {
     for i in 48 {
         sig[i] = r_be[i];
         sig[48 + i] = s_be[i];
+    }
+    let q_pt = p384_scalar_mul(g, d);
+    if !ecdsa_p384_verify_raw_pt(q_pt, z, sig) {
+        secure_zeroize_slice(sig[..]);
+        return [0; 96];
     }
     return sig;
 }

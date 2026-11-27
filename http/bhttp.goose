@@ -191,12 +191,15 @@ fn bhttp_decode_response(raw: const u8[:], out: BhttpResponse&) -> bool {
     let frame, ok0 = quic::decode_varint_cursor(raw, idx);
     guard ok0 && frame == rfc::BHTTP_FRAME_KNOWN_LEN_RESPONSE else { return false; }
 
-    var status: u64 = 0;
+    var status:     u64 = 0;
+    var info_count: i32 = 0;
     loop {
         let st, ok1 = quic::decode_varint_cursor(raw, idx);
-        guard ok1 && st >= 100 && st <= 599 else { return false; }
+        guard ok1 && st >= 100 && st <= 599 && st != 101 else { return false; }
         status = st;
         guard status < 200 else { break; }
+        info_count += 1;
+        guard info_count <= 8 else { return false; }
         guard idx < raw.len else { return false; }
         let sec_len, ok_sec = quic::decode_varint_cursor(raw, idx);
         guard ok_sec && sec_len <= ((raw.len - idx) as u64) else { return false; }

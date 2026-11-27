@@ -18,6 +18,7 @@ const ZSTD_MAGIC_DICTIONARY:      u32 = 0xEC30A437; // RFC 8878 §5 Formatted Di
 const ZSTD_MAGIC_SKIPPABLE_START: u32 = 0x184D2A50;
 const ZSTD_MAGIC_SKIPPABLE_END:   u32 = 0x184D2A5F;
 const ZSTD_BLOCKSIZE_MAX:         i64 = 131072; // 128 KB
+const ZSTD_MAX_WINDOW_SIZE:       i64 = 8388608; // 8 MiB (RFC 8878 Section 3.1.1.1.2)
 
 const ZSTD_BLOCK_TYPE_RAW:        u32 = 0;
 const ZSTD_BLOCK_TYPE_RLE:        u32 = 1;
@@ -1688,14 +1689,22 @@ fn execute_single_sequence<B>(
     frame_start_out:  i64,
     window_size:      i64,
     dict_content:     const u8[:] = "",
+    block_out_limit:  i64         = -1,
 ) -> CompressError {
     let offset, ok_off = compute_repeat_offset(offset_val, lit_len, rep0, rep1, rep2);
     guard ok_off else { return CompressError.CorruptedBitstream; }
 
+    let step_len = add_sat_i64(lit_len as i64, match_len as i64);
     if max_output_bytes >= 0 {
         let cur_out = sub_sat_i64(out_buf.len, initial_out_len);
-        let needed = add_sat_i64(cur_out, (lit_len as i64) + (match_len as i64));
-        guard needed <= max_output_bytes else { return CompressError.OutputBufferOverflow; }
+        guard add_sat_i64(cur_out, step_len) <= max_output_bytes else {
+            return CompressError.OutputBufferOverflow;
+        }
+    }
+    if block_out_limit >= 0 {
+        guard add_sat_i64(out_buf.len, step_len) <= block_out_limit else {
+            return CompressError.CorruptedBitstream;
+        }
     }
 
     let lit_err = apply_sequence_literals(lit_buf, lit_ptr, lit_len, out_buf);
@@ -1878,6 +1887,7 @@ struct SeqExecCtx {
     frame_start_out:  i64         = 0,
     window_size:      i64         = 0,
     dict_content:     const u8[:] = "",
+    block_out_limit:  i64         = -1,
 }
 
 // Configures an FSE sequence table state (LL/OF/ML) for mode 0..3 (RFC 8878 §3.1.1.3.2.1.1).
@@ -2002,7 +2012,7 @@ fn decode_fast_seq_pair<B>(
     let err_A = execute_single_sequence(
         lit_A, mat_A, off_val_A, ctx.lit_buf, lit_ptr, out_buf,
         rep0, rep1, rep2, ctx.max_output_bytes, ctx.initial_out_len,
-        ctx.frame_start_out, ctx.window_size, ctx.dict_content,
+        ctx.frame_start_out, ctx.window_size, ctx.dict_content, ctx.block_out_limit,
     );
     guard err_A == CompressError.None else { return err_A; }
 
@@ -2028,7 +2038,7 @@ fn decode_fast_seq_pair<B>(
     return execute_single_sequence(
         lit_B, mat_B, off_val_B, ctx.lit_buf, lit_ptr, out_buf,
         rep0, rep1, rep2, ctx.max_output_bytes, ctx.initial_out_len,
-        ctx.frame_start_out, ctx.window_size, ctx.dict_content,
+        ctx.frame_start_out, ctx.window_size, ctx.dict_content, ctx.block_out_limit,
     );
 }
 
@@ -2088,7 +2098,7 @@ fn decode_fast_sequence_streams<B>(
         let err = execute_single_sequence(
             lit_val, mat_val, off_val, ctx.lit_buf, lit_ptr, out_buf,
             rep0, rep1, rep2, ctx.max_output_bytes, ctx.initial_out_len,
-            ctx.frame_start_out, ctx.window_size, ctx.dict_content,
+            ctx.frame_start_out, ctx.window_size, ctx.dict_content, ctx.block_out_limit,
         );
         guard err == CompressError.None else { return err; }
         seq_i++;
@@ -2151,7 +2161,7 @@ fn decode_slow_sequence_streams<B>(
         let err = execute_single_sequence(
             lit_len, match_len, offset_val, ctx.lit_buf, lit_ptr, out_buf,
             rep0, rep1, rep2, ctx.max_output_bytes, ctx.initial_out_len,
-            ctx.frame_start_out, ctx.window_size, ctx.dict_content,
+            ctx.frame_start_out, ctx.window_size, ctx.dict_content, ctx.block_out_limit,
         );
         guard err == CompressError.None else { return err; }
         seq_i++;
@@ -2170,6 +2180,7 @@ fn append_trailing_literals<B>(
     out_buf:          B&,
     initial_out_len:  i64,
     max_output_bytes: i64,
+    block_out_limit:  i64 = -1,
 ) -> CompressError {
     guard lit_ptr >= 0 && lit_ptr <= lit_buf.len else { return CompressError.None; }
     let rem_lit = lit_buf.len - lit_ptr;
@@ -2177,6 +2188,11 @@ fn append_trailing_literals<B>(
     if max_output_bytes >= 0 {
         let total = add_sat_i64(sub_sat_i64(out_buf.len, initial_out_len), rem_lit);
         guard total <= max_output_bytes else { return CompressError.OutputBufferOverflow; }
+    }
+    if block_out_limit >= 0 {
+        guard add_sat_i64(out_buf.len, rem_lit) <= block_out_limit else {
+            return CompressError.CorruptedBitstream;
+        }
     }
     guard comp_try_append(out_buf, lit_buf[lit_ptr..lit_buf.len]) else {
         return CompressError.OutputBufferOverflow;
@@ -2232,9 +2248,12 @@ fn decode_sequences<B>(
     window_size:      i64         = 0,
     initial_out_len:  i64         = 0,
     dict_content:     const u8[:] = "",
+    block_out_limit:  i64         = -1,
 ) -> CompressError {
     if offset >= block_end {
-        return append_trailing_literals(lit_buf, 0, out_buf, initial_out_len, max_output_bytes);
+        return append_trailing_literals(
+            lit_buf, 0, out_buf, initial_out_len, max_output_bytes, block_out_limit,
+        );
     }
 
     let saved_offset = offset;
@@ -2246,7 +2265,9 @@ fn decode_sequences<B>(
 
     if nb_seq == 0 {
         guard offset == block_end else { return CompressError.CorruptedBitstream; }
-        let err0 = append_trailing_literals(lit_buf, 0, out_buf, initial_out_len, max_output_bytes);
+        let err0 = append_trailing_literals(
+            lit_buf, 0, out_buf, initial_out_len, max_output_bytes, block_out_limit,
+        );
         guard err0 == CompressError.None else { return err0; }
         committed = true;
         return CompressError.None;
@@ -2292,6 +2313,7 @@ fn decode_sequences<B>(
         frame_start_out:  frame_start_out,
         window_size:      window_size,
         dict_content:     dict_content,
+        block_out_limit:  block_out_limit,
     };
     var lit_ptr: i64 = 0;
     var rep0 = state.rep[0];
@@ -2343,7 +2365,9 @@ fn decode_sequences<B>(
     state.rep[1] = rep1;
     state.rep[2] = rep2;
 
-    let trail_err = append_trailing_literals(lit_buf, lit_ptr, out_buf, initial_out_len, max_output_bytes);
+    let trail_err = append_trailing_literals(
+        lit_buf, lit_ptr, out_buf, initial_out_len, max_output_bytes, block_out_limit,
+    );
     guard trail_err == CompressError.None else { return trail_err; }
 
     offset = block_end;
@@ -2598,6 +2622,7 @@ fn parse_zstd_frame_header_ex(
     frame_content_size:    i64&,
     content_checksum_flag: u8&,
     frame_dict_id:         u32&,
+    max_window_size:       i64 = ZSTD_MAX_WINDOW_SIZE,
 ) -> CompressError {
     guard offset < src.len else { return CompressError.InputBufferTruncated; }
     let fhd = src[offset];
@@ -2614,6 +2639,9 @@ fn parse_zstd_frame_header_ex(
     if single_segment == 0 {
         guard pos < src.len else { return CompressError.InputBufferTruncated; }
         window_size = decode_zstd_window_descriptor(src[pos]);
+        guard max_window_size < 0 || window_size <= max_window_size else {
+            return CompressError.InvalidHeader;
+        }
         pos = add_sat_i64(pos, 1);
     }
 
@@ -2624,6 +2652,9 @@ fn parse_zstd_frame_header_ex(
     guard fcs_err == CompressError.None else { return fcs_err; }
     if single_segment == 1 {
         window_size = frame_content_size;
+        guard max_window_size < 0 || window_size <= max_window_size else {
+            return CompressError.InvalidHeader;
+        }
     }
 
     offset = pos;
@@ -2642,10 +2673,12 @@ fn parse_zstd_frame_header(
     window_size:           i64&,
     frame_content_size:    i64&,
     content_checksum_flag: u8&,
+    max_window_size:       i64 = ZSTD_MAX_WINDOW_SIZE,
 ) -> CompressError {
     var frame_dict_id: u32 = 0;
     return parse_zstd_frame_header_ex(
-        src, offset, window_size, frame_content_size, content_checksum_flag, frame_dict_id,
+        src, offset, window_size, frame_content_size, content_checksum_flag,
+        frame_dict_id, max_window_size,
     );
 }
 
@@ -2715,6 +2748,7 @@ fn decompress_zstd_block<B>(
 
     if block_type == ZSTD_BLOCK_TYPE_COMPRESSED {
         let block_out_start = out_buf.len;
+        let block_out_limit = add_sat_u64(block_out_start as u64, block_max_size as u64) as i64;
         let lits = decode_literals(src, offset, block_end, lit_buf, state, block_max_size);
         if !lits.ok { return CompressError.CorruptedBitstream; }
         let seq_err = decode_sequences(
@@ -2729,6 +2763,7 @@ fn decompress_zstd_block<B>(
             window_size,
             initial_out_len,
             dict_content,
+            block_out_limit,
         );
         if seq_err != CompressError.None { return seq_err; }
         if (out_buf.len - block_out_start) > block_max_size {
@@ -2801,6 +2836,7 @@ fn decompress_single_zstd_frame<B>(
     dict_is_formatted: bool        = false,
     dict_id:           u32         = 0,
     dict_content:      const u8[:] = "",
+    max_window_size:   i64         = ZSTD_MAX_WINDOW_SIZE,
 ) -> CompressError {
     if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
     let magic = read_le_u32(src, offset);
@@ -2823,7 +2859,8 @@ fn decompress_single_zstd_frame<B>(
     var content_checksum_flag: u8  = 0;
     var frame_dict_id:         u32 = 0;
     let hdr_err = parse_zstd_frame_header_ex(
-        src, offset, window_size, frame_content_size, content_checksum_flag, frame_dict_id,
+        src, offset, window_size, frame_content_size, content_checksum_flag,
+        frame_dict_id, max_window_size,
     );
     if hdr_err != CompressError.None { return hdr_err; }
 
@@ -2890,6 +2927,7 @@ fn zstd_decompress_with_limit_impl(
     out_buf:          u8[>..]&,
     max_output_bytes: i64         = -1,
     dict:             const u8[:] = "",
+    max_window_size:  i64         = ZSTD_MAX_WINDOW_SIZE,
 ) -> CompressError {
     guard src.len > 0 else { return CompressError.InputBufferTruncated; }
     var parsed_dict = ParsedZstdDict {};
@@ -2923,6 +2961,7 @@ fn zstd_decompress_with_limit_impl(
             parsed_dict.is_formatted,
             parsed_dict.dict_id,
             dict_content,
+            max_window_size,
         );
         if err != CompressError.None {
             return err;
@@ -2939,11 +2978,12 @@ fn zstd_decompress_with_limit_impl<B>(
     out_buf:          B&,
     max_output_bytes: i64         = -1,
     dict:             const u8[:] = "",
+    max_window_size:  i64         = ZSTD_MAX_WINDOW_SIZE,
 ) -> CompressError {
     let avail = sub_sat_i64(out_buf.cap, out_buf.len);
     let eff_limit = if max_output_bytes >= 0 && max_output_bytes < avail { max_output_bytes } else { avail };
     var tmp: u8[>..] = [];
-    let err = zstd_decompress_with_limit_impl(src, tmp, eff_limit, dict);
+    let err = zstd_decompress_with_limit_impl(src, tmp, eff_limit, dict, max_window_size);
     guard err == CompressError.None else { return err; }
     guard out_buf.try_append(tmp[..]) else { return CompressError.OutputBufferOverflow; }
     return CompressError.None;
@@ -2957,6 +2997,7 @@ fn zstd_decompress_frames_incremental(
     out_buf:          u8[>..]&,
     max_output_bytes: i64         = -1,
     dict:             const u8[:] = "",
+    max_window_size:  i64         = ZSTD_MAX_WINDOW_SIZE,
 ) -> i64, CompressError {
     guard src.len > 0 else { return 0, CompressError.InputBufferTruncated; }
     var parsed_dict = ParsedZstdDict {};
@@ -2989,6 +3030,7 @@ fn zstd_decompress_frames_incremental(
             parsed_dict.is_formatted,
             parsed_dict.dict_id,
             dict_content,
+            max_window_size,
         );
         if err == CompressError.InputBufferTruncated {
             out_buf.resize(saved_out_len);
@@ -3009,11 +3051,12 @@ fn zstd_decompress_frames_incremental<B>(
     out_buf:          B&,
     max_output_bytes: i64         = -1,
     dict:             const u8[:] = "",
+    max_window_size:  i64         = ZSTD_MAX_WINDOW_SIZE,
 ) -> i64, CompressError {
     let avail = sub_sat_i64(out_buf.cap, out_buf.len);
     let eff_limit = if max_output_bytes >= 0 && max_output_bytes < avail { max_output_bytes } else { avail };
     var tmp: u8[>..] = [];
-    let consumed, err = zstd_decompress_frames_incremental(src, tmp, eff_limit, dict);
+    let consumed, err = zstd_decompress_frames_incremental(src, tmp, eff_limit, dict, max_window_size);
     if err == CompressError.None && tmp.len > 0 {
         guard out_buf.try_append(tmp[..]) else { return 0, CompressError.OutputBufferOverflow; }
     }
@@ -3026,14 +3069,20 @@ fn zstd_decompress_with_dict<B>(
     dict:             const u8[:],
     out_buf:          B&,
     max_output_bytes: i64 = -1,
+    max_window_size:  i64 = ZSTD_MAX_WINDOW_SIZE,
 ) -> bool, CompressError {
-    let err = zstd_decompress_with_limit_impl(src, out_buf, max_output_bytes, dict);
+    let err = zstd_decompress_with_limit_impl(src, out_buf, max_output_bytes, dict, max_window_size);
     return err == CompressError.None, err;
 }
 
 // Decompresses RFC 8878 Zstandard frame from src into out_buf with output limit guard.
-fn zstd_decompress_with_limit<B>(src: const u8[:], out_buf: B&, max_output_bytes: i64 = -1) -> bool, CompressError {
-    let err = zstd_decompress_with_limit_impl(src, out_buf, max_output_bytes);
+fn zstd_decompress_with_limit<B>(
+    src:              const u8[:],
+    out_buf:          B&,
+    max_output_bytes: i64 = -1,
+    max_window_size:  i64 = ZSTD_MAX_WINDOW_SIZE,
+) -> bool, CompressError {
+    let err = zstd_decompress_with_limit_impl(src, out_buf, max_output_bytes, "", max_window_size);
     return err == CompressError.None, err;
 }
 

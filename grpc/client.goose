@@ -220,7 +220,12 @@ fn parse_status_code(status_val: const u8[:]) -> u32 {
 }
 
 // Processes incoming gRPC-Web response body and trailers.
-fn process_web_response(body: const u8[:], ct: const u8[:], out_resp: Response&) -> bool {
+fn process_web_response(
+    body:     const u8[:],
+    ct:       const u8[:],
+    out_resp: Response&,
+    enc_hdr:  const u8[:] = "",
+) -> bool {
     guard grpc_internal::is_web(ct) else {
         out_resp.status = StatusCode.Unknown;
         return false;
@@ -234,7 +239,7 @@ fn process_web_response(body: const u8[:], ct: const u8[:], out_resp: Response&)
 
     var found_trailer = false;
     var found_data = false;
-    guard grpc_internal::scan_web_unary_frames(wire_bytes[..], out_resp, found_data, found_trailer) else {
+    guard grpc_internal::scan_web_unary_frames(wire_bytes[..], out_resp, found_data, found_trailer, enc_hdr) else {
         return false;
     }
     guard found_trailer else {
@@ -306,7 +311,7 @@ fn unary_call(
             }
             return true;
         }
-        let ok_web = process_web_response(res.body[..], ct, out_resp);
+        let ok_web = process_web_response(res.body[..], ct, out_resp, res.header(rfc::HEADER_GRPC_ENCODING));
         if res.status_code != 200 && out_resp.status == StatusCode.Ok {
             out_resp.status = status_from_http(res.status_code);
         }
@@ -324,8 +329,9 @@ fn unary_call(
 // ---- Streaming RPC Client Session (Bidi & Server Streaming) --------------
 
 struct ClientStreamOptions {
-    is_web:          bool = false,
-    use_compression: bool = false,
+    is_web:          bool     = false,
+    use_compression: bool     = false,
+    recv_encoding:   u8[..32] = [],
 }
 
 struct ClientStream {
@@ -333,6 +339,7 @@ struct ClientStream {
     is_active:       bool         = true,
     is_web:          bool         = false,
     use_compression: bool         = false,
+    recv_encoding:   u8[..32]     = [],
     parser:          StreamParser = StreamParser { .. },
 }
 
@@ -345,6 +352,7 @@ fn new_client_stream(
         is_active:       true,
         is_web:          opts.is_web,
         use_compression: opts.use_compression,
+        recv_encoding:   opts.recv_encoding,
         parser:          new_stream_parser(),
     };
 }
@@ -362,9 +370,18 @@ fn feed_stream_chunk(stream: ClientStream&, chunk: const u8[:]) -> bool {
 // Reads the next completed inbound message from the stream.
 fn read_stream_message<B>(stream: ClientStream&, out: B&, out_compressed: bool&) -> bool {
     guard stream.parser.next_message(out, out_compressed) else { return false; }
+    guard validate_recv_compression(out_compressed, stream.recv_encoding[..], false) == StatusCode.Ok else {
+        out.clear();
+        return false;
+    }
     if out_compressed {
+        let max_sz = if stream.parser.max_size > 0 {
+            stream.parser.max_size
+        } else {
+            rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE
+        };
         var decomp_buf: u8[>..] = [];
-        let ok_gz, _ = core::gzip_decompress_with_limit(out[..], decomp_buf, stream.parser.max_size);
+        let ok_gz, _ = core::gzip_decompress_with_limit(out[..], decomp_buf, max_sz);
         out.clear();
         guard ok_gz && out.try_append(decomp_buf[..]) else {
             out.clear();

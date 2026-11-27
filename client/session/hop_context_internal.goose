@@ -54,8 +54,12 @@ struct RequestExecutionContext {
     body:                    u8[>..]                = [],
 }
 
-// Extracts origin string "host:port" from parsed Url.
+// Extracts origin string from parsed Url, including scheme prefix for secure schemes.
 fn format_url_origin<B>(url_val: const core::Url&, out: B&) {
+    if url_val.is_secure_scheme() {
+        out.append(url_val.scheme());
+        out.append("://");
+    }
     let host = url_val.hostname();
     let port = url_val.effective_port();
     out.append(host);
@@ -75,6 +79,8 @@ fn resolve_target_origin<B>(target: const u8[:], out: B&) {
             format_url_origin(parsed, out);
             return;
         }
+    } else if target.len > 0 {
+        out.append("https://");
     }
     out.append(target);
 }

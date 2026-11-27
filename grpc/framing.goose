@@ -94,8 +94,9 @@ struct StreamParser {
 }
 
 fn new_stream_parser(max_msg_size: u32 = rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE) -> StreamParser {
+    let eff_max = if max_msg_size > 0 { max_msg_size } else { rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE };
     return StreamParser {
-        max_size:  max_msg_size,
+        max_size:  eff_max,
         read_pos:  0,
         has_error: false,
         buf:       [],
@@ -145,7 +146,8 @@ fn next_message<B>(p: StreamParser&, out: B&, out_compressed: bool&) -> bool {
     }
 
     let len_val_i64 = (core::read_be_u32(p.buf[..], core::add_sat_i64(pos, 1))) as i64;
-    guard len_val_i64 <= (p.max_size as i64) else {
+    let eff_max = if p.max_size > 0 { p.max_size } else { rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE };
+    guard len_val_i64 <= (eff_max as i64) else {
         p.has_error = true;
         return false;
     }
@@ -274,12 +276,10 @@ fn parse_web_trailers<B>(
 
     while cursor < trailer_bytes.len {
         let rel_nl = trailer_bytes[cursor..].index_of_byte('\n');
-        let line_end = if rel_nl >= 0 { core::add_sat_i64(cursor, rel_nl) } else { trailer_bytes.len };
-
-        var line = trailer_bytes[cursor..line_end];
-        if core::ends_with(line, "\r") {
-            line = line[..^1];
-        }
+        guard rel_nl >= 1 else { return false; }
+        let line_end = core::add_sat_i64(cursor, rel_nl);
+        guard trailer_bytes[core::sub_sat_i64(line_end, 1)] == '\r' else { return false; }
+        let line = trailer_bytes[cursor..core::sub_sat_i64(line_end, 1)];
         if line.len > 0 {
             guard grpc_internal::parse_web_trailer_line(
                 line, saw_status_key, found_valid_status, tmp_status, tmp_msg,

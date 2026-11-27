@@ -63,8 +63,13 @@ struct ReactorAccelRuntime {
     slot_ktls_rx:          bool[1024]                    = [false; 1024],
     slot_rio_rq:           u64[1024]                     = [0; 1024],
     slot_gen:              u16[1024]                     = [1; 1024],
+    slot_rx_inflight:      bool[1024]                    = [false; 1024],
+    slot_rx_armed:         bool[1024]                    = [false; 1024],
+    slot_rx_canceling:     bool[1024]                    = [false; 1024],
     slot_tx_inflight:      bool[1024]                    = [false; 1024],
+    slot_tx_notif_pending: bool[1024]                    = [false; 1024],
     slot_close_after_tx:   bool[1024]                    = [false; 1024],
+    slot_quarantined:      bool[1024]                    = [false; 1024],
     rio_tx_close_queue:    i64[..256]                    = [],
     uring_sqe_batch:       net_internal::UringSqe[..512] = [],
     slab:                  u8[>..]                       = [],
@@ -77,11 +82,26 @@ checkfree inline fn copy_bytes_to_slab(dst: u8[:], src: const u8[:]) {
     }
 }
 
+inline fn compact_uring_sqe_prefix(accel: ReactorAccelRuntime&, submitted: i32) {
+    guard submitted > 0 else { return; }
+    let total = accel.uring_sqe_batch.len;
+    let n = submitted as i64;
+    if n >= total {
+        accel.uring_sqe_batch.clear();
+        return;
+    }
+    let rem = core::sub_sat_i64(total, n);
+    for i in rem {
+        accel.uring_sqe_batch[i] = accel.uring_sqe_batch[core::add_sat_i64(i, n)];
+    }
+    accel.uring_sqe_batch.resize(rem);
+}
+
 // Stages queued io_uring SQEs into the SQ ring without calling io_uring_enter.
 fn reactor_stage_uring_sqes(accel: ReactorAccelRuntime&) -> i32 {
     guard accel.uring_fd >= 0 && accel.uring_sqe_batch.len > 0 else { return 0; }
     let rc = net_internal::native_uring_stage_sqes(accel.uring_fd, accel.uring_sqe_batch[..]);
-    accel.uring_sqe_batch.clear();
+    compact_uring_sqe_prefix(accel, rc);
     return rc;
 }
 
@@ -89,15 +109,15 @@ fn reactor_stage_uring_sqes(accel: ReactorAccelRuntime&) -> i32 {
 fn reactor_flush_uring_sqes(accel: ReactorAccelRuntime&) -> i32 {
     guard accel.uring_fd >= 0 && accel.uring_sqe_batch.len > 0 else { return 0; }
     let rc = net_internal::uring_submit_sqes(accel.uring_fd, accel.uring_sqe_batch[..]);
-    accel.uring_sqe_batch.clear();
+    compact_uring_sqe_prefix(accel, rc);
     return rc;
 }
 
-// Appends an io_uring SQE to the active batch, flushing first if the 128-entry batch is full.
+// Appends an io_uring SQE to the active batch, flushing first if the batch is full.
 fn reactor_queue_uring_sqe(accel: ReactorAccelRuntime&, sqe: const net_internal::UringSqe&) -> bool {
     guard accel.uring_fd >= 0 else { return false; }
     if accel.uring_sqe_batch.len >= accel.uring_sqe_batch.cap {
-        guard reactor_flush_uring_sqes(accel) >= 0 else { return false; }
+        guard reactor_flush_uring_sqes(accel) > 0 else { return false; }
     }
     return accel.uring_sqe_batch.try_push(sqe);
 }
@@ -116,6 +136,20 @@ inline fn ensure_uring_tx_slab(accel: ReactorAccelRuntime&) {
 
 inline fn reactor_accel_slot_token(accel: const ReactorAccelRuntime&, slot: i64) -> u64 {
     return core::shl_sat_u64(accel.slot_gen[slot], REACTOR_ACCEL_GEN_SHIFT) | (slot as u64);
+}
+
+inline fn reactor_accel_match_any_token(
+    accel: const ReactorAccelRuntime&,
+    token: u64,
+) -> i64, bool, bool {
+    let slot = (token & REACTOR_ACCEL_SLOT_MASK) as i64;
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS else { return -1, false, false; }
+    let is_active = accel.slot_accel[slot];
+    let is_quarantined = accel.slot_quarantined[slot];
+    guard is_active || is_quarantined else { return -1, false, false; }
+    let gen = ((token >> REACTOR_ACCEL_GEN_SHIFT) & REACTOR_ACCEL_GEN_MASK) as u16;
+    guard gen != 0 && gen == accel.slot_gen[slot] else { return -1, false, false; }
+    return slot, true, is_quarantined;
 }
 
 inline fn reactor_accel_match_token(accel: const ReactorAccelRuntime&, token: u64) -> i64, bool {
@@ -156,7 +190,7 @@ fn reactor_queue_kq_change(accel: ReactorAccelRuntime&, fd: i64, flags: u16, uda
     };
     if !accel.kq_changes.try_push(ev) {
         var ignored: net_internal::Kevent[1] = [net_internal::Kevent { .. }];
-        let _ = net_internal::kqueue_poll_slice(accel.kq_fd, accel.kq_changes[..], ignored[..], 0);
+        let _ = net_internal::kqueue_poll_slice(accel.kq_fd, accel.kq_changes[..], ignored[..0], 0);
         accel.kq_changes.clear();
         let _ = accel.kq_changes.try_push(ev);
     }
@@ -182,7 +216,10 @@ fn reactor_arm_uring_epoll_poll(accel: ReactorAccelRuntime&) {
 }
 
 fn reactor_arm_uring_slot_rx(accel: ReactorAccelRuntime&, slot: i64, fd: i64) {
-    guard accel.uring_fd >= 0 && slot >= 0 && slot < REACTOR_ACCEL_SLOTS && fd > 0 else { return; }
+    guard accel.uring_fd >= 0 && slot >= 0 && slot < REACTOR_ACCEL_SLOTS && fd > 0 &&
+        !accel.slot_quarantined[slot] && !accel.slot_rx_armed[slot] && !accel.slot_rx_canceling[slot] else {
+        return;
+    }
     var sqe = net_internal::UringSqe { .. };
     let tok = reactor_accel_slot_token(accel, slot);
     if accel.slot_ktls_rx[slot] {
@@ -192,32 +229,48 @@ fn reactor_arm_uring_slot_rx(accel: ReactorAccelRuntime&, slot: i64, fd: i64) {
             sqe, fd as i32, REACTOR_URING_PBUF_BGID, REACTOR_URING_TAG_RECV | tok,
         );
     }
-    let _ = reactor_queue_uring_sqe(accel, sqe);
+    if reactor_queue_uring_sqe(accel, sqe) {
+        accel.slot_rx_armed[slot] = true;
+    }
 }
 
 fn reactor_post_rio_slot_rx(accel: ReactorAccelRuntime&, slot: i64) -> bool {
-    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS && accel.slot_rio_rq[slot] != 0 else { return false; }
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS && accel.slot_rio_rq[slot] != 0 &&
+        !accel.slot_quarantined[slot] && !accel.slot_rx_inflight[slot] else {
+        return false;
+    }
     let rx_off = core::shl_sat_u64(slot as u64, 13) as u32;
-    return net_internal::native_rio_post_recv(
+    let rc = net_internal::native_rio_post_recv(
         accel.slot_rio_rq[slot],
         accel.rio_buf_id,
         rx_off,
         REACTOR_ACCEL_BUF_SIZE as u32,
         REACTOR_REQ_RX_TAG,
-    ) == 0;
+    );
+    guard rc == 0 else { return false; }
+    accel.slot_rx_inflight[slot] = true;
+    return true;
 }
 
-fn reactor_reset_accel_slot(accel: ReactorAccelRuntime&, slot: i64) {
-    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS else { return; }
-    net_internal::reactor_cancel_uring_slot(accel, slot);
+inline fn reactor_slot_inflight_any(accel: const ReactorAccelRuntime&, slot: i64) -> bool {
+    return accel.slot_rx_inflight[slot] || accel.slot_rx_armed[slot] ||
+        accel.slot_tx_inflight[slot] || accel.slot_tx_notif_pending[slot];
+}
+
+inline fn reactor_clear_accel_slot_fields(accel: ReactorAccelRuntime&, slot: i64) {
     if accel.slot_accel[slot] {
         accel.active_accel_slots = max(core::sub_sat_i64(accel.active_accel_slots, 1), 0);
     }
     accel.slot_accel[slot] = false;
     accel.slot_ktls_rx[slot] = false;
     accel.slot_rio_rq[slot] = 0;
+    accel.slot_rx_inflight[slot] = false;
+    accel.slot_rx_armed[slot] = false;
+    accel.slot_rx_canceling[slot] = false;
     accel.slot_tx_inflight[slot] = false;
+    accel.slot_tx_notif_pending[slot] = false;
     accel.slot_close_after_tx[slot] = false;
+    accel.slot_quarantined[slot] = false;
     accel.slot_gen[slot] = if accel.slot_gen[slot] >= 65535 {
         1
     } else {
@@ -225,11 +278,60 @@ fn reactor_reset_accel_slot(accel: ReactorAccelRuntime&, slot: i64) {
     };
 }
 
+fn reactor_reset_accel_slot(accel: ReactorAccelRuntime&, slot: i64) {
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS else { return; }
+    net_internal::reactor_cancel_uring_slot(accel, slot);
+    reactor_clear_accel_slot_fields(accel, slot);
+}
+
+fn reactor_quarantine_or_reset_slot(accel: ReactorAccelRuntime&, slot: i64) -> bool {
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS else { return true; }
+    let has_async_backend = accel.slot_accel[slot] &&
+        (accel.mode == ReactorAccelMode.IoUring || accel.mode == ReactorAccelMode.Rio);
+    if has_async_backend && reactor_slot_inflight_any(accel, slot) {
+        if accel.mode == ReactorAccelMode.IoUring {
+            net_internal::reactor_cancel_uring_slot(accel, slot);
+            if accel.slot_rx_armed[slot] {
+                accel.slot_rx_canceling[slot] = true;
+            }
+        }
+        accel.active_accel_slots = max(core::sub_sat_i64(accel.active_accel_slots, 1), 0);
+        accel.slot_accel[slot] = false;
+        accel.slot_close_after_tx[slot] = false;
+        accel.slot_quarantined[slot] = true;
+        return false;
+    }
+    reactor_clear_accel_slot_fields(accel, slot);
+    return true;
+}
+
+fn reactor_finalize_quarantined_slot(accel: ReactorAccelRuntime&, slot: i64) -> bool {
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS && accel.slot_quarantined[slot] &&
+        !reactor_slot_inflight_any(accel, slot) else {
+        return false;
+    }
+    reactor_clear_accel_slot_fields(accel, slot);
+    return true;
+}
+
+inline fn drain_rio_cq_before_close(cq_id: u64) {
+    guard cq_id != 0 else { return; }
+    var res: net_internal::RioResult[..64] = [];
+    for _ in 64 {
+        let n = net_internal::rio_drain_completions(cq_id, res);
+        if n <= 0 {
+            break;
+        }
+    }
+}
+
 fn reactor_close_accel(accel: ReactorAccelRuntime&) {
     if accel.rio_listener_fd > 0 {
         let _ = net_internal::native_rio_cancel_accept(accel.rio_listener_fd);
         accel.rio_listener_fd = -1;
     }
+    drain_rio_cq_before_close(accel.rio_cq);
+    drain_rio_cq_before_close(accel.rio_tx_cq);
     if accel.rio_buf_id != 0 {
         net_internal::native_rio_deregister_buffer(accel.rio_buf_id);
         accel.rio_buf_id = 0;
@@ -325,11 +427,21 @@ fn reactor_bind_slot_backend(accel: ReactorAccelRuntime&, slot: i64, client_fd: 
         reactor_arm_uring_slot_rx(accel, slot, client_fd);
         return;
     } else if accel.mode == ReactorAccelMode.Kqueue && accel.kq_fd >= 0 {
-        reactor_queue_kq_change(accel, client_fd, net_internal::EV_ADD | net_internal::EV_ENABLE, slot as u64);
+        let kq_udata = if slot >= 0 && slot < REACTOR_ACCEL_SLOTS {
+            reactor_accel_slot_token(accel, slot)
+        } else {
+            slot as u64
+        };
+        reactor_queue_kq_change(accel, client_fd, net_internal::EV_ADD | net_internal::EV_ENABLE, kq_udata);
         return;
     }
     if accel.epfd >= 0 {
-        if epoll_add(accel.epfd, client_fd, EPOLL_READ, slot as u64) {
+        let ep_udata = if slot >= 0 && slot < REACTOR_ACCEL_SLOTS {
+            reactor_accel_slot_token(accel, slot)
+        } else {
+            slot as u64
+        };
+        if epoll_add(accel.epfd, client_fd, EPOLL_READ, ep_udata) {
             accel.epfd_registered_count = core::add_sat_i64(accel.epfd_registered_count, 1) as i32;
             reactor_arm_uring_epoll_poll(accel);
         }
@@ -356,12 +468,13 @@ inline fn reactor_drain_cork_wire(conn: i64, wire: const u8[:]) -> bool {
     return true;
 }
 
-fn reactor_drain_rio_tx_cq(accel: ReactorAccelRuntime&) -> u32 {
+fn reactor_drain_rio_tx_cq(accel: ReactorAccelRuntime&) -> i32 {
     guard accel.rio_tx_cq != 0 else { return 0; }
     var tx_results: net_internal::RioResult[..64] = [];
     let n = net_internal::rio_drain_completions(accel.rio_tx_cq, tx_results);
+    guard n >= 0 else { return -1; }
     for i in tx_results.len {
-        let s, ok_tok = reactor_accel_match_token(accel, tx_results[i].socket_context);
+        let s, ok_tok, _ = reactor_accel_match_any_token(accel, tx_results[i].socket_context);
         if !ok_tok { continue; }
         accel.slot_tx_inflight[s] = false;
         if tx_results[i].status != 0 {
@@ -375,11 +488,13 @@ fn reactor_drain_rio_tx_cq(accel: ReactorAccelRuntime&) -> u32 {
 }
 
 fn reactor_submit_accel_tx(accel: ReactorAccelRuntime&, slot: i64, conn: i64, wire: const u8[:]) -> bool {
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS && !accel.slot_quarantined[slot] else { return false; }
     if accel.mode == ReactorAccelMode.Rio && accel.slot_rio_rq[slot] != 0 {
         return net_internal::reactor_submit_rio_tx(accel, slot, wire);
     }
     let can_uring = accel.mode == ReactorAccelMode.IoUring && accel.uring_fd >= 0;
-    if can_uring && wire.len <= REACTOR_URING_TX_BUF_SIZE && !accel.slot_tx_inflight[slot] {
+    if can_uring && wire.len <= REACTOR_URING_TX_BUF_SIZE && !accel.slot_tx_inflight[slot] &&
+        !accel.slot_tx_notif_pending[slot] {
         ensure_uring_tx_slab(accel);
         let tx_off = core::shl_sat_u64(slot as u64, 15) as i64;
         let tx_end = core::add_sat_i64(tx_off, wire.len);
@@ -400,6 +515,22 @@ fn reactor_submit_accel_tx(accel: ReactorAccelRuntime&, slot: i64, conn: i64, wi
     return reactor_drain_cork_wire(conn, wire);
 }
 
+inline fn filter_readiness_udata_gen(accel: const ReactorAccelRuntime&, raw_udata: u64) -> u64, bool {
+    if raw_udata == EPOLL_LISTENER_TAG {
+        return EPOLL_LISTENER_TAG, true;
+    }
+    let gen = ((raw_udata >> REACTOR_ACCEL_GEN_SHIFT) & REACTOR_ACCEL_GEN_MASK) as u16;
+    if gen == 0 {
+        return raw_udata, true;
+    }
+    let slot = (raw_udata & REACTOR_ACCEL_SLOT_MASK) as i64;
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS && !accel.slot_quarantined[slot] &&
+        gen == accel.slot_gen[slot] else {
+        return 0, false;
+    }
+    return slot as u64, true;
+}
+
 fn reactor_wait_readiness_events(
     accel:       ReactorAccelRuntime&,
     ready_udata: u64[:],
@@ -414,10 +545,11 @@ fn reactor_wait_readiness_events(
         let limit = min(min(n_kq as i64, 128), ready_udata.len);
         var out_idx: i64 = 0;
         for i in limit {
-            if (kev_out[i].flags & REACTOR_KQUEUE_EV_ERROR) == 0 {
-                ready_udata[out_idx] = kev_out[i].udata;
-                out_idx = core::add_sat_i64(out_idx, 1);
-            }
+            guard (kev_out[i].flags & REACTOR_KQUEUE_EV_ERROR) == 0 else { continue; }
+            let raw, ok = filter_readiness_udata_gen(accel, kev_out[i].udata);
+            guard ok else { continue; }
+            ready_udata[out_idx] = raw;
+            out_idx = core::add_sat_i64(out_idx, 1);
         }
         return out_idx as i32;
     }
@@ -435,7 +567,20 @@ fn reactor_wait_readiness_events(
     } else {
         timeout_ms
     };
-    return net_internal::epoll_wait_direct(accel.epfd, empty_fds[..], ready_udata, eff_timeout);
+    var raw_udata: u64[128] = [0; 128];
+    let raw_cap = min(ready_udata.len, 128);
+    let n_ep = net_internal::epoll_wait_direct(accel.epfd, empty_fds[..], raw_udata[..raw_cap], eff_timeout);
+    guard n_ep > 0 else { return 0; }
+    let ep_lim = min(n_ep as i64, raw_cap);
+    var out_ep: i64 = 0;
+    for i in ep_lim {
+        let raw, ok = filter_readiness_udata_gen(accel, raw_udata[i]);
+        if ok {
+            ready_udata[out_ep] = raw;
+            out_ep = core::add_sat_i64(out_ep, 1);
+        }
+    }
+    return out_ep as i32;
 }
 
 fn reactor_detach_listener(accel: ReactorAccelRuntime&, listener_fd: i64) {

@@ -431,8 +431,13 @@ fn test_json_decode_bounds() {
 
     var res = http::Response { .. };
     res.body.append("{\"id\":3000000000,\"name\":\"a_very_long_name\"}");
-    let item, err = http::decode_json<JsonItemModel>(res);
-    assert(http::ok(err));
+    let _, err = http::decode_json<JsonItemModel>(res);
+    assert(!http::ok(err));
+
+    var res_ok = http::Response { .. };
+    res_ok.body.append("{\"id\":2147483647,\"name\":\"a_very_long_name\"}");
+    let item, err_ok = http::decode_json<JsonItemModel>(res_ok);
+    assert(http::ok(err_ok));
     assert(item.id == 2147483647);
     assert(item.name.len == 16);
     assert(core::starts_with(item.name[..], "a_very_long_name"));
@@ -658,10 +663,12 @@ fn test_f012_h1_101_empty_body() {
         transport: net::Transport.Mock { route_idx: 0, cursor: 0 },
         ..
     };
-    let req = http::new_get("http://example.com/ws");
+    var req = http::new_get("http://example.com/ws");
+    http::set_header(req, "Connection", "Upgrade");
+    http::set_header(req, "Upgrade", "websocket");
     var resp = http::Response { status_code: 101, .. };
     let ok_101, keep = wing::pump_response_body(conn, req, resp, "upgraded-protocol-bytes", 100);
-    assert(ok_101 && keep);
+    assert(ok_101 && !keep);
     assert(resp.body.len == 0);
     assert(conn.rx_buf[..] == "upgraded-protocol-bytes");
     print("F012_H1_101_EMPTY_BODY: OK");
@@ -926,16 +933,25 @@ fn test_f005_auth_401_bounds_scheme_boundary_and_redirect_reset() {
     assert(http::ok(e_basic));
     assert(core::starts_with_fold(http::sent_header(r_basic, "Authorization"), "Basic "));
 
-    // 3. Redirect target that challenges with 401 after an earlier hop must also be allowed to retry auth
+    // 3. Same-origin redirect target challenging 401 resets auth_retried, while cross-origin never leaks creds
     var c_red = client::new_client();
     assert(client::set_credentials(c_red, "admin", "secret"));
     client::mock_route(c_red, "GET", "https://example.com/entry", 302, "");
-    client::add_mock_header(c_red, "Location", "https://other.example.com/protected");
-    client::mock_route(c_red, "GET", "https://other.example.com/protected", 401, "");
-    client::add_mock_header(c_red, "WWW-Authenticate", "Basic realm=\"other\"");
+    client::add_mock_header(c_red, "Location", "https://example.com/protected");
+    client::mock_route(c_red, "GET", "https://example.com/protected", 401, "");
+    client::add_mock_header(c_red, "WWW-Authenticate", "Basic realm=\"same\"");
     let r_red, e_red = client::get(c_red, "https://example.com/entry");
     assert(http::ok(e_red));
     assert(core::starts_with_fold(http::sent_header(r_red, "Authorization"), "Basic "));
+
+    var c_xorig = client::new_client();
+    assert(client::set_credentials(c_xorig, "admin", "secret"));
+    client::mock_route(c_xorig, "GET", "https://example.com/entry-xorig", 302, "");
+    client::add_mock_header(c_xorig, "Location", "https://other.example.com/protected");
+    client::mock_route(c_xorig, "GET", "https://other.example.com/protected", 401, "");
+    client::add_mock_header(c_xorig, "WWW-Authenticate", "Basic realm=\"other\"");
+    let r_xorig, _ = client::get(c_xorig, "https://example.com/entry-xorig");
+    assert(http::sent_header(r_xorig, "Authorization") == "");
     print("PASS: F005 401 Basic capacity, scheme token boundary, and redirect auth");
 }
 

@@ -504,16 +504,14 @@ inline fn validate_decrypted_packet_bits(
     return 0;
 }
 
-// Removes RFC 9001 Section 5.4 header protection in place and decodes the full non-duplicate packet number.
+// Removes RFC 9001 Section 5.4 header protection in place and decodes the full packet number.
+// Replay/duplicate checking is deferred until after AEAD authentication (RFC 9001 Section 9.5).
 inline fn unprotect_packet_header_raw(
-    cipher_suite:       u16,
-    hp_key:             const u8[:],
-    largest_recv_pn:    u64,
-    recv_ranges:        const quic::AckInterval[..64]&,
-    has_min_tracked_pn: bool,
-    min_tracked_pn:     u64,
-    work_pkt:           u8[:],
-    hdr:                quic::QuicHeader&,
+    cipher_suite:    u16,
+    hp_key:          const u8[:],
+    largest_recv_pn: u64,
+    work_pkt:        u8[:],
+    hdr:             quic::QuicHeader&,
 ) -> u64, u8, bool {
     let sample_slice, ok_samp = tls::quic_extract_hp_sample(work_pkt, hdr.pn_offset);
     guard ok_samp else { return 0, 0, false; }
@@ -524,9 +522,7 @@ inline fn unprotect_packet_header_raw(
     guard pn_len >= 1 && pn_len <= 4 else { return 0, 0, false; }
 
     let full_pn, pn_ok = quic::decode_packet_number_checked(largest_recv_pn, trunc_pn, pn_len);
-    // RFC 9000 Section 12.3: Packet Numbers - Discard duplicate packets before payload processing.
-    let dup = is_pn_already_received(recv_ranges, full_pn, has_min_tracked_pn, min_tracked_pn);
-    guard pn_ok && !dup else { return 0, 0, false; }
+    guard pn_ok else { return 0, 0, false; }
 
     let unmasked_b0 = work_pkt[0];
     if (unmasked_b0 & 0x80) == 0 {
@@ -572,9 +568,6 @@ fn verify_and_decrypt_zero_rtt_packet(
         conn.zero_rtt_keys.cipher_suite,
         conn.zero_rtt_keys.hp_key[..],
         conn.app_space.largest_recv_pn,
-        conn.app_space.recv_ranges,
-        conn.app_space.has_min_tracked_pn,
-        conn.app_space.min_tracked_pn,
         work_pkt[..],
         hdr,
     );
@@ -600,6 +593,14 @@ fn verify_and_decrypt_zero_rtt_packet(
         hdr = saved_hdr;
         out_plaintext.clear();
         return post_err, false;
+    }
+    // RFC 9001 Section 9.5 / RFC 9000 Section 12.3: Check duplicate PN only after AEAD authentication.
+    if is_pn_already_received(
+        conn.app_space.recv_ranges, full_pn, conn.app_space.has_min_tracked_pn, conn.app_space.min_tracked_pn,
+    ) {
+        hdr = saved_hdr;
+        out_plaintext.clear();
+        return 0, false;
     }
     return 0, true;
 }
@@ -652,6 +653,12 @@ inline fn try_peer_key_update_open(
         out_plaintext.clear();
         return post_err, false;
     }
+    if is_pn_already_received(
+        conn.app_space.recv_ranges, full_pn, conn.app_space.has_min_tracked_pn, conn.app_space.min_tracked_pn,
+    ) {
+        out_plaintext.clear();
+        return 0, false;
+    }
     guard quic_commit_cached_next_keys(conn.app_space) else {
         out_plaintext.clear();
         return rfc::QUIC_ERR_KEY_UPDATE_ERROR, false;
@@ -687,6 +694,12 @@ fn verify_and_decrypt_one_rtt_payload(
             out_plaintext.clear();
             return post_err, false;
         }
+        if is_pn_already_received(
+            conn.app_space.recv_ranges, full_pn, conn.app_space.has_min_tracked_pn, conn.app_space.min_tracked_pn,
+        ) {
+            out_plaintext.clear();
+            return 0, false;
+        }
         if !conn.app_space.has_recv_packets || full_pn > conn.app_space.phase_highest_pn {
             conn.app_space.phase_highest_pn = full_pn;
         }
@@ -710,6 +723,12 @@ fn verify_and_decrypt_one_rtt_payload(
         guard post_err == 0 else {
             out_plaintext.clear();
             return post_err, false;
+        }
+        if is_pn_already_received(
+            conn.app_space.recv_ranges, full_pn, conn.app_space.has_min_tracked_pn, conn.app_space.min_tracked_pn,
+        ) {
+            out_plaintext.clear();
+            return 0, false;
         }
         return 0, true;
     }
@@ -759,8 +778,7 @@ fn verify_and_decrypt_packet(
 
     let saved_hdr = hdr;
     let full_pn, unmasked_b0, ok_hp = unprotect_packet_header_raw(
-        space.cipher_suite, space.hp_key[..], space.largest_recv_pn, space.recv_ranges,
-        space.has_min_tracked_pn, space.min_tracked_pn, work_pkt[..], hdr,
+        space.cipher_suite, space.hp_key[..], space.largest_recv_pn, work_pkt[..], hdr,
     );
     guard ok_hp else { return 0, false; }
 
@@ -791,6 +809,13 @@ fn verify_and_decrypt_packet(
         hdr = saved_hdr;
         out_plaintext.clear();
         return post_err, false;
+    }
+    if is_pn_already_received(
+        space.recv_ranges, full_pn, space.has_min_tracked_pn, space.min_tracked_pn,
+    ) {
+        hdr = saved_hdr;
+        out_plaintext.clear();
+        return 0, false;
     }
     return 0, true;
 }

@@ -339,10 +339,14 @@ fn stage_client_alt_svc(
             resp.early_hints = eh;
         }
     }
-    if enable_altsvc && is_https {
-        let alt_svc_val = http::header(resp, "Alt-Svc");
-        if alt_svc_val.len > 0 {
-            http::update(altsvc, origin_buf, alt_svc_val, now_sec);
+    if enable_altsvc {
+        if resp.status_code == rfc::STATUS_MISDIRECTED_REQUEST {
+            http::update(altsvc, origin_buf, "clear", now_sec);
+        } else if is_https {
+            let alt_svc_val = http::header(resp, "Alt-Svc");
+            if alt_svc_val.len > 0 {
+                http::update(altsvc, origin_buf, alt_svc_val, now_sec);
+            }
         }
     }
     if enable_hsts && is_https {
@@ -365,7 +369,9 @@ fn stage_client_decompress(
     now_sec:     i64  = 0,
 ) -> wire::StageVerdict {
     let has_cd = http::header(resp, rfc::HEADER_CONTENT_DIGEST).len > 0;
-    let cd_ok_pre = if strict_mode && has_cd { http::verify_response_content_digest(resp) } else { true };
+    if strict_mode && has_cd && !http::verify_response_content_digest(resp) {
+        return wire::StageVerdict.Abort { err_code: rfc::STATUS_BAD_GATEWAY };
+    }
 
     let enc = http::header(resp, "Content-Encoding");
     if enc.len > 0 {
@@ -376,9 +382,6 @@ fn stage_client_decompress(
         }
     }
 
-    if strict_mode && has_cd && !cd_ok_pre && !http::verify_response_content_digest(resp) {
-        return wire::StageVerdict.Abort { err_code: rfc::STATUS_BAD_GATEWAY };
-    }
     if strict_mode && http::header(resp, rfc::HEADER_REPR_DIGEST).len > 0 && !http::verify_response_repr_digest(resp) {
         return wire::StageVerdict.Abort { err_code: rfc::STATUS_BAD_GATEWAY };
     }

@@ -447,7 +447,8 @@ fn rsa_limbs_mod_inv(r_limbs: const u32[:], m_limbs: const u32[:], out_inv: u32[
     return true;
 }
 
-// Constant-time Chaum-blinded RSA modular exponentiation core on pre-validated `base < m` and nonzero `exp`.
+// Constant-time Chaum-blinded + exponent-blinded RSA modular exponentiation core
+// on pre-validated `base < m` and nonzero `exp`, with Bellcore fault verification.
 // crap:ignore
 fn rsa_mod_exp_blinded_ct(
     base:    const u8[:],
@@ -466,6 +467,7 @@ fn rsa_mod_exp_blinded_ct(
     var r_e:         u8[..512]  = [];
     var blind_base:  u8[..512]  = [];
     var blind_res:   u8[..512]  = [];
+    var check:       u8[..512]  = [];
     defer secure_zeroize_u32_slice(r_limbs[..]);
     defer secure_zeroize_u32_slice(r_inv_limbs[..]);
     defer secure_zeroize_slice(r_be[0..k]);
@@ -473,6 +475,7 @@ fn rsa_mod_exp_blinded_ct(
     defer secure_zeroize_slice(r_e[..]);
     defer secure_zeroize_slice(blind_base[..]);
     defer secure_zeroize_slice(blind_res[..]);
+    defer secure_zeroize_slice(check[..]);
 
     rsa_be_to_limbs(m, m_limbs);
     var found = false;
@@ -492,9 +495,23 @@ fn rsa_mod_exp_blinded_ct(
     rsa_limbs_to_be(r_inv_limbs[..], k, r_inv_be);
     rsa_mod_exp_monty_ct(r_be[0..k], pub_exp, m, r_e);
     rsa_be_mul_mod(base, r_e[..], m, blind_base);
-    rsa_mod_exp_monty_ct(blind_base[..], exp, m, blind_res);
+    guard rsa_mod_exp_exp_blinded_ct(blind_base[..], exp, m, blind_res) else {
+        out.clear();
+        return false;
+    }
     rsa_be_mul_mod(blind_res[..], r_inv_be[..], m, out);
-    return out.len == k;
+    guard out.len == k else {
+        secure_zeroize_slice(out[..]);
+        out.clear();
+        return false;
+    }
+    rsa_mod_exp_monty_ct(out[..], pub_exp, m, check);
+    guard check.len == k && ct_eq_bytes(check[..], base) else {
+        secure_zeroize_slice(out[..]);
+        out.clear();
+        return false;
+    }
+    return true;
 }
 
 // Computes Chaum-blinded `out = base^exp mod m` using public exponent `pub_exp`:
@@ -534,6 +551,57 @@ inline fn rsa_add_blind_exp(exp: const u8[:], r_be: const u8[:], d_plus: u8[:]) 
     d_plus[0] = (carry & 0xFF) as u8;
 }
 
+// Constant-time full-width exponent-blinded `out = base^exp mod m` on pre-validated `base < m` and nonzero `exp`.
+// Blinds all `exp.len` bytes (`exp + r`) using `base^(exp + r) * (base^-1)^r mod m` when invertible,
+// falling back to full-width multiplicative exponent splitting otherwise.
+// crap:ignore
+fn rsa_mod_exp_exp_blinded_ct(base: const u8[:], exp: const u8[:], m: const u8[:], out: u8[..512]&) -> bool {
+    let k = m.len;
+    var d_plus:         u8[513]    = [0; 513];
+    var m_limbs:        u32[..128] = [];
+    var base_limbs:     u32[..128] = [];
+    var base_inv_limbs: u32[..128] = [];
+    var base_inv_be:    u8[..512]  = [];
+    var part1:          u8[..512]  = [];
+    var part2:          u8[..512]  = [];
+    var r_full:         u8[512]    = [0; 512];
+    var d1:             u8[512]    = [0; 512];
+    var d2:             u8[512]    = [0; 512];
+    defer {
+        secure_zeroize_slice(d_plus[0..exp.len + 1]);
+        secure_zeroize_u32_slice(base_limbs[..]);
+        secure_zeroize_u32_slice(base_inv_limbs[..]);
+        secure_zeroize_slice(base_inv_be[..]);
+        secure_zeroize_slice(part1[..]);
+        secure_zeroize_slice(part2[..]);
+        secure_zeroize_slice(r_full[0..exp.len]);
+        secure_zeroize_slice(d1[0..exp.len]);
+        secure_zeroize_slice(d2[0..exp.len]);
+    };
+
+    guard csprng_fill(r_full[0..exp.len]) else { return false; }
+    rsa_be_to_limbs(m, m_limbs);
+    rsa_be_to_limbs(base, base_limbs);
+    if rsa_limbs_mod_inv(base_limbs[..], m_limbs[..], base_inv_limbs) {
+        r_full[exp.len - 1] |= 0x01;
+        rsa_add_blind_exp(exp, r_full[0..exp.len], d_plus[0..exp.len + 1]);
+        rsa_limbs_to_be(base_inv_limbs[..], k, base_inv_be);
+        rsa_mod_exp_monty_ct(base, d_plus[0..exp.len + 1], m, part1);
+        rsa_mod_exp_monty_ct(base_inv_be[..], r_full[0..exp.len], m, part2);
+        rsa_be_mul_mod(part1[..], part2[..], m, out);
+        return out.len == k;
+    }
+
+    for i in exp.len {
+        d1[i] = exp[i] & r_full[i];
+        d2[i] = exp[i] & (~r_full[i]);
+    }
+    rsa_mod_exp_monty_ct(base, d1[0..exp.len], m, part1);
+    rsa_mod_exp_monty_ct(base, d2[0..exp.len], m, part2);
+    rsa_be_mul_mod(part1[..], part2[..], m, out);
+    return out.len == k;
+}
+
 // Computes constant-time exponent-blinded `out = base^exp mod m` for secret `exp >= 2`.
 // Evaluates `base^(exp + r) * (base^-1)^r mod m` in fixed width `exp.len` with zero leading-zero trimming.
 // crap:ignore
@@ -547,54 +615,7 @@ fn rsa_mod_exp_exp_blinded(base: const u8[:], exp: const u8[:], m: const u8[:], 
     let base_ok = ct_declassify_u8((((rsa_be_cmp(base, m) as! u32) >> 31) & 1) as u8);
     let exp_ok = ct_declassify_u8(rsa_exp_gt_one_bit(exp));
     guard base_ok != 0 && exp_ok != 0 else { return false; }
-
-    var r_be:           u8[32]     = [0; 32];
-    var d_plus:         u8[513]    = [0; 513];
-    var m_limbs:        u32[..128] = [];
-    var base_limbs:     u32[..128] = [];
-    var base_inv_limbs: u32[..128] = [];
-    var base_inv_be:    u8[..512]  = [];
-    var part1:          u8[..512]  = [];
-    var part2:          u8[..512]  = [];
-    var r_full:         u8[512]    = [0; 512];
-    var d1:             u8[512]    = [0; 512];
-    var d2:             u8[512]    = [0; 512];
-    defer {
-        secure_zeroize_32(r_be);
-        secure_zeroize_slice(d_plus[0..exp.len + 1]);
-        secure_zeroize_u32_slice(base_limbs[..]);
-        secure_zeroize_u32_slice(base_inv_limbs[..]);
-        secure_zeroize_slice(base_inv_be[..]);
-        secure_zeroize_slice(part1[..]);
-        secure_zeroize_slice(part2[..]);
-        secure_zeroize_slice(r_full[0..exp.len]);
-        secure_zeroize_slice(d1[0..exp.len]);
-        secure_zeroize_slice(d2[0..exp.len]);
-    };
-
-    rsa_be_to_limbs(m, m_limbs);
-    rsa_be_to_limbs(base, base_limbs);
-    if rsa_limbs_mod_inv(base_limbs[..], m_limbs[..], base_inv_limbs) {
-        let r_len = min(exp.len, 32);
-        guard csprng_fill(r_be[0..r_len]) else { return false; }
-        r_be[r_len - 1] |= 0x01;
-        rsa_add_blind_exp(exp, r_be[0..r_len], d_plus[0..exp.len + 1]);
-        rsa_limbs_to_be(base_inv_limbs[..], k, base_inv_be);
-        rsa_mod_exp_monty_ct(base, d_plus[0..exp.len + 1], m, part1);
-        rsa_mod_exp_monty_ct(base_inv_be[..], r_be[0..r_len], m, part2);
-        rsa_be_mul_mod(part1[..], part2[..], m, out);
-        return out.len == k;
-    }
-
-    guard csprng_fill(r_full[0..exp.len]) else { return false; }
-    for i in exp.len {
-        d1[i] = exp[i] & r_full[i];
-        d2[i] = exp[i] & (~r_full[i]);
-    }
-    rsa_mod_exp_monty_ct(base, d1[0..exp.len], m, part1);
-    rsa_mod_exp_monty_ct(base, d2[0..exp.len], m, part2);
-    rsa_be_mul_mod(part1[..], part2[..], m, out);
-    return out.len == k;
+    return rsa_mod_exp_exp_blinded_ct(base, exp, m, out);
 }
 
 // Validates that an RSA public exponent `e_be` is an odd integer in `3 <= e < n` with odd >=2048-bit modulus `n`.

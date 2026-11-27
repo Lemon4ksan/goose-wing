@@ -20,7 +20,7 @@ struct HttpsRecord {
     no_default_alpn: bool          = false,
     ipv4_hints:      u32[..8]      = [],
     ipv6_hints:      u8[16][..8]   = [],
-    ech_config_list: u8[..512]     = [], // Raw wire bytes of ECHConfigList
+    ech_config_list: u8[..2048]    = [], // Raw wire bytes of ECHConfigList
     has_ech:         bool          = false,
 }
 

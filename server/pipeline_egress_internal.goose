@@ -10,6 +10,7 @@ import rfc.http;
 import http.headers;
 import http.request;
 import http.response;
+import http.cache.cache_control;
 import http.negotiate;
 import http.digest_fields;
 import http.server_timing;
@@ -323,8 +324,34 @@ fn feed_server_body_chunk(
     return server::feed_server_body_chunk_with_stage(cfg, state, req, sctx, chunk, is_last, res, noop);
 }
 
+inline fn is_bad_route_cache_target(url: const u8[:]) -> bool {
+    if url.contains_byte(';') { return true; }
+    for i in url.len {
+        let b = url[i];
+        if b <= 0x1F || b == 0x7F { return true; }
+        if b == '%' && core::add_sat_i64(i, 2) < url.len {
+            let hi = url[core::add_sat_i64(i, 1)];
+            let lo = url[core::add_sat_i64(i, 2)];
+            if hi == '0' && (lo == '0' || lo == '9' || lo == 'a' || lo == 'A' || lo == 'd' || lo == 'D') {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+inline fn has_route_cache_blocking_request_headers(req: const http::Request&) -> bool {
+    let has_auth = (req.presence_mask & http::HDR_PRESENCE_AUTHORIZATION) != 0
+        || http::has_header(req.headers, rfc::HEADER_AUTHORIZATION)
+        || http::has_header(req.headers, "Proxy-Authorization");
+    let has_cookie = (req.presence_mask & http::HDR_PRESENCE_COOKIE) != 0
+        || http::has_header(req.headers, rfc::HEADER_COOKIE);
+    return has_auth || has_cookie || req.body.len > 0;
+}
+
 fn build_route_cache_key(req: const http::Request&, out: u8[..256]&) -> bool {
     out.clear();
+    guard !is_bad_route_cache_target(req.url[..]) else { return false; }
     let raw_host = http::header(req, rfc::HEADER_HOST).trim_lws();
     var host_lower: u8[..256] = [];
     guard raw_host.len <= host_lower.cap else { return false; }
@@ -340,14 +367,13 @@ fn stage_server_cache_lookup(
     res:        http::Response&,
     handler_id: i32 = -1,
 ) -> wire::StageVerdict {
-    // RFC 9111 Section 3.5: Bypass shared route cache on Authorization, Cookie, or no-store/no-cache.
-    let has_auth = (req.presence_mask & http::HDR_PRESENCE_AUTHORIZATION) != 0
-        || http::has_header(req.headers, rfc::HEADER_AUTHORIZATION);
-    let has_cookie = (req.presence_mask & http::HDR_PRESENCE_COOKIE) != 0
-        || http::has_header(req.headers, rfc::HEADER_COOKIE);
-    let req_cc = http::header(req, "Cache-Control");
-    let bypass_cc = req_cc.contains_fold("no-store") || req_cc.contains_fold("no-cache");
-    guard !has_auth && !has_cookie && !bypass_cc
+    // RFC 9111 Section 3.5: Bypass shared route cache on Authorization, Cookie, body, or no-store/no-cache.
+    let req_cc = http::parse_cache_control_headers(
+        req.headers,
+        http::CacheControlParseOptions { is_request: true, ignore_cargo_cult: true },
+    );
+    let bypass_cc = req_cc.is_no_store() || req_cc.is_no_cache();
+    guard !has_route_cache_blocking_request_headers(req) && !bypass_cc
         && (req.method[..] == "GET" || req.method[..] == "HEAD") else {
         return wire::StageVerdict.Continue;
     }
@@ -481,11 +507,12 @@ fn stage_server_cache_store(
 ) -> wire::StageVerdict {
     let _prof = server_prof::lit_prof_enter("stage.cache_store");
     defer server_prof::lit_prof_leave(_prof);
-    // RFC 9111 Section 3 / 4.1: Skip unkeyed Vary, Set-Cookie, and private/no-store responses.
-    let res_cc = http::header(res, "Cache-Control");
+    // RFC 9111 Section 3 / 4.1: Skip unkeyed Vary, Set-Cookie, and private/no-store/no-cache responses.
+    let res_cc = http::parse_cache_control_headers(res.headers);
     let skip_priv = http::has_header(res.headers, rfc::HEADER_SET_COOKIE)
-        || res_cc.contains_fold("private")
-        || res_cc.contains_fold("no-store");
+        || res_cc.is_private()
+        || res_cc.is_no_store()
+        || res_cc.is_no_cache();
     if !skip_priv && res.status_code == 200 && res.body.len > 0 && !http::has_header(res.headers, rfc::HEADER_VARY) {
         let ctype = http::get_inline(res.headers, http::WellKnownHeader.ContentType);
         let existing_etag = http::get_inline(res.headers, http::WellKnownHeader.ETag);

@@ -153,8 +153,84 @@ fn parse_forwarded_pair(pair: const u8[:]) -> const u8[:] {
     return normalize_forwarded_ip(raw_val);
 }
 
-inline fn is_trusted_proxy_peer(trust_proxy_headers: bool, client_ip: const u8[:]) -> bool {
-    return trust_proxy_headers || client_ip == "127.0.0.1" || client_ip == "::1";
+fn is_ip_in_cidr_list(ip_str: const u8[:], cidrs: const u8[..64][..8]) -> bool {
+    guard ip_str.len > 0 && cidrs.len > 0 else { return false; }
+    let ip_addr, ok_ip = core::parse_ip_addr(ip_str);
+    guard ok_ip else { return false; }
+    for &raw_cidr in cidrs {
+        let cidr_s = raw_cidr[..].trim_lws();
+        guard cidr_s.len > 0 else { continue; }
+        let cidr, ok_c = core::parse_cidr(cidr_s);
+        if ok_c && core::cidr_contains_ip(cidr, ip_addr) {
+            return true;
+        }
+        if !ok_c {
+            let exact_addr, ok_e = core::parse_ip_addr(cidr_s);
+            if ok_e && core::ip_addr_equals(exact_addr, ip_addr) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+inline fn is_trusted_proxy_peer(
+    trust_proxy_headers: bool,
+    client_ip:           const u8[:],
+    trusted_proxy_cidrs: const u8[..64][..8] = [],
+) -> bool {
+    guard trust_proxy_headers else { return false; }
+    if trusted_proxy_cidrs.len == 0 {
+        return true;
+    }
+    return is_ip_in_cidr_list(client_ip, trusted_proxy_cidrs);
+}
+
+// Extracts the first normalized `for=` IP token from a single RFC 7239 Forwarded element.
+//
+// Example:
+//   elem = "for=\"192.0.2.60:4711\";proto=https"
+//   returns: "192.0.2.60"
+fn extract_forwarded_element_ip(elem: const u8[:]) -> const u8[:] {
+    var elem_rem = elem;
+    while elem_rem.len > 0 {
+        let sc = elem_rem.find_unquoted_byte(';');
+        let pair = elem_rem[..sc];
+        elem_rem = if sc < elem_rem.len { elem_rem[core::add_sat_i64(sc, 1)..] } else { "" };
+        let ip = parse_forwarded_pair(pair);
+        if ip.len > 0 {
+            return ip;
+        }
+    }
+    return "";
+}
+
+// Walks comma-separated X-Forwarded-For hops right-to-left, skipping trusted proxy CIDRs.
+//
+// Example:
+//   xff = "1.2.3.4, 203.0.113.9, 10.0.0.5", trusted_proxy_cidrs = ["10.0.0.0/8"]
+//   returns: "203.0.113.9"
+fn extract_xff_right_to_left(
+    xff:                 const u8[:],
+    trusted_proxy_cidrs: const u8[..64][..8],
+) -> const u8[:] {
+    var end = xff.len;
+    var last_trusted = xff[0..0];
+    while end > 0 {
+        let comma_idx = xff[..end].last_index_of_byte(',');
+        let seg_start = if comma_idx >= 0 { core::add_sat_i64(comma_idx, 1) } else { 0 };
+        let token = xff[seg_start..end].trim_lws();
+        end = if comma_idx >= 0 { comma_idx } else { 0 };
+        guard token.len > 0 else { break; }
+        let ip = normalize_forwarded_ip(token);
+        guard ip.len > 0 && ip.len <= 48 else { break; }
+        if is_ip_in_cidr_list(ip, trusted_proxy_cidrs) {
+            last_trusted = ip;
+            continue;
+        }
+        return ip;
+    }
+    return last_trusted;
 }
 
 fn has_custom_forwarding_header(map: const http::HeaderMap&) -> bool {

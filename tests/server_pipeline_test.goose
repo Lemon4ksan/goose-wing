@@ -886,6 +886,10 @@ fn test_server_target_and_host_invariants(t: lit::T&) {
 fn test_nginx_harmony_invariants(t: lit::T&) {
     t.run("1. X-Real-IP extraction with loopback and trust_proxy_headers") { sub =>
         var server = server::new_http_server("127.0.0.1", 8080);
+        server.trust_proxy_headers = true;
+        var loopback_cidr: u8[..64] = [];
+        let _ = loopback_cidr.try_set("127.0.0.0/8");
+        let _ = server.pipeline.trusted_proxy_cidrs.try_push(loopback_cidr);
         server.pipeline.enable_rate_limiter = true;
         server.pipeline.limiter = security::new_sharded_limiter(security::new_gcra_quota(1, wing::secs(1), 0));
         server::add_route(server.pipeline.router, "GET", "/ip-check", 1, 0);
@@ -915,6 +919,13 @@ fn test_nginx_harmony_invariants(t: lit::T&) {
 
     t.run("2. X-Forwarded-For comma-separated list extraction") { sub =>
         var server = server::new_http_server("127.0.0.1", 8080);
+        server.trust_proxy_headers = true;
+        var loopback_cidr: u8[..64] = [];
+        let _ = loopback_cidr.try_set("127.0.0.0/8");
+        var priv_cidr: u8[..64] = [];
+        let _ = priv_cidr.try_set("10.0.0.0/8");
+        let _ = server.pipeline.trusted_proxy_cidrs.try_push(loopback_cidr);
+        let _ = server.pipeline.trusted_proxy_cidrs.try_push(priv_cidr);
         server.pipeline.enable_rate_limiter = true;
         server.pipeline.limiter = security::new_sharded_limiter(security::new_gcra_quota(1, wing::secs(1), 0));
         server::add_route(server.pipeline.router, "GET", "/xff-check", 1, 0);
@@ -934,6 +945,10 @@ fn test_nginx_harmony_invariants(t: lit::T&) {
 
     t.run("2b. RFC 7239 Forwarded header extraction and precedence") { sub =>
         var server = server::new_http_server("127.0.0.1", 8080);
+        server.trust_proxy_headers = true;
+        var loopback_cidr: u8[..64] = [];
+        let _ = loopback_cidr.try_set("127.0.0.0/8");
+        let _ = server.pipeline.trusted_proxy_cidrs.try_push(loopback_cidr);
         server.pipeline.enable_rate_limiter = true;
         server.pipeline.limiter = security::new_sharded_limiter(security::new_gcra_quota(1, wing::secs(1), 0));
         server::add_route(server.pipeline.router, "GET", "/fwd-check", 1, 0);
@@ -1990,6 +2005,26 @@ fn test_srv_reg2_r1_cache_and_edge_filter(t: lit::T&) {
 // ----------------------------------------------------------------------------
 // 28. H2 Multiplexer
 // ----------------------------------------------------------------------------
+struct H2BigRespStage {
+    dummy: i32 = 0,
+}
+
+fn server::on_server_stage(
+    stage: H2BigRespStage&,
+    phase: wire::ServerHookPhase,
+    cfg:   server::ServerPipelineConfig&,
+    req:   const http::Request&,
+    ctx:   server::ServerStageCtx&,
+    res:   http::Response&,
+) -> wire::StageVerdict {
+    if phase == wire::ServerHookPhase.RouteHandler && ctx.handler_id == 55 {
+        res.status_code = 200;
+        http::set_header(res, "Content-Type", "text/plain");
+        for _ in 10000 { res.body.push('Z'); }
+    }
+    return wire::StageVerdict.Continue;
+}
+
 fn test_srv_reg2_r2_h2_multiplexer(t: lit::T&) {
     t.run("2. H2 HPACK dyn table update, conn window replenish on RST, partial send body corruption") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
@@ -2028,26 +2063,23 @@ fn test_srv_reg2_r2_h2_multiplexer(t: lit::T&) {
         sub.assert_true(ok_w1, "Stream 1 CL mismatch resets stream, keeps conn alive");
         sub.assert_eq(sess.conn.conn_recv_window, 65535, "conn_recv_window replenished after stream DATA error");
 
-        // F008: Pre-populate route_cache with 10,000 'Z' bytes on handler 55 and register /cached-big with CACHE_LOOKUP.
-        // Peer initial window is 1000 -> 1000 bytes sent initially, 9000 bytes remaining (> 8192 inline cap!).
+        // F008: Handler 55 on POST /big-resp returns 10,000 'Z' bytes (> 8192 inline cap -> spill slab).
+        // Peer initial window is 1000 -> 1000 bytes sent initially, 9000 bytes remaining.
         // Then peer sends WINDOW_UPDATE(+20000) -> flushed DATA must NOT contain "LEAKED_REQ_BYTES"!
-        var big_cached: u8[>..] = [];
-        for k in 10000 { big_cached.push('Z'); }
-        server::cache_store(pipeline.route_cache, 1, big_cached[..], 55, "text/plain");
-        let in_cache = wire::STAGE_SRV_IN_DEFAULT_MASK | wire::STAGE_SRV_IN_CACHE_LOOKUP;
-        server::add_route_pso(pipeline.router, "GET", "/cached-big", 55, in_cache, wire::STAGE_SRV_OUT_DEFAULT_MASK);
+        server::add_route(pipeline.router, "POST", "/big-resp", 55);
         var h5: u8[..512] = [];
-        http2::encode_hpack_field(dt, h5, ":method", "GET", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h5, ":method", "POST", http2::HpackIndexing.Incremental, false);
         http2::encode_hpack_field(dt, h5, ":scheme", "https", http2::HpackIndexing.Incremental, false);
         http2::encode_hpack_field(dt, h5, ":authority", "127.0.0.1", http2::HpackIndexing.Incremental, false);
-        http2::encode_hpack_field(dt, h5, ":path", "/cached-big", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h5, ":path", "/big-resp", http2::HpackIndexing.Incremental, false);
         var w5: u8[..1024] = [];
         build_h2_frame(w5, h5.len as u32, 0x01, 0x04, 5);
         w5.append(h5[..]);
         build_h2_frame(w5, 16, 0x00, 0x01, 5);
         w5.append("LEAKED_REQ_BYTES");
         wire_out.clear();
-        let _, ok_w5 = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", w5[..], 1000, wire_out);
+        var big_stage = H2BigRespStage { .. };
+        let _, ok_w5 = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", w5[..], 1000, wire_out, big_stage);
         sub.assert_true(ok_w5, "Stream 5 partial send initiated");
 
         // Send WINDOW_UPDATE for conn (0) and stream 5 (+20000)

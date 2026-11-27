@@ -709,18 +709,22 @@ struct Span {
     val_len:  u16 = 0,
 }
 
-// Builds a Span from trimmed pair slice bounds.
-//
-// Example:
-//   raw = "sid=xyz", pair_start = 0, pair_end = 7
-//   returns: Span { name_pos: 0, name_len: 3, val_pos: 4, val_len: 3 }
-fn parse_kv_span(raw: const u8[:], pair_start: i64, pair_end: i64) -> Span {
+fn cookie_internal::parse_kv_span_checked(
+    raw:        const u8[:],
+    pair_start: i64,
+    pair_end:   i64,
+) -> cookie::Span, bool {
+    var empty_span = cookie::Span { .. };
     guard raw.len <= 65535 && pair_end <= 65535 && pair_start >= 0 && pair_start <= pair_end
         && pair_end <= raw.len else {
-        return Span { .. };
+        return empty_span, false;
     }
 
     let raw_pair = raw[pair_start..pair_end];
+    guard !cookie_internal::has_prohibited_ctl(raw_pair) else {
+        return empty_span, false;
+    }
+
     let no_lead = raw_pair.trim_lws_start();
     let start = core::sub_sat_i64(pair_end, no_lead.len);
     let pair_slice = no_lead.trim_lws_end();
@@ -730,22 +734,39 @@ fn parse_kv_span(raw: const u8[:], pair_start: i64, pair_end: i64) -> Span {
     if has_eq {
         let name_clean = name_raw.trim_lws_end();
         let val_clean = val_raw.trim_lws_start();
+        guard (name_clean.len > 0 || val_clean.len > 0)
+            && cookie_internal::is_valid_cookie_name(name_clean)
+            && cookie_internal::is_valid_cookie_val(val_clean) else {
+            return empty_span, false;
+        }
         let val_start = core::sub_sat_i64(end, val_clean.len);
-
-        return Span {
+        return cookie::Span {
             name_pos: start as u16,
             name_len: name_clean.len as u16,
             val_pos:  val_start as u16,
             val_len:  val_clean.len as u16,
-        };
+        }, true;
     }
 
-    return Span {
+    guard pair_slice.len > 0 && cookie_internal::is_valid_cookie_name(pair_slice) else {
+        return empty_span, false;
+    }
+    return cookie::Span {
         name_pos: start as u16,
         name_len: pair_slice.len as u16,
         val_pos:  end as u16,
         val_len:  0,
-    };
+    }, true;
+}
+
+// Builds a Span from trimmed pair slice bounds.
+//
+// Example:
+//   raw = "sid=xyz", pair_start = 0, pair_end = 7
+//   returns: Span { name_pos: 0, name_len: 3, val_pos: 4, val_len: 3 }
+fn parse_kv_span(raw: const u8[:], pair_start: i64, pair_end: i64) -> Span {
+    let span, ok = cookie_internal::parse_kv_span_checked(raw, pair_start, pair_end);
+    return if ok { span } else { Span { .. } };
 }
 
 // Parses next cookie pair from raw Cookie: header slice without heap allocations.
@@ -775,8 +796,10 @@ fn next_span(
     guard pair_trimmed.len > 0 else { return empty_span, false; }
     let pair_end = core::add_sat_i64(pair_start, pair_trimmed.len);
 
+    let span, ok = cookie_internal::parse_kv_span_checked(raw_header, pair_start, pair_end);
+    guard ok else { return empty_span, false; }
     cursor = next_cur;
-    return parse_kv_span(raw_header, pair_start, pair_end), true;
+    return span, true;
 }
 
 // Extracts cookie value slice from raw wire header using span coordinates.
@@ -802,6 +825,10 @@ inline fn span_name(raw: const u8[:], span: Span) -> const u8[:] {
 //   raw_header = "theme=dark; sid=abc123", name = "sid"
 //   returns: "abc123", true
 fn find_cookie_value(raw_header: const u8[:], name: const u8[:]) -> const u8[:], bool {
+    guard !cookie_internal::has_prohibited_ctl(raw_header) && name.len > 0
+        && cookie_internal::is_valid_cookie_name(name) else {
+        return "", false;
+    }
     var cursor: i64 = 0;
     while cursor < raw_header.len {
         let span, ok = next_span(raw_header, cursor);

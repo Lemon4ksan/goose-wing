@@ -144,6 +144,42 @@ class NativeGrpcServer:
         self.proc = None
 
 
+def encode_pb_bytes_field1(data: bytes) -> bytes:
+    """Encodes protobuf length-delimited field 1 with multi-byte varint length."""
+    n = len(data)
+    varint = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        if n:
+            varint.append(b | 0x80)
+        else:
+            varint.append(b)
+            break
+    return b"\x0a" + bytes(varint) + data
+
+
+def decode_pb_bytes_field1(wire: bytes) -> bytes | None:
+    """Decodes protobuf length-delimited field 1 with multi-byte varint length."""
+    if len(wire) < 2 or wire[0] != 0x0A:
+        return None
+    length = 0
+    shift = 0
+    idx = 1
+    while idx < len(wire):
+        b = wire[idx]
+        idx += 1
+        length |= (b & 0x7F) << shift
+        if (b & 0x80) == 0:
+            if idx + length > len(wire):
+                return None
+            return wire[idx : idx + length]
+        shift += 7
+        if shift > 35:
+            return None
+    return None
+
+
 def encode_lpm(data: bytes, compressed: bool = False) -> bytes:
     flag = 1 if compressed else 0
     return struct.pack(">BI", flag, len(data)) + data
@@ -338,6 +374,19 @@ def run_e2e_tests(host: str, port: int) -> tuple[int, int]:
         "Large 32 KB LPM Frame Transmission & Parsing",
         f"recvd_len={len(msg_lg)}",
     )
+
+    # 8b. Multi-byte protobuf varint boundary lengths on SayHello (>=128B, wrap at 248B, >=256B)
+    for pb_len in (128, 248, 256):
+        pb_in = encode_pb_bytes_field1(b"A" * pb_len)
+        st_pb, body_pb, _ = run_grpc_web_test(host, port, "/helloworld.Greeter/SayHello", pb_in)
+        _, raw_pb = decode_lpm(body_pb)
+        dec_pb = decode_pb_bytes_field1(raw_pb)
+        exp_pb = b"Hello, " + (b"A" * pb_len) + b"!"
+        record(
+            st_pb == 200 and dec_pb == exp_pb,
+            f"SayHello Multi-Byte Protobuf Varint ({pb_len}B input)",
+            f"st={st_pb} got_len={len(dec_pb) if dec_pb is not None else 'bad_varint'} head={raw_pb[:16].hex()}",
+        )
 
     # 9-13. Native Goose Client (wing::Session over HTTP/2) E2E Suite
     client_exe = ensure_client_binary(force_rebuild=False)

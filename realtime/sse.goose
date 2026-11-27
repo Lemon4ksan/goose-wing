@@ -83,39 +83,55 @@ fn sse_flush(p: SseParser&) {
 
 // ---- SSE Serializer -----------------------------------------------------
 
-// Serializes an SSE event into standard wire format.
+inline fn is_valid_sse_request_token(s: const u8[:]) -> bool {
+    for b in s {
+        guard b > 0x20 && b != 0x7F else { return false; }
+    }
+    return true;
+}
+
+// Serializes an SSE event into standard wire format. Rolls back `out` on buffer overflow.
 fn sse_format_event<B>(
     out:        B&,
     event_type: const u8[:],
     data:       const u8[:],
     id:         const u8[:] = "",
     retry_ms:   u32         = 0,
-) {
+) -> bool {
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+
     if retry_ms > 0 {
-        out.append("retry: ");
-        format(out, retry_ms);
-        out.push('\n');
+        var retry_buf: u8[..16] = [];
+        format(retry_buf, retry_ms);
+        guard out.try_append("retry: ") && out.try_append(retry_buf[..]) && out.try_push('\n') else {
+            return false;
+        }
     }
     if id.len > 0 {
         let clean_id_len = realtime_internal::sse_clean_token_len(id);
         if clean_id_len > 0 {
-            out.append("id: ");
-            out.append(id[..clean_id_len]);
-            out.push('\n');
+            guard out.try_append("id: ") && out.try_append(id[..clean_id_len]) && out.try_push('\n') else {
+                return false;
+            }
         }
     }
     if event_type.len > 0 {
         let clean_ev_len = realtime_internal::sse_clean_token_len(event_type);
         let clean_ev = event_type[..clean_ev_len];
         if clean_ev.len > 0 && clean_ev != "message" {
-            out.append("event: ");
-            out.append(clean_ev);
-            out.push('\n');
+            guard out.try_append("event: ") && out.try_append(clean_ev) && out.try_push('\n') else {
+                return false;
+            }
         }
     }
 
-    realtime_internal::sse_format_data_lines(out, data);
-    out.push('\n');
+    guard realtime_internal::sse_format_data_lines(out, data) && out.try_push('\n') else {
+        return false;
+    }
+    committed = true;
+    return true;
 }
 
 // ---- High-Level Ergonomic SSE Subscription ------------------------------
@@ -141,26 +157,35 @@ fn sse_build_request_headers<B>(
     host: const u8[:],
     path: const u8[:],
     out:  B&,
-) {
-    let raw_path = if path.len > 0 { path } else { "/" };
-    let clean_path = raw_path[..realtime_internal::sse_clean_token_len(raw_path)];
-    let eff_path = if clean_path.len > 0 { clean_path } else { "/" };
-    let clean_host = host[..realtime_internal::sse_clean_token_len(host)];
+) -> bool {
+    let eff_path = if path.len > 0 { path } else { "/" };
+    guard host.len > 0 && is_valid_sse_request_token(host) && is_valid_sse_request_token(eff_path) else {
+        return false;
+    }
 
-    out.append("GET ");
-    out.append(eff_path);
-    out.append(" HTTP/1.1\r\nHost: ");
-    out.append(clean_host);
-    out.append("\r\nAccept: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive");
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+
+    guard out.try_append("GET ") &&
+        out.try_append(eff_path) &&
+        out.try_append(" HTTP/1.1\r\nHost: ") &&
+        out.try_append(host) &&
+        out.try_append("\r\nAccept: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive") else {
+        return false;
+    }
     if sub.parser.last_event_id.len > 0 {
         let raw_id = sub.parser.last_event_id[..];
         let clean_id = raw_id[..realtime_internal::sse_clean_token_len(raw_id)];
         if clean_id.len > 0 {
-            out.append("\r\nLast-Event-ID: ");
-            out.append(clean_id);
+            guard out.try_append("\r\nLast-Event-ID: ") && out.try_append(clean_id) else {
+                return false;
+            }
         }
     }
-    out.append("\r\n\r\n");
+    guard out.try_append("\r\n\r\n") else { return false; }
+    committed = true;
+    return true;
 }
 
 // Feeds incoming network chunk into subscription and dispatches parsed events.

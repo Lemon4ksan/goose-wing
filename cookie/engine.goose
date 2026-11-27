@@ -885,6 +885,14 @@ fn cookie_internal::domain_gc_candidate_less(
     if cookie_a.secure != cookie_b.secure {
         return !cookie_a.secure;
     }
+    let a_host_pfx = cookie_a.name[..].starts_with_fold("__host-");
+    let b_host_pfx = cookie_b.name[..].starts_with_fold("__host-");
+    if a_host_pfx != b_host_pfx {
+        return !a_host_pfx;
+    }
+    if cookie_a.httponly != cookie_b.httponly {
+        return !cookie_a.httponly;
+    }
     if cookie_a.host_only != cookie_b.host_only {
         return !cookie_a.host_only;
     }
@@ -898,6 +906,9 @@ fn cookie_internal::global_gc_candidate_less(
     cookie_a: const cookie::CanonicalCookie&,
     cookie_b: const cookie::CanonicalCookie&,
 ) -> bool {
+    if cookie_a.secure != cookie_b.secure {
+        return !cookie_a.secure;
+    }
     if cookie_a.priority != cookie_b.priority {
         return cookie_internal::priority_rank(cookie_a.priority)
             < cookie_internal::priority_rank(cookie_b.priority);
@@ -1000,13 +1011,13 @@ fn cookie_internal::resolve_domain_purge_round_params(
         return cookie::Priority.Low, true, min(need_to_evict, low_excess);
     }
     if round_idx == 2 {
-        return cookie::Priority.Low, false, min(need_to_evict, low_excess);
-    }
-    if round_idx == 3 {
         return cookie::Priority.Medium, true, min(need_to_evict, med_excess);
     }
-    if round_idx == 4 {
+    if round_idx == 3 {
         return cookie::Priority.High, true, min(need_to_evict, high_excess);
+    }
+    if round_idx == 4 {
+        return cookie::Priority.Low, false, min(need_to_evict, low_excess);
     }
     if round_idx == 5 {
         return cookie::Priority.Medium, false, min(need_to_evict, med_excess);
@@ -1102,13 +1113,15 @@ fn cookie_internal::evict_global_lru_fallback_cookies(
     guard need_to_evict > 0 else { return 0; }
     var candidate_indices: i32[..3400] = [];
     for &cookie_val, idx in jar.cookies {
-        if !cookie_val.secure || cookie_val.priority == cookie::Priority.Low {
+        if !cookie_val.secure {
             guard candidate_indices.try_push(idx as i32) else { break; }
         }
     }
-    if candidate_indices.len == 0 && jar.cookies.len >= cookie_internal::K_MAX_COOKIES {
+    if candidate_indices.len < need_to_evict && jar.cookies.len >= cookie_internal::K_MAX_COOKIES {
         for &cookie_val, idx in jar.cookies {
-            guard candidate_indices.try_push(idx as i32) else { break; }
+            if cookie_val.secure {
+                guard candidate_indices.try_push(idx as i32) else { break; }
+            }
         }
     }
     guard candidate_indices.len > 0 else { return 0; }

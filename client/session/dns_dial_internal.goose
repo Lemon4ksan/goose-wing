@@ -221,14 +221,24 @@ fn resolve_https_svcb_record<B>(
     guard https_entry && h_stat != dns::CacheStatus.Expired && https_entry.https_records.len > 0 else {
         return true;
     }
-    let meta, eff_port = net::extract_https_svcb_metadata(https_entry.https_records[0], port_num);
-    guard !is_ssrf_blocked_port(session.ssrf_guard, eff_port) else { return false; }
-    task.metadata = meta;
-    task.https_status = net::DnsQueryStatus.Success;
-    if (session.enable_ech || session.auto_ech_discovery) && https_entry.https_records[0].has_ech {
-        let _ = out_ech_list.try_set(https_entry.https_records[0].ech_config_list[..]);
+    var got_svcb = false;
+    for &rec in https_entry.https_records {
+        let meta, eff_port = net::extract_https_svcb_metadata(rec, port_num, host_str);
+        guard !is_ssrf_blocked_port(session.ssrf_guard, eff_port) else { return false; }
+        if !got_svcb {
+            task.metadata = meta;
+            task.https_status = net::DnsQueryStatus.Success;
+            got_svcb = true;
+        }
+        if (session.enable_ech || session.auto_ech_discovery) &&
+            rec.has_ech && rec.ech_config_list.len > 0 && out_ech_list.len == 0 {
+            guard out_ech_list.try_set(rec.ech_config_list[..]) else { return false; }
+        }
+        guard collect_https_svcb_hint_candidates(session.ssrf_guard, meta, eff_port, task) else {
+            return false;
+        }
     }
-    return collect_https_svcb_hint_candidates(session.ssrf_guard, meta, eff_port, task);
+    return true;
 }
 
 fn lookup_dns_https_h3_endpoint(
@@ -319,6 +329,64 @@ fn collect_cached_address_candidates(
     return true;
 }
 
+fn ensure_ech_config_if_required<B>(
+    session:      client::Session&,
+    host_str:     const u8[:],
+    now_sec:      i64,
+    out_ech_list: B&,
+) -> http::Error {
+    guard session.enable_ech && out_ech_list.len == 0 else { return http::Error { .. }; }
+    let disc_ech, ok_disc = client::resolve_ech_config(session, host_str, now_sec);
+    if ok_disc && disc_ech.len > 0 {
+        guard out_ech_list.try_set(disc_ech[..]) else {
+            return http::make_error(
+                rfc::STATUS_BAD_GATEWAY, "tls", "ECHConfigList exceeds buffer capacity",
+            );
+        }
+    }
+    guard out_ech_list.len > 0 else {
+        return http::make_error(
+            rfc::STATUS_BAD_GATEWAY, "tls", "ECH required but no ECHConfigList available",
+        );
+    }
+    return http::Error { .. };
+}
+
+fn resolve_live_host_candidates_no_ech(
+    session:        client::Session&,
+    host_str:       const u8[:],
+    port_num:       u16,
+    now_sec:        i64,
+    out_candidates: net::DnsCandidate[..32]&,
+) -> http::Error {
+    out_candidates.clear();
+    let has_override, ov_err = try_resolve_override_candidate(session, host_str, port_num, out_candidates);
+    if has_override {
+        return ov_err;
+    }
+
+    let now_ms = core::mul_sat_i64(now_sec, 1000);
+    var task = net::new_dns_race_task(port_num);
+
+    guard collect_cached_address_candidates(session, host_str, port_num, now_sec, task) else {
+        return http::make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: DNS rebinding to private IP blocked");
+    }
+    if session.ip_family == net::IpFamily.Ipv6Only { task.ipv4_candidates.clear(); }
+    if session.ip_family == net::IpFamily.Ipv4Only { task.ipv6_candidates.clear(); }
+
+    let _ = task.check_dns_resolution_delay_tick(core::add_sat_i64(now_ms, rfc::HE_RESOLUTION_DELAY_MS));
+    let pref_fam, _ = net::lookup_preferred_family(session.af_cache, host_str, now_sec);
+    net::interleave_candidates_by_preference(
+        task.ipv6_candidates[..], task.ipv4_candidates[..], pref_fam, out_candidates,
+    );
+    if out_candidates.len == 0 {
+        return resolve_system_dns_candidates(
+            session, host_str, port_num, now_sec, task, out_candidates,
+        );
+    }
+    return http::Error { .. };
+}
+
 fn resolve_and_validate_live_host<B>(
     session:        client::Session&,
     host_str:       const u8[:],
@@ -326,6 +394,7 @@ fn resolve_and_validate_live_host<B>(
     now_sec:        i64,
     out_candidates: net::DnsCandidate[..32]&,
     out_ech_list:   B&,
+    require_ech:    bool = true,
 ) -> http::Error {
     var committed = false;
     defer if !committed { out_candidates.clear(); out_ech_list.clear(); };
@@ -345,7 +414,11 @@ fn resolve_and_validate_live_host<B>(
         return http::make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: DNS rebinding to private IP blocked");
     }
     guard resolve_https_svcb_record(session, host_str, port_num, now_sec, task, out_ech_list) else {
-        return http::make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: HTTPS SVCB hint to private IP blocked");
+        return http::make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: HTTPS SVCB hint or ECH rejected");
+    }
+    if require_ech {
+        let ech_err = ensure_ech_config_if_required(session, host_str, now_sec, out_ech_list);
+        guard http::ok(ech_err) else { return ech_err; }
     }
     if session.ip_family == net::IpFamily.Ipv6Only { task.ipv4_candidates.clear(); }
     if session.ip_family == net::IpFamily.Ipv4Only { task.ipv6_candidates.clear(); }

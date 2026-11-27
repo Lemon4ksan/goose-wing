@@ -720,7 +720,12 @@ fn encode_qpack_field<B>(
     var committed = false;
     defer if !committed { out.resize(start_len); };
 
-    let never_index = indexing == QpackIndexingPolicy.NeverIndex;
+    let is_sensitive = name.eq_ascii_fold("authorization") ||
+        name.eq_ascii_fold("proxy-authorization") ||
+        name.eq_ascii_fold("cookie") ||
+        name.eq_ascii_fold("set-cookie");
+    let never_index = indexing == QpackIndexingPolicy.NeverIndex || is_sensitive;
+    let eff_huffman = use_huffman && !is_sensitive;
     if !never_index {
         let s_idx, exact_s = find_qpack_static_field(name, val);
         if exact_s {
@@ -735,20 +740,20 @@ fn encode_qpack_field<B>(
        name == h3_internal::QPACK_STATIC_TABLE[s_idx_name as i64].name {
         let name_ref_mask: u8 = if never_index { 0x70 } else { 0x50 };
         guard http2::hpack_encode_int(out, s_idx_name, 4, name_ref_mask) &&
-              http2::encode_hpack_string_literal(out, val, use_huffman) else {
+              http2::encode_hpack_string_literal(out, val, eff_huffman) else {
             return false;
         }
         committed = true;
         return true;
     }
 
-    if use_huffman {
+    if eff_huffman {
         let huff_len = http2::huff_encoded_byte_len(name);
         if huff_len < (name.len as u64) {
             let lit_huff_mask: u8 = if never_index { 0x38 } else { 0x28 };
             guard http2::hpack_encode_int(out, huff_len, 3, lit_huff_mask) &&
                   http2::huff_encode_bytes(name, out) &&
-                  http2::encode_hpack_string_literal(out, val, use_huffman) else {
+                  http2::encode_hpack_string_literal(out, val, eff_huffman) else {
                 return false;
             }
             committed = true;
@@ -758,7 +763,7 @@ fn encode_qpack_field<B>(
     let lit_plain_mask: u8 = if never_index { 0x30 } else { 0x20 };
     guard http2::hpack_encode_int(out, name.len as u64, 3, lit_plain_mask) &&
           out.try_append(name) &&
-          http2::encode_hpack_string_literal(out, val, use_huffman) else {
+          http2::encode_hpack_string_literal(out, val, eff_huffman) else {
         return false;
     }
     committed = true;
@@ -885,6 +890,18 @@ fn encode_qpack_field_dynamic<B1, B2>(
         max_dyn_abs_used = saved_max_dyn;
         used_any_dyn = saved_used_dyn;
     };
+
+    let is_sensitive = name.eq_ascii_fold("authorization") ||
+        name.eq_ascii_fold("proxy-authorization") ||
+        name.eq_ascii_fold("cookie") ||
+        name.eq_ascii_fold("set-cookie");
+    if is_sensitive {
+        guard encode_qpack_field(out_section, name, val, false, QpackIndexingPolicy.NeverIndex) else {
+            return false;
+        }
+        committed = true;
+        return true;
+    }
 
     let s_idx, exact_s = find_qpack_static_field(name, val);
     if exact_s {

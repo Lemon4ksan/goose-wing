@@ -304,9 +304,118 @@ fn decode_json_string_into<B>(text: const u8[:], at: i64, end: i64, dst: B&) -> 
     return true;
 }
 
+// Validates an escaped or raw JSON string body `text[at..end]` for strict UTF-8 and valid surrogates.
+//
+// Example:
+//   text = "hi\\u0020there", at = 0, end = 13
+//   returns: true
+fn validate_json_string_body(text: const u8[:], at: i64, end: i64) -> bool {
+    guard at >= 0 && end >= at && end <= text.len else { return false; }
+    var pos = at;
+    while pos < end {
+        let c = text[pos];
+        if c == '\\' {
+            pos = add_sat_i64(pos, 1);
+            guard pos < end else { return false; }
+            let e = text[pos];
+            pos = add_sat_i64(pos, 1);
+            if e == 'u' {
+                let _, next_pos, ok_u = decode_json_unicode_escape(text, pos, end);
+                guard ok_u else { return false; }
+                pos = next_pos;
+            } else {
+                let _, ok_short = map_json_short_escape(e);
+                guard ok_short else { return false; }
+            }
+            continue;
+        }
+        let cp, sz, ok_cp = decode_utf8(text[pos..end]);
+        guard ok_cp && sz > 0 && cp >= 0x20 && cp != '"' else { return false; }
+        pos = add_sat_i64(pos, sz);
+    }
+    return true;
+}
+
+// Decodes an escaped JSON string body `text[at..end]` into growable `dst` with strict UTF-8 checks.
+//
+// Example:
+//   text = "hello\\nworld", at = 0, end = 12 -> dst = "hello\nworld", returns true
+fn decode_json_string_growable(text: const u8[:], at: i64, end: i64, dst: u8[>..]&) -> bool {
+    dst.clear();
+    guard at >= 0 && end >= at && end <= text.len else { return false; }
+    var pos = at;
+    while pos < end {
+        let c = text[pos];
+        pos = add_sat_i64(pos, 1);
+        if c != '\\' {
+            guard c >= 0x20 && c != '"' else { dst.clear(); return false; }
+            dst.push(c);
+            continue;
+        }
+        guard pos < end else { dst.clear(); return false; }
+        let e = text[pos];
+        pos = add_sat_i64(pos, 1);
+        if e == 'u' {
+            let cp, next_pos, ok_u = decode_json_unicode_escape(text, pos, end);
+            guard ok_u else { dst.clear(); return false; }
+            let scalar = if cp > 0x10FFFF { 0xFFFD as u32 } else { cp };
+            let b0, b1, b2, b3 = encode_utf8_scalar_bytes(scalar);
+            dst.push(b0);
+            if scalar >= 0x80 { dst.push(b1); }
+            if scalar >= 0x800 { dst.push(b2); }
+            if scalar >= 0x10000 { dst.push(b3); }
+            pos = next_pos;
+        } else {
+            let decoded_b, ok_short = map_json_short_escape(e);
+            guard ok_short else { dst.clear(); return false; }
+            dst.push(decoded_b);
+        }
+    }
+    guard validate_utf8(dst[..]) else { dst.clear(); return false; }
+    return true;
+}
+
+// Reads a JSON string token from `r` into growable `dst` with strict UTF-8 and surrogate checks.
+//
+// Example:
+//   r at "\"HS256\"", dst: u8[>..] -> dst = "HS256", returns true
+fn read_json_string_growable(r: json::Reader&, dst: u8[>..]&) -> bool {
+    dst.clear();
+    guard json::peek(r) == '"' else {
+        json::fail(r, "expected a string");
+        return false;
+    }
+    let start = add_sat_i64(r.pos, 1);
+    let end, escaped = json::scan_string(r.text, start);
+    guard end >= 0 else {
+        json::fail(r, "bad string");
+        return false;
+    }
+    r.pos = add_sat_i64(end, 1);
+    if escaped {
+        guard json::valid_escapes(r.text, start, end) else {
+            r.pos = sub_sat_i64(start, 1);
+            json::fail(r, "bad escape");
+            return false;
+        }
+        guard decode_json_string_growable(r.text, start, end, dst) else {
+            json::fail(r, "invalid utf-8 or escape");
+            return false;
+        }
+        return true;
+    }
+    let raw = r.text[start..end];
+    guard validate_utf8(raw) else {
+        json::fail(r, "invalid utf-8");
+        return false;
+    }
+    dst.append(raw);
+    return true;
+}
+
 // Reads a JSON string token from `r` directly into bounded buffer `dst` without heap/data-stack scratch allocation.
 // Unescaped strings copy in one slice operation; escaped strings decode in-place into `dst`.
-// Returns false if the next token is not a valid string or exceeds `dst.cap` (leaving `r` advanced past the string).
+// Sets `r.error` on invalid UTF-8/escape; returns false without failing `r` on capacity overflow.
 //
 // Example:
 //   r at "\"HS256\"", dst: u8[..16]
@@ -330,7 +439,13 @@ fn read_json_string_into<B>(r: json::Reader&, dst: B&) -> bool {
             json::fail(r, "bad escape");
             return false;
         }
-        return decode_json_string_into(r.text, start, end, dst);
+        if decode_json_string_into(r.text, start, end, dst) {
+            return true;
+        }
+        if !validate_json_string_body(r.text, start, end) {
+            json::fail(r, "invalid utf-8 or escape");
+        }
+        return false;
     }
     let raw = r.text[start..end];
     guard validate_utf8(raw) else {

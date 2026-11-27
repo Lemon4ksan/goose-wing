@@ -926,7 +926,7 @@ fn decode_hpack_to_map_loop<B, C>(
             val_buf,
             cookie_buf,
         );
-        if err == rfc::H2_ERR_COMPRESSION_ERROR {
+        if err == rfc::H2_ERR_COMPRESSION_ERROR || err == rfc::H2_ERR_ENHANCE_YOUR_CALM {
             return err;
         }
         if err != rfc::H2_ERR_NO_ERROR && first_err == rfc::H2_ERR_NO_ERROR {
@@ -1103,6 +1103,7 @@ fn encode_hpack_field<B>(
     defer if !committed { out.resize(start_len); };
     let is_never = (indexing == HpackIndexing.NeverIndexed);
     let is_inc = (indexing == HpackIndexing.Incremental);
+    let eff_huffman = use_huffman && !is_never;
 
     var s_idx:       u64 = 0;
     var d_match_idx: u64 = 0;
@@ -1145,12 +1146,12 @@ fn encode_hpack_field<B>(
         guard hpack_encode_int(out, name_ref_idx, prefix_bits, prefix_mask) else { return false; }
     } else {
         guard hpack_encode_int(out, 0, prefix_bits, prefix_mask) &&
-              encode_hpack_string_literal(out, name, use_huffman) else {
+              encode_hpack_string_literal(out, name, eff_huffman) else {
             return false;
         }
     }
 
-    guard encode_hpack_string_literal(out, val, use_huffman) else { return false; }
+    guard encode_hpack_string_literal(out, val, eff_huffman) else { return false; }
 
     if is_inc {
         insert_header(dt, name, val, false);
@@ -1162,10 +1163,8 @@ fn encode_hpack_field<B>(
 // Selects the HPACK indexing representation for a header field (RFC 7541 §7.1).
 // Protects sensitive credentials with NeverIndexed and omits volatile or oversized entries from the dynamic table.
 fn select_hpack_indexing(name: const u8[:], val: const u8[:], max_table_size: i64) -> HpackIndexing {
-    if name.eq_ascii_fold("authorization") || name.eq_ascii_fold("proxy-authorization") {
-        return HpackIndexing.NeverIndexed;
-    }
-    if name.eq_ascii_fold("cookie") && val.len < 20 {
+    if name.eq_ascii_fold("authorization") || name.eq_ascii_fold("proxy-authorization") ||
+       name.eq_ascii_fold("cookie") || name.eq_ascii_fold("set-cookie") {
         return HpackIndexing.NeverIndexed;
     }
     let entry_size = core::add_sat_i64(core::add_sat_i64(name.len, val.len), 32);

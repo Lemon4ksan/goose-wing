@@ -91,7 +91,9 @@ fn build_h2_request_pseudo_headers(
     headers:     const http::HeaderMap&,
 ) -> http2::PseudoHeaders, bool {
     var pseudo = http2::PseudoHeaders { .. };
-    let auth_str = current_url.host();
+    var auth_buf: u8[..300] = [];
+    core::format_outgoing_host(current_url, auth_buf);
+    let auth_str = auth_buf[..];
     let proto_hdr = http::find_header(headers, ":protocol");
     if curr_method.eq_ascii_fold("CONNECT") && proto_hdr.len == 0 {
         pseudo.has_method = true;

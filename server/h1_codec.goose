@@ -629,6 +629,7 @@ fn serialize_bad_request_error<B>(
     header_policy: ServerHeaderPolicy = ServerHeaderPolicy.Standard,
 ) {
     var err_resp = http::Response { status_code: rfc::STATUS_BAD_REQUEST, .. };
+    http::set_header(err_resp, "Connection", "close");
     serialize_http1_response(err_resp, server_name, wire_out, 0, header_policy);
 }
 

@@ -28,6 +28,7 @@
 #include <arm_neon.h>
 #endif
 
+#pragma pack(push, 1)
 typedef struct {
     uint8_t *data;
     int64_t len;
@@ -56,6 +57,16 @@ typedef struct {
     const uint32_t *data;
     int64_t len;
 } wing_u32_ro;
+#pragma pack(pop)
+
+_Static_assert(sizeof(wing_bytes_rw) == sizeof(void *) + sizeof(int64_t), "wing_bytes_rw ABI mismatch");
+_Static_assert(offsetof(wing_bytes_rw, len) == sizeof(void *), "wing_bytes_rw len offset mismatch");
+_Static_assert(sizeof(wing_bytes_ro) == sizeof(void *) + sizeof(int64_t), "wing_bytes_ro ABI mismatch");
+_Static_assert(sizeof(wing_u16_rw) == sizeof(void *) + sizeof(int64_t), "wing_u16_rw ABI mismatch");
+_Static_assert(sizeof(wing_u32_rw) == sizeof(void *) + sizeof(int64_t), "wing_u32_rw ABI mismatch");
+_Static_assert(sizeof(wing_u64_rw) == sizeof(void *) + sizeof(int64_t), "wing_u64_rw ABI mismatch");
+_Static_assert(sizeof(wing_i32_rw) == sizeof(void *) + sizeof(int64_t), "wing_i32_rw ABI mismatch");
+_Static_assert(sizeof(wing_u32_ro) == sizeof(void *) + sizeof(int64_t), "wing_u32_ro ABI mismatch");
 
 // Forward declaration from shim/tcp.c
 int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data);
@@ -85,7 +96,7 @@ int64_t wing_fast_cork_append(int64_t conn, wing_bytes_rw cork_buf, int64_t cork
     int64_t clen = cork_len;
     int64_t rlen = resp.len;
 
-    if (clen + rlen > cork_buf.len) {
+    if (rlen > cork_buf.len - clen) {
         const uint8_t *p = cork_buf.data;
         size_t rem = (size_t)clen;
         int attempts = 0;
@@ -190,8 +201,8 @@ int64_t wing_fast_cork_append(int64_t conn, wing_bytes_rw cork_buf, int64_t cork
 // Replicates 4-byte mask across 128-bit/256-bit SIMD registers.
 void wing_simd_mask_websocket(wing_bytes_rw slice, const uint8_t mask[4]) {
     uint8_t *data = slice.data;
+    if (!data || slice.len <= 0 || !mask) return;
     size_t len = (size_t)slice.len;
-    if (!data || len == 0 || !mask) return;
 
     size_t i = 0;
 
@@ -226,7 +237,7 @@ void wing_simd_mask_websocket(wing_bytes_rw slice, const uint8_t mask[4]) {
         i += 16;
     }
 #elif defined(__ARM_NEON) || defined(__aarch64__) || defined(_M_ARM64)
-    uint8x16_t mask128 = vld1q_dup_u32(&mask32);
+    uint8x16_t mask128 = vreinterpretq_u8_u32(vld1q_dup_u32(&mask32));
     while (i + 16 <= len) {
         uint8x16_t v = vld1q_u8(data + i);
         vst1q_u8(data + i, veorq_u8(v, mask128));
@@ -254,8 +265,8 @@ void wing_simd_mask_websocket(wing_bytes_rw slice, const uint8_t mask[4]) {
 // Returns 1 if all bytes < 0x80 (pure ASCII / valid 1-byte UTF-8), 0 otherwise.
 int32_t wing_simd_is_pure_ascii(wing_bytes_ro slice) {
     const uint8_t *data = slice.data;
+    if (!data || slice.len <= 0) return 1;
     size_t len = (size_t)slice.len;
-    if (!data || len == 0) return 1;
 
     size_t i = 0;
 
@@ -288,8 +299,8 @@ int32_t wing_simd_is_pure_ascii(wing_bytes_ro slice) {
 // Returns offset of '\r' if found, or -1 if not found.
 int64_t wing_simd_find_crlf(wing_bytes_ro slice) {
     const uint8_t *data = slice.data;
+    if (!data || slice.len < 2) return -1;
     size_t len = (size_t)slice.len;
-    if (!data || len < 2) return -1;
 
     size_t i = 0;
 
@@ -327,8 +338,8 @@ int64_t wing_simd_find_crlf(wing_bytes_ro slice) {
 // Shifts the unmasked payload back over the 6-, 8-, or 14-byte frame header directly.
 void wing_simd_unmask_shifted(wing_bytes_rw slice, int64_t header_len, int64_t payload_len, const uint8_t mask[4]) {
     uint8_t *frame = slice.data;
-    if (!frame || payload_len <= 0 || header_len <= 0 || !mask) return;
-    if ((size_t)slice.len < (size_t)(header_len + payload_len)) return;
+    if (!frame || payload_len <= 0 || header_len <= 0 || slice.len <= 0 || !mask) return;
+    if (header_len > slice.len || payload_len > slice.len - header_len) return;
 
     uint32_t mask32;
     memcpy(&mask32, mask, 4);
@@ -356,7 +367,7 @@ void wing_simd_unmask_shifted(wing_bytes_rw slice, int64_t header_len, int64_t p
         i += 16;
     }
 #elif defined(__ARM_NEON) || defined(__aarch64__) || defined(_M_ARM64)
-    uint8x16_t mask128 = vld1q_dup_u32(&mask32);
+    uint8x16_t mask128 = vreinterpretq_u8_u32(vld1q_dup_u32(&mask32));
     while (i + 16 <= len) {
         uint8x16_t v = vld1q_u8(src + i);
         vst1q_u8(dst + i, veorq_u8(v, mask128));
@@ -384,8 +395,8 @@ void wing_simd_unmask_shifted(wing_bytes_rw slice, int64_t header_len, int64_t p
 // Uses AVX2 / SSE2 32-byte & 16-byte parallel comparison registers with bitmask reduction.
 int64_t wing_fast_find_crlfcrlf(wing_bytes_ro slice) {
     const uint8_t *data = slice.data;
+    if (!data || slice.len < 4) return -1;
     size_t len = (size_t)slice.len;
-    if (!data || len < 4) return -1;
 
     size_t limit = len - 4;
     size_t i = 0;
@@ -600,8 +611,8 @@ static inline uint64_t wing_swar_to_upper_64(uint64_t v) {
 // In-place vectorized/SWAR ASCII lowercase conversion for HTTP header field names
 void wing_swar_to_lower(wing_bytes_rw slice) {
     uint8_t *data = slice.data;
+    if (!data || slice.len <= 0) return;
     size_t len = (size_t)slice.len;
-    if (!data || len == 0) return;
 
     size_t i = 0;
     while (i + 8 <= len) {
@@ -623,8 +634,8 @@ void wing_swar_to_lower(wing_bytes_rw slice) {
 // In-place vectorized/SWAR ASCII uppercase conversion
 void wing_swar_to_upper(wing_bytes_rw slice) {
     uint8_t *data = slice.data;
+    if (!data || slice.len <= 0) return;
     size_t len = (size_t)slice.len;
-    if (!data || len == 0) return;
 
     size_t i = 0;
     while (i + 8 <= len) {
@@ -824,8 +835,8 @@ int64_t wing_memchr(wing_bytes_ro slice, uint8_t b) {
 // Vectorized byte counter using SSE2 / NEON / SWAR with hardware popcount
 int64_t wing_simd_count_byte(wing_bytes_ro slice, uint8_t b) {
     const uint8_t *data = slice.data;
+    if (!data || slice.len <= 0) return 0;
     size_t len = (size_t)slice.len;
-    if (!data || len == 0) return 0;
 
     int64_t count = 0;
     size_t i = 0;
@@ -910,7 +921,8 @@ int64_t wing_simd_last_index_of_byte(wing_bytes_ro slice, uint8_t b) {
 
 // 64-bit SWAR case-insensitive equality comparison (8 bytes per cycle)
 int32_t wing_swar_eq_ascii_fold(wing_bytes_ro a, wing_bytes_ro b) {
-    if (a.len != b.len) return 0;
+    if (a.len != b.len || a.len < 0) return 0;
+    if (a.len == 0) return 1;
     if (a.data == b.data) return 1;
     size_t len = (size_t)a.len;
     const uint8_t *da = a.data;
@@ -1090,6 +1102,7 @@ static inline int wing_simd_ctz(unsigned int x) {
 
 // Flat Register Routing (Tier 0 L0 Register Table)
 // 16-slot Structure of Arrays (592 bytes) matching Goose L0RegisterTable.
+#pragma pack(push, 1)
 typedef struct {
     uint64_t w0[16];           // Offset   0 (128 B)
     uint64_t w1[16];           // Offset 128 (128 B)
@@ -1103,10 +1116,13 @@ typedef struct {
     uint16_t count;            // Offset 578   (2 B)
     uint8_t _pad2[12];         // Offset 580  (12 B)
 } wing_l0_table_t;
+#pragma pack(pop)
+
+_Static_assert(sizeof(wing_l0_table_t) == 592, "wing_l0_table_t size mismatch");
 
 // Matches an HTTP request wire path against the L0 Register Table using AVX2 or portable SWAR.
 int32_t wing_simd_match_l0(wing_bytes_ro path, uint8_t method_id, const wing_l0_table_t *tbl) {
-    if (!tbl || tbl->count == 0 || path.len <= 0 || path.len > 16) {
+    if (!tbl || tbl->count == 0 || tbl->count > 16 || !path.data || path.len <= 0 || path.len > 16) {
         return -1;
     }
 
@@ -1666,7 +1682,7 @@ static uint16_t wing_fix_lit_pack[288];
 static uint32_t wing_fix_len_pack[259];
 static uint32_t wing_fix_dist_fast[513];
 static uint8_t wing_rev5_lut[32];
-static int wing_fix_enc_ready = 0;
+static volatile int wing_fix_enc_ready = 0;
 
 static inline uint32_t wing_bitrev_u32(uint32_t v, int bits) {
     uint32_t r = 0;
@@ -1677,12 +1693,7 @@ static inline uint32_t wing_bitrev_u32(uint32_t v, int bits) {
     return r;
 }
 
-static void wing_init_fix_enc_tables(void) {
-#if defined(__GNUC__) || defined(__clang__)
-    if (__atomic_load_n(&wing_fix_enc_ready, __ATOMIC_ACQUIRE)) return;
-#else
-    if (wing_fix_enc_ready) return;
-#endif
+static void wing_populate_fix_enc_tables(void) {
     for (uint32_t s = 0; s <= 143; s++)
         wing_fix_lit_pack[s] = (uint16_t)((wing_bitrev_u32(0x30U + s, 8) << 4) | 8U);
     for (uint32_t s = 144; s <= 255; s++)
@@ -1731,10 +1742,39 @@ static void wing_init_fix_enc_tables(void) {
             }
         }
     }
-#if defined(__GNUC__) || defined(__clang__)
-    __atomic_store_n(&wing_fix_enc_ready, 1, __ATOMIC_RELEASE);
+}
+
+#if defined(_MSC_VER)
+static INIT_ONCE wing_fix_enc_once = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK wing_fix_enc_init_cb(PINIT_ONCE once, PVOID param, PVOID *ctx) {
+    (void)once;
+    (void)param;
+    (void)ctx;
+    wing_populate_fix_enc_tables();
+    return TRUE;
+}
+#endif
+
+static void wing_init_fix_enc_tables(void) {
+#if defined(_MSC_VER)
+    (void)InitOnceExecuteOnce(&wing_fix_enc_once, wing_fix_enc_init_cb, NULL, NULL);
+#elif defined(__GNUC__) || defined(__clang__)
+    if (__atomic_load_n(&wing_fix_enc_ready, __ATOMIC_ACQUIRE) == 2) return;
+    int expected = 0;
+    if (__atomic_compare_exchange_n(&wing_fix_enc_ready, &expected, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        wing_populate_fix_enc_tables();
+        __atomic_store_n(&wing_fix_enc_ready, 2, __ATOMIC_RELEASE);
+        return;
+    }
+    while (__atomic_load_n(&wing_fix_enc_ready, __ATOMIC_ACQUIRE) != 2) {
+#if defined(__x86_64__) || defined(__i386__)
+        __builtin_ia32_pause();
+#endif
+    }
 #else
-    wing_fix_enc_ready = 1;
+    if (wing_fix_enc_ready == 2) return;
+    wing_populate_fix_enc_tables();
+    wing_fix_enc_ready = 2;
 #endif
 }
 
@@ -1833,6 +1873,7 @@ static int64_t wing_deflate_l1_chunk_avx2(const uint8_t *src, int64_t chunk_star
                                           int64_t dst_cap) {
     int64_t chunk_len = chunk_end - chunk_start;
     if (chunk_len < 0 || chunk_len > 65535) return -1;
+    if (bit_state[1] > 31ULL) return -1;
     uint64_t bits = bit_state[0];
     int bc = (int)bit_state[1];
     int64_t out_idx = 0;
@@ -1990,8 +2031,8 @@ static int64_t wing_deflate_l1_chunk_avx2(const uint8_t *src, int64_t chunk_star
 
 int64_t wing_simd_deflate_l1_chunk(wing_bytes_ro src, int64_t chunk_start, int64_t chunk_end, int32_t is_final,
                                    wing_u32_rw head, wing_u64_rw bit_state, wing_bytes_rw dst) {
-    if (!head.data || head.len < 64 || (head.len & (head.len - 1)) != 0) return -1;
-    if (!bit_state.data || bit_state.len < 2) return -1;
+    if (!head.data || head.len < 64 || head.len > (1LL << 30) || (head.len & (head.len - 1)) != 0) return -1;
+    if (!bit_state.data || bit_state.len < 2 || bit_state.data[1] > 31ULL) return -1;
     if (!dst.data || dst.len <= 0) return -1;
     if (chunk_start < 0 || chunk_end < chunk_start || chunk_end > src.len) return -1;
     if (chunk_end > chunk_start && !src.data) return -1;

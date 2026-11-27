@@ -12,6 +12,7 @@ extern fn native_rio_available() -> i32 = "wing_rio_available";
 extern fn native_rio_deregister_buffer(buf_id: u64) = "wing_rio_deregister_buffer";
 extern fn native_rio_create_cq(queue_size: u32) -> u64 = "wing_rio_create_cq";
 extern fn native_rio_close_cq(cq_id: u64) = "wing_rio_close_cq";
+extern fn native_rio_cq_is_corrupt(cq_id: u64) -> i32 = "wing_rio_cq_is_corrupt";
 extern fn native_rio_receive(
     rq_id:       u64,
     buf_id:      u64,
@@ -68,6 +69,7 @@ extern fn native_rio_hs_begin(
     buf_size: u32,
     sock_ctx: u64,
 ) = "wing_rio_hs_begin";
+extern fn native_rio_hs_is_rx_inflight() -> i32 = "wing_rio_hs_is_rx_inflight";
 extern fn native_rio_hs_end(out_leftover: u8[:]) -> i32 = "wing_rio_hs_end";
 
 // Page-locked registered memory buffer slice descriptor for Windows RIO
@@ -259,15 +261,17 @@ fn rio_wait_cq(cq_id: u64, timeout_ms: i32) -> i32 {
 }
 
 // Drains completed Windows RIO operations into a bounded `RioResult[..64]` slice.
-fn rio_drain_completions(cq_id: u64, out_results: RioResult[..64]&) -> u32 {
+// Returns `-1` if the CQ latched `RIO_CORRUPT_CQ`.
+fn rio_drain_completions(cq_id: u64, out_results: RioResult[..64]&) -> i32 {
     guard cq_id != 0 else { return 0; }
     out_results.clear();
     var raw: RioResult[64] = [RioResult { .. }; 64];
     let n = native_rio_dequeue_slice(cq_id, raw[..]);
+    guard n >= 0 else { return -1; }
     guard n > 0 else { return 0; }
     let count = min(n as i64, 64);
     for i in count {
         let _ = out_results.try_push(raw[i]);
     }
-    return out_results.len as u32;
+    return out_results.len as i32;
 }

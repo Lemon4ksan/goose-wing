@@ -185,6 +185,8 @@ struct QuicSrvConnSlot {
     close_event_emitted:         bool                 = false,
     handshake_done_queued:       bool                 = false,
     new_cid_queued:              bool                 = false,
+    scid_retired:                bool                 = false,
+    issued_cid_max_seq:          u64                  = 0,
     init_keys_discarded:         bool                 = false,
     hs_keys_discarded:           bool                 = false,
     pending_close_tx:            bool                 = false,
@@ -547,7 +549,7 @@ fn zeroize_and_free_conn_slot(c_idx: i64) {
 // ---- Connection Slot Initialization & CID Demuxing -------------------------
 
 fn cid_matches_conn(cslot: const QuicSrvConnSlot&, cid: const u8[:], is_initial: bool) -> bool {
-    if cid.len > 0 && core::ct_eq_bytes(cid, cslot.conn.scid[..]) {
+    if !cslot.scid_retired && cid.len > 0 && core::ct_eq_bytes(cid, cslot.conn.scid[..]) {
         return true;
     }
     if cid.len == 0 && cslot.conn.scid.len == 0 {
@@ -1144,13 +1146,54 @@ fn handle_stop_sending_frame(
     }
 }
 
+fn handle_retire_conn_id_frame(
+    eslot:    QuicSrvEndpointSlot&,
+    cslot:    QuicSrvConnSlot&,
+    pkt_dcid: const u8[:],
+    seq:      u64,
+    now_ns:   u64,
+) -> bool {
+    guard cslot.conn.scid.len > 0 && seq <= cslot.issued_cid_max_seq else {
+        close_conn_with_error(
+            eslot, cslot, rfc::QUIC_ERR_PROTOCOL_VIOLATION, "invalid retire cid", false, now_ns,
+        );
+        return false;
+    }
+    if seq == 0 {
+        if pkt_dcid.len > 0 && core::ct_eq_bytes(pkt_dcid, cslot.conn.scid[..]) {
+            close_conn_with_error(
+                eslot, cslot, rfc::QUIC_ERR_PROTOCOL_VIOLATION, "retire active scid", false, now_ns,
+            );
+            return false;
+        }
+        cslot.scid_retired = true;
+        return true;
+    }
+    let alt_i = (seq - 1) as i64;
+    if alt_i >= 0 && alt_i < cslot.conn.alt_scids.len {
+        let cur = cslot.conn.alt_scids[alt_i][..];
+        if cur.len > 0 && pkt_dcid.len > 0 && core::ct_eq_bytes(pkt_dcid, cur) {
+            close_conn_with_error(
+                eslot, cslot, rfc::QUIC_ERR_PROTOCOL_VIOLATION, "retire active alt cid", false, now_ns,
+            );
+            return false;
+        }
+        cslot.conn.alt_scids[alt_i].clear();
+    }
+    if seq == 1 {
+        cslot.alt_cid.clear();
+    }
+    return true;
+}
+
 fn handle_decrypted_plain_frames(
-    eslot:  QuicSrvEndpointSlot&,
-    cslot:  QuicSrvConnSlot&,
-    c_idx:  i64,
-    htype:  QuicHeaderType,
-    plain:  const u8[:],
-    now_ns: u64,
+    eslot:    QuicSrvEndpointSlot&,
+    cslot:    QuicSrvConnSlot&,
+    c_idx:    i64,
+    htype:    QuicHeaderType,
+    plain:    const u8[:],
+    now_ns:   u64,
+    pkt_dcid: const u8[:] = "",
 ) {
     var idx: i64 = 0;
     var had_ack = false;
@@ -1168,6 +1211,8 @@ fn handle_decrypted_plain_frames(
             handle_reset_stream_frame(eslot, cslot, c_idx, frame.stream_id, frame.error_code);
         } else if frame.frame_type == QuicFrameType.StopSending {
             handle_stop_sending_frame(eslot, cslot, c_idx, frame.stream_id);
+        } else if frame.frame_type == QuicFrameType.RetireConnectionId {
+            guard handle_retire_conn_id_frame(eslot, cslot, pkt_dcid, frame.stream_id, now_ns) else { return; }
         } else if frame.frame_type == QuicFrameType.PathChallenge && frame.payload.len == 8 {
             for k in 8 { cslot.pending_path_resp[k] = frame.payload[k]; }
             cslot.has_path_resp = true;
@@ -1298,6 +1343,7 @@ fn on_tls_handshake_established(eslot: QuicSrvEndpointSlot&, cslot: QuicSrvConnS
         if generate_unique_server_cid(cslot.ep_idx, cslot.ep_gen, new_cid) && core::csprng_fill(new_tok[..]) {
             if cslot.conn.alt_scids.try_push(new_cid) && cslot.alt_cid.try_set(new_cid[..]) {
                 cslot.alt_reset_token = new_tok;
+                cslot.issued_cid_max_seq = 1;
                 cslot.new_cid_queued = true;
             }
         }
@@ -1432,6 +1478,7 @@ fn step_coalesced_srv_packet(
     any_handled: bool&,
     saw_1rtt:    bool&,
 ) -> bool {
+    let rx_hdr, ok_rx_hdr = parse_header(pkt[offset..], cslot.conn.scid.len as u8);
     let now_us, _ = core::div_rem_u64(now_ns, 1000);
     var ack = AckFrame { .. };
     var htype = QuicHeaderType.Initial;
@@ -1447,7 +1494,8 @@ fn step_coalesced_srv_packet(
         saw_1rtt = true;
     }
     if res.needs_ack { mark_space_ack_needed(cslot, htype); }
-    handle_decrypted_plain_frames(eslot, cslot, c_idx, htype, plain[..], now_ns);
+    let pkt_dcid = if ok_rx_hdr { rx_hdr.dcid[..] } else { "" };
+    handle_decrypted_plain_frames(eslot, cslot, c_idx, htype, plain[..], now_ns, pkt_dcid);
     offset = core::add_sat_i64(offset, consumed);
     return handle_post_packet_transition(eslot, cslot, htype, now_ns);
 }

@@ -492,7 +492,11 @@ fn test_cors_policy_and_matching(t: lit::T&) {
         sub.assert_true(preflight_res.has_header("Access-Control-Max-Age"), "Access-Control-Max-Age present");
         sub.assert_eq(preflight_res.header("Access-Control-Max-Age"), "7200", "max age matches");
         sub.assert_true(preflight_res.has_header("Vary"), "Vary header present on dynamic origin");
-        sub.assert_eq(preflight_res.header("Vary"), "Origin", "Vary mirrors Origin");
+        sub.assert_eq(
+            preflight_res.header("Vary"),
+            "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+            "Vary includes Origin and preflight request headers",
+        );
     };
 
     t.run("CORS Wildcard with Credentials Rejection") { sub =>

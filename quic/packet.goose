@@ -205,33 +205,35 @@ fn compute_hp_masks_batch(
 
 // Applies header protection mask to packet header and packet number field (RFC 9001 Section 5.4.1).
 checkfree fn apply_header_protection(pkt: u8[:], pn_offset: u32, pn_len: u8, hp_mask: const u8[5]&) {
-    guard pkt.len > 0 && pn_len >= 1 && pn_len <= 4 else { return; }
-    let pn_end = (pn_offset as u64) + pn_len;
-    guard pn_end <= (pkt.len as u64) else { return; }
+    let off64 = pn_offset as i64;
+    guard pkt.len >= 4 && off64 >= 0 && off64 <= pkt.len - 4 && pn_len >= 1 && pn_len <= 4 else { return; }
     let is_long = (pkt[0] & 0x80) != 0;
     quic_internal::toggle_first_byte_protection(pkt, is_long, hp_mask[0]);
-    for i in (pn_len as i64) {
-        let _ = quic_internal::xor_pn_byte_at(pkt, pn_offset, hp_mask, i);
+    let pn_win = pkt[off64..off64 + 4];
+    let pn_len64 = pn_len as i64;
+    for i in 4 {
+        let active_mask = (((i - pn_len64) >> 63) & 0xFF) as! u8;
+        pn_win[i] = pn_win[i] ^ (hp_mask[1 + i] & active_mask);
     }
 }
 
 // Removes header protection mask in-place, returning true packet number length and truncated PN.
 checkfree fn remove_header_protection(pkt: u8[:], pn_offset: u32, hp_mask: const u8[5]&) -> u8, u64 {
-    guard pkt.len > 0 else { return 0, 0; }
+    let off64 = pn_offset as i64;
+    guard pkt.len >= 4 && off64 >= 0 && off64 <= pkt.len - 4 else { return 0, 0; }
     let is_long = (pkt[0] & 0x80) != 0;
     quic_internal::toggle_first_byte_protection(pkt, is_long, hp_mask[0]);
     let pn_len: u8 = (pkt[0] & 0x03) + 1;
-    let pn_end = (pn_offset as u64) + pn_len;
-    if pn_end > (pkt.len as u64) {
-        // Revert first byte unmasking on bounds violation
-        quic_internal::toggle_first_byte_protection(pkt, is_long, hp_mask[0]);
-        return 0, 0;
-    }
+    let pn_win = pkt[off64..off64 + 4];
+    let pn_len64 = pn_len as i64;
     var trunc_pn: u64 = 0;
-
-    for i in (pn_len as i64) {
-        let unmasked = quic_internal::xor_pn_byte_at(pkt, pn_offset, hp_mask, i);
-        trunc_pn = (trunc_pn << 8) | unmasked;
+    for i in 4 {
+        let sign = (i - pn_len64) >> 63;
+        let active_mask = (sign & 0xFF) as! u8;
+        let active_bit = (sign & 1) as! u64;
+        pn_win[i] = pn_win[i] ^ (hp_mask[1 + i] & active_mask);
+        let unmasked = (pn_win[i] & active_mask) as u64;
+        trunc_pn = (trunc_pn << (active_bit << 3)) | unmasked;
     }
     return pn_len, trunc_pn;
 }

@@ -164,7 +164,12 @@ fn encode_single_h3_map_entry<B1, B2>(
     }
     let eff_val = if lower_name[..] == "te" { "trailers" } else { val };
     guard http2::validate_field_syntax(lower_name[..], eff_val) else { return false; }
-    if http::is_sensitive(e) {
+    let is_sens = http::is_sensitive(e) ||
+        lower_name[..] == "authorization" ||
+        lower_name[..] == "proxy-authorization" ||
+        lower_name[..] == "cookie" ||
+        lower_name[..] == "set-cookie";
+    if is_sens {
         return encode_qpack_sensitive_field(body_fields, lower_name[..], eff_val);
     }
     let prev_body = body_fields.len;

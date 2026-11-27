@@ -20,13 +20,20 @@ import .client;
 
 inline fn matches_media_type(ct: const u8[:], prefix: const u8[:]) -> bool {
     guard ct.starts_with_fold(prefix) else { return false; }
-    if ct.len == prefix.len { return true; }
-    let next_byte = ct[prefix.len];
-    let suffix_idx = core::add_sat_i64(prefix.len, 1);
-    if next_byte == '+' {
-        return ct.len > suffix_idx && core::is_tchar(ct[suffix_idx]);
+    var pos = prefix.len;
+    if pos < ct.len && ct[pos] == '+' {
+        pos = core::add_sat_i64(pos, 1);
+        let sub_start = pos;
+        while pos < ct.len && core::is_tchar(ct[pos]) {
+            pos = core::add_sat_i64(pos, 1);
+        }
+        guard pos > sub_start else { return false; }
     }
-    return next_byte == ';' || next_byte == ' ' || next_byte == '\t';
+    while pos < ct.len && core::is_lws(ct[pos]) {
+        pos = core::add_sat_i64(pos, 1);
+    }
+    if pos == ct.len { return true; }
+    return ct[pos] == ';' && !ct[pos..].contains_byte(',');
 }
 
 inline fn is_web(ct: const u8[:]) -> bool {
@@ -77,7 +84,13 @@ fn parse_web_trailer_line<B>(
     out_message:        B&,
 ) -> bool {
     let name, raw_val, ok_split = line.split_once_byte(':');
-    guard ok_split && name.len > 0 else { return true; }
+    guard ok_split && name.len > 0 else { return false; }
+    for b in name {
+        guard core::is_tchar(b) else { return false; }
+    }
+    for vb in raw_val {
+        guard vb == '\t' || (vb >= 0x20 && vb <= 0x7E) || vb >= 0x80 else { return false; }
+    }
     let val = raw_val.trim_lws();
     if name.eq_ascii_fold("grpc-status") {
         if saw_status_key {
@@ -399,6 +412,7 @@ fn scan_web_unary_frames(
     out_resp:      grpc::Response&,
     found_data:    bool&,
     found_trailer: bool&,
+    enc_hdr:       const u8[:] = "",
 ) -> bool {
     var offset:        u32     = 0;
     var frame_payload: u8[>..] = [];
@@ -414,6 +428,12 @@ fn scan_web_unary_frames(
             wire_bytes[..], offset, frame_payload, is_trailers, is_comp,
         );
         guard ok_frame else {
+            out_resp.payload.clear();
+            return false;
+        }
+        let comp_st = grpc::validate_recv_compression(is_comp, enc_hdr, false);
+        guard comp_st == grpc::StatusCode.Ok else {
+            out_resp.status = comp_st;
             out_resp.payload.clear();
             return false;
         }
@@ -461,7 +481,8 @@ fn parse_web_unary_body(
 
     var found_trailer = false;
     var found_data = false;
-    guard scan_web_unary_frames(wire_bytes[..], out_resp, found_data, found_trailer) else {
+    let enc_hdr = res_headers.get_header(rfc::HEADER_GRPC_ENCODING);
+    guard scan_web_unary_frames(wire_bytes[..], out_resp, found_data, found_trailer, enc_hdr) else {
         return false;
     }
 
@@ -492,14 +513,30 @@ fn parse_web_unary_body(
     return true;
 }
 
+inline fn count_header_occurrences(m: const http::HeaderMap&, name: const u8[:]) -> i64 {
+    var count: i64 = 0;
+    for &e in m.entries {
+        if http::entry_name(m, e).eq_ascii_fold(name) {
+            count = core::add_sat_i64(count, 1);
+        }
+    }
+    return count;
+}
+
 // Extracts `grpc-status`, `grpc-message`, and `grpc-status-details-bin` from `res` trailers or headers.
 //
 // Example:
 //   res.trailers["grpc-status"] = "0", res.status_code = 200
 //   returns: true, out_resp.status = grpc::StatusCode.Ok
 inline fn extract_client_response_status(res: const http::Response&, out_resp: grpc::Response&) -> bool {
-    let in_trailers = res.trailers.has_header(rfc::HEADER_GRPC_STATUS);
-    let in_headers = !in_trailers && res.headers.has_header(rfc::HEADER_GRPC_STATUS);
+    let tr_cnt = count_header_occurrences(res.trailers, rfc::HEADER_GRPC_STATUS);
+    let hd_cnt = count_header_occurrences(res.headers, rfc::HEADER_GRPC_STATUS);
+    if tr_cnt > 1 || (tr_cnt == 0 && hd_cnt > 1) {
+        out_resp.status = grpc::StatusCode.Unknown;
+        return false;
+    }
+    let in_trailers = tr_cnt == 1;
+    let in_headers = !in_trailers && hd_cnt == 1;
     if !in_trailers && !in_headers {
         out_resp.status = grpc::status_from_http(res.status_code);
         return false;

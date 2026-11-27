@@ -520,11 +520,15 @@ fn dispatch_single_rio_result<D, CtxA, CtxB>(
     count:  i32&,
 ) {
     let link = core::IoLink { raw: res.socket_context };
-    let slot, ok = host_match_link(host, link);
-    guard ok else { return; }
-    let tag = host.links[slot].tag;
+    let slot, is_closing, ok_any = host_match_any_link(host, link);
+    guard ok_any else { return; }
     if res.request_context == HOST_RIO_REQ_TX {
         host.links[slot].tx_inflight = false;
+        if is_closing {
+            finalize_closing_host_slot(host, slot);
+            return;
+        }
+        let tag = host.links[slot].tag;
         if res.status != 0 {
             release_host_slot(host, slot);
             let ev = core::LinkEvent {
@@ -540,6 +544,13 @@ fn dispatch_single_rio_result<D, CtxA, CtxB>(
         }
         return;
     }
+    guard res.request_context == HOST_RIO_REQ_RX else { return; }
+    host.links[slot].rx_inflight = false;
+    if is_closing {
+        finalize_closing_host_slot(host, slot);
+        return;
+    }
+    let tag = host.links[slot].tag;
     if res.status != 0 {
         release_host_slot(host, slot);
         let ev = core::LinkEvent {
@@ -569,6 +580,28 @@ fn dispatch_single_rio_result<D, CtxA, CtxB>(
     }
 }
 
+inline fn close_corrupt_rio_links<D, CtxA, CtxB>(
+    host:   net::Host&,
+    driver: D&,
+    arg_a:  CtxA&,
+    arg_b:  CtxB&,
+    count:  i32&,
+) {
+    for i in host.links.len {
+        guard host.is_open && i < host.links.len else { break; }
+        guard host.links[i].in_use && host.links[i].is_rio else { continue; }
+        let link = host_slot_link(host, i);
+        let tag = host.links[i].tag;
+        release_host_slot(host, i);
+        let ev = core::LinkEvent {
+            kind: core::LinkEventKind.Closed, link: link, tag: tag, err: core::IoError.Closed, ..
+        };
+        emit_host_event(host, driver, arg_a, arg_b, ev, count);
+    }
+    native_rio_close_cq(host.rio_cq);
+    host.rio_cq = 0;
+}
+
 fn poll_rio_backend<D, CtxA, CtxB>(
     host:       net::Host&,
     driver:     D&,
@@ -588,12 +621,47 @@ fn poll_rio_backend<D, CtxA, CtxB>(
     var rio_results: RioResult[..64] = [];
     var n = rio_drain_completions(host.rio_cq, rio_results);
     if n == 0 && timeout_ms > 0 && host.epfd_count == 0 {
-        let _ = rio_wait_cq(host.rio_cq, min(timeout_ms, 5) as i32);
-        n = rio_drain_completions(host.rio_cq, rio_results);
+        let wait_rc = rio_wait_cq(host.rio_cq, min(timeout_ms, 5) as i32);
+        if wait_rc < 0 {
+            n = -1;
+        } else {
+            n = rio_drain_completions(host.rio_cq, rio_results);
+        }
+    }
+    if n < 0 {
+        close_corrupt_rio_links(host, driver, arg_a, arg_b, count);
+        return;
     }
     for k in rio_results.len {
         dispatch_single_rio_result(host, driver, arg_a, arg_b, rio_results[k], count);
     }
+}
+
+inline fn handle_closing_uring_cqe(host: net::Host&, op: u64, slot: i64, cqe: const UringCqe&) {
+    if op == HOST_URING_OP_RECV {
+        if (cqe.flags & URING_CQE_F_MORE) == 0 {
+            host.links[slot].rx_armed = false;
+            host.links[slot].rx_canceling = false;
+        }
+    } else if op == HOST_URING_OP_SEND {
+        if (cqe.flags & URING_CQE_F_NOTIF) != 0 {
+            host.links[slot].tx_notif_pending = false;
+        } else {
+            host.links[slot].tx_inflight = false;
+            if (cqe.flags & URING_CQE_F_MORE) != 0 {
+                host.links[slot].tx_notif_pending = true;
+            }
+        }
+    } else if op == HOST_URING_OP_ACCEPT {
+        if (cqe.flags & URING_CQE_F_MORE) == 0 {
+            host.links[slot].accept_armed = false;
+        }
+    } else if op == HOST_URING_OP_CONNECT {
+        host.links[slot].connect_armed = false;
+    } else if op == HOST_URING_OP_POLL_W {
+        host.links[slot].poll_w_armed = false;
+    }
+    finalize_closing_host_slot(host, slot);
 }
 
 fn dispatch_uring_send_cqe<D, CtxA, CtxB>(
@@ -605,10 +673,16 @@ fn dispatch_uring_send_cqe<D, CtxA, CtxB>(
     cqe:    const UringCqe&,
     count:  i32&,
 ) {
-    guard (cqe.flags & URING_CQE_F_NOTIF) == 0 else { return; }
+    if (cqe.flags & URING_CQE_F_NOTIF) != 0 {
+        host.links[slot].tx_notif_pending = false;
+        return;
+    }
     let link = host_slot_link(host, slot);
     let tag = host.links[slot].tag;
     host.links[slot].tx_inflight = false;
+    if (cqe.flags & URING_CQE_F_MORE) != 0 {
+        host.links[slot].tx_notif_pending = true;
+    }
     if cqe.res <= 0 {
         release_host_slot(host, slot);
         let closed_ev = core::LinkEvent {
@@ -637,8 +711,23 @@ fn dispatch_uring_recv_cqe<D, CtxA, CtxB>(
     bid:        u16,
     count:      i32&,
 ) {
+    if (cqe.flags & URING_CQE_F_MORE) == 0 {
+        host.links[slot].rx_armed = false;
+        host.links[slot].rx_canceling = false;
+    }
     let link = host_slot_link(host, slot);
     let tag = host.links[slot].tag;
+    if cqe.res == URING_ERR_ENOBUFS || cqe.res == URING_ERR_ECANCELED {
+        if has_buf { uring_recycle_pbuf(host.uring_pbuf, bid); }
+        host.links[slot].rx_armed = false;
+        host.links[slot].rx_canceling = false;
+        host.links[slot].epoll_mask &= ~net::EPOLL_READ;
+        if host.links[slot].in_use && host.links[slot].gen == gen &&
+            !host.links[slot].rx_paused && !host.links[slot].eof_received {
+            sync_slot_interest(host, slot);
+        }
+        return;
+    }
     if cqe.res == 0 {
         if has_buf { uring_recycle_pbuf(host.uring_pbuf, bid); }
         host.links[slot].eof_received = true;
@@ -688,6 +777,9 @@ fn dispatch_uring_accept_cqe<D, CtxA, CtxB>(
     cqe:    const UringCqe&,
     count:  i32&,
 ) {
+    if (cqe.flags & URING_CQE_F_MORE) == 0 {
+        host.links[slot].accept_armed = false;
+    }
     if cqe.res > 0 {
         handle_accepted_fd(host, driver, arg_a, arg_b, slot, gen, cqe.res as i64, false, count);
     }
@@ -708,9 +800,14 @@ fn dispatch_uring_cqe<D, CtxA, CtxB>(
 ) {
     let has_buf = (cqe.flags & URING_CQE_F_BUFFER) != 0;
     let bid = ((cqe.flags >> 16) & 0xFFFF) as u16;
-    let op, slot, ok = host_match_uring_tag(host, cqe.user_data);
+    let op, slot, is_closing, ok = host_match_any_uring_tag(host, cqe.user_data);
     guard ok else {
         if has_buf { uring_recycle_pbuf(host.uring_pbuf, bid); }
+        return;
+    }
+    if is_closing {
+        if has_buf { uring_recycle_pbuf(host.uring_pbuf, bid); }
+        handle_closing_uring_cqe(host, op, slot, cqe);
         return;
     }
     if op == HOST_URING_OP_RECV {
@@ -726,6 +823,7 @@ fn dispatch_uring_cqe<D, CtxA, CtxB>(
         return;
     }
     if op == HOST_URING_OP_CONNECT {
+        host.links[slot].connect_armed = false;
         let ev_flags: u32 = if cqe.res < 0 { core::POLL_ERROR } else { core::POLL_WRITE };
         finish_connecting_slot(host, driver, arg_a, arg_b, slot, gen, ev_flags, count);
         return;
@@ -734,13 +832,16 @@ fn dispatch_uring_cqe<D, CtxA, CtxB>(
         dispatch_uring_send_cqe(host, driver, arg_a, arg_b, slot, cqe, count);
         return;
     }
-    if op == HOST_URING_OP_POLL_W && host.links[slot].want_write {
-        host.links[slot].want_write = false;
-        host.links[slot].epoll_mask &= ~net::EPOLL_WRITE;
-        let ev = core::LinkEvent {
-            kind: core::LinkEventKind.Writable, link: host_slot_link(host, slot), tag: host.links[slot].tag, ..
-        };
-        emit_host_event(host, driver, arg_a, arg_b, ev, count);
+    if op == HOST_URING_OP_POLL_W {
+        host.links[slot].poll_w_armed = false;
+        if host.links[slot].want_write {
+            host.links[slot].want_write = false;
+            host.links[slot].epoll_mask &= ~net::EPOLL_WRITE;
+            let ev = core::LinkEvent {
+                kind: core::LinkEventKind.Writable, link: host_slot_link(host, slot), tag: host.links[slot].tag, ..
+            };
+            emit_host_event(host, driver, arg_a, arg_b, ev, count);
+        }
     }
 }
 

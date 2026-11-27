@@ -381,7 +381,7 @@ def check_h2spec_zero_skipped(stdout: str) -> bool:
 
 
 def run_h2spec(
-    spec_section: str = "generic",
+    spec_section: str = "all",
     strict: bool = False,
     timeout_sec: int = 2,
     verbose: bool = False,
@@ -457,7 +457,7 @@ def main():
     parser.add_argument(
         "spec",
         nargs="?",
-        default="generic",
+        default="all",
         help="Spec section to test: generic, http2/3.5, http2/4.1, hpack, or all",
     )
     parser.add_argument("-S", "--strict", action="store_true", help="Run in strict mode")

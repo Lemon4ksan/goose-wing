@@ -72,6 +72,7 @@ struct ServerPipelineConfig {
     enable_slowloris_timer:    bool                              = true,
     tls_enabled:               bool                              = true,
     trust_proxy_headers:       bool                              = false,
+    trusted_proxy_cidrs:       u8[..64][..8]                     = [],
     server_pso_capabilities:   u64                               = 0xFFFFFFFFFFFFFFFF,
     hdr_scan_cursor:           i64                               = 0,
     last_valid_host:           u8[..128]                         = [],
@@ -94,6 +95,7 @@ fn init_server_pipeline_config_inplace(
     cfg.deadline_ns = 30000000000;
     cfg.gzip_level = 1;
     cfg.trust_proxy_headers = false;
+    cfg.trusted_proxy_cidrs.clear();
     cfg.server_pso_capabilities = 0xFFFFFFFFFFFFFFFF;
     cfg.max_header_bytes = 16384;
     cfg.max_body_bytes = 10485760;
@@ -375,31 +377,37 @@ fn validate_pipeline_expect_header(req: const http::Request&) -> bool {
 //
 // Example:
 //   fwd = "for=\"192.0.2.60:4711\";proto=http, for=198.51.100.17"
-//   returns: "192.0.2.60"
-fn extract_rfc7239_forwarded_for(fwd: const u8[:]) -> const u8[:] {
-    var rem = fwd;
-    while rem.len > 0 {
-        let comma_idx = rem.find_unquoted_byte(',');
-        let elem = rem[..comma_idx];
-        rem = if comma_idx < rem.len { rem[core::add_sat_i64(comma_idx, 1)..] } else { "" };
-
-        var elem_rem = elem;
-        while elem_rem.len > 0 {
-            let sc = elem_rem.find_unquoted_byte(';');
-            let pair = elem_rem[..sc];
-            elem_rem = if sc < elem_rem.len { elem_rem[core::add_sat_i64(sc, 1)..] } else { "" };
-
-            let ip = server_internal::parse_forwarded_pair(pair);
-            if ip.len > 0 {
-                return ip;
-            }
-        }
+//   returns: "198.51.100.17"
+fn extract_rfc7239_forwarded_for(
+    fwd:                 const u8[:],
+    trusted_proxy_cidrs: const u8[..64][..8] = [],
+) -> const u8[:] {
+    var starts: i64[..32] = [];
+    var ends:   i64[..32] = [];
+    var offset: i64       = 0;
+    while offset < fwd.len {
+        let comma_rel = fwd[offset..].find_unquoted_byte(',');
+        let elem_end = core::add_sat_i64(offset, comma_rel);
+        guard starts.try_push(offset) && ends.try_push(elem_end) else { return ""; }
+        offset = if elem_end < fwd.len { core::add_sat_i64(elem_end, 1) } else { fwd.len };
     }
-    return "";
+    var last_trusted = fwd[0..0];
+    var i = starts.len;
+    while i > 0 {
+        i -= 1;
+        let ip = server_internal::extract_forwarded_element_ip(fwd[starts[i]..ends[i]]);
+        guard ip.len > 0 && ip.len <= 48 else { break; }
+        if server_internal::is_ip_in_cidr_list(ip, trusted_proxy_cidrs) {
+            last_trusted = ip;
+            continue;
+        }
+        return ip;
+    }
+    return last_trusted;
 }
 
-// Extracts the effective client IP, checking proxy forwarding headers if trusted or local.
-// Priority: RFC 7239 Forwarded ("for=..."), X-Real-IP, X-Forwarded-For, client_ip.
+// Extracts the effective client IP, checking proxy forwarding headers only from trusted peers.
+// Priority: RFC 7239 Forwarded (right-to-left), X-Forwarded-For (right-to-left), X-Real-IP, client_ip.
 //
 // Example:
 //   trust = true, client_ip = "127.0.0.1", req header "Forwarded: for=192.0.2.60"
@@ -408,33 +416,30 @@ fn extract_effective_client_ip(
     trust_proxy_headers: bool,
     client_ip:           const u8[:],
     req:                 const http::Request&,
+    trusted_proxy_cidrs: const u8[..64][..8] = [],
 ) -> const u8[:] {
-    guard server_internal::is_trusted_proxy_peer(trust_proxy_headers, client_ip) &&
+    guard server_internal::is_trusted_proxy_peer(trust_proxy_headers, client_ip, trusted_proxy_cidrs) &&
         server_internal::has_custom_forwarding_header(req.headers) else {
         return client_ip;
     }
     let fwd = http::header(req, rfc::HEADER_FORWARDED);
     if fwd.len > 0 {
-        let fwd_ip = extract_rfc7239_forwarded_for(fwd);
+        let fwd_ip = extract_rfc7239_forwarded_for(fwd, trusted_proxy_cidrs);
         if fwd_ip.len > 0 && fwd_ip.len <= 48 {
             return fwd_ip;
         }
     }
-    let real_ip = server_internal::normalize_forwarded_ip(http::header(req, rfc::HEADER_X_REAL_IP).trim_lws());
-    if real_ip.len > 0 && real_ip.len <= 48 {
-        return real_ip;
-    }
     let xff = http::header(req, rfc::HEADER_X_FORWARDED_FOR);
     if xff.len > 0 {
-        let comma_idx = xff.index_of_byte(',');
-        let raw_first = if comma_idx >= 0 {
-            xff[..comma_idx].trim_lws()
-        } else {
-            xff.trim_lws()
-        };
-        let first_ip = server_internal::normalize_forwarded_ip(raw_first);
-        if first_ip.len > 0 && first_ip.len <= 48 {
-            return first_ip;
+        let xff_ip = server_internal::extract_xff_right_to_left(xff, trusted_proxy_cidrs);
+        if xff_ip.len > 0 && xff_ip.len <= 48 {
+            return xff_ip;
+        }
+    }
+    if fwd.len == 0 && xff.len == 0 {
+        let real_ip = server_internal::normalize_forwarded_ip(http::header(req, rfc::HEADER_X_REAL_IP).trim_lws());
+        if real_ip.len > 0 && real_ip.len <= 48 {
+            return real_ip;
         }
     }
     return client_ip;
@@ -683,7 +688,9 @@ fn execute_server_pipeline_async<UserStage>(
         return PipelineOutcome.Handled;
     }
 
-    let eff_ip = extract_effective_client_ip(cfg.trust_proxy_headers, client_ip, req);
+    let eff_ip = extract_effective_client_ip(
+        cfg.trust_proxy_headers, client_ip, req, cfg.trusted_proxy_cidrs,
+    );
 
     // Stage 1: Connection liveliness / timeout check (Slowloris defense)
     let slow_v = server_internal::stage_server_slowloris(conn_timer, cfg.enable_slowloris_timer, now_ns, res);

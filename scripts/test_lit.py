@@ -36,10 +36,12 @@ def print_colored(text: str, color: str = "") -> None:
 
 
 def run_single_test(
-    lit_bin: Path, test_file: Path, verbose: bool
+    lit_bin: Path, test_file: Path, verbose: bool, config_path: Path | None = None
 ) -> tuple[Path, int, int, str, str]:
     t0 = time.perf_counter()
     cmd = [str(lit_bin), str(test_file)]
+    if config_path is not None:
+        cmd.extend(["--config", str(config_path)])
     if verbose:
         cmd.append("--verbose")
     proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -104,10 +106,21 @@ def main() -> int:
     root = Path(__file__).resolve().parent.parent
     lit_dir = root / "tests" / "lit"
 
+    win_config: Path | None = None
     if platform.system() == "Windows":
         gcc_noavx = root / "tools" / "gcc_noavx.cmd"
+        base_cfg = root / ".litconfig"
         if gcc_noavx.exists():
             os.environ.setdefault("GOOSE_CC", str(gcc_noavx))
+            if base_cfg.exists():
+                win_config = root / ".lit" / "cache" / "litconfig.win"
+                win_config.parent.mkdir(parents=True, exist_ok=True)
+                cfg_lines = base_cfg.read_text(encoding="utf-8").splitlines(keepends=True)
+                win_lines = [
+                    f"cc = {gcc_noavx.as_posix()}\n" if line.strip() == "cc = gcc" else line
+                    for line in cfg_lines
+                ]
+                win_config.write_text("".join(win_lines), encoding="utf-8")
 
     if not lit_dir.exists():
         print_colored(f"ERROR: LIT tests directory not found at {lit_dir}", "red")
@@ -141,7 +154,10 @@ def main() -> int:
     failed = 0
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(run_single_test, lit_bin, tf, args.verbose) for tf in test_files]
+        futures = [
+            executor.submit(run_single_test, lit_bin, tf, args.verbose, win_config)
+            for tf in test_files
+        ]
         for fut in as_completed(futures):
             tf, rc, ms, stdout, stderr = fut.result()
             if rc == 0:

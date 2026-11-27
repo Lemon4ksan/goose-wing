@@ -142,7 +142,15 @@ fn parse_proxy_v1(wire: const u8[:]) -> ProxyHeader, i64, bool {
     return hdr, consumed, true;
 }
 
-// Formats a PROXY protocol v1 text header
+inline fn is_valid_proxy_v1_ip_str(s: const u8[:]) -> bool {
+    guard s.len > 0 && s.len <= 46 else { return false; }
+    for b in s {
+        if b <= 0x20 || b >= 0x7F { return false; }
+    }
+    return true;
+}
+
+// Formats a PROXY protocol v1 text header (<= 107 bytes per HAProxy §2.1).
 fn format_proxy_v1<B>(hdr: const ProxyHeader&, out: B&) -> bool {
     let is_local_or_unspec = hdr.command == ProxyCommand.Local || hdr.family == ProxyAddressFamily.Unspec;
     guard is_local_or_unspec || hdr.family == ProxyAddressFamily.Inet4 || hdr.family == ProxyAddressFamily.Inet6 else {
@@ -150,51 +158,46 @@ fn format_proxy_v1<B>(hdr: const ProxyHeader&, out: B&) -> bool {
     }
 
     var scratch: u8[..128] = [];
-    scratch.append("PROXY ");
+    guard scratch.try_append("PROXY ") else { return false; }
 
     if is_local_or_unspec {
-        scratch.append("UNKNOWN\r\n");
+        guard scratch.try_append("UNKNOWN\r\n") && scratch.len <= net_internal::PROXY_V1_MAX_LEN else {
+            return false;
+        }
         return out.try_append(scratch[..]);
     }
 
-    if hdr.family == ProxyAddressFamily.Inet4 {
-        scratch.append("TCP4 ");
-        if hdr.src_ip_str.len > 0 {
-            scratch.append(hdr.src_ip_str[..]);
-        } else {
-            net_internal::format_ipv4(hdr.src_ipv4, scratch);
-        }
-        scratch.push(' ');
-        if hdr.dst_ip_str.len > 0 {
-            scratch.append(hdr.dst_ip_str[..]);
-        } else {
-            net_internal::format_ipv4(hdr.dst_ipv4, scratch);
-        }
-        scratch.push(' ');
-        format(scratch, hdr.src_port as i64);
-        scratch.push(' ');
-        format(scratch, hdr.dst_port as i64);
-        scratch.append("\r\n");
-        return out.try_append(scratch[..]);
-    }
-
-    scratch.append("TCP6 ");
     if hdr.src_ip_str.len > 0 {
-        scratch.append(hdr.src_ip_str[..]);
+        guard is_valid_proxy_v1_ip_str(hdr.src_ip_str[..]) else { return false; }
+    }
+    if hdr.dst_ip_str.len > 0 {
+        guard is_valid_proxy_v1_ip_str(hdr.dst_ip_str[..]) else { return false; }
+    }
+
+    let proto = if hdr.family == ProxyAddressFamily.Inet4 { "TCP4 " } else { "TCP6 " };
+    guard scratch.try_append(proto) else { return false; }
+    if hdr.src_ip_str.len > 0 {
+        guard scratch.try_append(hdr.src_ip_str[..]) else { return false; }
+    } else if hdr.family == ProxyAddressFamily.Inet4 {
+        net_internal::format_ipv4(hdr.src_ipv4, scratch);
     } else {
         net_internal::format_ipv6(hdr.src_ipv6, scratch);
     }
-    scratch.push(' ');
+    guard scratch.try_push(' ') else { return false; }
     if hdr.dst_ip_str.len > 0 {
-        scratch.append(hdr.dst_ip_str[..]);
+        guard scratch.try_append(hdr.dst_ip_str[..]) else { return false; }
+    } else if hdr.family == ProxyAddressFamily.Inet4 {
+        net_internal::format_ipv4(hdr.dst_ipv4, scratch);
     } else {
         net_internal::format_ipv6(hdr.dst_ipv6, scratch);
     }
-    scratch.push(' ');
-    format(scratch, hdr.src_port as i64);
-    scratch.push(' ');
-    format(scratch, hdr.dst_port as i64);
-    scratch.append("\r\n");
+    guard scratch.try_push(' ') else { return false; }
+    (hdr.src_port as u64).format_u64_dec(scratch);
+    guard scratch.try_push(' ') else { return false; }
+    (hdr.dst_port as u64).format_u64_dec(scratch);
+    guard scratch.try_append("\r\n") && scratch.len <= net_internal::PROXY_V1_MAX_LEN else {
+        return false;
+    }
     return out.try_append(scratch[..]);
 }
 

@@ -8,6 +8,7 @@ import std;
 import os;
 import core;
 import rfc.ws;
+import security.cors;
 import net.transport;
 import .ws_handshake;
 import .websocket;
@@ -162,11 +163,18 @@ fn is_valid_ws_upgrade_req_line(req_head: const u8[:]) -> bool {
     return ok_sp && target.len > 0 && target[0] == '/' && proto == "HTTP/1.1";
 }
 
-fn validate_ws_upgrade_headers(req_head: const u8[:]) -> const u8[:], bool {
+fn validate_ws_upgrade_headers(req_head: const u8[:], allowed_origin: const u8[:] = "") -> const u8[:], bool {
     guard is_valid_ws_upgrade_req_line(req_head) else { return "", false; }
     let host_val, host_cnt = find_http1_header_counted(req_head, "Host");
     let ver, ver_cnt = find_http1_header_counted(req_head, "Sec-WebSocket-Version");
     let key, key_cnt = find_http1_header_counted(req_head, "Sec-WebSocket-Key");
+    let orig_val, orig_cnt = find_http1_header_counted(req_head, "Origin");
+    guard orig_cnt <= 1 else { return "", false; }
+    if allowed_origin.len > 0 {
+        guard orig_cnt == 1 && security::match_cors_origin_pattern(orig_val, allowed_origin) else {
+            return "", false;
+        }
+    }
     guard host_cnt >= 1 && host_val.len > 0 && ver_cnt == 1 && ver == "13" else { return "", false; }
     guard http1_head_has_token(req_head, "Upgrade", "websocket") &&
         http1_head_has_token(req_head, "Connection", "upgrade") else {
@@ -183,14 +191,15 @@ fn validate_ws_upgrade_headers(req_head: const u8[:]) -> const u8[:], bool {
 //   ws_accept_transport(conn, tr, "GET /ws HTTP/1.1\r\nHost: h\r\nUpgrade: websocket\r\n...", "")
 //   returns: true (after writing 101 Switching Protocols)
 fn ws_accept_transport(
-    conn:        WsConn&,
-    t:           net::Transport,
-    req_head:    const u8[:],
-    leftover:    const u8[:] = "",
-    subprotocol: const u8[:] = "",
+    conn:           WsConn&,
+    t:              net::Transport,
+    req_head:       const u8[:],
+    leftover:       const u8[:] = "",
+    subprotocol:    const u8[:] = "",
+    allowed_origin: const u8[:] = "",
 ) -> bool {
     ws_reset_conn(conn);
-    let key, ok_hdrs = validate_ws_upgrade_headers(req_head);
+    let key, ok_hdrs = validate_ws_upgrade_headers(req_head, allowed_origin);
     guard ok_hdrs else { return false; }
 
     var accept_key: u8[..64] = [];

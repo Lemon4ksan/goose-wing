@@ -2238,10 +2238,12 @@ fn test_rfc6265bis_samesite_and_domain_ip_rules(t: lit::T&) {
         sub.assert_true(c.matches_domain("[2001:db8::1]"), "IPv6 with brackets must match unbracketed cookie domain");
     };
 
-    t.run("DOMAIN-DOT-01: FQDN multiple trailing dots normalize correctly") { sub =>
+    t.run("DOMAIN-DOT-01: FQDN trailing dots are isolated and malformed dots rejected") { sub =>
         var c = cookie::new_canonical_cookie("test_dot", "val3");
         c.with_domain("example.com", false);
-        sub.assert_true(c.matches_domain("example.com.."), "Host with multiple trailing dots must match");
+        sub.assert_true(c.matches_domain("example.com"), "Exact domain matches");
+        sub.assert_false(c.matches_domain("example.com."), "Trailing-dot FQDN must not fold onto non-dotted domain");
+        sub.assert_false(c.matches_domain("example.com.."), "Host with multiple trailing dots must not match");
     };
 }
 

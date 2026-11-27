@@ -9,6 +9,7 @@ import std;
 import core;
 import rfc.http;
 import rfc.ws;
+import security.cors;
 import http.headers;
 import http.request;
 import http.response;
@@ -163,9 +164,10 @@ fn validate_client_upgrade_response(
 
 // Server-side WebSocket upgrade handler (RFC 6455). Validates client request and populates 101 response.
 fn ws_upgrade_request(
-    req:         const http::Request&,
-    out_resp:    http::Response&,
-    subprotocol: const u8[:] = "",
+    req:            const http::Request&,
+    out_resp:       http::Response&,
+    subprotocol:    const u8[:] = "",
+    allowed_origin: const u8[:] = "",
 ) -> WebSocketSession, bool {
     guard req.method[..] == "GET" else {
         out_resp.status_code = rfc::STATUS_METHOD_NOT_ALLOWED;
@@ -176,7 +178,7 @@ fn ws_upgrade_request(
         return WebSocketSession { .. }, false;
     }
 
-    let client_key, ok_hdrs = realtime_internal::validate_ws_upgrade_headers(req, out_resp);
+    let client_key, ok_hdrs = realtime_internal::validate_ws_upgrade_headers(req, out_resp, allowed_origin);
     guard ok_hdrs else {
         return WebSocketSession { .. }, false;
     }
@@ -203,6 +205,25 @@ fn ws_upgrade_request(
     }
 
     return session, true;
+}
+
+// Validates a WebSocket upgrade request against a configured `security::CorsPolicy` Origin allowlist
+// before producing `101 Switching Protocols` (or `403 Forbidden` on disallowed Origin).
+fn ws_upgrade_request_with_policy(
+    req:         const http::Request&,
+    out_resp:    http::Response&,
+    policy:      const security::CorsPolicy&,
+    subprotocol: const u8[:] = "",
+) -> WebSocketSession, bool {
+    let origin = req.headers.find_header("Origin").trim_lws();
+    if policy.allowed_origins.len > 0 || policy.reject_non_matching_origin {
+        guard realtime_internal::req_count_header(req, "origin") == 1 &&
+            security::is_origin_allowed(policy, origin) else {
+            out_resp.status_code = rfc::STATUS_FORBIDDEN;
+            return WebSocketSession { .. }, false;
+        }
+    }
+    return ws_upgrade_request(req, out_resp, subprotocol);
 }
 
 // Inspects an incoming HTTP Request to determine if it is an RFC 6455 WebSocket Upgrade request.

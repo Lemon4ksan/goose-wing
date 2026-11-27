@@ -346,12 +346,12 @@ checkfree fn quic_crypto_stage_ooo(
 
 // Drains all newly contiguous or overlapped staged OOO ranges into `stream.buf`.
 checkfree fn quic_crypto_drain_ooo(stream: tls::QuicCryptoStream&) -> bool {
-    let count = stream.ooo_ranges.len;
-    if count == 0 { return true; }
+    let ranges = stream.ooo_ranges;
+    if ranges.len == 0 { return true; }
 
-    var drop_count: i64 = count;
-    for i in count {
-        let r = stream.ooo_ranges[i];
+    var drop_count: i64 = ranges.len;
+    for i in ranges.len {
+        let r = ranges[i];
         if r.start > stream.consumed_offset {
             drop_count = i;
             break;
@@ -369,9 +369,9 @@ checkfree fn quic_crypto_drain_ooo(stream: tls::QuicCryptoStream&) -> bool {
     if drop_count == 0 { return true; }
 
     var next: tls::QuicCryptoOooRange[..16] = [];
-    for k in drop_count..count {
+    for k in drop_count..ranges.len {
         guard next.len < next.cap else { return false; }
-        next.push(stream.ooo_ranges[k]);
+        next.push(ranges[k]);
     }
     stream.ooo_ranges = next;
     return true;

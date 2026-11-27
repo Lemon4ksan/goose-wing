@@ -16,7 +16,6 @@
     "*DelegatedCredential*": "RFC 9345 delegated credentials are not implemented",
     "*ClientAuth*": "PureGoose server-side CertificateRequest is not enabled in shim",
     "*Resume*": "BoGo cross-process session ticket persistence flags are not enabled",
-    "*GREASE*": "BoringSSL-specific GREASE assertion expectations differ from PureGoose",
     "*V2ClientHello*": "SSLv2-compatible ClientHello is rejected by design",
     "*FalseStart*": "TLS 1.2 False Start does not apply to TLS 1.3",
     "*OCSP*": "BoGo stapled OCSP shim flags are tested via native LIT OCSP suites",

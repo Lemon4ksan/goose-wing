@@ -169,54 +169,71 @@ fn verify_client_cors_response<H>(
     return acao.eq_ascii_fold(expected_origin);
 }
 
+inline fn is_wildcard_cors_policy(policy: const CorsPolicy&) -> bool {
+    return !policy.allow_credentials && security_internal::has_wildcard_origin(policy);
+}
+
+fn validate_cors_preflight_headers<Req>(
+    policy:     const CorsPolicy&,
+    req:        const Req&,
+    req_method: const u8[:],
+    allow_wild: bool,
+) -> CorsResult {
+    guard req_method.len > 0 && security_internal::is_valid_cors_token(req_method) &&
+        security_internal::header_list_has_token(policy.allowed_methods[..], req_method, allow_wild) else {
+        return CorsResult.RejectedPreflightMethod;
+    }
+    for &e in req.headers.entries {
+        guard req.headers.entry_name(e).eq_ascii_fold(rfc::HEADER_ACCESS_CONTROL_REQUEST_HEADERS) else { continue; }
+        let hdr_line = req.headers.entry_value(e).trim_lws();
+        if hdr_line.len > 0 &&
+            !are_cors_request_headers_allowed(policy.allowed_headers[..], hdr_line, allow_wild) {
+            return CorsResult.RejectedPreflightHeaders;
+        }
+    }
+    return CorsResult.AllowedPreflight;
+}
+
 // Evaluates CORS rules against request Origin and populates response headers.
 // Returns CorsResult indicating whether the request was allowed, preflighted, or rejected.
 // Wildcard '*' origin is disallowed when allow_credentials is true.
 fn evaluate_cors<Req, Res>(policy: const CorsPolicy&, req: const Req&, res: Res&) -> CorsResult {
+    let is_wild = is_wildcard_cors_policy(policy);
     let origin, origin_unique = security_internal::find_unique_cors_header(req.headers, rfc::HEADER_ORIGIN);
-    guard origin_unique else { return CorsResult.RejectedOrigin; }
-    guard origin.len > 0 else { return CorsResult.NoCors; }
-    guard !origin.contains_byte(',') else { return CorsResult.RejectedOrigin; }
-
-    // Check configuration validity: allow_credentials == true with wildcard "*" origin is invalid (Fetch §3.2.2)
+    guard origin_unique && !origin.contains_byte(',') else {
+        if !is_wild { apply_cors_vary_header(res); }
+        return CorsResult.RejectedOrigin;
+    }
+    guard origin.len > 0 else {
+        if !is_wild { apply_cors_vary_header(res); }
+        return CorsResult.NoCors;
+    }
     guard validate_cors_policy(policy) else { return CorsResult.InvalidConfig; }
-    guard is_origin_allowed(policy, origin) else { return CorsResult.RejectedOrigin; }
+    guard is_origin_allowed(policy, origin) else {
+        if !is_wild { apply_cors_vary_header(res); }
+        return CorsResult.RejectedOrigin;
+    }
 
     let req_method_hdr, acrm_unique = security_internal::find_unique_cors_header(
         req.headers, rfc::HEADER_ACCESS_CONTROL_REQUEST_METHOD,
     );
-    guard acrm_unique else { return CorsResult.RejectedPreflightMethod; }
-    var has_acrm = false;
-    for &e in req.headers.entries {
-        if req.headers.entry_name(e).eq_ascii_fold(rfc::HEADER_ACCESS_CONTROL_REQUEST_METHOD) {
-            has_acrm = true;
-            break;
-        }
-    }
+    let has_acrm = req.headers.has_header(rfc::HEADER_ACCESS_CONTROL_REQUEST_METHOD);
     let is_preflight = req.method[..] == rfc::METHOD_OPTIONS && has_acrm;
-    if is_preflight {
-        let allow_wild = !policy.allow_credentials;
-        guard req_method_hdr.len > 0 && security_internal::is_valid_cors_token(req_method_hdr) &&
-            security_internal::header_list_has_token(policy.allowed_methods[..], req_method_hdr, allow_wild) else {
-            return CorsResult.RejectedPreflightMethod;
+    if !acrm_unique || is_preflight {
+        if !is_wild { apply_cors_vary_header(res); }
+        if req.method[..] == rfc::METHOD_OPTIONS {
+            security_internal::merge_response_vary_tokens(
+                res.headers, "Access-Control-Request-Method, Access-Control-Request-Headers",
+            );
         }
-        for &e in req.headers.entries {
-            guard req.headers.entry_name(e).eq_ascii_fold(rfc::HEADER_ACCESS_CONTROL_REQUEST_HEADERS) else { continue; }
-            let hdr_line = req.headers.entry_value(e).trim_lws();
-            if hdr_line.len > 0 &&
-                !are_cors_request_headers_allowed(policy.allowed_headers[..], hdr_line, allow_wild) {
-                return CorsResult.RejectedPreflightHeaders;
-            }
-        }
+        guard acrm_unique else { return CorsResult.RejectedPreflightMethod; }
+        let pf_res = validate_cors_preflight_headers(policy, req, req_method_hdr, !policy.allow_credentials);
+        guard pf_res == CorsResult.AllowedPreflight else { return pf_res; }
     }
 
-    let is_wildcard_allow = !policy.allow_credentials && security_internal::has_wildcard_origin(policy);
-    let allow_origin_val = if is_wildcard_allow { "*" } else { origin };
+    let allow_origin_val = if is_wild { "*" } else { origin };
     res.headers.set_header(rfc::HEADER_ACCESS_CONTROL_ALLOW_ORIGIN, allow_origin_val);
-
-    if !is_wildcard_allow {
-        apply_cors_vary_header(res);
-    }
+    if !is_wild { apply_cors_vary_header(res); }
 
     if policy.allow_credentials {
         res.headers.set_header(rfc::HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS, "true");

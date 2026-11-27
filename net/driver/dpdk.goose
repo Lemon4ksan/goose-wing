@@ -48,6 +48,7 @@ extern fn native_dpdk_rx_burst_read_one(
     queue_id: u16,
     dst:      u8[:],
 ) -> i32 = "wing_dpdk_rx_burst_read_one";
+extern fn native_dpdk_pktmbuf_free(mbuf_ptr: u64) = "wing_dpdk_pktmbuf_free";
 
 struct DpdkPortConfig {
     port_id:      u16  = 0,
@@ -133,6 +134,12 @@ fn dpdk_tx_burst(dev: const DpdkDevice&, queue_id: u16, mbufs: const u64[:]) -> 
     guard dev.is_started && mbufs.len > 0 else { return 0; }
     let nb = min(mbufs.len, 64) as u16;
     return native_dpdk_tx_burst(dev.port_id, queue_id, mbufs[0], nb);
+}
+
+fn dpdk_free_mbuf(mbuf: u64) {
+    if mbuf != 0 {
+        native_dpdk_pktmbuf_free(mbuf);
+    }
 }
 
 fn dpdk_rx_burst(dev: const DpdkDevice&, queue_id: u16, out_mbufs: u64[..32]&, max_pkts: u16 = 32) -> u16 {

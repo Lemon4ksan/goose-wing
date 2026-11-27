@@ -204,7 +204,7 @@ fn handle_migration_probe(
         let _ = net::send(udp_tr, "MIG_REGISTERED");
         return true;
     }
-    if datagram.len >= 9 && datagram[0] == QUIC_FRAME_PATH_RESPONSE {
+    if mig.initialized && datagram.len >= 9 && datagram[0] == QUIC_FRAME_PATH_RESPONSE {
         let ok_resp = quic::on_path_response(mig.mgr, datagram[1..9]) && quic::complete(mig.mgr);
         if ok_resp {
             var ack: u8[..32] = [];
@@ -224,14 +224,15 @@ fn handle_migration_probe(
 }
 
 fn dispatch_incoming_datagram(
-    sock:      i64,
-    server:    server::HttpServer&,
-    ep:        server::H3ServerEndpoint&,
-    mig:       H3MigrationSession&,
-    datagram:  const u8[:],
-    peer_ip:   u32,
-    peer_port: u16,
-    out_wire:  u8[..2048]&,
+    sock:              i64,
+    server:            server::HttpServer&,
+    ep:                server::H3ServerEndpoint&,
+    mig:               H3MigrationSession&,
+    datagram:          const u8[:],
+    peer_ip:           u32,
+    peer_port:         u16,
+    enable_test_hooks: bool,
+    out_wire:          u8[..2048]&,
 ) -> bool {
     let udp_tr = net::Transport.Udp {
         fd:        sock,
@@ -242,11 +243,11 @@ fn dispatch_incoming_datagram(
         let _ = net::send(udp_tr, "BYE");
         return false;
     }
-    if datagram.len >= 15 && datagram[..15] == "H3_STREAM_2MB\r\n" {
+    if enable_test_hooks && datagram.len >= 15 && datagram[..15] == "H3_STREAM_2MB\r\n" {
         send_2mb_h3_stream(sock, udp_tr);
         return true;
     }
-    if handle_migration_probe(udp_tr, mig, datagram, peer_port) {
+    if enable_test_hooks && handle_migration_probe(udp_tr, mig, datagram, peer_port) {
         return true;
     }
 
@@ -266,12 +267,13 @@ inline fn is_recv_valid(recvd: i32, max_len: i64) -> bool {
 }
 
 fn poll_and_dispatch_datagram(
-    sock:     i64,
-    server:   server::HttpServer&,
-    ep:       server::H3ServerEndpoint&,
-    mig:      H3MigrationSession&,
-    in_buf:   u8[:],
-    out_wire: u8[..2048]&,
+    sock:              i64,
+    server:            server::HttpServer&,
+    ep:                server::H3ServerEndpoint&,
+    mig:               H3MigrationSession&,
+    in_buf:            u8[:],
+    enable_test_hooks: bool,
+    out_wire:          u8[..2048]&,
 ) -> bool {
     var peer_port: u16 = 0;
     var peer_ip:   u32 = 0;
@@ -280,21 +282,49 @@ fn poll_and_dispatch_datagram(
         return true;
     }
     return dispatch_incoming_datagram(
-        sock, server, ep, mig, in_buf[..(recvd as i64)], peer_ip, peer_port, out_wire,
+        sock,
+        server,
+        ep,
+        mig,
+        in_buf[..(recvd as i64)],
+        peer_ip,
+        peer_port,
+        enable_test_hooks,
+        out_wire,
     );
 }
 
-fn run_server_loop(sock: i64, server: server::HttpServer&, ep: server::H3ServerEndpoint&) {
+fn run_server_loop(
+    sock:              i64,
+    server:            server::HttpServer&,
+    ep:                server::H3ServerEndpoint&,
+    enable_test_hooks: bool,
+) {
     var in_buf:   u8[65536]  = [0; 65536];
     var out_wire: u8[..2048] = [];
     var mig = H3MigrationSession { .. };
     var is_running = true;
     while is_running {
-        is_running = poll_and_dispatch_datagram(sock, server, ep, mig, in_buf[..], out_wire);
+        is_running = poll_and_dispatch_datagram(
+            sock, server, ep, mig, in_buf[..], enable_test_hooks, out_wire,
+        );
     }
 }
 
+fn has_cli_flag(cli_args: u8[:][>..]&, flag: const u8[:]) -> bool {
+    var i: i64 = 1;
+    while i < cli_args.len {
+        if cli_args[i] == flag {
+            return true;
+        }
+        i = core::add_sat_i64(i, 1);
+    }
+    return false;
+}
+
 fn main() {
+    let cli_args = args();
+    let enable_test_hooks = has_cli_flag(cli_args, "--enable-test-hooks");
     let port_env = net::get_env_port(0);
     let sock = net::udp_bind("0.0.0.0", port_env);
     guard sock > 0 else {
@@ -320,7 +350,7 @@ fn main() {
 
     print("READY_PORT:", port, "\n");
 
-    run_server_loop(sock, server, ep);
+    run_server_loop(sock, server, ep, enable_test_hooks);
 
     net::tcp_close(sock);
 }

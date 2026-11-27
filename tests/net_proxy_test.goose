@@ -679,6 +679,9 @@ fn test_proxy_server_integration(t: lit::T&) {
     t.run("HttpServer with accept_proxy_protocol = true") { sub =>
         var server = server::new_http_server("127.0.0.1", 8080);
         server.accept_proxy_protocol = true;
+        var trusted_cidr: u8[..64] = [];
+        let _ = trusted_cidr.try_set("127.0.0.0/8");
+        let _ = server.proxy_protocol_trusted_cidrs.try_push(trusted_cidr);
         server::add_get_route(server, "/api/hello", 101);
 
         // Prepend PROXY v1 header before HTTP/1.1 wire request

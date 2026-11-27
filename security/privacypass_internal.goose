@@ -260,7 +260,11 @@ fn parse_challenge_params(
         }
         guard consume_challenge_param_delimiter(raw, idx) else { return false; }
     }
-    guard challenge_b64.len > 0 else { return false; }
+    // RFC 9577 Section 2.1.2.1: Both challenge and token-key parameters are REQUIRED.
+    guard (seen_mask & 1) != 0 && challenge_b64.len > 0 &&
+          (seen_mask & 2) != 0 && temp_token_key.len > 0 else {
+        return false;
+    }
     committed = true;
     return true;
 }

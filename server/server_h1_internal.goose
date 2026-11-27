@@ -144,7 +144,7 @@ fn headers_have_conn_token(headers: const http::HeaderMap&, token: const u8[:]) 
 // Checks whether request or response demands connection closure (RFC 9112 §9.3 & NGINX proxy_pass harmony).
 // Applies "Connection: close" to response headers if close is requested or for HTTP/1.0 without keep-alive.
 fn check_and_apply_connection_close(req: const http::Request&, res: http::Response&) -> bool {
-    guard res.status_code != 101 else { return false; }
+    if res.status_code == rfc::STATUS_SWITCHING_PROTOCOLS { return true; }
     let has_conn_hdr = http::has_header(req, "connection") ||
         http::has_header(res, "connection") ||
         (res.presence_mask & http::RES_PRESENCE_CONNECTION) != 0;
@@ -246,6 +246,22 @@ fn authorize_ws_upgrade_stage<Stage, B>(
     wire_out: B&,
     stage:    Stage&,
 ) -> bool {
+    // CSWSH protection: validate Origin against configured CORS/Origin allowlist before 101.
+    let enforce_origin = server.pipeline.cors_policy.allowed_origins.len > 0 ||
+        server.pipeline.cors_policy.reject_non_matching_origin;
+    if enforce_origin {
+        let origin_hdr = req.headers.find_header("Origin").trim_lws();
+        if !security::is_origin_allowed(server.pipeline.cors_policy, origin_hdr) {
+            reset_server_response_fast(res);
+            res.status_code = rfc::STATUS_FORBIDDEN;
+            res.set_header("Connection", "close");
+            server::serialize_http1_response(
+                res, server.server_name[..], wire_out, 0, resolve_server_header_policy(server),
+            );
+            server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
+            return false;
+        }
+    }
     if is_noop_server_stage(stage) { return true; }
     reset_server_response_fast(res);
     var sctx = server::ServerStageCtx { handler_id: ws_idx, now_ns: now_ns, .. };

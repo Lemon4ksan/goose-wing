@@ -104,14 +104,16 @@ fn serialize_cache_group_list<B>(tags: const CacheGroupTag[:], out: B&) -> bool 
 
 // Reports whether a stored response belongs to the given group.
 // Names compare character-by-character, case sensitive (RFC 9875 §2.1).
-// Evaluates `entry.headers.get_header("cache-groups")` on demand to avoid storing a 2.1 KB tag array per CachedEntry.
+// Evaluates all `Cache-Groups` header instances on demand.
 fn entry_has_group(entry: const CachedEntry&, group: const u8[:]) -> bool {
-    let raw_cg = entry.headers.get_header("cache-groups");
-    guard raw_cg.len > 0 else { return false; }
-    var tags: CacheGroupTag[..32] = [];
-    guard parse_cache_group_list(raw_cg, tags) && tags.len > 0 else { return false; }
-    for &tag in tags {
-        if tag.name[..] == group { return true; }
+    for &e in entry.headers.entries {
+        guard entry.headers.entry_name(e).eq_ascii_fold("cache-groups") else { continue; }
+        var tags: CacheGroupTag[..32] = [];
+        if parse_cache_group_list(entry.headers.entry_value(e), tags) {
+            for &tag in tags {
+                if tag.name[..] == group { return true; }
+            }
+        }
     }
     return false;
 }
@@ -132,6 +134,9 @@ fn invalidate_group(
         guard err_base == core::UrlParseError.None && parsed_base.valid else { return 0; }
         base_orig = core::origin_from_url(parsed_base);
         has_origin = base_orig.scheme.len > 0;
+        guard has_origin else { return 0; }
+    } else if cache.options.shared {
+        return 0;
     }
     for &entry, idx in cache.entries {
         if !entry.is_valid { continue; }

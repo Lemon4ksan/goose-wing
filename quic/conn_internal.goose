@@ -609,10 +609,17 @@ inline fn dispatch_conn_id_frame(conn: quic::QuicConnection&, frame: const quic:
         return quic::ProcessResult { handled: true, needs_ack: true };
     }
     if frame.frame_type == quic::QuicFrameType.RetireConnectionId {
-        // RFC 9000 Section 19.16: RETIRE_CONNECTION_ID Frames - An endpoint that provides a zero-length connection ID MUST treat receipt of a RETIRE_CONNECTION_ID frame as a connection error of type PROTOCOL_VIOLATION.
-        if conn.scid.len == 0 {
+        // RFC 9000 Section 19.16: RETIRE_CONNECTION_ID Frames - Zero-length SCID or unissued sequence
+        // number MUST be treated as PROTOCOL_VIOLATION.
+        if conn.scid.len == 0 || frame.stream_id > (conn.alt_scids.len as u64) {
             quic::close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
             return quic::ProcessResult { handled: false, needs_ack: false };
+        }
+        if frame.stream_id >= 1 {
+            let alt_i = (frame.stream_id - 1) as i64;
+            if alt_i >= 0 && alt_i < conn.alt_scids.len {
+                conn.alt_scids[alt_i].clear();
+            }
         }
         return quic::ProcessResult { handled: true, needs_ack: true };
     }

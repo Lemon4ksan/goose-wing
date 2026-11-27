@@ -473,7 +473,15 @@ fn establish_https_transport(
     ech_list:       const u8[:],
     tls_timeout_ms: u32,
     now_sec:        i64,
+    alpn_override:  const u8[:] = "",
 ) -> net::Transport, net::NegotiatedProtocol, http::Error {
+    if session.enable_ech && ech_list.len == 0 {
+        return net::Transport.Disconnected,
+            net::NegotiatedProtocol.Http11,
+            http::make_error(
+                rfc::STATUS_BAD_GATEWAY, "tls", "ECH required but no ECHConfigList available",
+            );
+    }
     let host_is_hsts = session.enable_hsts && session.hsts.is_hsts_host(host_str, now_sec);
     let effective_insecure_skip = session.insecure_skip_verify && !host_is_hsts;
     let pure_only_opts = ech_list.len > 0 || session.virtual_clock_us > 0 ||
@@ -484,7 +492,7 @@ fn establish_https_transport(
     }
     if !force_pure {
         let ep_slot, neg_alpn, tls_err = establish_backend_tls_connection(
-            session, sock, host_str, effective_insecure_skip, tls_timeout_ms,
+            session, sock, host_str, effective_insecure_skip, tls_timeout_ms, alpn_override,
         );
         guard http::ok(tls_err) else {
             return net::Transport.Disconnected, net::NegotiatedProtocol.Http11, tls_err;
@@ -501,6 +509,7 @@ fn establish_https_transport(
     defer core::secure_zeroize_32(tls_cfg.client_priv_seed);
     let prep_err = prepare_pure_tls_client_config(
         session, host_str, ech_list, effective_insecure_skip, tls_timeout_ms, now_sec, tls_cfg,
+        alpn_override,
     );
     guard http::ok(prep_err) else {
         return net::Transport.Disconnected, net::NegotiatedProtocol.Http11, prep_err;

@@ -63,7 +63,10 @@ inline fn find_key_idx(store: const security::KeyStore&, key_id: u32) -> i64, bo
 }
 
 // Additional Authenticated Data (AAD) for context binding:
-// ver (1B) || key_id (4B) || timestamp_sec (8B) || cookie_name_len (2B) || cookie_name.
+// ver (1B) || key_id (4B) || timestamp_sec (8B) || cookie_name_len (2B) || cookie_name
+// [|| context_len (2B) || context [|| salt_len (2B) || salt]].
+// When `context` and `salt` are empty, emits the exact 15 + len(cookie_name) legacy AAD.
+// When `context` is non-empty on HKDF-AES-GCM, the full 256-bit `salt` is also bound into AAD.
 //
 // Example:
 //   ver = 1, key_id = 1, timestamp_sec = 1700000000, cookie_name = "sid", out = []
@@ -74,12 +77,22 @@ fn build_cookie_aad<B>(
     timestamp_sec: u64,
     cookie_name:   const u8[:],
     out:           B&,
+    context:       const u8[:] = "",
+    salt:          const u8[:] = "",
 ) {
     out.push(ver);
     out.append_u32_be(key_id);
     out.append_u64_be(timestamp_sec);
     out.append_u16_be(cookie_name.len as u16);
     out.append(cookie_name);
+    if context.len > 0 {
+        out.append_u16_be(context.len as u16);
+        out.append(context);
+        if salt.len > 0 {
+            out.append_u16_be(salt.len as u16);
+            out.append(salt);
+        }
+    }
 }
 
 // Framed HMAC input buffer for SignedJar:
@@ -179,6 +192,7 @@ fn seal_binary_hkdf_aes<B>(
     now_sec:     i64,
     nonce_seed:  u64,
     out:         B&,
+    context:     const u8[:] = "",
 ) -> bool {
     guard now_sec > 0 && is_jar_key_valid_at(slot, now_sec) &&
         cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
@@ -199,9 +213,10 @@ fn seal_binary_hkdf_aes<B>(
     out.append(salt[..]);
     out.append(nonce12[..]);
 
-    var aad_stack: u8[..4128] = [];
+    var aad_stack: u8[..4224] = [];
     defer core::secure_zeroize_slice(aad_stack[..]);
-    build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec as u64, cookie_name, aad_stack);
+    let aad_salt = if context.len > 0 { salt[..] } else { "" };
+    build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec as u64, cookie_name, aad_stack, context, aad_salt);
     let ct_start = out.len;
     out.resize(core::add_sat_i64(ct_start, plaintext.len), 0);
     let tag, _, ok_seal = core::hkdf_aes256_gcm_seal(
@@ -224,6 +239,7 @@ fn seal_binary_xchacha20<B>(
     now_sec:     i64,
     nonce_seed:  u64,
     out:         B&,
+    context:     const u8[:] = "",
 ) -> bool {
     guard now_sec > 0 && is_jar_key_valid_at(slot, now_sec) &&
         cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
@@ -247,9 +263,9 @@ fn seal_binary_xchacha20<B>(
     core::ct_copy_bytes(nonce24[..], entropy[..24]);
     out.append(nonce24[..]);
 
-    var aad_stack: u8[..4128] = [];
+    var aad_stack: u8[..4224] = [];
     defer core::secure_zeroize_slice(aad_stack[..]);
-    build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, now_u, cookie_name, aad_stack);
+    build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, now_u, cookie_name, aad_stack, context);
     let tag, ok_seal = core::xchacha20_poly1305_seal(slot.encryption_key, nonce24, plaintext, aad_stack[..], out);
     guard ok_seal else {
         core::secure_zeroize_slice(out[..]);
@@ -297,8 +313,9 @@ fn open_binary_xchacha20<B>(
     var tag: u8[16] = [0; 16];
     core::ct_copy_bytes(tag[..], raw_wire[tag_off..core::add_sat_i64(tag_off, 16)]);
 
-    var aad_stack: u8[..4128] = [];
-    build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, ts, cookie_name, aad_stack);
+    var aad_stack: u8[..4224] = [];
+    defer core::secure_zeroize_slice(aad_stack[..]);
+    build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, ts, cookie_name, aad_stack, jar.context[..]);
     guard core::xchacha20_poly1305_open(slot.encryption_key, nonce24, ct, aad_stack[..], tag, out) else {
         return false;
     }
@@ -343,8 +360,10 @@ fn open_binary_hkdf_aes<B>(
     var tag: u8[16] = [0; 16];
     core::ct_copy_bytes(tag[..], raw_wire[tag_off..core::add_sat_i64(tag_off, 16)]);
 
-    var aad_stack: u8[..4128] = [];
-    build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, ts, cookie_name, aad_stack);
+    var aad_stack: u8[..4224] = [];
+    defer core::secure_zeroize_slice(aad_stack[..]);
+    let aad_salt = if jar.context.len > 0 { salt32[..] } else { "" };
+    build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, ts, cookie_name, aad_stack, jar.context[..], aad_salt);
     guard core::hkdf_aes256_gcm_open(slot.encryption_key, salt32, nonce12, ct, aad_stack[..], tag, out) else {
         return false;
     }

@@ -164,8 +164,14 @@ fn extract_status<B>(
     out_message.clear();
     let http_code = grpc_internal::resolve_effective_http_status(headers);
 
+    let tr_cnt = grpc_internal::count_header_occurrences(trailers, rfc::HEADER_GRPC_STATUS);
+    let hd_cnt = grpc_internal::count_header_occurrences(headers, rfc::HEADER_GRPC_STATUS);
+    if tr_cnt > 1 || (tr_cnt == 0 && hd_cnt > 1) {
+        out_status = StatusCode.Unknown;
+        return false;
+    }
     let trailer_status = trailers.get_header(rfc::HEADER_GRPC_STATUS);
-    if trailer_status.len > 0 || trailers.has_header(rfc::HEADER_GRPC_STATUS) {
+    if tr_cnt == 1 || trailer_status.len > 0 {
         let code_int, ok_code = trailer_status.trim_lws().parse_u32_dec();
         out_status = if ok_code { status_from_code(code_int) } else { StatusCode.Unknown };
         if http_code != 200 && out_status == StatusCode.Ok {
@@ -180,7 +186,7 @@ fn extract_status<B>(
     }
 
     let header_status = headers.get_header(rfc::HEADER_GRPC_STATUS);
-    if header_status.len > 0 || headers.has_header(rfc::HEADER_GRPC_STATUS) {
+    if hd_cnt == 1 || header_status.len > 0 {
         let code_int, ok_code = header_status.trim_lws().parse_u32_dec();
         out_status = if ok_code { status_from_code(code_int) } else { StatusCode.Unknown };
         if http_code != 200 && out_status == StatusCode.Ok {

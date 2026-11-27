@@ -323,7 +323,8 @@ fn apply_content_length_header(val: const u8[:], flags: u16&, content_length: i6
 
 // RFC 9112 Section 6.1: Transfer-Encoding - rejects TE+CL conflicts, HTTP/1.0 TE, and unknown codings.
 fn apply_transfer_encoding_header(val: const u8[:], flags: u16&) -> ParseStatus {
-    guard (flags & H1_FLAG_HAS_CL) == 0 && (flags & H1_FLAG_HTTP10) == 0 else {
+    // RFC 9112 §6.3: Reject duplicate Transfer-Encoding or Transfer-Encoding alongside Content-Length / HTTP/1.0.
+    guard (flags & H1_FLAG_HAS_TE) == 0 && (flags & H1_FLAG_HAS_CL) == 0 && (flags & H1_FLAG_HTTP10) == 0 else {
         return ParseStatus.BadRequest;
     }
     guard core::eq_ascii_fold(val, "chunked") else { return ParseStatus.BadRequest; }
@@ -357,6 +358,75 @@ fn apply_request_framing_header(name: const u8[:], val: const u8[:], req: Reques
     return ParseStatus.Complete;
 }
 
+// Parses an RFC 9112 §7.1.1 chunk-ext-val (token or quoted-string) starting after OWS.
+// Advances `pos` past the value on success; restores `pos` on failure.
+//
+// Example:
+//   ext = "name=\"v\\n1\"", pos = 5
+//   returns: true, pos = 12
+fn scan_chunk_ext_val(ext: const u8[:], pos: i64&) -> bool {
+    let saved = pos;
+    let n = ext.len;
+    while pos < n && core::is_lws(ext[pos]) { pos = pos + 1; }
+    if pos >= n {
+        pos = saved;
+        return false;
+    }
+    if ext[pos] != '"' {
+        let val_start = pos;
+        while pos < n && core::is_tchar(ext[pos]) { pos = pos + 1; }
+        guard pos > val_start else {
+            pos = saved;
+            return false;
+        }
+        return true;
+    }
+    pos = pos + 1;
+    var escaped = false;
+    while pos < n {
+        let b = ext[pos];
+        pos = pos + 1;
+        guard b == '\t' || (b >= 0x20 && b != 0x7F) else {
+            pos = saved;
+            return false;
+        }
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if b == '\\' {
+            escaped = true;
+            continue;
+        }
+        if b == '"' { return true; }
+    }
+    pos = saved;
+    return false;
+}
+
+// Validates RFC 9112 §7.1.1 chunk-ext syntax: *( BWS ";" BWS chunk-ext-name [ BWS "=" BWS chunk-ext-val ] ).
+inline fn is_valid_chunk_ext(ext: const u8[:]) -> bool {
+    var pos: i64 = 0;
+    let n = ext.len;
+    while pos < n {
+        while pos < n && core::is_lws(ext[pos]) { pos = pos + 1; }
+        let name_start = pos;
+        while pos < n && core::is_tchar(ext[pos]) { pos = pos + 1; }
+        guard pos > name_start else { return false; }
+        while pos < n && core::is_lws(ext[pos]) { pos = pos + 1; }
+        if pos < n && ext[pos] == '=' {
+            pos = pos + 1;
+            guard scan_chunk_ext_val(ext, pos) else { return false; }
+            while pos < n && core::is_lws(ext[pos]) { pos = pos + 1; }
+        }
+        if pos >= n { return true; }
+        guard ext[pos] == ';' else { return false; }
+        pos = pos + 1;
+        guard pos < n else { return false; }
+    }
+    return false;
+}
+
 inline fn is_valid_chunk_size_and_ext(line: const u8[:], out_sz: u64&) -> bool {
     let sz_raw, ext_raw, has_semi = core::split_once_byte(line, ';');
     let sz_clean = if has_semi { core::trim_lws_end(sz_raw) } else { sz_raw };
@@ -365,11 +435,7 @@ inline fn is_valid_chunk_size_and_ext(line: const u8[:], out_sz: u64&) -> bool {
         guard core::is_ascii_hexdigit(b) else { return false; }
     }
     if has_semi {
-        for b in ext_raw {
-            guard b != 0 && b != '\r' && b != '\n' && b != 0x7F && (b >= 0x20 || b == '\t') else {
-                return false;
-            }
-        }
+        guard is_valid_chunk_ext(ext_raw) else { return false; }
     }
     let parsed, ok_hex = core::parse_u64_hex(sz_clean);
     out_sz = parsed;

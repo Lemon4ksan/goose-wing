@@ -26,17 +26,24 @@ fn build_http_connect_request(
     proxy_auth:  const u8[:],
     user_agent:  const u8[:],
     out:         u8[..1024]&,
-) {
-    guard net_internal::is_valid_connect_host(target_host) else { return; }
+) -> bool {
+    guard net_internal::is_valid_connect_host(target_host) else { return false; }
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
     out.clear();
-    net_internal::append_connect_line(out, target_host, target_port);
-    net_internal::append_sanitized_header(out, "Proxy-Authorization: ", proxy_auth);
-    net_internal::append_sanitized_header(out, "User-Agent: ", user_agent);
-    out.append("Proxy-Connection: Keep-Alive\r\n\r\n");
+    guard net_internal::append_connect_line(out, target_host, target_port) &&
+        net_internal::append_sanitized_header(out, "Proxy-Authorization: ", proxy_auth) &&
+        net_internal::append_sanitized_header(out, "User-Agent: ", user_agent) &&
+        out.try_append("Proxy-Connection: Keep-Alive\r\n\r\n") else {
+        return false;
+    }
+    committed = true;
+    return true;
 }
 
-// Strips Proxy-Authorization, Proxy-Connection, standard hop-by-hop headers,
-// and Connection tokens so credentials never leak to origin (RFC 9110 §7.6.1 & Go #16875).
+// Strips Proxy-Authorization, Proxy-Connection, and standard hop-by-hop headers
+// so credentials never leak to origin (RFC 9110 §7.6.1).
 //
 // Example:
 //   headers contains [("Proxy-Authorization", "Basic ..."), ("Host", "example.com")]
@@ -49,9 +56,9 @@ fn sanitize_tunnel_headers_for_origin(headers: http::HeaderMap&) {
     let total_entries = orig_headers.entries.len;
     for read_i in total_entries {
         let h_name = http::entry_name(orig_headers, orig_headers.entries[read_i]);
-        let drop = http::is_hop_by_hop_header_name(h_name) ||
-            net_internal::is_token_in_connection_headers(orig_headers, h_name);
-        if !drop {
+        let is_dyn_hop = http::is_token_in_connection_header_map(orig_headers, h_name)
+            && !http::is_protected_end_to_end_header(h_name);
+        if !http::is_hop_by_hop_header_name(h_name) && !is_dyn_hop {
             http::compact_kept_entry_into(headers, read_i, write_entry_i, new_raw);
         }
     }
@@ -116,7 +123,9 @@ fn http_connect_client_handshake(
 ) -> ConnectTunnelError {
     guard sock_fd > 0 else { return ConnectTunnelError.ConnectFailed; }
     var req_buf: u8[..1024] = [];
-    build_http_connect_request(target_host, target_port, proxy_auth, user_agent, req_buf);
+    guard build_http_connect_request(target_host, target_port, proxy_auth, user_agent, req_buf) else {
+        return ConnectTunnelError.ConnectFailed;
+    }
     guard req_buf.len > 0 && tcp_send(sock_fd, req_buf[..]) == (req_buf.len as i32) else {
         return ConnectTunnelError.ConnectFailed;
     }

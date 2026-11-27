@@ -16,6 +16,9 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include <limits.h>
+
+#pragma pack(push, 1)
 typedef struct {
     uint8_t *data;
     int64_t len;
@@ -25,6 +28,12 @@ typedef struct {
     const uint8_t *data;
     int64_t len;
 } wing_bytes_ro;
+#pragma pack(pop)
+
+_Static_assert(sizeof(wing_bytes_rw) == sizeof(uint8_t *) + sizeof(int64_t), "wing_bytes_rw must be packed");
+_Static_assert(offsetof(wing_bytes_rw, len) == sizeof(uint8_t *), "wing_bytes_rw.len must follow data");
+_Static_assert(sizeof(wing_bytes_ro) == sizeof(const uint8_t *) + sizeof(int64_t), "wing_bytes_ro must be packed");
+_Static_assert(offsetof(wing_bytes_ro, len) == sizeof(const uint8_t *), "wing_bytes_ro.len must follow data");
 
 #if defined(__wasm__)
 #include <stdlib.h>
@@ -139,20 +148,32 @@ int32_t wing_page_ring_create(uint32_t min_capacity, uint64_t *out_handle, uint3
         PVOID ph = pVirtualAlloc2(GetCurrentProcess(), NULL, 2 * (SIZE_T)cap, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
                                   PAGE_NOACCESS, NULL, 0);
         if (ph) {
-            pVirtualFreeEx(GetCurrentProcess(), ph, cap, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER);
-            PVOID v1 = pMapViewOfFile3(hMap, GetCurrentProcess(), ph, 0, cap, MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE,
-                                       NULL, 0);
-            PVOID v2 = pMapViewOfFile3(hMap, GetCurrentProcess(), (char *)ph + cap, 0, cap, MEM_REPLACE_PLACEHOLDER,
-                                       PAGE_READWRITE, NULL, 0);
-            if (v1 && v2 && v2 == (char *)v1 + cap) {
-                ring->base = (uint8_t *)ph;
-                ring->is_placeholder = 1;
-                *out_handle = (uint64_t)(uintptr_t)ring;
-                *out_capacity = cap;
-                return 0;
+            if (!pVirtualFreeEx(GetCurrentProcess(), ph, cap, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) {
+                VirtualFree(ph, 0, MEM_RELEASE);
+            } else {
+                PVOID v1 = pMapViewOfFile3(hMap, GetCurrentProcess(), ph, 0, cap, MEM_REPLACE_PLACEHOLDER,
+                                           PAGE_READWRITE, NULL, 0);
+                PVOID v2 = v1 ? pMapViewOfFile3(hMap, GetCurrentProcess(), (char *)ph + cap, 0, cap,
+                                                MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, NULL, 0)
+                              : NULL;
+                if (v1 && v2 && v2 == (char *)v1 + cap) {
+                    ring->base = (uint8_t *)ph;
+                    ring->is_placeholder = 1;
+                    *out_handle = (uint64_t)(uintptr_t)ring;
+                    *out_capacity = cap;
+                    return 0;
+                }
+                if (v1) {
+                    UnmapViewOfFile(v1);
+                } else {
+                    VirtualFree(ph, 0, MEM_RELEASE);
+                }
+                if (v2) {
+                    UnmapViewOfFile(v2);
+                } else {
+                    VirtualFree((char *)ph + cap, 0, MEM_RELEASE);
+                }
             }
-            if (v1) UnmapViewOfFile(v1);
-            if (v2) UnmapViewOfFile(v2);
         }
     }
 
@@ -354,7 +375,8 @@ int32_t wing_page_ring_recv(uint64_t handle, uint64_t tail_offset, uint32_t max_
         DWORD tv = timeout_ms;
         setsockopt((SOCKET)sock_fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
     }
-    int res = recv((SOCKET)sock_fd, (char *)dst, (int)to_recv, 0);
+    int win_len = (to_recv > (uint32_t)INT_MAX) ? INT_MAX : (int)to_recv;
+    int res = recv((SOCKET)sock_fd, (char *)dst, win_len, 0);
     return (int32_t)res;
 #else
     if (timeout_ms > 0) {

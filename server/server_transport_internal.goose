@@ -420,8 +420,9 @@ fn dispatch_http1_connection_turn<Stage, OutBuf>(
         server.is_running = false;
     }
     let conn_hdr = res.header("Connection");
-    let wants_ka = server.is_running && conn_hdr.eq_ascii_fold("keep-alive");
-    if !wants_ka && conn_hdr.len == 0 {
+    let is_101 = res.status_code == rfc::STATUS_SWITCHING_PROTOCOLS;
+    let wants_ka = server.is_running && !is_101 && conn_hdr.eq_ascii_fold("keep-alive");
+    if !wants_ka && conn_hdr.len == 0 && !is_101 {
         http::set_header(res, "Connection", "close");
     }
     if out_wire.len >= 12288 {
@@ -575,7 +576,9 @@ fn step_page_ring_conn<Stage>(
     let _, ok_handle = server::handle_connection_page_ring_scratch(
         server, peer_ip, ring, now_ns, cork, peek_chunk, stage,
     );
-    let should_close = !ok_handle || server::response_wire_has_connection_close(cork.cork_as_slice());
+    let should_close = !ok_handle ||
+        server::response_wire_has_connection_close(cork.cork_as_slice()) ||
+        core::starts_with(cork.cork_as_slice(), "HTTP/1.1 101 ");
     if !ok_handle {
         if cork.cork_pending() > 0 { net::tcp_flush_cork(conn, cork); }
         return false;
@@ -653,7 +656,9 @@ fn step_pipe_loop_conn<Stage>(
     let _, ok = server::handle_connection_pipe(
         server, peer_ip, pipe, now_ns, cork, server::g_default_reactor.h2_sessions[h2_idx], stage,
     );
-    let should_close = !ok || server::response_wire_has_connection_close(cork.cork_as_slice());
+    let should_close = !ok ||
+        server::response_wire_has_connection_close(cork.cork_as_slice()) ||
+        core::starts_with(cork.cork_as_slice(), "HTTP/1.1 101 ");
     if !ok {
         if cork.cork_pending() > 0 { net::tcp_flush_cork(conn, cork); }
         return false;
@@ -772,7 +777,9 @@ fn step_tls_loop_conn(
     let _, ok = server::handle_connection_pipe(
         server, peer_ip, pipe, now_ns, cork, server::g_default_reactor.h2_sessions[h2_idx],
     );
-    let should_close = !ok || server::response_wire_has_connection_close(cork.cork_as_slice());
+    let should_close = !ok ||
+        server::response_wire_has_connection_close(cork.cork_as_slice()) ||
+        core::starts_with(cork.cork_as_slice(), "HTTP/1.1 101 ");
     if !ok {
         if cork.cork_pending() > 0 { server::tls_flush_cork(conn, slot_idx, cork); }
         return false;

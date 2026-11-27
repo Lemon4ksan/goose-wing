@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <limits.h>
 
+#pragma pack(push, 1)
 typedef struct {
     uint8_t *data;
     int64_t len;
@@ -28,6 +29,12 @@ typedef struct {
     const uint8_t *data;
     int64_t len;
 } wing_bytes_ro;
+#pragma pack(pop)
+
+_Static_assert(sizeof(wing_bytes_rw) == sizeof(uint8_t *) + sizeof(int64_t), "wing_bytes_rw must be packed");
+_Static_assert(offsetof(wing_bytes_rw, len) == sizeof(uint8_t *), "wing_bytes_rw.len must follow data");
+_Static_assert(sizeof(wing_bytes_ro) == sizeof(const uint8_t *) + sizeof(int64_t), "wing_bytes_ro must be packed");
+_Static_assert(offsetof(wing_bytes_ro, len) == sizeof(const uint8_t *), "wing_bytes_ro.len must follow data");
 
 #if defined(__wasm__)
 // WebAssembly portability environment
@@ -71,7 +78,25 @@ typedef struct {
     uint32_t flags;
     bool has_guard;
     bool is_locked;
+    bool is_committed;
 } wing_guarded_arena_t;
+
+static void wing_page_zeroize_raw(void *ptr, size_t len) {
+    if (!ptr || len == 0) return;
+#if defined(_WIN32)
+    SecureZeroMemory(ptr, len);
+#elif defined(__STDC_LIB_EXT1__)
+    memset_s(ptr, (rsize_t)len, 0, (rsize_t)len);
+#else
+    volatile uint8_t *p = (volatile uint8_t *)ptr;
+    while (len--) {
+        *p++ = 0;
+    }
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ __volatile__("" : : "r"(ptr) : "memory");
+#endif
+#endif
+}
 
 static uint64_t get_system_page_size(void) {
 #if defined(__wasm__)
@@ -129,6 +154,7 @@ int32_t wing_guarded_arena_create(uint64_t requested_capacity, uint32_t flags, u
     arena->flags = flags;
     arena->has_guard = use_guard;
     arena->is_locked = false;
+    arena->is_committed = true;
 
 #if defined(__wasm__)
     arena->base = (uint8_t *)calloc(1, total_alloc);
@@ -180,6 +206,12 @@ int32_t wing_guarded_arena_create(uint64_t requested_capacity, uint32_t flags, u
         }
     }
 
+#if defined(MADV_DONTDUMP)
+    (void)madvise(arena->base, aligned_cap, MADV_DONTDUMP);
+#endif
+#if defined(MADV_WIPEONFORK)
+    (void)madvise(arena->base, aligned_cap, MADV_WIPEONFORK);
+#endif
 #if defined(MADV_HUGEPAGE)
     if (flags & WING_PAGE_HUGE_PAGES) {
         madvise(arena->base, aligned_cap, MADV_HUGEPAGE);
@@ -198,6 +230,10 @@ void wing_guarded_arena_destroy(uint64_t handle) {
     if (!arena || !arena->base) {
         if (arena) free(arena);
         return;
+    }
+
+    if (arena->is_committed && arena->capacity > 0) {
+        wing_page_zeroize_raw(arena->base, (size_t)arena->capacity);
     }
 
     if (arena->is_locked) {
@@ -226,7 +262,7 @@ void wing_guarded_arena_destroy(uint64_t handle) {
 int64_t wing_guarded_arena_write(uint64_t handle, uint64_t offset, wing_bytes_ro src) {
     if (handle == 0 || !src.data || src.len <= 0) return 0;
     wing_guarded_arena_t *arena = (wing_guarded_arena_t *)(uintptr_t)handle;
-    if (!arena || !arena->base) return -1;
+    if (!arena || !arena->base || !arena->is_committed) return -1;
 
     if (offset >= arena->capacity) return -2;
 
@@ -240,7 +276,7 @@ int64_t wing_guarded_arena_write(uint64_t handle, uint64_t offset, wing_bytes_ro
 int64_t wing_guarded_arena_read(uint64_t handle, uint64_t offset, wing_bytes_rw dst) {
     if (handle == 0 || !dst.data || dst.len <= 0) return 0;
     wing_guarded_arena_t *arena = (wing_guarded_arena_t *)(uintptr_t)handle;
-    if (!arena || !arena->base) return -1;
+    if (!arena || !arena->base || !arena->is_committed) return -1;
 
     if (offset >= arena->capacity) return -2;
 
@@ -256,20 +292,35 @@ int32_t wing_guarded_arena_reset(uint64_t handle) {
     wing_guarded_arena_t *arena = (wing_guarded_arena_t *)(uintptr_t)handle;
     if (!arena || !arena->base) return -2;
 
-#if defined(__wasm__)
-    // WebAssembly has no kernel MMU page decommit, fallback to memset
-    memset(arena->base, 0, (size_t)arena->capacity);
+#if defined(__wasm__) || defined(__APPLE__)
+    // WebAssembly has no MMU page decommit; macOS MADV_DONTNEED does not guarantee zero-fill.
+    wing_page_zeroize_raw(arena->base, (size_t)arena->capacity);
     return 0;
 #elif defined(_WIN32)
-    // Instant OS sub-microsecond page recycle without CPU-intensive memset:
-    // Decommit releases physical RAM frames instantly back to OS pool.
-    // Recommit provides fresh demand-zero pages on next CPU access.
-    BOOL ok1 = VirtualFree(arena->base, arena->capacity, MEM_DECOMMIT);
+    if (arena->is_locked) {
+        if (!arena->is_committed) return -3;
+        wing_page_zeroize_raw(arena->base, (size_t)arena->capacity);
+        return 0;
+    }
+    if (arena->is_committed) {
+        if (!VirtualFree(arena->base, arena->capacity, MEM_DECOMMIT)) {
+            return -3;
+        }
+        arena->is_committed = false;
+    }
     LPVOID p = VirtualAlloc(arena->base, arena->capacity, MEM_COMMIT, PAGE_READWRITE);
-    return (ok1 && p) ? 0 : -3;
+    if (!p) {
+        return -3;
+    }
+    arena->is_committed = true;
+    return 0;
 #else
-    // POSIX MADV_DONTNEED: kernel drops pages from process working set;
+    // Linux MADV_DONTNEED: kernel drops pages from process working set;
     // subsequent accesses transparently receive clean zero-filled physical pages.
+    if (arena->is_locked) {
+        wing_page_zeroize_raw(arena->base, (size_t)arena->capacity);
+        return 0;
+    }
     int rc = madvise(arena->base, arena->capacity, MADV_DONTNEED);
     return (rc == 0) ? 0 : -3;
 #endif
@@ -278,17 +329,17 @@ int32_t wing_guarded_arena_reset(uint64_t handle) {
 int32_t wing_guarded_arena_clear_zero(uint64_t handle, uint64_t len) {
     if (handle == 0) return -1;
     wing_guarded_arena_t *arena = (wing_guarded_arena_t *)(uintptr_t)handle;
-    if (!arena || !arena->base) return -2;
+    if (!arena || !arena->base || !arena->is_committed) return -2;
 
     uint64_t to_clear = (len > arena->capacity || len == 0) ? arena->capacity : len;
-    memset(arena->base, 0, (size_t)to_clear);
+    wing_page_zeroize_raw(arena->base, (size_t)to_clear);
     return 0;
 }
 
 int32_t wing_page_lock(uint64_t handle, uint64_t offset, uint64_t len) {
     if (handle == 0) return -1;
     wing_guarded_arena_t *arena = (wing_guarded_arena_t *)(uintptr_t)handle;
-    if (!arena || !arena->base) return -2;
+    if (!arena || !arena->base || !arena->is_committed) return -2;
 
     if (offset > arena->capacity || len > arena->capacity - offset) return -3;
     uint64_t lock_len = (len == 0) ? (arena->capacity - offset) : len;
@@ -307,6 +358,12 @@ int32_t wing_page_lock(uint64_t handle, uint64_t offset, uint64_t len) {
 #else
     int rc = mlock(arena->base + offset, lock_len);
     if (rc == 0) {
+#if defined(MADV_DONTDUMP)
+        (void)madvise(arena->base + offset, lock_len, MADV_DONTDUMP);
+#endif
+#if defined(MADV_WIPEONFORK)
+        (void)madvise(arena->base + offset, lock_len, MADV_WIPEONFORK);
+#endif
         arena->is_locked = true;
         return 0;
     }
@@ -317,7 +374,7 @@ int32_t wing_page_lock(uint64_t handle, uint64_t offset, uint64_t len) {
 int32_t wing_page_unlock(uint64_t handle, uint64_t offset, uint64_t len) {
     if (handle == 0) return -1;
     wing_guarded_arena_t *arena = (wing_guarded_arena_t *)(uintptr_t)handle;
-    if (!arena || !arena->base) return -2;
+    if (!arena || !arena->base || !arena->is_committed) return -2;
 
     if (offset > arena->capacity || len > arena->capacity - offset) return -3;
     uint64_t unlock_len = (len == 0) ? (arena->capacity - offset) : len;
@@ -409,7 +466,7 @@ int32_t wing_mmap_file_open(wing_bytes_ro path, uint64_t *out_handle, uint64_t *
     }
 
     LARGE_INTEGER liSize;
-    if (!GetFileSizeEx(hFile, &liSize)) {
+    if (GetFileType(hFile) != FILE_TYPE_DISK || !GetFileSizeEx(hFile, &liSize) || liSize.QuadPart < 0) {
         CloseHandle(hFile);
         free(mf);
         return -4;
@@ -453,7 +510,7 @@ int32_t wing_mmap_file_open(wing_bytes_ro path, uint64_t *out_handle, uint64_t *
     }
 
     struct stat st;
-    if (fstat(fd, &st) < 0) {
+    if (fstat(fd, &st) < 0 || !S_ISREG(st.st_mode) || st.st_size < 0 || (uint64_t)st.st_size > (uint64_t)SIZE_MAX) {
         close(fd);
         free(mf);
         return -4;
@@ -521,7 +578,12 @@ int32_t wing_mmap_file_send(uint64_t handle, uint64_t offset, uint32_t len, int6
     int sent = send((SOCKET)sock_fd, (const char *)(mf->base + offset), (int)to_send, 0);
     return (sent >= 0) ? sent : -1;
 #else
-    ssize_t sent = send((int)sock_fd, mf->base + offset, (size_t)to_send, 0);
+#ifdef MSG_NOSIGNAL
+    int send_flags = MSG_NOSIGNAL;
+#else
+    int send_flags = 0;
+#endif
+    ssize_t sent = send((int)sock_fd, mf->base + offset, (size_t)to_send, send_flags);
     return (sent >= 0) ? (int32_t)sent : -1;
 #endif
 }

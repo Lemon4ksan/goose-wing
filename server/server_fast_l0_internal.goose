@@ -478,7 +478,8 @@ fn process_pipelined_stream_turn<Stage, B>(
         return classify_h1_stream_parse_failure(server, parse_st, stream, wire_out), 0;
     }
 
-    if try_handle_pipelined_websocket(server, req, wire_out) {
+    if try_handle_pipelined_websocket_with_stage(server, req, now_ns, res, wire_out, stage) {
+        conn_wants_close = true;
         total_handled = core::add_sat_i64(total_handled, 1);
         total_consumed = core::add_sat_i64(total_consumed, consumed);
         return StreamTurnResult.Stop, consumed;
@@ -608,7 +609,8 @@ fn finish_single_pipeline_turn<Stage, B>(
     total_handled = core::add_sat_i64(total_handled, 1);
     acquire_turn_scratch(server);
     defer release_turn_scratch(server);
-    if try_handle_pipelined_websocket(server, g_turn_req, wire_out) {
+    if try_handle_pipelined_websocket_with_stage(server, g_turn_req, now_ns, g_turn_res, wire_out, stage) {
+        conn_wants_close = true;
         return;
     }
 

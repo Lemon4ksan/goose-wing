@@ -13,9 +13,9 @@ struct RingCursor {
     mask: u64 = 63,
 }
 
-// Returns the number of occupied slots in `c`.
+// Returns the number of occupied slots in `c` using wrapping unsigned modular delta.
 inline fn ring_cursor_len(c: const RingCursor&) -> u64 {
-    return sub_sat_u64(c.head, c.tail);
+    return c.head - c.tail;
 }
 
 // Returns the total power-of-two capacity (`mask + 1`) of `c`.
@@ -35,7 +35,7 @@ inline fn ring_cursor_free(c: const RingCursor&) -> u64 {
 inline fn ring_cursor_push(c: RingCursor&) -> i64, bool {
     guard ring_cursor_free(c) > 0 else { return -1, false; }
     let idx = (c.head & c.mask) as i64;
-    c.head = add_sat_u64(c.head, 1);
+    c.head = c.head + 1;
     return idx, true;
 }
 
@@ -46,6 +46,6 @@ inline fn ring_cursor_push(c: RingCursor&) -> i64, bool {
 inline fn ring_cursor_pop(c: RingCursor&) -> i64, bool {
     guard ring_cursor_len(c) > 0 else { return -1, false; }
     let idx = (c.tail & c.mask) as i64;
-    c.tail = add_sat_u64(c.tail, 1);
+    c.tail = c.tail + 1;
     return idx, true;
 }

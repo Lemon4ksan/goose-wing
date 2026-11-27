@@ -652,13 +652,18 @@ fn test_cve_2025_58186_cookie_parsing_memory_exhaustion(t: lit::T&) {
 // 22. Go #79944 & RFC 6055: FQDN Trailing Dot Host-Only Cookie Matching
 // ----------------------------------------------------------------------------
 fn test_rfc6055_fqdn_trailing_dot_cookie_matching(t: lit::T&) {
-    t.run("Host-only cookie must match FQDN with trailing dot (RFC 6055 & Go #79944)") { sub =>
+    t.run("Host-only cookie isolates FQDN with trailing dot (RFC 6265bis)") { sub =>
         var c = cookie::CanonicalCookie { host_only: true, .. };
         c.domain.append("example.com");
 
         sub.assert_true(cookie::matches_domain(c, "example.com"), "Matches exact host");
-        sub.assert_true(cookie::matches_domain(c, "example.com."), "Must match FQDN with trailing dot");
+        sub.assert_false(cookie::matches_domain(c, "example.com."), "Must not fold trailing-dot FQDN across origins");
         sub.assert_false(cookie::matches_domain(c, "evil.com"), "Must not match different domain");
+
+        var c_dot = cookie::CanonicalCookie { host_only: true, .. };
+        c_dot.domain.append("example.com.");
+        sub.assert_true(cookie::matches_domain(c_dot, "example.com."), "Matches exact trailing-dot FQDN");
+        sub.assert_false(cookie::matches_domain(c_dot, "example.com"), "Trailing-dot cookie must not leak to non-dotted host");
     };
 }
 

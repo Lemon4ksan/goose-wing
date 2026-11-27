@@ -634,7 +634,7 @@ fn aes_gcm_open_small<B>(
     let expected_len = add_sat_i64(start_len, ciphertext.len);
     if out_plaintext.len != expected_len {
         if out_plaintext.len > start_len {
-            secure_zeroize_slice(out_plaintext[start_len..]);
+            secure_zeroize_buf_tail(out_plaintext, start_len);
             out_plaintext.resize(start_len);
         }
         return false;
@@ -763,7 +763,7 @@ fn aes256_gcm_open<B>(
     zeroize_aes256_ks(ks);
     if out_plaintext.len - start_len != ciphertext.len {
         if out_plaintext.len > start_len {
-            secure_zeroize_slice(out_plaintext[start_len..]);
+            secure_zeroize_buf_tail(out_plaintext, start_len);
             out_plaintext.resize(start_len);
         }
         return false;
@@ -892,7 +892,7 @@ fn aes128_gcm_open<B>(
     zeroize_aes128_ks(ks);
     if out_plaintext.len - start_len != ciphertext.len {
         if out_plaintext.len > start_len {
-            secure_zeroize_slice(out_plaintext[start_len..]);
+            secure_zeroize_buf_tail(out_plaintext, start_len);
             out_plaintext.resize(start_len);
         }
         return false;

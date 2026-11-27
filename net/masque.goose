@@ -12,6 +12,21 @@ import .tunnel_internal;
 
 // ---- Capsule Types & Constants (RFC 9297 Section 3, RFC 9484 Section 4) ---
 
+const DEFAULT_MAX_HTTP_CAPSULE_LEN: u64 = 65536;
+
+enum CapsuleParseStatus {
+    Ok,
+    Incomplete,
+    TooLarge,
+    Malformed,
+}
+
+struct HttpCapsuleHeader {
+    capsule_type: u64 = 0,
+    payload_len:  u64 = 0,
+    header_len:   u64 = 0,
+}
+
 struct HttpCapsule {
     capsule_type: u64         = 0,
     payload:      const u8[:] = [],
@@ -19,6 +34,65 @@ struct HttpCapsule {
 }
 
 // ---- Capsule Codec (RFC 9297 Section 3.1) -------------------------------
+
+inline fn varint_wire_len(first_byte: u8) -> u64 {
+    return (1 as u64) << (first_byte >> 6);
+}
+
+// Parses only the RFC 9297 §3.2 capsule header (Type || Length) without buffering the payload.
+// Enforces `max_capsule_len` before payload allocation or framing.
+//
+// Example:
+//   src = "\x00\x05hello", max_capsule_len = 65536
+//   returns: HttpCapsuleHeader { capsule_type: 0, payload_len: 5, header_len: 2 }, CapsuleParseStatus.Ok
+fn parse_http_capsule_header(
+    src:             const u8[:],
+    max_capsule_len: u64 = DEFAULT_MAX_HTTP_CAPSULE_LEN,
+) -> HttpCapsuleHeader, CapsuleParseStatus {
+    var hdr = HttpCapsuleHeader { .. };
+    guard src.len > 0 else { return hdr, CapsuleParseStatus.Incomplete; }
+
+    let t_need = varint_wire_len(src[0]);
+    guard (src.len as u64) >= t_need else { return hdr, CapsuleParseStatus.Incomplete; }
+    let ctype, off1, ok1 = quic::decode_varint(src, 0);
+    guard ok1 else { return hdr, CapsuleParseStatus.Malformed; }
+
+    guard off1 < (src.len as u64) else { return hdr, CapsuleParseStatus.Incomplete; }
+    let l_need = varint_wire_len(src[off1 as i64]);
+    guard core::add_sat_u64(off1, l_need) <= (src.len as u64) else {
+        return hdr, CapsuleParseStatus.Incomplete;
+    }
+    let clen, off2, ok2 = quic::decode_varint(src, off1);
+    guard ok2 else { return hdr, CapsuleParseStatus.Malformed; }
+    guard clen <= max_capsule_len else { return hdr, CapsuleParseStatus.TooLarge; }
+
+    hdr.capsule_type = ctype;
+    hdr.payload_len = clen;
+    hdr.header_len = off2;
+    return hdr, CapsuleParseStatus.Ok;
+}
+
+// Advances `idx` past an entire capsule (typically unknown capsule type) without buffering its payload
+// (RFC 9297 §3.2). Restores `idx` on incomplete, oversized, or malformed input.
+//
+// Example:
+//   src = "\x10\x03abcrest", idx = 0, max_capsule_len = 65536
+//   returns: HttpCapsuleHeader { capsule_type: 0x10, payload_len: 3, header_len: 2 }, Ok, idx = 5
+fn skip_http_capsule(
+    src:             const u8[:],
+    idx:             i64&,
+    max_capsule_len: u64 = DEFAULT_MAX_HTTP_CAPSULE_LEN,
+) -> HttpCapsuleHeader, CapsuleParseStatus {
+    guard idx >= 0 && idx <= src.len else { return HttpCapsuleHeader { .. }, CapsuleParseStatus.Malformed; }
+    let hdr, st = parse_http_capsule_header(src[idx..], max_capsule_len);
+    guard st == CapsuleParseStatus.Ok else { return hdr, st; }
+    let total = core::add_sat_u64(hdr.header_len, hdr.payload_len);
+    guard total >= hdr.header_len && total <= ((src.len - idx) as u64) else {
+        return hdr, CapsuleParseStatus.Incomplete;
+    }
+    idx = core::add_sat_i64(idx, total as i64);
+    return hdr, CapsuleParseStatus.Ok;
+}
 
 // Parses an HTTP Capsule header and value from wire stream (RFC 9297 §3.1).
 // Capsule format: Type (VarInt) || Length (VarInt) || Value (bytes)

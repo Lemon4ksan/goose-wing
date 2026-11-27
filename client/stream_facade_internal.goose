@@ -18,9 +18,16 @@ import http.json_codec;
 import http.request;
 import http.response;
 import http.compression_dict;
+import net.pool;
+import net.transport;
+import net.happy_eyeballs;
+import net.tcp;
+import wire.h1_exchange;
 import .stream;
 import .client;
 import .session.verbs;
+import .session.dns_dial_internal;
+import .session.tls_hop_internal;
 
 // ---- Stream Internal Helpers -----------------------------------------------
 
@@ -447,6 +454,93 @@ fn clone_isolated_transport_client(session: const client::Session&) -> client::C
     };
 }
 
+fn execute_doh_mock_request(
+    session: const client::Session&,
+    req:     const http::Request&,
+) -> http::Response, bool {
+    var resp = http::Response { .. };
+    for &route in session.mock_routes {
+        let method_ok = route.method.len == 0 || route.method[..].eq_ascii_fold(req.method[..]);
+        let url_ok = route.pattern_url[..] == req.url[..] ||
+            core::starts_with(req.url[..], route.pattern_url[..]);
+        guard method_ok && url_ok else { continue; }
+        for &rip in route.resolved_ips {
+            guard !is_ssrf_blocked_ip(session.ssrf_guard, rip[..]) else { return resp, false; }
+        }
+        resp.status_code = route.status_code;
+        http::copy_headers(route.headers, resp.headers);
+        for &e in resp.headers.entries {
+            http::update_response_presence(resp, http::entry_name(resp.headers, e));
+        }
+        resp.body.append(route.body[..]);
+        return resp, true;
+    }
+    return resp, false;
+}
+
+fn execute_doh_live_request(
+    doh_client: client::Client&,
+    req:        const http::Request&,
+) -> http::Response, bool {
+    var resp = http::Response { .. };
+    let target_url, _ = core::parse_url(req.url[..]);
+    guard target_url.valid && target_url.is_secure_scheme() else { return resp, false; }
+
+    let host_str = target_url.hostname();
+    let port_num = target_url.effective_port() as u16;
+    guard !is_ssrf_blocked_ip(doh_client.ssrf_guard, host_str) &&
+        !is_ssrf_blocked_port(doh_client.ssrf_guard, port_num) else {
+        return resp, false;
+    }
+
+    let now_us = client::effective_clock_us(doh_client);
+    let now_sec = div_euclid(now_us, 1000000);
+    let now_ms = div_euclid(now_us, 1000);
+    var eff_proxy_url: u8[..256] = [];
+    let proxy_chain, ok_proxy = resolve_effective_hop_proxy(doh_client, host_str, true, eff_proxy_url);
+    guard ok_proxy else { return resp, false; }
+
+    var dns_candidates: net::DnsCandidate[..32] = [];
+    let needs_dns = proxy_chain.is_direct ||
+        (proxy_chain.servers.len > 0 && proxy_chain.servers[0].scheme == net::ProxyScheme.Socks5);
+    if needs_dns {
+        let dns_err = resolve_live_host_candidates_no_ech(
+            doh_client, host_str, port_num, now_sec, dns_candidates,
+        );
+        guard http::ok(dns_err) else { return resp, false; }
+    }
+
+    let conn_t = calc_phase_timeout_ms(doh_client.connect_timeout_ms, doh_client.timeout_ms, 0);
+    let tls_t = calc_phase_timeout_ms(doh_client.tls_handshake_timeout_ms, doh_client.timeout_ms, 0);
+    let dial_res, dial_err = dial_live_tcp_or_proxy(
+        doh_client, eff_proxy_url[..], proxy_chain, host_str, port_num,
+        dns_candidates[..], conn_t, now_sec, now_ms,
+    );
+    guard http::ok(dial_err) else { return resp, false; }
+
+    let https_t, _, tls_err = establish_https_transport(
+        doh_client, dial_res.sock, host_str, "", tls_t, now_sec, "http/1.1",
+    );
+    guard http::ok(tls_err) else {
+        net::fd_close(dial_res.sock);
+        return resp, false;
+    }
+
+    var pconn = net::PooledConnection {
+        protocol:  net::NegotiatedProtocol.Http11,
+        transport: https_t,
+        ..
+    };
+    defer pconn.transport.close();
+    let eff_t: u32 = if doh_client.timeout_ms > 0 {
+        min(doh_client.timeout_ms, 0xFFFFFFFF) as u32
+    } else {
+        5000
+    };
+    let ok_ex, _ = wing::execute_h1_exchange(pconn, req, target_url, resp, eff_t);
+    return resp, ok_ex;
+}
+
 // Dispatches a DNS-over-HTTPS wire query using an isolated HTTP client transport
 // to ensure application credentials, custom headers, and interceptors do not leak to public resolvers.
 fn doh_query(
@@ -458,11 +552,17 @@ fn doh_query(
     var req = http::new_request(if session.doh.use_post { "POST" } else { "GET" }, "");
 
     if session.doh.use_post {
-        req.url.append(session.doh.endpoint[..]);
+        let clean_ep, _ = session.doh.endpoint[..].strip_suffix("{?dns}");
+        guard clean_ep.starts_with_fold("https://") && clean_ep.len > 8 else {
+            return dns::Response { .. }, false;
+        }
+        req.url.append(clean_ep);
         http::set_header(req, "content-type", rfc::DOH_CONTENT_TYPE);
         http::set_header(req, "accept", rfc::DOH_CONTENT_TYPE);
         var wire_query: u8[..512] = [];
-        guard dns::build_query(domain, qtype, tx_id, wire_query) else { return dns::Response { .. }, false; }
+        guard dns::build_query(domain, qtype, tx_id, wire_query) else {
+            return dns::Response { .. }, false;
+        }
         req.body.append(wire_query[..]);
     } else {
         guard dns::build_doh_get_url(session.doh.endpoint[..], domain, qtype, req.url) else {
@@ -472,14 +572,28 @@ fn doh_query(
     }
 
     var doh_client = clone_isolated_transport_client(session);
-    let res, err = client::do(doh_client, req);
-    guard http::ok(err) && res.status_code == rfc::STATUS_OK else { return dns::Response { .. }, false; }
+    var res = http::Response { .. };
+    var ok_http = false;
+    if doh_client.mock_routes.len > 0 {
+        res, ok_http = execute_doh_mock_request(doh_client, req);
+    } else {
+        res, ok_http = execute_doh_live_request(doh_client, req);
+    }
+    guard ok_http && res.status_code == rfc::STATUS_OK else { return dns::Response { .. }, false; }
+
+    let ct_raw = res.header("content-type");
+    let ct_media, _, _ = ct_raw.split_once_byte(';');
+    guard ct_media.trim_lws().eq_ascii_fold(rfc::DOH_CONTENT_TYPE) else {
+        return dns::Response { .. }, false;
+    }
 
     let parsed, ok_dns = dns::parse_response(res.body[..]);
     let clean_dom = domain.trim_end_byte('.');
     guard ok_dns &&
         parsed.rcode == rfc::DNS_RCODE_NOERROR &&
         parsed.question_count == 1 &&
+        parsed.qtype == qtype &&
+        parsed.qclass == rfc::DNS_QCLASS_IN &&
         parsed.qname[..].eq_ascii_fold(clean_dom) else {
         return dns::Response { .. }, false;
     }

@@ -131,10 +131,24 @@ fn is_cookie_timestamp_valid(store: const KeyStore&, cookie_sec: i64, now_sec: i
 struct PrivateJar {
     store:        KeyStore = KeyStore { .. },
     use_hkdf_aes: bool     = false, // false = XChaCha20-Poly1305 (default), true = HKDF + AES-256-GCM
+    context:      u8[..64] = [],    // optional domain-separation context bound into AEAD AAD
 }
 
 fn new_private_jar(store: KeyStore, use_hkdf_aes: bool = false) -> PrivateJar {
-    return PrivateJar { store: store, use_hkdf_aes: use_hkdf_aes };
+    return PrivateJar { store: store, use_hkdf_aes: use_hkdf_aes, .. };
+}
+
+// Constructs a domain-separated `PrivateJar` binding `context` (<= 64 bytes) into AEAD AAD.
+fn new_private_jar_with_context(
+    store:        KeyStore,
+    use_hkdf_aes: bool,
+    context:      const u8[:],
+) -> PrivateJar, bool {
+    var jar = PrivateJar { store: store, use_hkdf_aes: use_hkdf_aes, .. };
+    guard context.len <= 64 && jar.context.try_set(context) else {
+        return PrivateJar { .. }, false;
+    }
+    return jar, true;
 }
 
 // Encrypts and authenticates cookie payload into binary wire format.
@@ -152,9 +166,13 @@ fn seal_binary<B>(
     guard security_internal::is_jar_key_valid_at(slot, now_sec) else { return false; }
 
     if jar.use_hkdf_aes {
-        return security_internal::seal_binary_hkdf_aes(slot, cookie_name, plaintext, now_sec, nonce_seed, out);
+        return security_internal::seal_binary_hkdf_aes(
+            slot, cookie_name, plaintext, now_sec, nonce_seed, out, jar.context[..],
+        );
     }
-    return security_internal::seal_binary_xchacha20(slot, cookie_name, plaintext, now_sec, nonce_seed, out);
+    return security_internal::seal_binary_xchacha20(
+        slot, cookie_name, plaintext, now_sec, nonce_seed, out, jar.context[..],
+    );
 }
 
 // Verifies authentication tag, context binding, and decrypts payload into `out`.

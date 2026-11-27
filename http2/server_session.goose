@@ -394,6 +394,10 @@ fn fail_edge_connection(slot: H2EdgeSlot&, error_code: u32) -> bool {
 }
 
 fn reject_edge_stream(slot: H2EdgeSlot&, stream_id: u32, error_code: u32) -> bool {
+    let now_ms = slot.conn.reset_limiter.last_refill_ms;
+    guard core::token_bucket_consume(slot.conn.reset_limiter, now_ms) else {
+        return fail_edge_connection(slot, rfc::H2_ERR_ENHANCE_YOUR_CALM);
+    }
     reset_stream(slot.conn, stream_id);
     guard emit_edge_rst_stream(slot, stream_id, error_code) else {
         return fail_edge_connection(slot, rfc::H2_ERR_INTERNAL_ERROR);
@@ -888,6 +892,10 @@ fn ingest_edge_priority_frame(slot: H2EdgeSlot&, hdr: const FrameHeader&, payloa
 }
 
 fn ingest_edge_priority_update_frame(slot: H2EdgeSlot&, payload: const u8[:]) -> bool {
+    let now_ms = slot.conn.reset_limiter.last_refill_ms;
+    guard core::token_bucket_consume(slot.conn.reset_limiter, now_ms) else {
+        return fail_edge_connection(slot, rfc::H2_ERR_ENHANCE_YOUR_CALM);
+    }
     let psid, prio, pu_err = parse_priority_update_payload(payload, true);
     if pu_err == rfc::H2_ERR_FRAME_SIZE_ERROR || psid == 0 {
         let err_code = if pu_err == rfc::H2_ERR_FRAME_SIZE_ERROR {

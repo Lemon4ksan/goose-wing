@@ -131,10 +131,11 @@ struct ServerDispatcher {
 }
 
 fn new_server_dispatcher(max_msg_size: u32 = rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE) -> ServerDispatcher {
+    let eff_max = if max_msg_size > 0 { max_msg_size } else { rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE };
     return ServerDispatcher {
         methods:          [],
         health_entries:   [],
-        max_message_size: max_msg_size,
+        max_message_size: eff_max,
         enable_web:       true,
     };
 }
@@ -725,9 +726,10 @@ fn write_lpm_frame(
 // over an active HTTP/2 stream (`H2Stream`), enforcing flow-control window bounds and
 // RFC 9113 stream state validity.
 fn dispatch_bidi_streaming(
-    conn:   H2Stream&,
-    reader: LpmReader&,
-    writer: LpmWriter&,
+    conn:     H2Stream&,
+    reader:   LpmReader&,
+    writer:   LpmWriter&,
+    encoding: const u8[:] = "",
 ) -> bool {
     guard conn.state == H2StreamState.Open || conn.state == H2StreamState.HalfClosedRemote else {
         return false;
@@ -752,6 +754,9 @@ fn dispatch_bidi_streaming(
         let span = reader.spans[reader.read_cursor];
         let msg, ok = read_next_lpm(reader);
         guard ok else { return false; }
+        guard validate_recv_compression(span.compressed, encoding, true) == StatusCode.Ok else {
+            return false;
+        }
         let frame_in = core::add_sat_i64(5, span.len);
         consumed_in = core::add_sat_i64(consumed_in, frame_in);
         if span.compressed {
@@ -900,7 +905,7 @@ fn handle_h2_wire_frame<
     if hdr.frame_type != rfc::H2_FRAME_HEADERS && hdr.frame_type != rfc::H2_FRAME_DATA {
         let ok_ctrl = handle_h2_control_frame(conn, hdr, payload);
         if ok_ctrl && hdr.frame_type == rfc::H2_FRAME_RST_STREAM && hdr.stream_id == pending_stream_id {
-            server::reset_server_request_fast(pending);
+            http::reset_request(pending);
             pending_stream_id = 0;
         }
         return ok_ctrl;
@@ -915,16 +920,18 @@ fn handle_h2_wire_frame<
         let frag, ok_frag = grpc_internal::slice_h2_headers_fragment(payload, hdr.flags, hdr.stream_id);
         guard ok_frag else { return false; }
         var pseudo = http2::PseudoHeaders { .. };
-        server::reset_server_request_fast(pending);
+        http::reset_request(pending);
         let _ = pending.method.try_set("POST");
         let hpack_res = http2::decode_hpack_to_map(
             hpack_dec, frag, pseudo, pending.headers, 8192, true,
         );
         guard hpack_res == rfc::H2_ERR_NO_ERROR
             && pseudo.has_method
+            && pseudo.has_scheme
+            && (pseudo.scheme[..].eq_ascii_fold("http") || pseudo.scheme[..].eq_ascii_fold("https"))
             && !pseudo.has_status
             && !pseudo.has_protocol else {
-            server::reset_server_request_fast(pending);
+            http::reset_request(pending);
             return false;
         }
         pending_stream_id = hdr.stream_id;
@@ -947,7 +954,7 @@ fn handle_h2_wire_frame<
             if out_wire.len > 0 {
                 let _ = net::tcp_send(conn, out_wire[..]);
             }
-            server::reset_server_request_fast(pending);
+            http::reset_request(pending);
             pending_stream_id = 0;
         }
         return true;
@@ -959,12 +966,17 @@ fn handle_h2_wire_frame<
     }
     let data_slice, ok_data = grpc_internal::slice_h2_data_payload(payload, hdr.flags);
     guard ok_data else { return false; }
+    let eff_max = if d.max_message_size > 0 {
+        d.max_message_size
+    } else {
+        rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE
+    };
     let max_body = max(
-        core::add_sat_u64(d.max_message_size, rfc::GRPC_LPM_HEADER_LEN),
+        core::add_sat_u64(eff_max, rfc::GRPC_LPM_HEADER_LEN),
         core::add_sat_u64(rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE, rfc::GRPC_LPM_HEADER_LEN),
     );
     guard core::add_sat_u64(pending.body.len as u64, data_slice.len as u64) <= max_body else {
-        server::reset_server_request_fast(pending);
+        http::reset_request(pending);
         pending_stream_id = 0;
         return false;
     }
@@ -977,7 +989,7 @@ fn handle_h2_wire_frame<
         if out_wire.len > 0 {
             let _ = net::tcp_send(conn, out_wire[..]);
         }
-        server::reset_server_request_fast(pending);
+        http::reset_request(pending);
         pending_stream_id = 0;
     }
     return true;

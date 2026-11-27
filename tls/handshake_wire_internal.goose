@@ -286,19 +286,25 @@ fn encode_compress_certificate_extension<B>(out: B&, algorithms: const u16[:]) {
     out.append(b.buf[..]);
 }
 
+const DEFAULT_OFFERED_CERT_ALGOS: u16[3] = [
+    rfc::CERT_COMPRESSION_BROTLI,
+    rfc::CERT_COMPRESSION_ZSTD,
+    rfc::CERT_COMPRESSION_ZLIB,
+];
+
 // Parses a CompressedCertificate handshake message payload (RFC 8879 Section 4)
 // Example:
 //   payload = [0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x28, 0xB5, 0x2F, 0xFD]
 //   returns: msg with algorithm = CERT_COMPRESS_ZSTD, uncompressed_len = 256, ok = true
 fn parse_compressed_certificate(
     payload:       const u8[:],
-    offered_algos: const u16[:] = [],
+    offered_algos: const u16[:] = DEFAULT_OFFERED_CERT_ALGOS[..],
 ) -> tls::CompressedCertMsg, bool {
     var msg = tls::CompressedCertMsg { compressed_data: payload[..0], .. };
     var ic = CompressedCertificate { .. };
     guard parse_compressed_certificate_msg(payload, ic) else { return msg, false; }
     // RFC 8879 Section 4: Compressed Certificate Message - Selected algorithm MUST belong to the advertised offer list.
-    guard offered_algos.len == 0 || offered_algos.contains(ic.algorithm) else { return msg, false; }
+    guard offered_algos.len > 0 && offered_algos.contains(ic.algorithm) else { return msg, false; }
     msg.algorithm = ic.algorithm;
     msg.uncompressed_len = ic.uncompressed_length;
     msg.compressed_data = ic.compressed_certificate_message;
@@ -329,13 +335,13 @@ fn encode_compressed_certificate_payload<B>(
 fn decompress_incoming_certificate<B>(
     payload:       const u8[:],
     out_cert:      B&,
-    offered_algos: const u16[:] = [],
+    offered_algos: const u16[:] = DEFAULT_OFFERED_CERT_ALGOS[..],
 ) -> bool {
     var committed = false;
     defer if !committed { out_cert.clear(); };
     var comp_msg = CompressedCertificate { .. };
     guard parse_compressed_certificate_msg(payload, comp_msg) else { return false; }
-    guard offered_algos.len == 0 || offered_algos.contains(comp_msg.algorithm) else { return false; }
+    guard offered_algos.len > 0 && offered_algos.contains(comp_msg.algorithm) else { return false; }
     guard comp_msg.uncompressed_length <= rfc::MAX_UNCOMPRESSED_CERT_SIZE else { return false; }
     guard decompress_certificate_payload(
         comp_msg.compressed_certificate_message,

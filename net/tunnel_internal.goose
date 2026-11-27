@@ -70,37 +70,35 @@ inline fn is_valid_connect_host(host: const u8[:]) -> bool {
     return host.len > 0 && !has_crlf_or_null(host) && !host.contains_byte(' ') && !host.contains_byte('\t');
 }
 
-fn append_connect_line(out: u8[..1024]&, host: const u8[:], port: u16) {
-    if is_valid_connect_host(host) {
-        format(out, "CONNECT ", host, ":", port, " HTTP/1.1\r\n");
-        format(out, "Host: ", host, ":", port, "\r\n");
+fn append_connect_authority(out: u8[..1024]&, host: const u8[:], port: u16) -> bool {
+    let bare_ipv6 = host.contains_byte(':') && host[0] != '[';
+    if bare_ipv6 {
+        guard out.try_push('[') && out.try_append(host) && out.try_push(']') else { return false; }
+    } else {
+        guard out.try_append(host) else { return false; }
     }
+    guard out.try_push(':') else { return false; }
+    var port_buf: u8[..16] = [];
+    let port_u64: u64 = port;
+    port_u64.format_u64_dec(port_buf);
+    return out.try_append(port_buf[..]);
 }
 
-fn append_sanitized_header(out: u8[..1024]&, prefix: const u8[:], val: const u8[:]) {
-    if val.len > 0 && !has_crlf_or_null(val) {
-        out.append(prefix);
-        out.append(val);
-        out.append("\r\n");
-    }
+fn append_connect_line(out: u8[..1024]&, host: const u8[:], port: u16) -> bool {
+    guard is_valid_connect_host(host) else { return false; }
+    return out.try_append("CONNECT ") &&
+        append_connect_authority(out, host, port) &&
+        out.try_append(" HTTP/1.1\r\nHost: ") &&
+        append_connect_authority(out, host, port) &&
+        out.try_append("\r\n");
 }
 
-fn is_token_in_connection_headers(headers: const http::HeaderMap&, target_name: const u8[:]) -> bool {
-    for idx in 0..headers.entries.len {
-        let e = headers.entries[idx];
-        guard http::entry_name(headers, e).eq_ascii_fold("connection") else { continue; }
-        var rest: const u8[:] = http::entry_value(headers, e);
-        while rest.len > 0 {
-            let token_raw, remaining, has_comma = rest.split_once_byte(',');
-            let token = token_raw.trim_lws();
-            if token.len > 0 && token.eq_ascii_fold(target_name) {
-                return true;
-            }
-            if !has_comma { break; }
-            rest = remaining;
-        }
+fn append_sanitized_header(out: u8[..1024]&, prefix: const u8[:], val: const u8[:]) -> bool {
+    if val.len == 0 {
+        return true;
     }
-    return false;
+    guard !has_crlf_or_null(val) else { return false; }
+    return out.try_append(prefix) && out.try_append(val) && out.try_append("\r\n");
 }
 
 inline fn is_valid_connect_reason_phrase(reason: const u8[:]) -> bool {

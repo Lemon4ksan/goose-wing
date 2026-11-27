@@ -401,6 +401,10 @@ fn parse_socks5_client_request(buf: const u8[:]) -> SocksTarget, SocksParseStatu
         return out, SocksParseStatus.Unsupported;
     }
     let st = net_internal::decode_socks5_atyp_target(buf, 3, out);
+    guard st == SocksParseStatus.Ok else { return out, st; }
+    if cmd == rfc::SOCKS5_CMD_CONNECT && out.port == 0 {
+        return SocksTarget { .. }, SocksParseStatus.Invalid;
+    }
     return out, st;
 }
 
@@ -433,7 +437,9 @@ fn parse_socks5_udp_header(pkt: const u8[:]) -> Socks5UdpHeader, SocksParseStatu
     guard out.frag == 0 else { return out, SocksParseStatus.Unsupported; }
     out.target.cmd = rfc::SOCKS5_CMD_UDP_ASSOCIATE;
     let st = net_internal::decode_socks5_atyp_target(pkt, 3, out.target);
-    guard st == SocksParseStatus.Ok else { return out, st; }
+    guard st == SocksParseStatus.Ok && out.target.port != 0 else {
+        return Socks5UdpHeader { .. }, if st != SocksParseStatus.Ok { st } else { SocksParseStatus.Invalid };
+    }
     out.header_len = out.target.consumed;
     return out, SocksParseStatus.Ok;
 }

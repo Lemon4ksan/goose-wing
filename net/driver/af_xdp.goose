@@ -21,6 +21,7 @@ extern fn native_af_xdp_register_umem(
 ) -> i32 = "wing_af_xdp_register_umem";
 extern fn native_af_xdp_set_ring_size(xsk_fd: i64, ring_opt: i32, entries: u32) -> i32 = "wing_af_xdp_set_ring_size";
 extern fn native_af_xdp_bind(xsk_fd: i64, ifindex: u32, queue_id: u32, flags: u32) -> i32 = "wing_af_xdp_bind";
+extern fn native_af_xdp_ring_need_wakeup(xsk_fd: i64, is_tx: i32) -> i32 = "wing_af_xdp_ring_need_wakeup";
 extern fn native_af_xdp_mmap_rings(xsk_fd: i64, entries: u32) -> i32 = "wing_af_xdp_mmap_rings";
 extern fn native_af_xdp_fill_push(xsk_fd: i64, umem_offset: u64) -> i32 = "wing_af_xdp_fill_push";
 extern fn native_af_xdp_tx_submit(xsk_fd: i64, addr: u64, len: u32, options: u32) -> i32 = "wing_af_xdp_tx_submit";
@@ -83,8 +84,10 @@ const XSK_RING_TX:         i32 = 3;
 const XSK_RING_FILL:       i32 = 5;
 const XSK_RING_COMPLETION: i32 = 6;
 
-const XDP_FLAGS_ZEROCOPY: u32 = 1 << 2;
-const XDP_FLAGS_COPY:     u32 = 1 << 1;
+const XDP_FLAGS_ZEROCOPY:        u32 = 1 << 2;
+const XDP_FLAGS_COPY:            u32 = 1 << 1;
+const XDP_FLAGS_USE_NEED_WAKEUP: u32 = 1 << 3;
+const XDP_ERR_EINVAL:            i32 = -22;
 
 fn new_af_xdp_socket() -> AfXdpSocket {
     return AfXdpSocket {
@@ -129,16 +132,23 @@ fn af_xdp_open_socket(
     umem.is_registered = true;
 
     // Configure standard ring depths (2048 descriptors) and map Fill/Completion/RX/TX rings
-    native_af_xdp_set_ring_size(fd, XSK_RING_FILL, 2048);
-    native_af_xdp_set_ring_size(fd, XSK_RING_COMPLETION, 2048);
-    native_af_xdp_set_ring_size(fd, XSK_RING_RX, 2048);
-    native_af_xdp_set_ring_size(fd, XSK_RING_TX, 2048);
+    let fill_err = native_af_xdp_set_ring_size(fd, XSK_RING_FILL, 2048);
+    guard fill_err == 0 else { return new_af_xdp_socket(), fill_err; }
+    let comp_err = native_af_xdp_set_ring_size(fd, XSK_RING_COMPLETION, 2048);
+    guard comp_err == 0 else { return new_af_xdp_socket(), comp_err; }
+    let rx_err = native_af_xdp_set_ring_size(fd, XSK_RING_RX, 2048);
+    guard rx_err == 0 else { return new_af_xdp_socket(), rx_err; }
+    let tx_err = native_af_xdp_set_ring_size(fd, XSK_RING_TX, 2048);
+    guard tx_err == 0 else { return new_af_xdp_socket(), tx_err; }
 
     let mmap_err = native_af_xdp_mmap_rings(fd, 2048);
-    let mapped = mmap_err == 0;
+    guard mmap_err == 0 else { return new_af_xdp_socket(), mmap_err; }
 
-    let bind_flags = if zero_copy { XDP_FLAGS_ZEROCOPY } else { XDP_FLAGS_COPY };
-    let bind_err = native_af_xdp_bind(fd, ifindex, queue_id, bind_flags);
+    let base_flags = if zero_copy { XDP_FLAGS_ZEROCOPY } else { XDP_FLAGS_COPY };
+    var bind_err = native_af_xdp_bind(fd, ifindex, queue_id, base_flags | XDP_FLAGS_USE_NEED_WAKEUP);
+    if bind_err == XDP_ERR_EINVAL {
+        bind_err = native_af_xdp_bind(fd, ifindex, queue_id, base_flags);
+    }
     if bind_err != 0 {
         return new_af_xdp_socket(), bind_err;
     }
@@ -150,7 +160,7 @@ fn af_xdp_open_socket(
         queue_id:       queue_id,
         umem:           umem,
         is_bound:       true,
-        rings_mapped:   mapped,
+        rings_mapped:   true,
         zero_copy_mode: zero_copy,
     }, 0;
 }
@@ -275,21 +285,21 @@ struct XskRingState {
     _pad:      u64[4]  = [0; 4],
 }
 
-// Enqueues a burst of UMEM frame addresses into `ring` using bounded ring slot staging.
+// Enqueues a burst of UMEM frame addresses into `ring` with 32-bit wrapping cursor delta.
 fn xsk_fill_ring_enqueue_burst(ring: XskRingState&, addrs: const u64[:]) -> u32 {
     guard addrs.len > 0 else { return 0; }
-    var cur = core::RingCursor {
-        head: ring.prod_head,
-        tail: ring.cons_head,
-        mask: ring.mask,
-    };
+    let cap = min((ring.mask + 1) as u64, 64);
+    var used = (ring.prod_head - ring.cons_head) as u64;
+    var prod = ring.prod_head;
     var staged: u64 = 0;
     for addr in addrs {
-        let slot_idx, ok = core::ring_cursor_push(cur);
-        guard ok else { break; }
+        guard used < cap else { break; }
+        let slot_idx = (prod & ring.mask) as i64;
         ring.entries[slot_idx] = addr;
+        prod = prod + 1;
+        used = core::add_sat_u64(used, 1);
         staged = core::add_sat_u64(staged, 1);
     }
-    ring.prod_head = cur.head as u32;
+    ring.prod_head = prod;
     return staged as u32;
 }

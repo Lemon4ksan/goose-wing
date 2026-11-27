@@ -234,7 +234,7 @@ fn cork_write_sse_chunk(
     flush_now:  bool        = true,
 ) -> i32 {
     var frame: u8[..4096] = [];
-    realtime::sse_format_event(frame, event_type, data, id, retry_ms);
+    guard realtime::sse_format_event(frame, event_type, data, id, retry_ms) else { return -1; }
     guard frame.len > 0 else { return 0; }
     let written = cork_write_http1_chunk(sc, frame[..]);
     guard written >= 0 else { return -1; }

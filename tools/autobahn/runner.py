@@ -330,21 +330,7 @@ def run_autobahn(
                 "-o",
                 str(out_dir),
             ]
-            # If no cases specified, default to core RFC 6455 categories (1..10)
-            if not cases:
-                for c in [
-                    "1.*",
-                    "2.*",
-                    "3.*",
-                    "4.*",
-                    "5.*",
-                    "6.*",
-                    "7.*",
-                    "9.*",
-                    "10.*",
-                ]:
-                    cmd.extend(["-i", c])
-            else:
+            if cases:
                 for c in cases:
                     cmd.extend(["-i", c])
 
@@ -368,7 +354,7 @@ def run_autobahn(
                 "outdir": str(out_dir),
                 "servers": [{"url": f"ws://127.0.0.1:{port}"}],
                 "cases": cases or ["*"],
-                "exclude-cases": exclude or ["12.*", "13.*"],
+                "exclude-cases": exclude or [],
             }
             with open(spec_file, "w", encoding="utf-8") as f:
                 json.dump(spec, f, indent=2)
@@ -388,7 +374,7 @@ def run_autobahn(
                 "outdir": "/reports",
                 "servers": [{"url": f"ws://{host_target}:{port}"}],
                 "cases": cases or ["*"],
-                "exclude-cases": exclude or ["12.*", "13.*"],
+                "exclude-cases": exclude or [],
             }
             with open(spec_file, "w", encoding="utf-8") as f:
                 json.dump(spec, f, indent=2)

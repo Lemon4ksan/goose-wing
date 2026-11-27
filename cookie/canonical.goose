@@ -249,8 +249,8 @@ fn with_source(cookie_ref: CanonicalCookie&, scheme: SourceScheme, port: i32) ->
 
 // Whether host matches the cookie's host-only or domain-scoped rule (RFC 6265 Section 5.1.3 & RFC 6055).
 fn matches_domain(cookie_val: const CanonicalCookie&, host: const u8[:]) -> bool {
-    let clean_host = host.trim_byte('.').trim_byte('[').trim_byte(']');
-    let clean_domain = cookie_val.domain[..].trim_byte('.').trim_byte('[').trim_byte(']');
+    let clean_host = host.trim_start_byte('.').trim_byte('[').trim_byte(']');
+    let clean_domain = cookie_val.domain[..].trim_start_byte('.').trim_byte('[').trim_byte(']');
     guard clean_host.len > 0 && clean_domain.len > 0 else { return false; }
 
     // RFC 6265 Section 5.1.3: If either host or cookie domain is an IP address,

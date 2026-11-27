@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#pragma pack(push, 1)
 typedef struct {
     const uint8_t *data;
     int64_t len;
@@ -16,6 +17,12 @@ typedef struct {
     uint8_t *data;
     int64_t len;
 } wing_bytes_mut;
+#pragma pack(pop)
+
+_Static_assert(sizeof(wing_bytes_ro) == sizeof(const uint8_t *) + sizeof(int64_t), "wing_bytes_ro must be packed");
+_Static_assert(offsetof(wing_bytes_ro, len) == sizeof(const uint8_t *), "wing_bytes_ro.len must follow data");
+_Static_assert(sizeof(wing_bytes_mut) == sizeof(uint8_t *) + sizeof(int64_t), "wing_bytes_mut must be packed");
+_Static_assert(offsetof(wing_bytes_mut, len) == sizeof(uint8_t *), "wing_bytes_mut.len must follow data");
 
 #if defined(__linux__)
 #include <unistd.h>

@@ -12,6 +12,7 @@ import std;
 import core;
 import rfc.http;
 import rfc.h3_quic;
+import security.cors;
 import http.request;
 import http.response;
 import .internal;
@@ -74,6 +75,15 @@ fn format_webtransport_connect_request(
     // :protocol = webtransport
     http::set_header(req, ":protocol", rfc::WEBTRANSPORT_PROTOCOL);
     http::set_header(req, "sec-webtransport-http3-draft", "draft16");
+}
+
+// Validates an incoming HTTP request Origin against a configured Origin allowlist policy.
+fn validate_webtransport_origin(
+    req:    const http::Request&,
+    policy: const security::CorsPolicy&,
+) -> bool {
+    let origin = req.headers.find_header("Origin").trim_lws();
+    return security::is_origin_allowed(policy, origin);
 }
 
 // Validates whether an incoming HTTP request is an Extended CONNECT WebTransport request.
@@ -212,6 +222,41 @@ fn decode_webtransport_datagram(
     guard idx <= wire.len && out.payload.try_set(wire[idx..]) else { return false; }
 
     out.session_id = core::mul_sat_u64(quarter_id, 4);
+    return true;
+}
+
+const MAX_WEBTRANSPORT_DATAGRAM_BYTES: i64 = 1200;
+
+// Decodes and enforces active session state, datagram enablement, session match, and datagram
+// byte quota for an inbound WebTransport datagram.
+fn accept_webtransport_datagram(
+    session:         const WebTransportSession&,
+    wire:            const u8[:],
+    out:             WebTransportDatagram&,
+    max_dgram_bytes: i64 = MAX_WEBTRANSPORT_DATAGRAM_BYTES,
+) -> bool {
+    guard session.is_active && !session.is_draining && session.datagrams_enabled else { return false; }
+    guard decode_webtransport_datagram(wire, out) else { return false; }
+    guard out.session_id == session.session_id && out.payload.len <= max_dgram_bytes else {
+        out = WebTransportDatagram { .. };
+        return false;
+    }
+    return true;
+}
+
+// Decodes an inbound WebTransport datagram and validates active session state and quota in `demuxer`.
+fn route_webtransport_datagram(
+    demuxer:         const WebTransportDemuxer&,
+    wire:            const u8[:],
+    out:             WebTransportDatagram&,
+    max_dgram_bytes: i64 = MAX_WEBTRANSPORT_DATAGRAM_BYTES,
+) -> bool {
+    guard decode_webtransport_datagram(wire, out) else { return false; }
+    let st, found = get_webtransport_session_state(demuxer, out.session_id);
+    guard found && st == WebTransportSessionState.Active && out.payload.len <= max_dgram_bytes else {
+        out = WebTransportDatagram { .. };
+        return false;
+    }
     return true;
 }
 

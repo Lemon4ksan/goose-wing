@@ -60,8 +60,23 @@ fn bhttp_field_section_size(map: const http::HeaderMap&) -> u64 {
     return total;
 }
 
+// RFC 9292 Section 3.6: Reject connection-specific hop-by-hop headers (RFC 9113 Section 8.2.2).
+inline fn is_disallowed_bhttp_connection_header(name: const u8[:], val: const u8[:]) -> bool {
+    if name.eq_ascii_fold("connection") ||
+       name.eq_ascii_fold("transfer-encoding") ||
+       name.eq_ascii_fold("keep-alive") ||
+       name.eq_ascii_fold("upgrade") ||
+       name.eq_ascii_fold("proxy-connection") {
+        return true;
+    }
+    if name.eq_ascii_fold("te") {
+        return !val.trim_lws().eq_ascii_fold("trailers");
+    }
+    return false;
+}
+
 // Writes header section (length prefix + field lines), content, and empty
-// trailers after control data; returns false on capacity overflow.
+// trailers after control data; returns false on capacity overflow or invalid field.
 fn bhttp_encode_tail(map: const http::HeaderMap&, body: const u8[:], out: u8[..8192]&) -> bool {
     let section_len = bhttp_field_section_size(map);
     let section_need = bhttp_varint_size(section_len) + section_len;
@@ -69,6 +84,9 @@ fn bhttp_encode_tail(map: const http::HeaderMap&, body: const u8[:], out: u8[..8
     // Pre-validate total capacity (section + content + 1-byte empty trailers)
     // so no partial write can occur on overflow.
     guard out.len + (section_need as i64) + (content_need as i64) + 1 <= out.cap else { return false; }
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
     guard quic::encode_varint(section_len, out) else { return false; }
     for &entry in map.entries {
         let name = map.raw_buf[entry.name_begin..entry.name_end];
@@ -76,12 +94,19 @@ fn bhttp_encode_tail(map: const http::HeaderMap&, body: const u8[:], out: u8[..8
             continue;
         }
         let val = map.raw_buf[entry.values_begin..entry.values_end];
+        guard !rfc::bhttp_is_reserved_pseudo(name) &&
+              http::is_valid_header_name_h2(name) &&
+              http::is_valid_header_value(val) &&
+              !is_disallowed_bhttp_connection_header(name, val) else {
+            return false;
+        }
         guard bhttp_put_len_bytes(out, name) else { return false; }
         guard bhttp_put_len_bytes(out, val) else { return false; }
     }
 
     guard bhttp_put_len_bytes(out, body) else { return false; } // content
     guard bhttp_put_len_bytes(out, "") else { return false; }   // empty trailers
+    committed = true;
     return true;
 }
 
@@ -118,10 +143,23 @@ fn bhttp_decode_field_line(
         guard http::is_valid_header_name_h2(name) && http::is_valid_header_value(val) else { return false; }
     } else {
         seen_regular = true;
-        guard http::is_valid_header_name_h2(name) && http::is_valid_header_value(val) else { return false; }
+        guard http::is_valid_header_name_h2(name) &&
+              http::is_valid_header_value(val) &&
+              !is_disallowed_bhttp_connection_header(name, val) else {
+            return false;
+        }
     }
     guard headers.append_header(name, val) else { return false; }
     idx = val_end;
+    return true;
+}
+
+inline fn validate_bhttp_content_length(headers: const http::HeaderMap&, body_len: i32) -> bool {
+    for &entry in headers.entries {
+        guard headers.entry_name(entry) == "content-length" else { continue; }
+        let cl_val, ok_cl = http::validate_content_length_value(headers.entry_value(entry));
+        guard ok_cl && cl_val == body_len else { return false; }
+    }
     return true;
 }
 
@@ -161,6 +199,8 @@ fn bhttp_decode_tail(
         body_len = clen as i32;
         scan = cend;
     }
+
+    guard validate_bhttp_content_length(headers, body_len) else { return false; }
 
     if scan < raw.len {
         let tlen, ok = quic::decode_varint_cursor(raw, scan);
@@ -679,10 +719,10 @@ fn accumulate_want_digest_weights(
 }
 
 inline fn apply_streaming_digest_entry(v: http::StreamingDigestVerifier&, entry: const http::SfDictEntry&) -> bool {
+    guard !entry.is_inner_list && entry.item.kind == http::SfType.Binary else { return false; }
     let is_sha256 = entry.key[..].eq_ascii_fold(rfc::DIGEST_ALG_SHA256);
     let is_sha512 = entry.key[..].eq_ascii_fold(rfc::DIGEST_ALG_SHA512);
     guard is_sha256 || is_sha512 else { return true; }
-    guard entry.item.kind == http::SfType.Binary else { return false; }
 
     var decoded: u8[..64] = [];
     guard core::base64_decode(entry.item.str_val[..], decoded) else { return false; }
@@ -822,4 +862,36 @@ fn is_skippable_ohttp_key_config(raw: const u8[:]) -> bool {
     let _, ok_pk = cur.read_bytes(pk_len);
     let sym_bytes, ok_sym = cur.read_u16_prefixed();
     return ok_pk && ok_sym && cur.buf.len == 0 && sym_bytes.len >= 4 && (sym_bytes.len & 3) == 0;
+}
+
+fn ohttp_replay_cache_has(
+    cache:    const http::OhttpReplayCache&,
+    enc_hash: const u8[32]&,
+    now_sec:  i64,
+) -> bool {
+    for i in http::OHTTP_REPLAY_CACHE_CAP {
+        if !cache.occupied[i] {
+            continue;
+        }
+        let ts = cache.timestamps[i];
+        if now_sec >= ts && core::sub_sat_i64(now_sec, ts) > cache.ttl_sec {
+            continue;
+        }
+        if core::ct_eq_tag32(cache.enc_hashes[i], enc_hash) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn ohttp_replay_cache_insert(
+    cache:    http::OhttpReplayCache&,
+    enc_hash: const u8[32]&,
+    now_sec:  i64,
+) {
+    let idx = cache.head % http::OHTTP_REPLAY_CACHE_CAP;
+    cache.enc_hashes[idx] = enc_hash;
+    cache.timestamps[idx] = now_sec;
+    cache.occupied[idx] = true;
+    cache.head = (idx + 1) % http::OHTTP_REPLAY_CACHE_CAP;
 }

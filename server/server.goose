@@ -38,53 +38,54 @@ struct WsRouteEntry {
 }
 
 struct HttpServer {
-    pipeline:                  ServerPipelineConfig             = ServerPipelineConfig { .. },
-    host:                      u8[..256]                        = "127.0.0.1",
-    port:                      u16                              = 8080,
-    server_name:               u8[..64]                         = "goose-wing/1.0",
-    timer:                     server_internal::ConnectionTimer = server_internal::ConnectionTimer { .. },
-    is_running:                bool                             = false,
-    requests_processed:        u64                              = 0,
-    accept_proxy_protocol:     bool                             = false,
-    trust_proxy_headers:       bool                             = false,
-    topic_tree:                realtime::TopicTree              = realtime::TopicTree { .. },
-    ws_routes:                 WsRouteEntry[..16]               = [WsRouteEntry { .. }; 16],
-    ws_route_count:            i32                              = 0,
-    shared_compressor:         realtime::SharedWsCompressor     = realtime::SharedWsCompressor { .. },
-    sni_registry:              SniRegistry                      = SniRegistry { .. },
-    worker_ring:               core::SpscRing                   = core::SpscRing { .. },
-    cached_date:               CachedHttpDate                   = CachedHttpDate { .. },
-    fast_l0_last_headers:      u8[..256]                        = [],
-    fast_l0_last_host:         u8[..128]                        = [],
-    fast_l0_last_close:        bool                             = false,
-    enable_header_memoization: bool                             = false,
-    turn_in_use:               bool                             = false,
-    handle_os_signals:         bool                             = false,
-    honor_shutdown_flag:       bool                             = true,
-    shutdown_grace_ns:         u64                              = 2000000000,
-    accel_mode:                net::ReactorAccelMode            = net::ReactorAccelMode.Auto,
-    enable_ktls_offload:       bool                             = true,
-    tls_backend:               tls::TlsBackendKind              = tls::TlsBackendKind.Auto,
-    tls_min_version:           tls::TlsMinVersion               = tls::TlsMinVersion.Tls13,
-    tls_cert_pem_file:         u8[..256]                        = [],
-    tls_key_pem_file:          u8[..256]                        = [],
-    tls_ca_file:               u8[..256]                        = [],
-    tls_require_client_cert:   bool                             = false,
-    tls_alpn_wire:             u8[..64]                         = [],
-    tls_keylog_file:           u8[..256]                        = [],
-    tls_handshake_timeout_ms:  u32                              = 5000,
-    idle_timeout_ms:           u64                              = 30000,
-    read_header_timeout_ms:    u32                              = 5000,
-    read_body_timeout_ms:      u32                              = 15000,
-    max_header_bytes:          i64                              = 16384,
-    max_body_bytes:            i64                              = 10485760,
-    max_connections:           i32                              = 0,
-    max_h2_concurrent_streams: u32                              = 100,
-    omit_server_header:        bool                             = false,
-    omit_date_header:          bool                             = false,
-    so_reuseport:              bool                             = false,
-    listen_backlog:            i32                              = 128,
-    tcp_nodelay:               bool                             = true,
+    pipeline:                     ServerPipelineConfig             = ServerPipelineConfig { .. },
+    host:                         u8[..256]                        = "127.0.0.1",
+    port:                         u16                              = 8080,
+    server_name:                  u8[..64]                         = "goose-wing/1.0",
+    timer:                        server_internal::ConnectionTimer = server_internal::ConnectionTimer { .. },
+    is_running:                   bool                             = false,
+    requests_processed:           u64                              = 0,
+    accept_proxy_protocol:        bool                             = false,
+    trust_proxy_headers:          bool                             = false,
+    proxy_protocol_trusted_cidrs: u8[..64][..8]                    = [],
+    topic_tree:                   realtime::TopicTree              = realtime::TopicTree { .. },
+    ws_routes:                    WsRouteEntry[..16]               = [WsRouteEntry { .. }; 16],
+    ws_route_count:               i32                              = 0,
+    shared_compressor:            realtime::SharedWsCompressor     = realtime::SharedWsCompressor { .. },
+    sni_registry:                 SniRegistry                      = SniRegistry { .. },
+    worker_ring:                  core::SpscRing                   = core::SpscRing { .. },
+    cached_date:                  CachedHttpDate                   = CachedHttpDate { .. },
+    fast_l0_last_headers:         u8[..256]                        = [],
+    fast_l0_last_host:            u8[..128]                        = [],
+    fast_l0_last_close:           bool                             = false,
+    enable_header_memoization:    bool                             = false,
+    turn_in_use:                  bool                             = false,
+    handle_os_signals:            bool                             = false,
+    honor_shutdown_flag:          bool                             = true,
+    shutdown_grace_ns:            u64                              = 2000000000,
+    accel_mode:                   net::ReactorAccelMode            = net::ReactorAccelMode.Auto,
+    enable_ktls_offload:          bool                             = true,
+    tls_backend:                  tls::TlsBackendKind              = tls::TlsBackendKind.Auto,
+    tls_min_version:              tls::TlsMinVersion               = tls::TlsMinVersion.Tls13,
+    tls_cert_pem_file:            u8[..256]                        = [],
+    tls_key_pem_file:             u8[..256]                        = [],
+    tls_ca_file:                  u8[..256]                        = [],
+    tls_require_client_cert:      bool                             = false,
+    tls_alpn_wire:                u8[..64]                         = [],
+    tls_keylog_file:              u8[..256]                        = [],
+    tls_handshake_timeout_ms:     u32                              = 5000,
+    idle_timeout_ms:              u64                              = 30000,
+    read_header_timeout_ms:       u32                              = 5000,
+    read_body_timeout_ms:         u32                              = 15000,
+    max_header_bytes:             i64                              = 16384,
+    max_body_bytes:               i64                              = 10485760,
+    max_connections:              i32                              = 0,
+    max_h2_concurrent_streams:    u32                              = 100,
+    omit_server_header:           bool                             = false,
+    omit_date_header:             bool                             = false,
+    so_reuseport:                 bool                             = false,
+    listen_backlog:               i32                              = 128,
+    tcp_nodelay:                  bool                             = true,
 }
 
 // Listening TCP socket tuning options applied by `set_server_socket_options` and `listen_http_server`.
@@ -400,6 +401,12 @@ fn complete_ws_upgrade<Req, B>(
     return true;
 }
 
+// Returns true if `peer_ip` matches at least one configured `proxy_protocol_trusted_cidrs`
+// entry (fail-closed when empty).
+fn is_trusted_proxy_protocol_peer(server: const HttpServer&, peer_ip: const u8[:]) -> bool {
+    return server_internal::is_ip_in_cidr_list(peer_ip, server.proxy_protocol_trusted_cidrs);
+}
+
 // Processes an incoming raw connection payload, performing protocol detection (H1 vs H2 preface),
 // executing the server pipeline with `<Stage>`, and serializing the wire response.
 fn handle_connection_wire<Stage, B>(
@@ -418,6 +425,10 @@ fn handle_connection_wire<Stage, B>(
     var raw_stream = wire_in;
 
     if server.accept_proxy_protocol {
+        guard is_trusted_proxy_protocol_peer(server, effective_ip[..]) else {
+            serialize_bad_request_error(server.server_name[..], wire_out);
+            return PipelineOutcome.Handled, false;
+        }
         let stripped, ok_proxy = server_internal::strip_required_proxy_preface(server, wire_in, effective_ip, wire_out);
         guard ok_proxy else {
             return PipelineOutcome.Handled, false;

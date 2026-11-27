@@ -152,10 +152,46 @@ fn is_file_url(url_val: const Url&) -> bool {
 }
 
 // Extracts the native operating system file path from a file: URL.
+// Decodes a percent-encoded `file://` URL pathname into `out`, rejecting `%00`, `%2F`, and `%5C`.
+// Leaves `out` empty on failure.
+//
+// Example:
+//   raw_path = "/tmp/a%20b.txt", out = []
+//   returns: true, out = "/tmp/a b.txt"
+fn decode_file_url_path<B>(raw_path: const u8[:], out: B&) -> bool {
+    out.clear();
+    var committed = false;
+    defer if !committed { out.clear(); };
+    guard raw_path.len > 0 else { return false; }
+
+    var scan_idx: i64 = 0;
+    while scan_idx < raw_path.len {
+        let cur = raw_path[scan_idx];
+        guard cur != 0 else { return false; }
+        if cur == '%' && scan_idx + 2 < raw_path.len {
+            let hi = hex_digit_to_val(raw_path[scan_idx + 1]);
+            let lo = hex_digit_to_val(raw_path[scan_idx + 2]);
+            if hi >= 0 && lo >= 0 {
+                let b = ((hi << 4) | lo) as u8;
+                guard b != 0 && b != '/' && b != '\\' else { return false; }
+                guard out.try_push(b) else { return false; }
+                scan_idx += 3;
+                continue;
+            }
+        }
+        guard out.try_push(cur) else { return false; }
+        scan_idx += 1;
+    }
+    committed = true;
+    return true;
+}
+
 // Decodes percent-encoded bytes (%20 -> space), drops the leading slash before Windows drive letters,
 // and normalizes separators to the native Windows backslash when a drive letter is present.
 fn file_path<B>(url_val: const Url&, out: B&) -> bool {
     out.clear();
+    var committed = false;
+    defer if !committed { out.clear(); };
     guard is_file_url(url_val) else { return false; }
 
     let host_str = hostname(url_val);
@@ -163,14 +199,17 @@ fn file_path<B>(url_val: const Url&, out: B&) -> bool {
     guard raw_pathname.len > 0 else { return false; }
 
     var decoded: u8[..2048] = [];
-    guard percent_decode(raw_pathname, decoded) else { return false; }
+    guard decode_file_url_path(raw_pathname, decoded) else { return false; }
 
     // Windows UNC network path (\\server\share\file.txt)
     if host_str.len > 0 && host_str != "localhost" {
         guard out.try_append("\\\\") && out.try_append(host_str) else { return false; }
         for char_byte in decoded {
-            guard out.try_push(if char_byte == '/' { '\\' } else { char_byte }) else { return false; }
+            guard out.try_push(if char_byte == '/' { '\\' } else { char_byte }) else {
+                return false;
+            }
         }
+        committed = true;
         return true;
     }
 
@@ -184,13 +223,17 @@ fn file_path<B>(url_val: const Url&, out: B&) -> bool {
         // Drop leading '/' before drive letter: C:\Users\...
         for scan_idx in 1..decoded.len {
             let char_byte = decoded[scan_idx];
-            guard out.try_push(if char_byte == '/' { '\\' } else { char_byte }) else { return false; }
+            guard out.try_push(if char_byte == '/' { '\\' } else { char_byte }) else {
+                return false;
+            }
         }
+        committed = true;
         return true;
     }
 
     // POSIX path: preserve leading '/' and forward slashes
     guard out.try_append(decoded[..]) else { return false; }
+    committed = true;
     return true;
 }
 

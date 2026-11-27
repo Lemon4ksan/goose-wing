@@ -56,19 +56,37 @@ struct Config {
     max_buffered_body_bytes:     i64           = 1048576,
 }
 
-// Identifies untrusted forwarding metadata headers to strip before re-injection.
-// RFC 9440 Section 2.4: Processing Rules - incoming Client-Cert fields MUST be removed before forwarding.
-inline fn is_forwarded_metadata_header(name: const u8[:]) -> bool {
-    if name.eq_ascii_fold("x-forwarded-for") { return true; }
-    if name.eq_ascii_fold("x-forwarded-proto") { return true; }
-    if name.eq_ascii_fold("x-forwarded-host") { return true; }
-    if name.eq_ascii_fold("x-forwarded-port") { return true; }
-    if name.eq_ascii_fold("x-forwarded-server") { return true; }
-    if name.eq_ascii_fold("x-forwarded-ssl") { return true; }
+inline fn is_canonical_forwarded_metadata_header(name: const u8[:]) -> bool {
+    if name.starts_with_fold("x-forwarded-") { return true; }
     if name.eq_ascii_fold("forwarded") { return true; }
     if name.eq_ascii_fold("client-cert") { return true; }
     if name.eq_ascii_fold("client-cert-chain") { return true; }
     if name.eq_ascii_fold("via") { return true; }
+    if name.eq_ascii_fold("x-real-ip") { return true; }
+    if name.eq_ascii_fold("true-client-ip") { return true; }
+    if name.eq_ascii_fold("cf-connecting-ip") { return true; }
+    if name.eq_ascii_fold("x-client-ip") { return true; }
+    if name.eq_ascii_fold("x-original-forwarded-for") { return true; }
+    return false;
+}
+
+// Identifies untrusted forwarding metadata headers (including underscore variants) to strip.
+// RFC 9440 Section 2.4: Processing Rules - incoming Client-Cert fields MUST be removed before forwarding.
+inline fn is_forwarded_metadata_header(name: const u8[:]) -> bool {
+    if !name.contains_byte('_') {
+        return is_canonical_forwarded_metadata_header(name);
+    }
+    var folded: u8[..64] = [];
+    if name.len <= folded.cap {
+        for b in name {
+            let _ = folded.try_push(if b == '_' { '-' } else { b });
+        }
+        if is_canonical_forwarded_metadata_header(folded[..]) {
+            return true;
+        }
+        return folded[..].eq_ascii_fold("proxy-authorization") ||
+            folded[..].eq_ascii_fold("proxy-authenticate");
+    }
     return false;
 }
 
@@ -899,7 +917,9 @@ fn run_prepared_exchange_on_conn(
             out_resp.set_header("Proxy-Status", ps_buf[..]);
         }
     }
-    let can_reuse = headers_valid && reuse == WireReuse.KeepAlive && conn.rx_buf.len == 0;
+    let is_tunnel_or_upgrade = (out_resp.status_code == 101) ||
+        (method.eq_ascii_fold("CONNECT") && out_resp.status_code >= 200 && out_resp.status_code < 300);
+    let can_reuse = headers_valid && !is_tunnel_or_upgrade && reuse == WireReuse.KeepAlive && conn.rx_buf.len == 0;
     let rtt_us = if headers_valid { proxy_internal::calc_probe_rtt_us(start_inst) } else { 0 };
     return headers_valid, can_reuse, rtt_us;
 }

@@ -465,9 +465,51 @@ fn validate_zstream_trailer(d: ZStreamDecompressor&, resume_next_member: bool&) 
     return CompressError.None;
 }
 
+const MAX_CONSECUTIVE_EMPTY_GZIP_MEMBERS: i64 = 1024;
+
+fn zstream_decompress_deflate_step<B>(
+    d:                ZStreamDecompressor&,
+    out:              B&,
+    max_output_bytes: i64,
+) -> CompressError, bool {
+    if d.allow_dict && d.window_len == 0 && d.dict.len > 0 {
+        update_sliding_window(d, d.dict);
+    }
+    var temp_out: u8[>..] = [];
+    let stream_limit = if max_output_bytes > 0 {
+        let produced = d.total_out as i64;
+        if produced >= max_output_bytes { return CompressError.OutputBufferOverflow, false; }
+        max_output_bytes - produced
+    } else { 0 };
+    let err, consumed = inflate_ex(
+        d.in_buf[..], temp_out, d.window[..d.window_len], stream_limit, d.max_window_dist,
+    );
+    guard err == CompressError.None || err == CompressError.InputBufferTruncated else {
+        return err, false;
+    }
+    if consumed > 0 {
+        guard comp_try_append(out, temp_out[..]) else {
+            return CompressError.OutputBufferOverflow, false;
+        }
+        d.total_out += temp_out.len as u64;
+        if d.format == ContainerFormat.Zlib {
+            d.adler = adler32_update(d.adler, temp_out[..]);
+        } else if d.format == ContainerFormat.Gzip {
+            d.crc = crc32_update(d.crc, temp_out[..]);
+        }
+        update_sliding_window(d, temp_out[..]);
+        drain_in_buf(d, consumed);
+    }
+    if err == CompressError.InputBufferTruncated {
+        return CompressError.None, true;
+    }
+    d.deflate_finished = true;
+    return CompressError.None, false;
+}
+
 // Resumable streaming decompression feeding arbitrary byte chunks (from 1 byte to multi-KB TCP slices).
 // Buffers incoming data, rolls back partial blocks on truncation, and enforces output quota guard.
-recursive fn zstream_decompress_write_limit<B>(
+fn zstream_decompress_write_limit<B>(
     d:                ZStreamDecompressor&,
     chunk:            const u8[:],
     out:              B&,
@@ -488,57 +530,33 @@ recursive fn zstream_decompress_write_limit<B>(
     d.in_buf.append(chunk);
     d.total_in += chunk.len as u64;
 
-    if !d.header_parsed {
-        let hdr_err = parse_stream_header(d);
-        guard hdr_err == CompressError.None else { return hdr_err; }
-        guard d.header_parsed else { return CompressError.None; }
-    }
-
-    if d.format == ContainerFormat.Zstd {
-        return zstream_decompress_zstd_step(d, out, max_output_bytes);
-    }
-
-    if !d.deflate_finished {
-        if d.allow_dict && d.window_len == 0 && d.dict.len > 0 {
-            update_sliding_window(d, d.dict);
+    var empty_members: i64 = 0;
+    while true {
+        if !d.header_parsed {
+            let hdr_err = parse_stream_header(d);
+            guard hdr_err == CompressError.None else { return hdr_err; }
+            guard d.header_parsed else { return CompressError.None; }
         }
-        let hist = d.window[..d.window_len];
-        var temp_out: u8[>..] = [];
-        let stream_limit = if max_output_bytes > 0 {
-            let produced = d.total_out as i64;
-            if produced >= max_output_bytes { return CompressError.OutputBufferOverflow; }
-            max_output_bytes - produced
-        } else { 0 };
-        let err, consumed = inflate_ex(d.in_buf[..], temp_out, hist, stream_limit, d.max_window_dist);
-        if consumed > 0 {
-            guard comp_try_append(out, temp_out[..]) else { return CompressError.OutputBufferOverflow; }
-            d.total_out += temp_out.len as u64;
-
-            if d.format == ContainerFormat.Zlib {
-                d.adler = adler32_update(d.adler, temp_out[..]);
-            } else if d.format == ContainerFormat.Gzip {
-                d.crc = crc32_update(d.crc, temp_out[..]);
-            }
-
-            update_sliding_window(d, temp_out[..]);
-            drain_in_buf(d, consumed);
+        if d.format == ContainerFormat.Zstd {
+            return zstream_decompress_zstd_step(d, out, max_output_bytes);
         }
-        if err == CompressError.InputBufferTruncated {
-            return CompressError.None;
+        if !d.deflate_finished {
+            let step_err, truncated = zstream_decompress_deflate_step(d, out, max_output_bytes);
+            guard step_err == CompressError.None else { return step_err; }
+            if truncated { return CompressError.None; }
         }
-        guard err == CompressError.None else { return err; }
-        d.deflate_finished = true;
-    }
-
-    if d.deflate_finished && !d.is_finished {
         var resume_next = false;
-        let tr_err = validate_zstream_trailer(d, resume_next);
-        guard tr_err == CompressError.None else { return tr_err; }
-        if resume_next {
-            return zstream_decompress_write_limit(d, "", out, max_output_bytes);
+        let member_bytes = sub_sat_u64(d.total_out, d.member_start_out);
+        if d.deflate_finished && !d.is_finished {
+            let tr_err = validate_zstream_trailer(d, resume_next);
+            guard tr_err == CompressError.None else { return tr_err; }
+        }
+        guard resume_next else { return CompressError.None; }
+        empty_members = if member_bytes == 0 { empty_members + 1 } else { 0 };
+        guard empty_members <= MAX_CONSECUTIVE_EMPTY_GZIP_MEMBERS else {
+            return CompressError.CorruptedBitstream;
         }
     }
-
     return CompressError.None;
 }
 

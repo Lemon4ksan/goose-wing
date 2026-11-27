@@ -14,7 +14,10 @@ import .cache;
 // ---- Internal Protocol Ceilings & Types ---------------------------------
 
 // RFC 1035 Section 2.3.4: Size limits - maximum backward compression pointer hops over a 255-octet wire name
-const MAX_POINTER_JUMPS: i64 = 127;
+const MAX_POINTER_JUMPS:        i64 = 127;
+const MAX_PACKET_POINTER_JUMPS: i64 = 512;
+const MAX_CNAME_CHAIN_HOPS:     i64 = 8;
+const MAX_TOTAL_PACKET_RRS:     u32 = 1024;
 
 enum SvcParamStatus {
     Ok,
@@ -257,11 +260,10 @@ checkfree fn parse_https_svc_params_status(rec: dns::HttpsRecord&, rdata: const 
     defer if !committed { rec = saved_rec; };
     rec.reset_svc_params();
 
-    var off:      i64  = 0;
-    var last_key: i32  = -1;
-    var mand_off: i64  = 0;
-    var mand_end: i64  = 0;
-    var mand_ech: bool = false;
+    var off:      i64 = 0;
+    var last_key: i32 = -1;
+    var mand_off: i64 = 0;
+    var mand_end: i64 = 0;
     var flags = SvcParamParseFlags { .. };
 
     while off + 4 <= rdata.len {
@@ -282,7 +284,6 @@ checkfree fn parse_https_svc_params_status(rec: dns::HttpsRecord&, rdata: const 
             guard ok_m else { return SvcParamStatus.Malformed, false; }
             mand_off = val_start;
             mand_end = off;
-            mand_ech = mand.has_ech;
             if mand.has_unsupported { flags.incompatible = true; }
             continue;
         }
@@ -298,7 +299,7 @@ checkfree fn parse_https_svc_params_status(rec: dns::HttpsRecord&, rdata: const 
     guard off == rdata.len && mand_off == mand_end else { return SvcParamStatus.Malformed, false; }
     // RFC 9460 Section 7.1.1: Representation - "no-default-alpn" MUST NOT appear without "alpn"
     guard !rec.no_default_alpn || flags.saw_alpn else { return SvcParamStatus.Malformed, false; }
-    if flags.incompatible || (mand_ech && flags.ech_dropped) {
+    if flags.incompatible || flags.ech_dropped {
         return SvcParamStatus.Incompatible, false;
     }
     committed = true;
@@ -463,6 +464,56 @@ checkfree inline fn apply_https_svc_params_tail(
     return true;
 }
 
+// Decodes a DNS wire name while charging compression pointer hops against `rem_jumps`.
+// Leaves `idx` and `out` unchanged on failure.
+//
+// Example:
+//   raw = "\x07example\x03com\x00", idx = 0, rem_jumps = 512
+//   returns: true, idx = 13, out = "example.com"
+checkfree fn decode_name_with_budget<B>(
+    raw:       const u8[:],
+    idx:       i64&,
+    rem_jumps: i64&,
+    out:       B&,
+) -> bool {
+    guard raw.len <= rfc::DOH_MAX_MESSAGE_OCTETS && idx >= 0 && idx < raw.len else {
+        return false;
+    }
+    var jumps: i64 = 0;
+    var current_off = idx;
+    var final_off = idx;
+    var advanced_original = false;
+    var scratch: u8[..255] = [];
+
+    while current_off >= 0 && current_off < raw.len {
+        let b = raw[current_off];
+        if b == 0 {
+            if !advanced_original { final_off = current_off + 1; }
+            guard copy_dns_name_out(out, scratch[..]) else { return false; }
+            idx = final_off;
+            return true;
+        }
+        if (b & rfc::DNS_POINTER_TAG) == rfc::DNS_POINTER_TAG {
+            guard current_off < raw.len - 1 else { return false; }
+            let ptr_off = (((b & 0x3F) as i64) << 8) | (raw[current_off + 1] as i64);
+            // RFC 1035 Section 4.1.4: Message compression - pointers must point backwards past 12-byte header
+            guard ptr_off < current_off && ptr_off >= rfc::DNS_HEADER_LEN else { return false; }
+            if !advanced_original {
+                final_off = current_off + 2;
+                advanced_original = true;
+            }
+            current_off = ptr_off;
+            jumps += 1;
+            guard jumps <= MAX_POINTER_JUMPS && rem_jumps > 0 else { return false; }
+            rem_jumps -= 1;
+            continue;
+        }
+        guard append_wire_label(raw, current_off, raw.len, scratch) else { return false; }
+        if !advanced_original { final_off = current_off; }
+    }
+    return false;
+}
+
 // Parses a single DNS Resource Record RDATA into `resp`.
 //
 // Example:
@@ -471,9 +522,11 @@ checkfree inline fn apply_https_svc_params_tail(
 checkfree fn parse_answer_record(
     resp:        dns::Response&,
     raw:         const u8[:],
+    owner_name:  const u8[:],
     rtype:       u16,
     rdlength:    i64,
     rdata_start: i64,
+    saw_alias:   bool&,
 ) -> bool {
     let rdata_end = rdata_start + rdlength;
     guard rdata_start >= 0 && rdlength >= 0 && rdata_start <= rdata_end && rdata_end <= raw.len else {
@@ -505,15 +558,25 @@ checkfree fn parse_answer_record(
             return false;
         }
         guard target_off >= 0 && target_off <= rdata_end else { return false; }
+        if rec.priority == 0 && rec.target_name.len > 0 &&
+            dns_names_eq_fold(rec.target_name[..], owner_name) {
+            return false;
+        }
         var keep_rec = true;
         guard rec.apply_https_svc_params_tail(raw[target_off..rdata_end], keep_rec) else {
             return false;
         }
         if keep_rec {
-            if resp.https_records.len < resp.https_records.cap {
+            if rec.priority == 0 && !saw_alias {
+                // RFC 9460 Section 2.4.1: ServiceMode RRs MUST be ignored if AliasMode RR is present
+                resp.https_records.clear();
+                saw_alias = true;
+            }
+            let accept = rec.priority == 0 || !saw_alias;
+            if accept && resp.https_records.len < resp.https_records.cap {
                 resp.https_records.push(rec);
             } else {
-                // Bounded to 4 HTTPS records per response; extra records are validated and ignored.
+                // Bounded to 4 HTTPS records per response; ignored or excess validated.
             }
         }
     }
@@ -524,15 +587,20 @@ checkfree fn parse_answer_record(
 // Rolls back `idx` on failure.
 //
 // Example:
-//   raw = "\x07example\x03com\x00\x00\x01\x00\x01", idx = 0, count = 1
+//   raw = "\x07example\x03com\x00\x00\x01\x00\x01", idx = 0, count = 1, rem_jumps = 512
 //   returns: true, idx = 17
-checkfree fn skip_questions(raw: const u8[:], idx: i64&, count: u16) -> bool {
+checkfree fn skip_questions(
+    raw:       const u8[:],
+    idx:       i64&,
+    count:     u16,
+    rem_jumps: i64&,
+) -> bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
     var qname: u8[..255] = [];
     for _ in count {
-        guard dns::decode_name(raw, idx, qname) else { return false; }
+        guard decode_name_with_budget(raw, idx, rem_jumps, qname) else { return false; }
         guard idx + 4 <= raw.len else { return false; }
         idx += 4;
     }
@@ -540,46 +608,63 @@ checkfree fn skip_questions(raw: const u8[:], idx: i64&, count: u16) -> bool {
     return true;
 }
 
-// Parses `count` DNS Question entries and returns the primary QNAME (RFC 1035 Section 4.1.2).
+// Parses `count` DNS Question entries and returns primary QNAME, QTYPE, QCLASS (RFC 1035 §4.1.2).
 // Rolls back `idx` on failure.
 //
 // Example:
-//   raw = "\x07example\x03com\x00\x00\x01\x00\x01", idx = 0, count = 1
-//   returns: "example.com", true (idx = 17)
-checkfree fn parse_questions(raw: const u8[:], idx: i64&, count: u16) -> u8[..255], bool {
+//   raw = "\x07example\x03com\x00\x00\x01\x00\x01", idx = 0, count = 1, rem_jumps = 512
+//   returns: "example.com", 1, 1, true (idx = 17)
+checkfree fn parse_questions(
+    raw:       const u8[:],
+    idx:       i64&,
+    count:     u16,
+    rem_jumps: i64&,
+) -> u8[..255], u16, u16, bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
     var first_qname: u8[..255] = [];
+    var first_qtype: u16       = 0;
+    var first_qcls:  u16       = 0;
     var qname:       u8[..255] = [];
     for q in count {
-        guard dns::decode_name(raw, idx, qname) else { return [], false; }
+        guard decode_name_with_budget(raw, idx, rem_jumps, qname) else {
+            return [], 0, 0, false;
+        }
         let pos = idx;
-        guard pos >= 0 && pos <= raw.len && pos + 4 <= raw.len else { return [], false; }
+        guard pos >= 0 && pos <= raw.len && pos + 4 <= raw.len else { return [], 0, 0, false; }
+        let qtype = read_dns_u16(raw[pos..], 0);
         let qclass = read_dns_u16(raw[pos..], 2);
-        guard qclass == rfc::DNS_QCLASS_IN else { return [], false; }
+        guard qclass == rfc::DNS_QCLASS_IN else { return [], 0, 0, false; }
         if q == 0 {
-            guard copy_dns_name_out(first_qname, qname[..]) else { return [], false; }
+            guard copy_dns_name_out(first_qname, qname[..]) else { return [], 0, 0, false; }
+            first_qtype = qtype;
+            first_qcls = qclass;
         }
         idx += 4;
     }
     committed = true;
-    return first_qname, true;
+    return first_qname, first_qtype, first_qcls, true;
 }
 
 // Skips `count` trailing DNS Resource Records while validating wire framing (RFC 1035 Section 4.1.3).
 // Rolls back `idx` on failure.
 //
 // Example:
-//   raw = "\x00\x00\x29\x10\x00\x00\x00\x00\x00\x00\x00", idx = 0, count = 1
+//   raw = "\x00\x00\x29\x10\x00\x00\x00\x00\x00\x00\x00", idx = 0, count = 1, rem_jumps = 512
 //   returns: true, idx = 11
-checkfree fn skip_records(raw: const u8[:], idx: i64&, count: u32) -> bool {
+checkfree fn skip_records(
+    raw:       const u8[:],
+    idx:       i64&,
+    count:     u32,
+    rem_jumps: i64&,
+) -> bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
     var rname: u8[..255] = [];
     for _ in count {
-        guard dns::decode_name(raw, idx, rname) else { return false; }
+        guard decode_name_with_budget(raw, idx, rem_jumps, rname) else { return false; }
         guard idx + 10 <= raw.len else { return false; }
         let rdlength = read_dns_u16(raw, idx + 8) as i64;
         idx += 10;
@@ -590,44 +675,54 @@ checkfree fn skip_records(raw: const u8[:], idx: i64&, count: u32) -> bool {
     return true;
 }
 
-checkfree inline fn prune_service_mode_when_alias_present(records: dns::HttpsRecord[..4]&) {
-    var has_alias = false;
-    for &rec in records {
-        if rec.priority == 0 {
-            has_alias = true;
-            break;
+checkfree inline fn is_dns_name_in_list(name: const u8[:], list: const u8[..255][:]) -> bool {
+    for &item in list {
+        if dns_names_eq_fold(name, item[..]) {
+            return true;
         }
     }
-    guard has_alias else { return; }
-    // RFC 9460 Section 2.4.1: SvcPriority - ServiceMode RRs MUST be ignored if AliasMode RR is present
-    var write_idx: i64 = 0;
-    let total = records.len;
-    for read_idx in total {
-        guard read_idx < records.len else { break; }
-        if records[read_idx].priority == 0 {
-            if write_idx != read_idx && write_idx < records.len {
-                records[write_idx] = records[read_idx];
-            }
-            write_idx += 1;
-        }
-    }
-    records.resize(write_idx);
+    return false;
 }
 
 // Decodes a CNAME RDATA target domain name and verifies exact RDLENGTH consumption.
 //
 // Example:
-//   raw = "\x03www\x07example\x03com\x00", rdata_off = 0, rdlength = 17
+//   raw = "\x03www\x07example\x03com\x00", rdata_off = 0, rdlength = 17, rem_jumps = 512
 //   returns: true, target = "www.example.com"
 checkfree inline fn decode_cname_rdata_target(
     raw:       const u8[:],
     rdata_off: i64,
     rdlength:  i64,
+    rem_jumps: i64&,
     target:    u8[..255]&,
 ) -> bool {
     var cname_off = rdata_off;
-    guard dns::decode_name(raw, cname_off, target) else { return false; }
+    guard decode_name_with_budget(raw, cname_off, rem_jumps, target) else { return false; }
     return cname_off == rdata_off + rdlength;
+}
+
+checkfree inline fn advance_cname_chain(
+    raw:          const u8[:],
+    rdata_off:    i64,
+    rdlength:     i64,
+    rem_jumps:    i64&,
+    owner:        u8[..255]&,
+    seen_owners:  u8[..255][..9]&,
+    cname_owners: u8[..255][..8]&,
+) -> bool {
+    guard cname_owners.len < MAX_CNAME_CHAIN_HOPS else { return false; }
+    var next_target: u8[..255] = [];
+    guard decode_cname_rdata_target(raw, rdata_off, rdlength, rem_jumps, next_target) else {
+        return false;
+    }
+    guard next_target.len > 0 && !is_dns_name_in_list(next_target[..], seen_owners[..]) else {
+        return false;
+    }
+    guard cname_owners.try_push(copy(owner)) && seen_owners.try_push(copy(next_target)) else {
+        return false;
+    }
+    owner = copy(next_target);
+    return true;
 }
 
 // Parses DNS resource records from the Answer section (RFC 1035 Section 4.1.3).
@@ -640,7 +735,8 @@ checkfree fn parse_answers(
     resp:           dns::Response&,
     raw:            const u8[:],
     idx:            i64&,
-    expected_qname: const u8[:] = "",
+    expected_qname: const u8[:],
+    rem_jumps:      i64&,
 ) -> bool {
     var expected_owner: u8[..255] = [];
     if resp.answer_count > 0 {
@@ -655,10 +751,15 @@ checkfree fn parse_answers(
     var committed = false;
     defer if !committed { idx = saved_idx; resp = saved_resp; };
 
+    var seen_owners:  u8[..255][..9] = [];
+    var cname_owners: u8[..255][..8] = [];
+    guard seen_owners.try_push(copy(expected_owner)) else { return false; }
+    var saw_non_cname = false;
+    var saw_alias = false;
     var has_ttl = false;
     var aname: u8[..255] = [];
     for _ in resp.answer_count {
-        guard dns::decode_name(raw, idx, aname) else { return false; }
+        guard decode_name_with_budget(raw, idx, rem_jumps, aname) else { return false; }
         guard idx + 10 <= raw.len else { return false; }
 
         let rtype = read_dns_u16(raw, idx);
@@ -668,15 +769,32 @@ checkfree fn parse_answers(
         idx += 10;
         guard idx + rdlength <= raw.len else { return false; }
 
+        if rclass != rfc::DNS_QCLASS_IN {
+            idx += rdlength;
+            continue;
+        }
         let owner_ok = dns_names_eq_fold(aname[..], expected_owner[..]);
-        if rclass != rfc::DNS_QCLASS_IN || !owner_ok {
+        if !owner_ok {
+            let is_rr = rtype == rfc::DNS_QTYPE_A || rtype == rfc::DNS_QTYPE_AAAA ||
+                rtype == rfc::DNS_QTYPE_HTTPS || rtype == rfc::DNS_QTYPE_CNAME;
+            guard !(is_rr && is_dns_name_in_list(aname[..], cname_owners[..])) else {
+                return false;
+            }
             idx += rdlength;
             continue;
         }
         if rtype == rfc::DNS_QTYPE_CNAME {
-            guard decode_cname_rdata_target(raw, idx, rdlength, expected_owner) else { return false; }
+            guard !saw_non_cname && advance_cname_chain(
+                raw, idx, rdlength, rem_jumps, expected_owner, seen_owners, cname_owners,
+            ) else { return false; }
         } else {
-            guard resp.parse_answer_record(raw, rtype, rdlength, idx) else { return false; }
+            if rtype == rfc::DNS_QTYPE_A || rtype == rfc::DNS_QTYPE_AAAA ||
+                rtype == rfc::DNS_QTYPE_HTTPS {
+                saw_non_cname = true;
+            }
+            guard resp.parse_answer_record(
+                raw, expected_owner[..], rtype, rdlength, idx, saw_alias,
+            ) else { return false; }
         }
         let ttl: u32 = if (raw_ttl & 0x80000000) != 0 { 0 } else { raw_ttl };
         if !has_ttl || ttl < resp.min_ttl_sec {
@@ -685,7 +803,6 @@ checkfree fn parse_answers(
         }
         idx += rdlength;
     }
-    prune_service_mode_when_alias_present(resp.https_records);
     committed = true;
     return true;
 }

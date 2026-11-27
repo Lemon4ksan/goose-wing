@@ -19,6 +19,8 @@ struct Response {
     is_response:    bool             = false,
     question_count: u16              = 0,
     answer_count:   u16              = 0,
+    qtype:          u16              = 0,
+    qclass:         u16              = 0,
     qname:          u8[..255]        = [],
     a_records:      u32[..8]         = [],
     aaaa_records:   u8[16][..8]      = [],
@@ -47,47 +49,8 @@ fn encode_name<B>(domain: const u8[:], out: B&) -> bool {
 //   raw = "\x07example\x03com\x00", idx = 0
 //   returns: true, idx = 13, out = "example.com"
 checkfree fn decode_name<B>(raw: const u8[:], idx: i64&, out: B&) -> bool {
-    guard idx >= 0 && idx < raw.len else { return false; }
-    var jumps = 0;
-    var current_off = idx;
-    var final_off = idx;
-    var advanced_original = false;
-    var scratch: u8[..255] = [];
-
-    while current_off >= 0 && current_off < raw.len {
-        let b = raw[current_off];
-        if b == 0 {
-            if !advanced_original {
-                final_off = current_off + 1;
-            }
-            guard dns_internal::copy_dns_name_out(out, scratch[..]) else { return false; }
-            idx = final_off;
-            return true;
-        }
-
-        if (b & rfc::DNS_POINTER_TAG) == rfc::DNS_POINTER_TAG {
-            guard current_off < raw.len - 1 else { return false; }
-            let ptr_off = (((b & 0x3F) as i64) << 8) | (raw[current_off + 1] as i64);
-            // RFC 1035 Section 4.1.4: Message compression - pointers must point backwards past 12-byte header
-            guard ptr_off < current_off && ptr_off >= rfc::DNS_HEADER_LEN else { return false; }
-            if !advanced_original {
-                final_off = current_off + 2;
-                advanced_original = true;
-            }
-            current_off = ptr_off;
-            jumps += 1;
-            guard jumps <= dns_internal::MAX_POINTER_JUMPS else { return false; }
-            continue;
-        }
-
-        guard dns_internal::append_wire_label(raw, current_off, raw.len, scratch) else {
-            return false;
-        }
-        if !advanced_original {
-            final_off = current_off;
-        }
-    }
-    return false;
+    var local_jumps = dns_internal::MAX_POINTER_JUMPS;
+    return dns_internal::decode_name_with_budget(raw, idx, local_jumps, out);
 }
 
 // ---- Query Building and Response Parsing --------------------------------
@@ -112,7 +75,9 @@ fn build_query<B>(domain: const u8[:], qtype: u16, tx_id: u16, out: B&) -> bool 
 //   raw = "\x00\x01\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00..."
 //   returns: Response { rcode: 0, answer_count: 1, .. }, true
 checkfree fn parse_response(raw: const u8[:]) -> Response, bool {
-    guard raw.len >= rfc::DNS_HEADER_LEN else { return Response { .. }, false; }
+    guard raw.len >= rfc::DNS_HEADER_LEN && raw.len <= rfc::DOH_MAX_MESSAGE_OCTETS else {
+        return Response { .. }, false;
+    }
     let flags = dns_internal::read_dns_u16(raw, 2);
     let is_resp = ((flags >> 15) & 1) == 1;
     // RFC 1035 Section 4.1.1: Header section format - OPCODE MUST be 0 (standard query) and TC bit 0
@@ -130,15 +95,21 @@ checkfree fn parse_response(raw: const u8[:]) -> Response, bool {
     };
     let ns_count = dns_internal::read_dns_u16(raw, 8);
     let ar_count = dns_internal::read_dns_u16(raw, 10);
+    let total_rrs = (resp.question_count as u32) +
+        resp.answer_count +
+        ns_count +
+        ar_count;
+    guard total_rrs <= dns_internal::MAX_TOTAL_PACKET_RRS else { return Response { .. }, false; }
 
+    var rem_jumps = dns_internal::MAX_PACKET_POINTER_JUMPS;
     var off = rfc::DNS_HEADER_LEN;
     if resp.rcode != rfc::DNS_RCODE_NOERROR {
-        guard dns_internal::skip_questions(raw, off, resp.question_count) else {
+        guard dns_internal::skip_questions(raw, off, resp.question_count, rem_jumps) else {
             return Response { .. }, false;
         }
         let trailing_rrs = (resp.answer_count as u32) + ns_count + ar_count;
         if trailing_rrs > 0 {
-            guard dns_internal::skip_records(raw, off, trailing_rrs) else {
+            guard dns_internal::skip_records(raw, off, trailing_rrs, rem_jumps) else {
                 return Response { .. }, false;
             }
         }
@@ -147,14 +118,18 @@ checkfree fn parse_response(raw: const u8[:]) -> Response, bool {
     }
 
     guard resp.question_count == 1 else { return Response { .. }, false; }
-    let qname, ok_q = dns_internal::parse_questions(raw, off, resp.question_count);
+    let qname, qtype, qclass, ok_q = dns_internal::parse_questions(
+        raw, off, resp.question_count, rem_jumps,
+    );
     guard ok_q && resp.qname.try_set(qname[..]) else { return Response { .. }, false; }
-    guard dns_internal::parse_answers(resp, raw, off, qname[..]) else {
+    resp.qtype = qtype;
+    resp.qclass = qclass;
+    guard dns_internal::parse_answers(resp, raw, off, qname[..], rem_jumps) else {
         return Response { .. }, false;
     }
     let extra_rrs = (ns_count as u32) + ar_count;
     if extra_rrs > 0 {
-        guard dns_internal::skip_records(raw, off, extra_rrs) else {
+        guard dns_internal::skip_records(raw, off, extra_rrs, rem_jumps) else {
             return Response { .. }, false;
         }
     }

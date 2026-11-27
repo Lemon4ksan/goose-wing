@@ -546,85 +546,132 @@ fn serialize_sfv_decimal<B>(scaled_milli: i64, out: B&) {
     out.append(frac_t2);
 }
 
-inline fn sf_serialize_item<B>(kind: SfType.Integer, item: const SfItem&, out: B&) {
+inline fn sf_serialize_item<B>(kind: SfType.Integer, item: const SfItem&, out: B&) -> bool {
     item.int_val.format_i64_dec(out);
+    return true;
 }
 
-inline fn sf_serialize_item<B>(kind: SfType.Decimal, item: const SfItem&, out: B&) {
+inline fn sf_serialize_item<B>(kind: SfType.Decimal, item: const SfItem&, out: B&) -> bool {
     serialize_sfv_decimal(item.int_val, out);
+    return true;
 }
 
-inline fn sf_serialize_item<B>(kind: SfType.Boolean, item: const SfItem&, out: B&) {
-    out.append(if item.bool_val { "?1" } else { "?0" });
+inline fn sf_serialize_item<B>(kind: SfType.Boolean, item: const SfItem&, out: B&) -> bool {
+    return out.try_append(if item.bool_val { "?1" } else { "?0" });
 }
 
-inline fn sf_serialize_item<B>(kind: SfType.Token, item: const SfItem&, out: B&) {
-    out.append(item.str_val);
+inline fn sf_serialize_item<B>(kind: SfType.Token, item: const SfItem&, out: B&) -> bool {
+    return out.try_append(item.str_val);
 }
 
-inline fn sf_serialize_item<B>(kind: SfType.String, item: const SfItem&, out: B&) {
-    out.push('"' as u8);
-    for i in item.str_val.len {
+inline fn sf_serialize_item<B>(kind: SfType.String, item: const SfItem&, out: B&) -> bool {
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+    guard out.try_push('"' as u8) else { return false; }
+    var i: i64 = 0;
+    while i < item.str_val.len {
         let ch = item.str_val[i];
-        if ch == '"' || ch == '\\' {
-            out.push('\\' as u8);
+        guard core::is_ascii_printable(ch) else { return false; }
+        if ch == '\\' {
+            if i + 1 < item.str_val.len && (item.str_val[i + 1] == '"' || item.str_val[i + 1] == '\\') {
+                guard out.try_push('\\' as u8) && out.try_push(item.str_val[i + 1]) else { return false; }
+                i += 2;
+                continue;
+            }
+            guard out.try_append("\\\\") else { return false; }
+            i += 1;
+            continue;
         }
-        out.push(ch);
+        if ch == '"' {
+            guard out.try_append("\\\"") else { return false; }
+            i += 1;
+            continue;
+        }
+        guard out.try_push(ch) else { return false; }
+        i += 1;
     }
-    out.push('"' as u8);
+    guard out.try_push('"' as u8) else { return false; }
+    committed = true;
+    return true;
 }
 
-inline fn sf_serialize_item<B>(kind: SfType.Binary, item: const SfItem&, out: B&) {
-    out.push(':' as u8);
-    out.append(item.str_val);
-    out.push(':' as u8);
+inline fn sf_serialize_item<B>(kind: SfType.Binary, item: const SfItem&, out: B&) -> bool {
+    let saved_len = out.len;
+    guard out.try_push(':' as u8) && out.try_append(item.str_val) && out.try_push(':' as u8) else {
+        out.resize(saved_len);
+        return false;
+    }
+    return true;
 }
 
-inline fn sf_serialize_item<B>(kind: SfType.Date, item: const SfItem&, out: B&) {
-    out.push('@' as u8);
+inline fn sf_serialize_item<B>(kind: SfType.Date, item: const SfItem&, out: B&) -> bool {
+    guard out.try_push('@' as u8) else { return false; }
     item.int_val.format_i64_dec(out);
+    return true;
 }
 
-inline fn sf_serialize_item<B>(kind: SfType.DisplayString, item: const SfItem&, out: B&) {
-    out.append("%\"");
-    out.append(item.str_val);
-    out.push('"' as u8);
+inline fn sf_serialize_item<B>(kind: SfType.DisplayString, item: const SfItem&, out: B&) -> bool {
+    let saved_len = out.len;
+    guard out.try_append("%\"") && out.try_append(item.str_val) && out.try_push('"' as u8) else {
+        out.resize(saved_len);
+        return false;
+    }
+    return true;
 }
 
-fn sf_serialize_item<B>(item: const SfItem&, out: B&) {
-    sf_serialize_item(item.kind, item, out);
+fn sf_serialize_item<B>(item: const SfItem&, out: B&) -> bool {
+    return sf_serialize_item(item.kind, item, out);
 }
 
 fn sf_serialize_parameters<B>(params: const SfParameter[:], out: B&) {
+    let saved_len = out.len;
     for &p in params {
-        out.push(';' as u8);
-        out.append(p.key);
+        guard out.try_push(';' as u8) && out.try_append(p.key) else {
+            out.resize(saved_len);
+            return;
+        }
         if p.item.kind == SfType.Boolean && p.item.bool_val {
             // omit "= ?1" per RFC 8941 Section 4.1.1.2
             continue;
         }
-        out.push('=' as u8);
-        sf_serialize_item(p.item, out);
+        guard out.try_push('=' as u8) && sf_serialize_item(p.item, out) else {
+            out.resize(saved_len);
+            return;
+        }
     }
 }
 
 fn sf_serialize_dict_entry<B>(entry: const SfDictEntry&, out: B&) {
-    out.append(entry.key);
+    let saved_len = out.len;
+    guard out.try_append(entry.key) else { return; }
     if entry.is_inner_list {
-        out.append("=(");
+        guard out.try_append("=(") else {
+            out.resize(saved_len);
+            return;
+        }
         for idx in entry.inner_items.len {
-            if idx > 0 {
-                out.push(' ' as u8);
+            if idx > 0 && !out.try_push(' ' as u8) {
+                out.resize(saved_len);
+                return;
             }
-            sf_serialize_item(entry.inner_items[idx], out);
+            guard sf_serialize_item(entry.inner_items[idx], out) else {
+                out.resize(saved_len);
+                return;
+            }
             http_internal::sf_serialize_item_params(entry.inner_items[idx].params[..], out);
         }
-        out.push(')' as u8);
+        guard out.try_push(')' as u8) else {
+            out.resize(saved_len);
+            return;
+        }
     } else if entry.item.kind == SfType.Boolean && entry.item.bool_val {
         // omit "=?1" for default boolean true dictionary keys
     } else {
-        out.push('=' as u8);
-        sf_serialize_item(entry.item, out);
+        guard out.try_push('=' as u8) && sf_serialize_item(entry.item, out) else {
+            out.resize(saved_len);
+            return;
+        }
     }
     sf_serialize_parameters(entry.params[..], out);
 }
