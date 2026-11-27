@@ -17,9 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# 2. Install official Goose compiler (v2026.3)
-RUN curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz | tar -xz -C /opt && \
-    ln -s /opt/goose-v2026.3-linux-x64/goose /usr/local/bin/goose
+# 2. Install official Goose compiler (v2026.4)
+RUN curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.4/goose-v2026.4-linux-x64.tar.gz | tar -xz -C /opt && \
+    ln -s /opt/goose-v2026.4-linux-x64/goose /usr/local/bin/goose
 
 # 3. Copy repository tree
 COPY . /app

@@ -6,7 +6,7 @@ workflows for `goose-wing`.
 ## Architectural invariants
 
 `goose-wing` is a zero-allocation systems networking engine written in
-[Goose](https://github.com/Lemon4ksan/goose). Contributions must follow four
+[Goose](https://github.com/aardappel/goose). Contributions must follow four
 rules:
 
 1. Do not use dynamic heap allocations (`[>..]`) on request, response, framing,
@@ -26,7 +26,7 @@ rules:
 
 ## Prerequisites
 
-- Goose compiler `v2026.3+` on `PATH`.
+- Goose compiler `v2026.4+` on `PATH`.
 - GCC 14+ (MinGW-w64 on Windows, native GCC on Linux) or Clang 18+.
 - Python 3.10+ for `tools/test_runner.py`, `tools/licensing.py`, and E2E
   harnesses.

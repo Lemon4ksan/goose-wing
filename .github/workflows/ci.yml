@@ -1,8 +1,11 @@
 name: CI
 
 on:
+  push:
+    branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -13,12 +16,14 @@ jobs:
     name: Detect changes
     runs-on: ubuntu-latest
     outputs:
-      goose: ${{ steps.filter.outputs.goose }}
+      goose: ${{ github.event_name != 'pull_request' || steps.filter.outputs.goose == 'true' }}
     steps:
       - name: Checkout repository
+        if: github.event_name == 'pull_request'
         uses: actions/checkout@v4
 
       - name: Filter file paths
+        if: github.event_name == 'pull_request'
         uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -29,6 +34,7 @@ jobs:
               - '*.build'
               - 'tests/fuzz/**'
               - 'scripts/sancov_runner.py'
+              - '.github/workflows/ci.yml'
 
   lint-and-licensing:
     name: Lint and license check
@@ -60,8 +66,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential gcc curl ca-certificates
-          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz | sudo tar -xz -C /opt
-          sudo ln -sf /opt/goose-v2026.3-linux-x64/goose /usr/local/bin/goose
+          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.4/goose-v2026.4-linux-x64.tar.gz | sudo tar -xz -C /opt
+          sudo ln -sf /opt/goose-v2026.4-linux-x64/goose /usr/local/bin/goose
           goose format --check .
           mkdir -p tools/bin
           (cd tools/goosemarklint && goose build --cc gcc -O2 -o ../bin/goosemarklint src/main.goose)
@@ -125,8 +131,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential gcc curl ca-certificates
-          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz | sudo tar -xz -C /opt
-          sudo ln -sf /opt/goose-v2026.3-linux-x64/goose /usr/local/bin/goose
+          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.4/goose-v2026.4-linux-x64.tar.gz | sudo tar -xz -C /opt
+          sudo ln -sf /opt/goose-v2026.4-linux-x64/goose /usr/local/bin/goose
 
       - name: Set up Goose toolchain (macOS)
         if: runner.os == 'macOS'
@@ -134,12 +140,12 @@ jobs:
         run: |
           ARCH="$(uname -m)"
           if [ "$ARCH" = "arm64" ]; then
-            PKG="goose-v2026.3-macos-arm64"
+            PKG="goose-v2026.4-macos-arm64"
           else
-            PKG="goose-v2026.3-macos-x64"
+            PKG="goose-v2026.4-macos-x64"
           fi
           mkdir -p "$HOME/.local/goose"
-          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused "https://github.com/aardappel/goose/releases/download/v2026.3/${PKG}.tar.gz" | tar -xz -C "$HOME/.local/goose"
+          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused "https://github.com/aardappel/goose/releases/download/v2026.4/${PKG}.tar.gz" | tar -xz -C "$HOME/.local/goose"
           GOOSE_BIN="$(find "$HOME/.local/goose" -type f -name goose | head -n 1)"
           chmod +x "$GOOSE_BIN"
           echo "$(dirname "$GOOSE_BIN")" >> "$GITHUB_PATH"
@@ -153,15 +159,15 @@ jobs:
           } elseif (Test-Path "C:\msys64\mingw64\bin\gcc.exe") {
             Add-Content -Path $env:GITHUB_PATH -Value "C:\msys64\mingw64\bin"
           }
-          $zip = Join-Path $env:RUNNER_TEMP "goose-v2026.3-windows-x64.zip"
-          $dst = Join-Path $env:RUNNER_TEMP "goose-v2026.3"
-          curl.exe -sSL --retry 5 --retry-delay 2 --retry-connrefused -o $zip https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-windows-x64.zip
+          $zip = Join-Path $env:RUNNER_TEMP "goose-v2026.4-windows-x64.zip"
+          $dst = Join-Path $env:RUNNER_TEMP "goose-v2026.4"
+          curl.exe -sSL --retry 5 --retry-delay 2 --retry-connrefused -o $zip https://github.com/aardappel/goose/releases/download/v2026.4/goose-v2026.4-windows-x64.zip
           Expand-Archive -Path $zip -DestinationPath $dst -Force
           $bin = Get-ChildItem -Path $dst -Recurse -Filter "goose.exe" | Select-Object -First 1
           if (-not $bin) { throw "goose.exe not found in release archive" }
           Add-Content -Path $env:GITHUB_PATH -Value $bin.DirectoryName
 
-      - name: Compile all 14 C shims
+      - name: Compile all 13 C shims
         shell: bash
         run: |
           CC_BIN="gcc"
@@ -181,20 +187,85 @@ jobs:
           goose check wing.goose
           goose check wing_h1.goose
 
-      - name: Build goose-lit and run cross-platform LIT suites
+      - name: External consumer smoke tests (core, wing_h1, wing in JIT and AOT)
         shell: bash
         run: |
-          git clone https://github.com/Lemon4ksan/goose-lit.git ../goose-lit
-          mkdir -p ../goose-lit/bin
-          EXT=""
-          CC_FLAG="--cc gcc"
+          REPO_DIR="$(pwd)"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            EXT=".exe"
-          elif [ "${{ runner.os }}" = "macOS" ]; then
-            CC_FLAG="--cc clang"
+            REPO_DIR="$(pwd -W)"
           fi
-          LIT_BIN="$(cd ../goose-lit && pwd)/bin/goose-lit${EXT}"
-          goose build ${CC_FLAG} -O2 -o "$LIT_BIN" ../goose-lit/bin.goose
+          CC_FLAG="--cc gcc"
+          EXT=""
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            CC_FLAG="--cc clang"
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            EXT=".exe"
+          fi
+          TMP_DIR="${RUNNER_TEMP:-/tmp}/wing_consumer_smoke"
+          rm -rf "$TMP_DIR"
+          mkdir -p "$TMP_DIR"
+
+          cat > "$TMP_DIR/use_core.goose" <<EOF
+          import std;
+          import core from "${REPO_DIR}";
+          fn main() {
+              let idx = core::index_of_byte("hello-wing", '-');
+              assert(idx == 5);
+              print("CORE_OK");
+          }
+          EOF
+
+          cat > "$TMP_DIR/use_h1.goose" <<EOF
+          import std;
+          import wing_h1 from "${REPO_DIR}";
+          fn main() {
+              var router = h1::Router { .. };
+              let ok = router.add_route("GET", "/ping", 1);
+              assert(ok);
+              print("H1_OK");
+          }
+          EOF
+
+          cat > "$TMP_DIR/use_wing.goose" <<EOF
+          import std;
+          import wing from "${REPO_DIR}";
+          fn main() {
+              var srv = server::new_http_server("127.0.0.1", 0);
+              srv.add_static_get_route("/health", "text/plain", "ok", 1);
+              var sess = client::new_session("https://example.com");
+              sess.set_timeout_ms(5000);
+              print("WING_OK");
+          }
+          EOF
+
+          for name in use_core use_h1 use_wing; do
+            echo "=== JIT $name ==="
+            goose "$TMP_DIR/${name}.goose"
+            echo "=== AOT $name ==="
+            goose build ${CC_FLAG} -O2 -o "$TMP_DIR/${name}${EXT}" "$TMP_DIR/${name}.goose"
+            "$TMP_DIR/${name}${EXT}"
+          done
+          rm -rf "$TMP_DIR"
+
+      - name: Download goose-lit v0.1.0 and run cross-platform LIT suites
+        shell: bash
+        run: |
+          LIT_DIR="${RUNNER_TEMP:-/tmp}/goose-lit-bin"
+          rm -rf "$LIT_DIR"
+          mkdir -p "$LIT_DIR"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/Lemon4ksan/goose-lit/releases/download/v0.1.0/goose-lit-v0.1.0-linux-x64.tar.gz | tar -xz -C "$LIT_DIR"
+            LIT_BIN="$LIT_DIR/goose-lit"
+            chmod +x "$LIT_BIN"
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/Lemon4ksan/goose-lit/releases/download/v0.1.0/goose-lit-v0.1.0-macos-arm64.tar.gz | tar -xz -C "$LIT_DIR"
+            LIT_BIN="$LIT_DIR/goose-lit"
+            chmod +x "$LIT_BIN"
+          else
+            curl -sSL --retry 5 --retry-delay 2 --retry-connrefused -o "$LIT_DIR/lit.zip" https://github.com/Lemon4ksan/goose-lit/releases/download/v0.1.0/goose-lit-v0.1.0-windows-x64.zip
+            python -c "import zipfile; zipfile.ZipFile('$LIT_DIR/lit.zip').extractall('$LIT_DIR')"
+            LIT_BIN="$LIT_DIR/goose-lit.exe"
+          fi
           "$LIT_BIN" tests/lit/verify_prerelease_fixes.goose
           "$LIT_BIN" tests/lit/verify_vulkan_h1_pipeline.goose
           "$LIT_BIN" tests/lit/verify_dst_simulation.goose
@@ -219,12 +290,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential clang gcc curl ca-certificates
-          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz | sudo tar -xz -C /opt
-          sudo ln -sf /opt/goose-v2026.3-linux-x64/goose /usr/local/bin/goose
+          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.4/goose-v2026.4-linux-x64.tar.gz | sudo tar -xz -C /opt
+          sudo ln -sf /opt/goose-v2026.4-linux-x64/goose /usr/local/bin/goose
 
       - name: Enforce constant-RAM RSS drift and O(n) complexity budgets
         run: |
-          git clone https://github.com/Lemon4ksan/goose-lit.git ../goose-lit
+          git clone --depth 1 --branch v0.1.0 https://github.com/Lemon4ksan/goose-lit.git ../goose-lit
           python scripts/sancov_runner.py --cc gcc --execs 2000 --check-complexity --max-rss-drift-kb 1024 --max-input-ms 50
 
       - name: Run ASan+UBSan fuzz smoke pass (-fno-sanitize-recover=all)
@@ -244,8 +315,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential gcc curl ca-certificates
-          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz | sudo tar -xz -C /opt
-          sudo ln -s /opt/goose-v2026.3-linux-x64/goose /usr/local/bin/goose
+          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.4/goose-v2026.4-linux-x64.tar.gz | sudo tar -xz -C /opt
+          sudo ln -sf /opt/goose-v2026.4-linux-x64/goose /usr/local/bin/goose
 
       - name: Typecheck core, wing, examples, and test suites
         run: |
@@ -255,14 +326,10 @@ jobs:
         run: |
           python tools/test_runner.py -f -j 2
 
-      - name: Clone and build goose-lit
+      - name: Install goose-lit v0.1.0
         run: |
-          git clone https://github.com/Lemon4ksan/goose-lit.git ../goose-lit || true
-          if [ -d "../goose-lit" ]; then
-            mkdir -p ../goose-lit/bin
-            goose build --cc gcc -O2 -o ../goose-lit/bin/goose-lit ../goose-lit/bin.goose
-            sudo ln -s $(pwd)/../goose-lit/bin/goose-lit /usr/local/bin/goose-lit
-          fi
+          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/Lemon4ksan/goose-lit/releases/download/v0.1.0/goose-lit-v0.1.0-linux-x64.tar.gz | sudo tar -xz -C /usr/local/bin
+          sudo chmod +x /usr/local/bin/goose-lit
 
       - name: Verify constant-time assembly and Dudect
         run: |
@@ -309,8 +376,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential gcc curl ca-certificates
-          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz | sudo tar -xz -C /opt
-          sudo ln -sf /opt/goose-v2026.3-linux-x64/goose /usr/local/bin/goose
+          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.4/goose-v2026.4-linux-x64.tar.gz | sudo tar -xz -C /opt
+          sudo ln -sf /opt/goose-v2026.4-linux-x64/goose /usr/local/bin/goose
 
       - name: Download Go module dependencies for HPACK oracle
         run: |
@@ -365,8 +432,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential gcc curl ca-certificates docker-compose-plugin
-          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz | sudo tar -xz -C /opt
-          sudo ln -sf /opt/goose-v2026.3-linux-x64/goose /usr/local/bin/goose
+          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.4/goose-v2026.4-linux-x64.tar.gz | sudo tar -xz -C /opt
+          sudo ln -sf /opt/goose-v2026.4-linux-x64/goose /usr/local/bin/goose
           mkdir -p tools/bin
           curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/summerwind/h2spec/releases/download/v2.6.0/h2spec_linux_amd64.tar.gz | tar -xz -C tools/bin
           chmod +x tools/bin/h2spec

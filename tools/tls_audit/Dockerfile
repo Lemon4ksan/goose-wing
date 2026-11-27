@@ -22,9 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 RUN curl -sSL --retry 5 --retry-delay 2 --retry-connrefused \
-    https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz | \
+    https://github.com/aardappel/goose/releases/download/v2026.4/goose-v2026.4-linux-x64.tar.gz | \
     tar -xz -C /opt && \
-    ln -s /opt/goose-v2026.3-linux-x64/goose /usr/local/bin/goose
+    ln -s /opt/goose-v2026.4-linux-x64/goose /usr/local/bin/goose
 
 RUN python3 -m venv /opt/audit-venv && \
     /opt/audit-venv/bin/pip install --no-cache-dir --upgrade pip && \

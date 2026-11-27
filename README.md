@@ -1,5 +1,17 @@
 # goose-wing
 
+[![Goose
+Language](https://img.shields.io/badge/lang-goose-blue.svg?style=flat-square)](https://github.com/aardappel/goose)
+[![License](https://img.shields.io/badge/license-Apache%202.0-lightgrey.svg?style=flat-square)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/Lemon4ksan/goose-wing/ci.yml?branch=main&style=flat-square)](https://github.com/Lemon4ksan/goose-wing/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Lemon4ksan/goose-wing?style=flat-square)](https://github.com/Lemon4ksan/goose-wing/releases)
+[![Platform: Linux
+x64](https://img.shields.io/badge/platform-Linux%20x64-blue.svg?style=flat-square)](https://github.com/Lemon4ksan/goose-wing/releases)
+[![Platform: macOS
+arm64](https://img.shields.io/badge/platform-macOS%20arm64-blue.svg?style=flat-square)](https://github.com/Lemon4ksan/goose-wing/releases)
+[![Platform: Windows
+x64](https://img.shields.io/badge/platform-Windows%20x64-blue.svg?style=flat-square)](https://github.com/Lemon4ksan/goose-wing/releases)
+
 Zero-allocation HTTP/1.1, HTTP/2, HTTP/3, and TLS 1.3 protocol engine and web
 framework for the [Goose programming
 language](https://github.com/aardappel/goose).
@@ -68,8 +80,17 @@ primitives, or `wing_h1` for the modular zero-copy HTTP/1.1 pipeline without
 
 ```goose
 import wing from "github.com/Lemon4ksan/goose-wing@v0.1.0";
+import core from "github.com/Lemon4ksan/goose-wing@v0.1.0";
 import wing_h1 from "github.com/Lemon4ksan/goose-wing@v0.1.0";
 ```
+
+Tested with Goose `v2026.4` on Linux `x86_64`, macOS `arm64`, and Windows
+`x86_64`. Prerequisites and limits:
+
+- Building `wing`, `core`, or `wing_h1` compiles C11 shims (`shim/*.c`) and
+  requires GCC or Clang. No link-time OpenSSL, Schannel, or `liburing` packages
+  are required.
+- `v0.1.x` is pre-1.0. Public APIs and wire helpers may change before `1.0.0`.
 
 ### 1. HTTP client session
 
@@ -140,18 +161,22 @@ fn main() {
 }
 ```
 
-### 4. Pluggable TLS backend (pure-Goose vs. optional OpenSSL / Schannel shim)
+### 4. Pluggable TLS backend (Auto system TLS vs. pure-Goose TLS 1.3)
 
-By default `goose-wing` uses its self-contained pure-Goose TLS 1.3 engine
-(`tls::TlsBackendKind.PureGoose`), which has zero external dependencies and
-stays bit-for-bit deterministic under single-seed DST simulation
-(`net/dst.goose`). `PureGoose` implements **TLS 1.3 only** (RFC 8446) and does
-not support TLS 1.2.
+By default, `client::Config` and `server::HttpServer` use
+`tls::TlsBackendKind.Auto`, which selects `SystemOpenSsl` or `SystemSchannel`
+when available and falls back to the pure-Goose TLS 1.3 engine
+(`tls::TlsBackendKind.PureGoose`) when no system library is found or when
+`PureGoose`-only features (ECH, deterministic virtual clocks, PQ hybrid) are
+enabled. `PureGoose` has zero external dependencies, stays bit-for-bit
+deterministic under single-seed DST simulation (`net/dst.goose`), and implements
+**TLS 1.3 only** (RFC 8446).
 
-> **Security note**: `PureGoose` has not undergone an independent third-party
-> cryptographic audit yet. For production internet-facing services, switching to
-> `tls::TlsBackendKind.SystemOpenSsl` (OpenSSL 3 / BoringSSL) is the safer
-> option for now.
+> **Security note**: `PureGoose` and the primitives in `core/crypto/` have not
+> undergone an independent third-party cryptographic audit yet. For production
+> internet-facing services, set `tls::TlsBackendKind.SystemOnly` (or
+> `tls::TlsBackendKind.SystemOpenSsl`) to require an audited system TLS library
+> and fail closed if none is installed.
 
 By default (`min_version = tls::TlsMinVersion.Tls13`), all backends stop
 strictly at TLS 1.3 and never fall back to TLS 1.2. Falling back to TLS 1.2

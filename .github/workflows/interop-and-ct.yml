@@ -96,12 +96,10 @@ jobs:
           cmake --build /tmp/goose/build -j 2
           sudo ln -sf /tmp/goose/build/goose /usr/local/bin/goose
 
-      - name: Clone and build goose-lit
+      - name: Install goose-lit v0.1.0
         run: |
-          git clone https://github.com/Lemon4ksan/goose-lit.git ../goose-lit
-          mkdir -p ../goose-lit/bin
-          goose build --cc gcc -O2 -o ../goose-lit/bin/goose-lit ../goose-lit/bin.goose
-          sudo ln -sf $(pwd)/../goose-lit/bin/goose-lit /usr/local/bin/goose-lit
+          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/Lemon4ksan/goose-lit/releases/download/v0.1.0/goose-lit-v0.1.0-linux-x64.tar.gz | sudo tar -xz -C /usr/local/bin
+          sudo chmod +x /usr/local/bin/goose-lit
 
       - name: Verify constant-time assembly
         run: |
@@ -140,12 +138,11 @@ jobs:
           cmake --build /tmp/goose/build -j 2
           sudo ln -sf /tmp/goose/build/goose /usr/local/bin/goose
 
-      - name: Clone and build goose-lit
+      - name: Install goose-lit v0.1.0
         run: |
-          git clone https://github.com/Lemon4ksan/goose-lit.git ../goose-lit
-          mkdir -p ../goose-lit/bin
-          goose build --cc gcc -O2 -o ../goose-lit/bin/goose-lit ../goose-lit/bin.goose
-          sudo ln -sf $(pwd)/../goose-lit/bin/goose-lit /usr/local/bin/goose-lit
+          git clone --depth 1 --branch v0.1.0 https://github.com/Lemon4ksan/goose-lit.git ../goose-lit
+          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/Lemon4ksan/goose-lit/releases/download/v0.1.0/goose-lit-v0.1.0-linux-x64.tar.gz | sudo tar -xz -C /usr/local/bin
+          sudo chmod +x /usr/local/bin/goose-lit
 
       - name: Run SanitizerCoverage parser fuzzing smoke pass
         run: |
