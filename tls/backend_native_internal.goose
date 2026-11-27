@@ -169,6 +169,22 @@ fn should_route_to_pure_backend(cfg: const tls::TlsBackendConfig&, is_server: bo
     return cfg.ca_file.len > 0 && !tls::tls_backend_available(tls::TlsBackendKind.SystemOpenSsl);
 }
 
+// Resolves the native backend kind for `wing_tls_backend_open`, excluding `SystemSecureTransport`
+// from `Auto` and `SystemOnly` modes (only explicit `SystemSecureTransport` may select it).
+fn resolve_native_open_kind(cfg: const tls::TlsBackendConfig&, is_server: bool) -> i32, bool {
+    if cfg.kind != tls::TlsBackendKind.Auto && cfg.kind != tls::TlsBackendKind.SystemOnly {
+        return kind_to_native_i32(cfg.kind), true;
+    }
+    if native_tls_backend_available(NATIVE_KIND_OPENSSL) != 0 {
+        return NATIVE_KIND_OPENSSL, true;
+    }
+    let has_pem_files = cfg.ca_file.len > 0 || cfg.cert_pem_file.len > 0 || cfg.key_pem_file.len > 0;
+    if !is_server && !has_pem_files && native_tls_backend_available(NATIVE_KIND_SCHANNEL) != 0 {
+        return NATIVE_KIND_SCHANNEL, true;
+    }
+    return NATIVE_KIND_PURE, false;
+}
+
 // Normalizes `server_name` (stripping `[...]` around IPv6 literals) and returns `(clean_name, is_ip_literal, ok)`.
 inline fn normalize_native_server_name(raw_name: const u8[:]) -> const u8[:], bool, bool {
     guard raw_name.len > 0 else { return raw_name, false, true; }

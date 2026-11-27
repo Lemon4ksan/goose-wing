@@ -83,13 +83,23 @@ struct TlsAndDnsPolicy {
     secure_dns_policy:            SecureDnsPolicy = SecureDnsPolicy.Allow,
     disable_cert_network_fetches: bool            = false,
     target_network_id:            u64             = 0,
+    tls_policy_hash:              u64             = 0,
+    tenant_id_hash:               u64             = 0,
+    socket_auth_binding:          u64             = 0,
+    proxy_creds_hash:             u64             = 0,
+    has_mtls_or_custom_ca:        bool            = false,
 }
 
 fn tls_and_dns_policy_equals(a: const TlsAndDnsPolicy&, b: const TlsAndDnsPolicy&) -> bool {
     return a.privacy_mode == b.privacy_mode &&
            a.secure_dns_policy == b.secure_dns_policy &&
            a.disable_cert_network_fetches == b.disable_cert_network_fetches &&
-           a.target_network_id == b.target_network_id;
+           a.target_network_id == b.target_network_id &&
+           a.tls_policy_hash == b.tls_policy_hash &&
+           a.tenant_id_hash == b.tenant_id_hash &&
+           a.socket_auth_binding == b.socket_auth_binding &&
+           a.proxy_creds_hash == b.proxy_creds_hash &&
+           a.has_mtls_or_custom_ca == b.has_mtls_or_custom_ca;
 }
 
 // 5-dimensional composite key isolating sockets in the connection pool.
@@ -135,6 +145,7 @@ fn pool_key_hash(k: const PoolKey&) -> u64 {
     for &srv in k.proxy_chain.servers {
         let sh = net_internal::wyhash64_ascii_fold(srv.host[..], srv.port);
         h = core::hash_combine_u64(h, sh);
+        h = core::hash_combine_u64(h, srv.proxy_creds_hash);
     }
     h = core::hash_combine_u64(h, k.partition_key.nonce);
     let part_h = net_internal::wyhash64_ascii_fold(
@@ -143,6 +154,11 @@ fn pool_key_hash(k: const PoolKey&) -> u64 {
     );
     h = core::hash_combine_u64(h, part_h);
     h = core::hash_combine_u64(h, k.tls_and_dns_policy.target_network_id);
+    h = core::hash_combine_u64(h, k.tls_and_dns_policy.tls_policy_hash);
+    h = core::hash_combine_u64(h, k.tls_and_dns_policy.tenant_id_hash);
+    h = core::hash_combine_u64(h, k.tls_and_dns_policy.socket_auth_binding);
+    h = core::hash_combine_u64(h, k.tls_and_dns_policy.proxy_creds_hash);
+    h = core::hash_combine_u64(h, if k.tls_and_dns_policy.has_mtls_or_custom_ca { 1 } else { 0 });
     return h;
 }
 
@@ -161,9 +177,9 @@ struct PooledHpackState {
     dec:    http2::DynamicTable = http2::new_dynamic_table(4096),
 }
 
-const MAX_POOLED_HPACK_SLOTS: i64 = 16;
+const MAX_POOLED_HPACK_SLOTS: i64 = 64;
 
-var g_hpack_slots: PooledHpackState[16] = [PooledHpackState { .. }; 16];
+var g_hpack_slots: PooledHpackState[64] = [PooledHpackState { .. }; 64];
 
 // Active or idle pooled TCP/TLS/QUIC connection representation.
 struct PooledConnection {
@@ -253,6 +269,15 @@ fn is_connection_healthy(
         return true;
     }
 
+    if conn.source_exhausted || (conn.protocol == NegotiatedProtocol.Http11 && conn.rx_buf.len > 0) {
+        conn.transport.close();
+        release_hpack_slot(conn);
+        conn.rx_buf.clear();
+        conn.no_new_exchanges = true;
+        conn.closed = true;
+        return false;
+    }
+
     let idle_duration_ns = core::ct_max_i64(0, core::sub_sat_i64(now_ns, conn.idle_at_ns));
 
     if max_idle_ns > 0 && idle_duration_ns > max_idle_ns {
@@ -339,7 +364,13 @@ fn can_coalesce_h2_connection(
         return false, false;
     }
 
-    // Partition key, proxy chain, and privacy mode must match 100%
+    // Never coalesce when mTLS client cert or custom CA trust policy is active (RFC 9113 §9.1.1)
+    guard !conn.key.tls_and_dns_policy.has_mtls_or_custom_ca &&
+          !target_key.tls_and_dns_policy.has_mtls_or_custom_ca else {
+        return false, false;
+    }
+
+    // Partition key, proxy chain, TLS policy, credentials, and tenant binding must match 100%
     guard conn.key.partition_key.network_anonymization_key_equals(target_key.partition_key) &&
           conn.key.proxy_chain.proxy_chain_equals(target_key.proxy_chain) &&
           conn.key.tls_and_dns_policy.tls_and_dns_policy_equals(target_key.tls_and_dns_policy) else {

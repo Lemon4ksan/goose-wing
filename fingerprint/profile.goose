@@ -8,6 +8,8 @@ namespace fingerprint;
 
 import std;
 import core;
+import rfc.tls;
+import rfc.h2;
 import http.headers;
 import .types;
 import .ja4;
@@ -96,15 +98,113 @@ fn wing_default_profile() -> ClientProfile {
     p.tls.sig_algorithms.push(0x0601); // rsa_pkcs1_sha512
 
     p.tls.alpn.append("h2");
+    let _ = validate_and_filter_profile(p);
     return p;
+}
+
+// Returns true only for PFS + AEAD TLS 1.3 and TLS 1.2 cipher suites (RFC 9113 Section 9.2.2).
+// Rejects RSA key exchange, CBC, SHA-1, RC4, 3DES, NULL, and export/weak suites.
+fn is_allowed_tls_cipher(cipher_id: u16) -> bool {
+    return match cipher_id {
+        0x1301 => true, // TLS_AES_128_GCM_SHA256
+        0x1302 => true, // TLS_AES_256_GCM_SHA384
+        0x1303 => true, // TLS_CHACHA20_POLY1305_SHA256
+        0x1304 => true, // TLS_AES_128_CCM_SHA256
+        0xC02B => true, // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        0xC02C => true, // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        0xC02F => true, // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        0xC030 => true, // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        0xCCA8 => true, // TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+        0xCCA9 => true, // TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+        0x009E => true, // TLS_DHE_RSA_WITH_AES_128_GCM_SHA256
+        0x009F => true, // TLS_DHE_RSA_WITH_AES_256_GCM_SHA384
+        0xCCAA => true, // TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+        _ => false,
+    };
+}
+
+inline fn filter_profile_ciphers(ciphers: u16[..32]&) -> bool {
+    let had_ciphers = ciphers.len > 0;
+    var filtered:   u16[..32] = [];
+    var real_count: i64       = 0;
+    for c in ciphers {
+        let is_g = rfc::is_grease_u16(c);
+        guard is_g || is_allowed_tls_cipher(c) else { continue; }
+        if !filtered.contains(c) && filtered.try_push(c) && !is_g {
+            real_count = core::add_sat_i64(real_count, 1);
+        }
+    }
+    ciphers = filtered;
+    return !had_ciphers || real_count > 0;
+}
+
+inline fn filter_profile_versions(versions: u16[..8]&) -> bool {
+    let had_versions = versions.len > 0;
+    var filtered:   u16[..8] = [];
+    var real_count: i64      = 0;
+    for v in versions {
+        let is_g = rfc::is_grease_u16(v);
+        guard is_g || v == 0x0304 || v == 0x0303 else { continue; }
+        if !filtered.contains(v) && filtered.try_push(v) && !is_g {
+            real_count = core::add_sat_i64(real_count, 1);
+        }
+    }
+    versions = filtered;
+    return !had_versions || real_count > 0;
+}
+
+// Strips disallowed TLS cipher suites and pre-TLS 1.2 versions from `profile`.
+// Returns false if a non-empty cipher or version list contains zero valid entries after filtering.
+fn validate_and_filter_profile(profile: ClientProfile&) -> bool {
+    let ok_ciphers = filter_profile_ciphers(profile.tls.ciphers);
+    let ok_versions = filter_profile_versions(profile.tls.supported_versions);
+    return ok_ciphers && ok_versions;
+}
+
+inline fn grease_u16_from_nibble(idx: u64) -> u16 {
+    let nib = (idx & 0x0F) as u16;
+    let b = (nib << 4) | 0x0A;
+    return (b << 8) | b;
+}
+
+inline fn prepend_grease_u16<B>(list: B&, grease_val: u16) {
+    var rebuilt = copy(list);
+    list.clear();
+    let _ = list.try_push(grease_val);
+    for v in rebuilt {
+        if !rfc::is_grease_u16(v) {
+            let _ = list.try_push(v);
+        }
+    }
+}
+
+// Rotates distinct RFC 8701 GREASE values across `ciphers`, `extensions`, and `supported_versions`.
+fn rotate_profile_grease(profile: ClientProfile&, seed: u64) {
+    var buf: u8[9] = [0; 9];
+    core::write_le_u64_at(buf[..], 0, seed);
+    let i0 = core::fnv1a_64(buf[..]) % 16;
+    buf[8] = 1;
+    let i1 = (i0 + 1 + (core::fnv1a_64(buf[..]) % 15)) % 16;
+    buf[8] = 2;
+    var i2 = core::fnv1a_64(buf[..]) % 16;
+    for _ in 2 {
+        if i2 == i0 || i2 == i1 {
+            i2 = (i2 + 1) % 16;
+        }
+    }
+    prepend_grease_u16(profile.tls.ciphers, grease_u16_from_nibble(i0));
+    prepend_grease_u16(profile.tls.extensions, grease_u16_from_nibble(i1));
+    prepend_grease_u16(profile.tls.supported_versions, grease_u16_from_nibble(i2));
 }
 
 // Constructs a completely custom, blank persona for full user control.
 fn custom_profile() -> ClientProfile {
-    return ClientProfile {
+    var p = ClientProfile {
         kind: Profile.Custom,
         ..
     };
+    let _ = validate_and_filter_profile(p);
+    return p;
 }
 
 // Constructs a minimal / bare profile without default headers.
@@ -227,9 +327,10 @@ fn format_p0f(profile: const ClientProfile&) -> u8[..256] {
     return format_p0f(profile.p0f);
 }
 
-// Configures the Akamai HTTP/2 fingerprint for this profile and synchronizes H2Settings.
+// Configures the Akamai HTTP/2 fingerprint for this profile and resets omitted H2Settings fields cleanly.
 fn set_akamai(profile: ClientProfile&, fp: const AkamaiFingerprint&) {
     profile.akamai = fp;
+    profile.h2 = H2Settings { .. };
     for &s in fp.settings {
         if s.id == rfc::H2_SETTING_HEADER_TABLE_SIZE { profile.h2.header_table_size = s.val; }
         else if s.id == rfc::H2_SETTING_ENABLE_PUSH { profile.h2.enable_push = s.val; }

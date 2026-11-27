@@ -388,14 +388,27 @@ struct H3HeaderCounts {
 }
 
 inline fn is_valid_h3_path_bytes(val: const u8[:]) -> bool {
-    guard val.len > 0 && (val[0] == '/' || (val[0] == '*' && val.len == 1)) else {
+    let n = val.len;
+    guard n > 0 && (val[0] == '/' || (val[0] == '*' && n == 1)) else {
         return false;
     }
-    for b in val {
+    var i: i64 = 0;
+    while i < n {
+        let b = val[i];
         if b <= 0x20 || b >= 0x7F || b == '#' || b == '<' || b == '>' || b == '"'
             || b == '\\' || b == '^' || b == '{' || b == '|' || b == '}' {
             return false;
         }
+        if b == '%' {
+            guard i + 2 < n
+                && core::is_ascii_hexdigit(val[i + 1])
+                && core::is_ascii_hexdigit(val[i + 2]) else {
+                return false;
+            }
+            i += 3;
+            continue;
+        }
+        i += 1;
     }
     return true;
 }

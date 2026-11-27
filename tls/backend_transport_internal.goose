@@ -115,8 +115,9 @@ recursive fn endpoint_feed_slot_rx(slot: TlsBackendTransportSlot&, fd: i64, time
     }
     var rx: u8[16640] = [0; 16640];
     let recvd = net::fd_recv(fd, rx[..], timeout_ms);
-    if recvd <= 0 { return recvd; }
-    guard recvd <= rx.len else { return -1; }
+    if recvd == -2 { return -2; }
+    // RFC 8446 Section 6.1: Closure Alerts - TCP EOF before close_notify is a truncation/error, not clean close.
+    guard recvd > 0 && recvd <= rx.len else { return -1; }
     let fed, fst = tls::tls_endpoint_feed_wire(slot.ep, rx[..recvd]);
     guard fst == tls::TlsBackendStatus.Ok || fst == tls::TlsBackendStatus.WantWrite else { return -1; }
     if fed >= 0 && fed < recvd {
@@ -278,6 +279,7 @@ fn pure_open_blocking_server_endpoint(
     slot.owns_rsa_key_slot = false;
     slot.compressed_cert_algo = cfg.compressed_cert_algo;
     slot.client_cfg.trust_store = cfg.client_trust_store;
+    slot.ca_policy_hash = compute_trust_store_policy_hash(slot.client_cfg.trust_store);
     committed = true;
     return tls::TlsEndpoint {
         kind:        tls::TlsBackendKind.PureGoose,

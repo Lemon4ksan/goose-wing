@@ -59,8 +59,8 @@ typedef int SOCKET;
 #include <signal.h>
 #include <errno.h>
 #include <pthread.h>
-#if defined(__linux__)
 #include <sched.h>
+#if defined(__linux__)
 #ifndef SO_ORIGINAL_DST
 #define SO_ORIGINAL_DST 80
 #endif
@@ -547,6 +547,11 @@ int32_t wing_tcp_set_rcvbuf(int64_t sock_fd, int32_t bytes) {
     (void)bytes;
     return 0;
 }
+int32_t wing_tcp_set_ipv6_only(int64_t sock_fd, int32_t enable) {
+    (void)sock_fd;
+    (void)enable;
+    return 0;
+}
 int32_t wing_pipe_create(int64_t *out_read_fd, int64_t *out_write_fd) {
     if (out_read_fd) *out_read_fd = -1;
     if (out_write_fd) *out_write_fd = -1;
@@ -645,13 +650,35 @@ static int wing_wait_fd(SOCKET s, int want_write, uint32_t timeout_ms) {
 #endif
 }
 
+#if !defined(_WIN32) && !defined(__wasm__)
+static pthread_once_t g_wing_sigpipe_once = PTHREAD_ONCE_INIT;
+
+static void wing_ignore_sigpipe_once(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_IGN;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    (void)sigaction(SIGPIPE, &sa, NULL);
+}
+#endif
+
+static void wing_set_nosigpipe(SOCKET s) {
+#if !defined(_WIN32) && !defined(__wasm__) && defined(SO_NOSIGPIPE)
+    int nosig = 1;
+    (void)setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &nosig, sizeof(nosig));
+#else
+    (void)s;
+#endif
+}
+
 // Initializes socket subsystem (WSAStartup on Windows, ignore SIGPIPE on POSIX).
 int32_t wing_tcp_init(void) {
 #ifdef _WIN32
     WSADATA wsa_data;
     return (int32_t)WSAStartup(MAKEWORD(2, 2), &wsa_data);
 #else
-    signal(SIGPIPE, SIG_IGN);
+    (void)pthread_once(&g_wing_sigpipe_once, wing_ignore_sigpipe_once);
     return 0;
 #endif
 }
@@ -701,6 +728,7 @@ int64_t wing_tcp_listen(wing_bytes_ro host, uint16_t port, int32_t backlog) {
 
     SOCKET s = socket(family, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) return -1;
+    wing_set_nosigpipe(s);
 #ifdef _WIN32
     // uSockets #263 / #101: Non-inheritable + SO_EXCLUSIVEADDRUSE on Windows prevents port hijacking (CWE-200).
     SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
@@ -748,6 +776,7 @@ static int64_t wing_unix_connect_impl(wing_bytes_ro path, int nonblocking, int32
     }
     SOCKET s = socket(AF_UNIX, SOCK_STREAM, 0);
     if (s == INVALID_SOCKET) return -1;
+    wing_set_nosigpipe(s);
 #ifdef _WIN32
     SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
     if (nonblocking) {
@@ -798,6 +827,7 @@ int64_t wing_tcp_listen_unix(wing_bytes_ro path, int32_t backlog) {
 #endif
     SOCKET s = socket(AF_UNIX, SOCK_STREAM, 0);
     if (s == INVALID_SOCKET) return -1;
+    wing_set_nosigpipe(s);
 #ifdef _WIN32
     SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
 #endif
@@ -824,6 +854,7 @@ int64_t wing_adopt_socket(int64_t raw_fd) {
     if (raw_fd <= 0) return -1;
     wing_tcp_init();
     SOCKET s = (SOCKET)raw_fd;
+    wing_set_nosigpipe(s);
     wing_tcp_set_nonblocking(raw_fd, 1);
 #ifdef _WIN32
     SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
@@ -891,6 +922,7 @@ int64_t wing_tcp_accept(int64_t listener_fd, uint32_t timeout_ms) {
     if (client_sock == INVALID_SOCKET) {
         return -1;
     }
+    wing_set_nosigpipe(client_sock);
 #ifdef _WIN32
     // uSockets #263: Do not inherit accepted socket handles into child processes
     SetHandleInformation((HANDLE)client_sock, HANDLE_FLAG_INHERIT, 0);
@@ -898,6 +930,9 @@ int64_t wing_tcp_accept(int64_t listener_fd, uint32_t timeout_ms) {
 
     int nodelay = 1;
     setsockopt(client_sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
+#if defined(__linux__) && defined(TCP_QUICKACK)
+    setsockopt(client_sock, IPPROTO_TCP, TCP_QUICKACK, &nodelay, sizeof(nodelay));
+#endif
 
     return (int64_t)client_sock;
 }
@@ -1047,6 +1082,7 @@ static int64_t wing_tcp_connect_sockaddr(const struct sockaddr_storage *ss, int 
     if (s == INVALID_SOCKET) {
         return -1;
     }
+    wing_set_nosigpipe(s);
 #ifdef _WIN32
     // uSockets #263: Do not inherit socket handles into child processes (prevents keep-alive hangs)
     SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
@@ -1623,8 +1659,19 @@ int32_t wing_tcp_send2(int64_t sock_fd, wing_bytes_ro hdr, wing_bytes_ro payload
         count++;
     }
     if (count == 0) return 0;
-    ssize_t sent = writev((int)sock_fd, bufs, count);
-    return (int32_t)sent;
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov = bufs;
+    msg.msg_iovlen = (size_t)count;
+    ssize_t sent = 0;
+    do {
+        sent = sendmsg((int)sock_fd, &msg, MSG_NOSIGNAL);
+    } while (sent < 0 && errno == EINTR);
+    if (sent < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return -2;
+        return -1;
+    }
+    return sent > (ssize_t)INT32_MAX ? INT32_MAX : (int32_t)sent;
 #endif
 }
 
@@ -1687,7 +1734,11 @@ int64_t wing_tcp_accept_nonblocking(int64_t listener_fd) {
 #endif
 
     int nodelay = 1;
+    wing_set_nosigpipe(client_sock);
     setsockopt(client_sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
+#if defined(__linux__) && defined(TCP_QUICKACK)
+    setsockopt(client_sock, IPPROTO_TCP, TCP_QUICKACK, &nodelay, sizeof(nodelay));
+#endif
 
     return (int64_t)client_sock;
 }
@@ -1992,8 +2043,9 @@ int64_t wing_udp_bind(wing_bytes_ro host, uint16_t port) {
 #ifdef _WIN32
     SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
     int opt = 1;
-    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
+    setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&opt, sizeof(opt));
 #else
+    wing_set_nosigpipe(s);
     int opt = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
 #if defined(SO_REUSEPORT)
@@ -2221,6 +2273,7 @@ int32_t wing_udp_recvmmsg(int64_t sock_fd, wing_bytes_rw payloads, wing_slice_i3
 // ---- Dual-Stack Proxy TCP, Pipe Splice, Local IPs, Dual-Stack UDP, and FS ----
 
 static void wing_prepare_nonblocking_cloexec(SOCKET s) {
+    wing_set_nosigpipe(s);
 #ifdef _WIN32
     SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
     u_long nb = 1;
@@ -2504,6 +2557,17 @@ int32_t wing_tcp_set_rcvbuf(int64_t sock_fd, int32_t bytes) {
     return setsockopt((SOCKET)sock_fd, SOL_SOCKET, SO_RCVBUF, (const char *)&val, sizeof(val)) == 0 ? 0 : -1;
 }
 
+int32_t wing_tcp_set_ipv6_only(int64_t sock_fd, int32_t enable) {
+    if (sock_fd <= 0) return -1;
+#if defined(IPV6_V6ONLY)
+    int val = enable ? 1 : 0;
+    return setsockopt((SOCKET)sock_fd, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&val, sizeof(val)) == 0 ? 0 : -1;
+#else
+    (void)enable;
+    return 0;
+#endif
+}
+
 int64_t wing_tcp_connect_opts_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip, uint16_t dst_port, uint32_t so_mark,
                                     int32_t ttl, int32_t mss, int32_t rcvbuf, int32_t tcp_nodelay, int32_t ka_idle,
                                     int32_t ka_intvl, int32_t ka_cnt, uint32_t user_timeout_ms, int32_t *out_state,
@@ -2529,7 +2593,11 @@ int64_t wing_tcp_connect_opts_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip, 
 
     wing_prepare_nonblocking_cloexec(s);
     int opt = 1;
+#ifdef _WIN32
+    setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&opt, sizeof(opt));
+#else
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
+#endif
     int nd = tcp_nodelay ? 1 : 0;
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&nd, sizeof(nd));
 
@@ -2821,9 +2889,13 @@ int64_t wing_udp_open_dual(wing_bytes_ro bind_ip, uint16_t bind_port, int32_t fl
 
     wing_prepare_nonblocking_cloexec(s);
     int opt = 1;
+#ifdef _WIN32
+    setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&opt, sizeof(opt));
+#else
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
 #if defined(SO_REUSEPORT)
     setsockopt(s, SOL_SOCKET, SO_REUSEPORT, (const char *)&opt, sizeof(opt));
+#endif
 #endif
     if (family == AF_INET6) {
         const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)&ss;

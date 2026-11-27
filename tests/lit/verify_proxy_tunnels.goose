@@ -190,6 +190,7 @@ thread_fn https_proxy_worker(cfg: RelayTarget) {
 
 fn test_proxy_config_and_fail_closed() {
     var sess = client::new_session();
+    sess.set_allow_loopback_ssrf(true);
     assert(sess.set_proxy("socks5h://bot:s3cr3t@127.0.0.1:1080"));
     assert(sess.set_proxy("https://relay:pass@proxy.example:443"));
     assert(!sess.set_proxy("ftp://bad.example:21"));

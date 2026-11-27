@@ -37,41 +37,48 @@ struct ProcessResult {
 }
 
 struct QuicConnection {
-    role:                  QuicRole              = QuicRole.Server,
-    state:                 QuicConnState         = QuicConnState.Initial,
-    version:               u32                   = rfc::QUIC_VERSION_1,
-    scid:                  u8[..20]              = [],
-    dcid:                  u8[..20]              = [],
-    original_dcid:         u8[..20]              = [],
-    initial_space:         PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Initial, .. },
-    handshake_space:       PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
-    app_space:             PnSpaceState          = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
-    tx_initial_space:      PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Initial, .. },
-    tx_handshake_space:    PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
-    tx_app_space:          PnSpaceState          = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
-    zero_rtt_keys:         QuicZeroRttKeys       = QuicZeroRttKeys { .. },
-    initial_crypto:        tls::QuicCryptoStream = tls::QuicCryptoStream { .. },
-    handshake_crypto:      tls::QuicCryptoStream = tls::QuicCryptoStream { .. },
-    app_crypto:            tls::QuicCryptoStream = tls::QuicCryptoStream { .. },
-    rtt:                   RttState              = RttState { .. },
-    pacer:                 Pacer                 = Pacer { .. },
-    bbr:                   BbrState              = BbrState { .. },
-    stream_table:          QuicStreamTable       = QuicStreamTable { .. },
-    flow_ctrl:             QuicFlowControl       = QuicFlowControl { .. },
-    bytes_received:        u64                   = 0,
-    bytes_sent:            u64                   = 0,
-    validated_address:     bool                  = false,
-    packets_rx:            u64                   = 0,
-    packets_tx:            u64                   = 0,
-    close_code:            u64                   = 0,
-    allow_grease_quic_bit: bool                  = false,
-    retry_received:        bool                  = false,
-    retry_token:           u8[..512]             = [],
-    aead_failed_decrypts:  u64                   = 0,
-    peer_reset_tokens:     u8[16][..8]           = [],
-    alt_scids:             u8[..20][..4]         = [],
-    migration:             QuicMigrationManager  = QuicMigrationManager { .. },
-    dplpmtud:              Dplpmtud              = Dplpmtud { .. },
+    role:                       QuicRole              = QuicRole.Server,
+    state:                      QuicConnState         = QuicConnState.Initial,
+    version:                    u32                   = rfc::QUIC_VERSION_1,
+    scid:                       u8[..20]              = [],
+    dcid:                       u8[..20]              = [],
+    original_dcid:              u8[..20]              = [],
+    initial_space:              PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Initial, .. },
+    handshake_space:            PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
+    app_space:                  PnSpaceState          = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
+    tx_initial_space:           PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Initial, .. },
+    tx_handshake_space:         PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
+    tx_app_space:               PnSpaceState          = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
+    zero_rtt_keys:              QuicZeroRttKeys       = QuicZeroRttKeys { .. },
+    initial_crypto:             tls::QuicCryptoStream = tls::QuicCryptoStream { .. },
+    handshake_crypto:           tls::QuicCryptoStream = tls::QuicCryptoStream { .. },
+    app_crypto:                 tls::QuicCryptoStream = tls::QuicCryptoStream { .. },
+    rtt:                        RttState              = RttState { .. },
+    pacer:                      Pacer                 = Pacer { .. },
+    bbr:                        BbrState              = BbrState { .. },
+    stream_table:               QuicStreamTable       = QuicStreamTable { .. },
+    flow_ctrl:                  QuicFlowControl       = QuicFlowControl { .. },
+    bytes_received:             u64                   = 0,
+    bytes_sent:                 u64                   = 0,
+    validated_address:          bool                  = false,
+    packets_rx:                 u64                   = 0,
+    packets_tx:                 u64                   = 0,
+    close_code:                 u64                   = 0,
+    allow_grease_quic_bit:      bool                  = false,
+    retry_received:             bool                  = false,
+    retry_token:                u8[..512]             = [],
+    aead_failed_decrypts:       u64                   = 0,
+    peer_reset_tokens:          u8[16][..8]           = [],
+    peer_reset_token_seqs:      u64[..8]              = [],
+    peer_cids:                  u8[..20][..8]         = [],
+    peer_cid_seqs:              u64[..8]              = [],
+    active_peer_cid_seq:        u64                   = 0,
+    active_connection_id_limit: u64                   = 8,
+    peer_retire_prior_to:       u64                   = 0,
+    pending_retire_cids:        u64[..256]            = [],
+    alt_scids:                  u8[..20][..4]         = [],
+    migration:                  QuicMigrationManager  = QuicMigrationManager { .. },
+    dplpmtud:                   Dplpmtud              = Dplpmtud { .. },
 }
 
 fn new_server_connection(scid: const u8[:]) -> QuicConnection {
@@ -194,13 +201,13 @@ fn migrate(conn: QuicConnection&, new_addr: const QuicEndpointAddr&, token: cons
 }
 
 // RFC 8899 Section 5.1: Handles acknowledgement of DPLPMTUD probe packet
-fn on_probe_acked(conn: QuicConnection&, acked_size: u32) -> bool {
-    return on_probe_acked(conn.dplpmtud, acked_size);
+fn on_probe_acked(conn: QuicConnection&, acked_size: u32, now_ms: u64 = 0) -> bool {
+    return on_probe_acked(conn.dplpmtud, acked_size, now_ms);
 }
 
 // RFC 8899 Section 5.1: Handles loss / timeout of DPLPMTUD probe packet
-fn on_probe_lost(conn: QuicConnection&, lost_size: u32) -> bool {
-    return on_probe_lost(conn.dplpmtud, lost_size);
+fn on_probe_lost(conn: QuicConnection&, lost_size: u32, now_ms: u64 = 0) -> bool {
+    return on_probe_lost(conn.dplpmtud, lost_size, now_ms);
 }
 
 // RFC 9000 Section 12.5 (Table 3): Validates whether a frame type is permitted in a packet type.
@@ -364,6 +371,7 @@ fn clear_space_keys(space: PnSpaceState&) {
     space.has_min_tracked_pn = false;
     space.loss_time_us = 0;
     space.sent_packets.clear();
+    space.skipped_pns.clear();
 }
 
 // Zeroizes all encryption keys, secrets, reset tokens, and CRYPTO buffers owned by `conn`.

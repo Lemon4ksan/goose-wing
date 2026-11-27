@@ -169,6 +169,12 @@ inline fn should_forward_ws_upgrade_field(
     return !config.strip_hop_by_hop;
 }
 
+// RFC 9875 Sections 2-3: Cache-Groups and Cache-Group-Invalidation headers.
+inline fn is_cache_group_header(name: const u8[:]) -> bool {
+    return name.eq_ascii_fold("cache-groups") ||
+        name.eq_ascii_fold("cache-group-invalidation");
+}
+
 fn should_forward_header_slices(
     name:               const u8[:],
     val:                const u8[:],
@@ -177,6 +183,7 @@ fn should_forward_header_slices(
     spill_raw:          const u8[:],
     config:             const proxy::Config&,
     ws_upgrade_allowed: bool,
+    method:             const u8[:],
 ) -> bool {
     if name.eq_ascii_fold("host") {
         return config.preserve_host;
@@ -184,8 +191,11 @@ fn should_forward_header_slices(
     if proxy::is_forwarded_metadata_header(name) {
         return false;
     }
+    if !config.forward_cache_groups && is_cache_group_header(name) {
+        return false;
+    }
     if name.eq_ascii_fold("max-forwards") {
-        return true;
+        return method.eq_ascii_fold("TRACE") || method.eq_ascii_fold("OPTIONS");
     }
     // RFC 9112 Section 6.3: Message Body Length - remove Content-Length if Transfer-Encoding is present.
     if name.eq_ascii_fold("content-length") &&
@@ -321,6 +331,7 @@ fn copy_filtered_entries_spill(
     out_arena:     http::OverflowArena&,
     config:        const proxy::Config&,
     allow_ws:      bool,
+    method:        const u8[:],
 ) -> bool {
     for &entry in entries {
         let name = http::resolve_entry_name_buf(in_headers.raw_buf[..], spill_raw, entry);
@@ -331,7 +342,7 @@ fn copy_filtered_entries_spill(
         }
         // RFC 9113 Section 8.3: HTTP Control Data - reject non-standard or unstripped pseudo-headers.
         guard http::is_valid_header_name(name) && http::is_valid_header_value(val) else { return false; }
-        if !should_forward_header_slices(name, val, in_headers, spill_entries, spill_raw, config, allow_ws) {
+        if !should_forward_header_slices(name, val, in_headers, spill_entries, spill_raw, config, allow_ws, method) {
             continue;
         }
         if name.eq_ascii_fold("content-length") {
@@ -361,11 +372,11 @@ fn copy_filtered_headers_spill(
         in_headers, spill_entries, spill_raw, config, method,
     );
     guard copy_filtered_entries_spill(
-        in_headers.entries[..], in_headers, spill_entries, spill_raw, out_headers, out_arena, config, allow_ws,
+        in_headers.entries[..], in_headers, spill_entries, spill_raw, out_headers, out_arena, config, allow_ws, method,
     ) else { return false; }
     if spill_entries.len > 0 {
         return copy_filtered_entries_spill(
-            spill_entries, in_headers, spill_entries, spill_raw, out_headers, out_arena, config, allow_ws,
+            spill_entries, in_headers, spill_entries, spill_raw, out_headers, out_arena, config, allow_ws, method,
         );
     }
     return true;
@@ -481,27 +492,68 @@ fn inject_via_header_spill(
     spill_raw:     const u8[:],
     pseudonym:     const u8[:],
     http_version:  const u8[:],
-) -> bool {
+) -> proxy::ProxyPrepareStatus {
     var combined: u8[..1024] = [];
     let has_existing = http::has_header_slices(in_headers, spill_entries, spill_raw, "Via");
     if has_existing {
         guard http::get_combined_slices(in_headers, spill_entries, spill_raw, "Via", combined, 950) else {
-            return false;
+            return proxy::ProxyPrepareStatus.BadRequest400;
         }
         // RFC 9110 Section 7.6.3: Via - detect forwarding loops when own pseudonym is already present.
-        guard !has_via_pseudonym_loop(combined[..], pseudonym) else { return false; }
+        guard !has_via_pseudonym_loop(combined[..], pseudonym) else {
+            return proxy::ProxyPrepareStatus.LoopDetected508;
+        }
     }
     guard pseudonym.len > 0 else {
-        guard combined.len > 0 else { return true; }
-        return http::append_header_spill(out_headers, out_arena, "Via", combined[..]);
+        guard combined.len > 0 else { return proxy::ProxyPrepareStatus.Ok; }
+        return if http::append_header_spill(out_headers, out_arena, "Via", combined[..]) {
+            proxy::ProxyPrepareStatus.Ok
+        } else {
+            proxy::ProxyPrepareStatus.BadRequest400
+        };
     }
     var via_buf: u8[..64] = [];
-    guard format_via(via_buf, pseudonym, http_version) else { return false; }
-    guard combined.len > 0 else {
-        return http::append_header_spill(out_headers, out_arena, "Via", via_buf[..]);
+    guard format_via(via_buf, pseudonym, http_version) else {
+        return proxy::ProxyPrepareStatus.BadRequest400;
     }
-    guard combined.try_append(", ") && combined.try_append(via_buf[..]) else { return false; }
-    return http::append_header_spill(out_headers, out_arena, "Via", combined[..]);
+    guard combined.len > 0 else {
+        return if http::append_header_spill(out_headers, out_arena, "Via", via_buf[..]) {
+            proxy::ProxyPrepareStatus.Ok
+        } else {
+            proxy::ProxyPrepareStatus.BadRequest400
+        };
+    }
+    guard combined.try_append(", ") && combined.try_append(via_buf[..]) else {
+        return proxy::ProxyPrepareStatus.BadRequest400;
+    }
+    return if http::append_header_spill(out_headers, out_arena, "Via", combined[..]) {
+        proxy::ProxyPrepareStatus.Ok
+    } else {
+        proxy::ProxyPrepareStatus.BadRequest400
+    };
+}
+
+fn is_trusted_proxy_peer(config: const proxy::Config&, client_ip: const u8[:]) -> bool {
+    guard config.trust_incoming_xff && config.trusted_proxy_cidrs.len > 0 && client_ip.len > 0 else {
+        return false;
+    }
+    let ip_addr, ok_ip = core::parse_ip_addr(client_ip);
+    guard ok_ip else { return false; }
+    for &raw_cidr in config.trusted_proxy_cidrs {
+        let cidr_s = raw_cidr[..].trim_lws();
+        guard cidr_s.len > 0 else { continue; }
+        let cidr, ok_c = core::parse_cidr(cidr_s);
+        if ok_c && core::cidr_contains_ip(cidr, ip_addr) {
+            return true;
+        }
+        if !ok_c {
+            let exact_addr, ok_e = core::parse_ip_addr(cidr_s);
+            if ok_e && core::ip_addr_equals(exact_addr, ip_addr) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 fn append_forwarded_metadata_xff_spill(
@@ -563,6 +615,7 @@ fn inject_forwarded_metadata_spill(
     proto:         const u8[:],
     config:        const proxy::Config&,
 ) -> bool {
+    let trust_xff = is_trusted_proxy_peer(config, client_ip);
     guard append_forwarded_metadata_xff_spill(
         out_headers,
         out_arena,
@@ -570,7 +623,7 @@ fn inject_forwarded_metadata_spill(
         spill_entries,
         spill_raw,
         client_ip,
-        config.trust_incoming_xff,
+        trust_xff,
     ) else { return false; }
 
     let orig_host = http::get_header_slices(in_headers, spill_entries, spill_raw, "Host");
@@ -578,7 +631,7 @@ fn inject_forwarded_metadata_spill(
         guard http::append_header_spill(out_headers, out_arena, "X-Forwarded-Proto", proto) else { return false; }
     }
     let existing_xf_host = http::get_header_slices(in_headers, spill_entries, spill_raw, "X-Forwarded-Host");
-    if config.trust_incoming_xff && existing_xf_host.len > 0 {
+    if trust_xff && existing_xf_host.len > 0 {
         guard http::append_header_spill(out_headers, out_arena, "X-Forwarded-Host", existing_xf_host) else {
             return false;
         }
@@ -646,9 +699,9 @@ fn apply_max_forwards_policy_spill(
     method:          const u8[:],
     forward_headers: http::HeaderMap&,
     forward_arena:   http::OverflowArena&,
-) -> bool {
+) -> proxy::ProxyPrepareStatus {
     guard method.eq_ascii_fold("TRACE") || method.eq_ascii_fold("OPTIONS") else {
-        return true;
+        return proxy::ProxyPrepareStatus.Ok;
     }
     var found = false;
     var hops: u64 = 0;
@@ -661,21 +714,25 @@ fn apply_max_forwards_policy_spill(
         }
         let val = http::entry_value_spill(forward_headers, forward_arena, entry).trim_lws();
         let parsed, ok = val.parse_u64_dec();
-        guard ok else { return false; }
+        guard ok else { return proxy::ProxyPrepareStatus.BadRequest400; }
         if !found {
             hops = parsed;
             found = true;
         } else {
-            guard parsed == hops else { return false; }
+            guard parsed == hops else { return proxy::ProxyPrepareStatus.BadRequest400; }
         }
     }
-    guard found else { return true; }
+    guard found else { return proxy::ProxyPrepareStatus.Ok; }
     // RFC 9110 Section 7.6.2: Max-Forwards - MUST NOT forward the request when Max-Forwards is zero.
-    guard hops > 0 else { return false; }
+    guard hops > 0 else { return proxy::ProxyPrepareStatus.MaxForwardsZeroLocal; }
     var mf_buf: u8[..24] = [];
     let next_hops = core::sub_sat_u64(hops, 1);
     next_hops.format_u64_dec(mf_buf);
-    return http::set_or_replace_spill(forward_headers, forward_arena, "Max-Forwards", mf_buf[..]);
+    return if http::set_or_replace_spill(forward_headers, forward_arena, "Max-Forwards", mf_buf[..]) {
+        proxy::ProxyPrepareStatus.Ok
+    } else {
+        proxy::ProxyPrepareStatus.BadRequest400
+    };
 }
 
 inline fn is_valid_accel_redirect_target(target: const u8[:]) -> bool {
@@ -716,14 +773,15 @@ inline fn matches_backend_url_prefix(url_val: const u8[:], backend_url_prefix: c
 }
 
 fn filter_single_upstream_response_header<B>(
-    in_headers:          const http::HeaderMap&,
-    entry_idx:           i64,
-    backend_url_prefix:  const u8[:],
-    public_url_prefix:   const u8[:],
-    out_headers:         http::HeaderMap&,
-    out_location_buf:    B&,
-    accel:               proxy::UpstreamAccelControl&,
-    first_loc_entry_idx: i64&,
+    in_headers:           const http::HeaderMap&,
+    entry_idx:            i64,
+    backend_url_prefix:   const u8[:],
+    public_url_prefix:    const u8[:],
+    out_headers:          http::HeaderMap&,
+    out_location_buf:     B&,
+    accel:                proxy::UpstreamAccelControl&,
+    first_loc_entry_idx:  i64&,
+    forward_cache_groups: bool = false,
 ) -> bool {
     let entry .= in_headers.entries[entry_idx];
     let name = http::entry_name(in_headers, entry);
@@ -736,6 +794,9 @@ fn filter_single_upstream_response_header<B>(
 
     if name.starts_with_fold("x-accel-") {
         return proxy::parse_x_accel_control_header(name, val, accel);
+    }
+    if !forward_cache_groups && is_cache_group_header(name) {
+        return true;
     }
     if http::is_hop_by_hop_header_name(name) {
         return true;

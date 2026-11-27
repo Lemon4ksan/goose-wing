@@ -776,6 +776,7 @@ fn test_hsts_preload_list_auto_upgrade(t: lit::T&) {
 fn test_dynamic_hsts_cache_lifecycle(t: lit::T&) {
     t.run("Dynamic Learning: Response Header Upgrades Subsequent Cleartext Requests") { sub =>
         var client = client::new_client();
+        client.ssrf_guard.enabled = false;
         client::set_clock_us(client, 1700000000000000); // t0
 
         sub.assert_false(client::is_hsts(client, "mycorp.internal"), "not HSTS initially");

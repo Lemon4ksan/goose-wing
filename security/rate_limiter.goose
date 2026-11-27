@@ -52,23 +52,32 @@ fn is_allowed(decision: const RateLimitDecision&) -> bool {
 }
 
 // Evaluates rate limit admission for a request consuming cost_n tokens at now_ns.
-// Returns Allowed with remaining capacity, or Rejected with retry_after_ns.
+// Returns Allowed with remaining capacity, or Rejected with retry_after_ns without mutating TAT.
 fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u64) -> RateLimitDecision {
+    guard cost_n > 0 else {
+        return RateLimitDecision.Rejected {
+            retry_after_ns: 0,
+            current_tat_ns: cell.tat_ns,
+        };
+    }
+
     let t = max(quota.emission_interval_ns, 1);
     let tau = quota.delay_tolerance_ns;
     let delta = core::mul_sat_u64(cost_n, t);
     let limit_window = core::add_sat_u64(tau, t);
-
+    let max_cells = core::add_sat_u64(quota.burst, 1);
     let tat_old = security_internal::clamp_clock_drift(cell.tat_ns, now_ns, limit_window);
-    cell.tat_ns = tat_old;
-
     let tat_base = core::ct_max_u64(now_ns, tat_old);
-    if delta > limit_window {
-        let excess = core::sub_sat_u64(delta, limit_window);
+
+    if cost_n > max_cells || delta > limit_window {
+        let excess = max(core::sub_sat_u64(delta, limit_window), 1);
         let base_wait = core::sub_sat_u64(tat_base, now_ns);
+        if tat_old < cell.tat_ns {
+            cell.tat_ns = tat_old;
+        }
         return RateLimitDecision.Rejected {
             retry_after_ns:        core::add_sat_u64(base_wait, excess),
-            current_tat_ns:        tat_old,
+            current_tat_ns:        cell.tat_ns,
             insufficient_capacity: true,
         };
     }
@@ -76,9 +85,12 @@ fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u
     let tat_new = core::add_sat_u64(tat_base, delta);
     let t_allow = core::sub_sat_u64(tat_new, limit_window);
     if now_ns < t_allow {
+        if tat_old < cell.tat_ns {
+            cell.tat_ns = tat_old;
+        }
         return RateLimitDecision.Rejected {
             retry_after_ns: core::sub_sat_u64(t_allow, now_ns),
-            current_tat_ns: tat_old,
+            current_tat_ns: cell.tat_ns,
         };
     }
 
@@ -99,21 +111,26 @@ fn gcra_reserve_n(
     now_ns:      u64,
     max_wait_ns: u64,
 ) -> RateLimitDecision {
+    guard cost_n > 0 else {
+        return RateLimitDecision.Rejected {
+            retry_after_ns: 0,
+            current_tat_ns: cell.tat_ns,
+        };
+    }
+
     let t = max(quota.emission_interval_ns, 1);
     let tau = quota.delay_tolerance_ns;
     let delta = core::mul_sat_u64(cost_n, t);
     let limit_window = core::add_sat_u64(tau, t);
-
     let tat_old = security_internal::clamp_clock_drift(cell.tat_ns, now_ns, limit_window);
-    cell.tat_ns = tat_old;
-
     let tat_base = core::ct_max_u64(now_ns, tat_old);
+
     if delta > core::add_sat_u64(limit_window, max_wait_ns) {
         let excess = core::sub_sat_u64(delta, limit_window);
         let base_wait = core::sub_sat_u64(tat_base, now_ns);
         return RateLimitDecision.Rejected {
             retry_after_ns:        core::add_sat_u64(base_wait, excess),
-            current_tat_ns:        tat_old,
+            current_tat_ns:        cell.tat_ns,
             insufficient_capacity: true,
         };
     }
@@ -138,9 +155,12 @@ fn gcra_reserve_n(
         };
     }
 
+    if tat_old < cell.tat_ns {
+        cell.tat_ns = tat_old;
+    }
     return RateLimitDecision.Rejected {
         retry_after_ns: wait_time,
-        current_tat_ns: tat_old,
+        current_tat_ns: cell.tat_ns,
     };
 }
 
@@ -229,14 +249,33 @@ fn new_probabilistic_gcra(quota: GcraQuota, sample_rate: u64 = 20) -> Probabilis
 
 // Stratified 1-in-rate sampled check: applies cost * sample_rate once per random slot in each rate-window.
 fn check_rate_limit(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> RateLimitDecision {
-    let rate = if pgcra.sample_rate > 0 { pgcra.sample_rate } else { 20 as u64 };
-    let sampled = security_internal::advance_probabilistic_sample_slot(pgcra, rate);
+    guard cost_n > 0 else {
+        return RateLimitDecision.Rejected {
+            retry_after_ns: 0,
+            current_tat_ns: pgcra.cell.tat_ns,
+        };
+    }
 
     let t = max(pgcra.quota.emission_interval_ns, 1);
     let tau = pgcra.quota.delay_tolerance_ns;
     let limit_window = core::add_sat_u64(tau, t);
+    let max_cells = core::add_sat_u64(pgcra.quota.burst, 1);
+    let delta = core::mul_sat_u64(cost_n, t);
     let tat_curr = security_internal::clamp_clock_drift(pgcra.cell.tat_ns, now_ns, limit_window);
-    pgcra.cell.tat_ns = tat_curr;
+
+    if cost_n > max_cells || delta > limit_window {
+        let tat_base = core::ct_max_u64(now_ns, tat_curr);
+        let excess = max(core::sub_sat_u64(delta, limit_window), 1);
+        let base_wait = core::sub_sat_u64(tat_base, now_ns);
+        return RateLimitDecision.Rejected {
+            retry_after_ns:        core::add_sat_u64(base_wait, excess),
+            current_tat_ns:        pgcra.cell.tat_ns,
+            insufficient_capacity: true,
+        };
+    }
+
+    let rate = if pgcra.sample_rate > 0 { pgcra.sample_rate } else { 20 as u64 };
+    let sampled = security_internal::advance_probabilistic_sample_slot(pgcra, rate);
 
     if sampled {
         let dec = gcra_check_n(pgcra.quota, pgcra.cell, cost_n, now_ns);
@@ -255,7 +294,7 @@ fn check_rate_limit(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> Rate
     guard now_ns >= t_allow else {
         return RateLimitDecision.Rejected {
             retry_after_ns: core::sub_sat_u64(t_allow, now_ns),
-            current_tat_ns: tat_curr,
+            current_tat_ns: pgcra.cell.tat_ns,
         };
     }
 

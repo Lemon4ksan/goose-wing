@@ -497,6 +497,29 @@ fn invalidate_scalable_matching_url(cache: http::ScalableCache&, target_url: con
     }
 }
 
+fn invalidate_scalable_group(
+    cache:    http::ScalableCache&,
+    group:    const u8[:],
+    base_url: const u8[:],
+) {
+    guard base_url.len > 0 else { return; }
+    let parsed_base, err_base = core::parse_url(base_url);
+    guard err_base == core::UrlParseError.None && parsed_base.valid else { return; }
+    let base_orig = core::origin_from_url(parsed_base);
+    guard base_orig.scheme.len > 0 else { return; }
+
+    for &entry, idx in cache.entries {
+        guard entry.is_valid && http::entry_has_group(entry, group) else { continue; }
+        let entry_url, err_u = core::parse_url(entry.url[..]);
+        guard err_u == core::UrlParseError.None && entry_url.valid else { continue; }
+        let entry_orig = core::origin_from_url(entry_url);
+        guard core::is_same_origin(entry_orig, base_orig) else { continue; }
+        entry.is_valid = false;
+        entry.security_zeroed = true;
+        detach_scalable_lru(cache, idx as i32);
+    }
+}
+
 fn invalidate_scalable_on_unsafe(cache: http::ScalableCache&, req: const http::Request&, resp: const http::Response&) {
     var canon_buf: u8[..2048] = [];
     let target_url = if canonicalize_cache_url(req.url[..], canon_buf) { canon_buf[..] } else { req.url[..] };
@@ -520,6 +543,16 @@ fn invalidate_scalable_on_unsafe(cache: http::ScalableCache&, req: const http::R
             core::is_same_origin(core::origin_from_url(c_url), base_orig);
         if same_c {
             invalidate_scalable_matching_url(cache, core::href(c_url));
+        }
+    }
+    // RFC 9875 §3: Cache-Group-Invalidation is scoped to the resolved origin (fail-closed otherwise).
+    for &e in resp.headers.entries {
+        guard resp.headers.entry_name(e).eq_ascii_fold("cache-group-invalidation") else { continue; }
+        var group_tags: http::CacheGroupTag[..32] = [];
+        if http::parse_cache_group_list(resp.headers.entry_value(e), group_tags) {
+            for &tag in group_tags {
+                invalidate_scalable_group(cache, tag.name[..], target_url);
+            }
         }
     }
 }

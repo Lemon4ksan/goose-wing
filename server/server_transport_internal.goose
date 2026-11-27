@@ -490,6 +490,10 @@ fn process_ready_http1_connection_buf<Stage, InBuf, FragBuf, OutBuf>(
         flush_http1_cork_buf(conn_fd, out_wire);
         return false;
     }
+    if try_reject_disallowed_trace(server, req.method[..], out_wire) {
+        flush_http1_cork_buf(conn_fd, out_wire);
+        return false;
+    }
     if realtime::is_websocket_upgrade_request(req) {
         flush_http1_cork_buf(conn_fd, out_wire);
         if serve_http1_upgraded_ws(conn_fd, server, req, consumed, stage, in_buf, ws_frag_buf, out_wire) {
@@ -569,10 +573,37 @@ fn poll_http_connection_ingress_buf<InBuf>(
     return !try_dispatch_h2_or_invalid_preface_buf(server, conn_fd, in_buf, recv_timeout_ms);
 }
 
+fn consume_tls_socket_proxy_protocol(
+    server:  const server::HttpServer&,
+    conn:    i64,
+    peer_ip: u8[..64]&,
+) -> bool {
+    net::tcp_get_peer_ip(conn, peer_ip);
+    guard server::is_trusted_proxy_protocol_peer(server, peer_ip[..]) else {
+        return false;
+    }
+    var peek_buf: u8[536] = [0; 536];
+    let pn = net::tcp_recv_peek(conn, peek_buf[..]);
+    guard pn > 0 && pn <= 536 else { return false; }
+    let hdr, consumed, ok = net::parse_proxy_header(peek_buf[..pn]);
+    guard ok && consumed > 0 && consumed <= pn else { return false; }
+    var drained: i64 = 0;
+    while drained < consumed {
+        let r = net::tcp_recv_slice(conn, peek_buf[drained..consumed], server.tls_handshake_timeout_ms);
+        guard r > 0 else { return false; }
+        drained = core::add_sat_i64(drained, r);
+    }
+    if hdr.src_ip_str.len > 0 {
+        let _ = peer_ip.try_set(hdr.src_ip_str[..]);
+    }
+    return true;
+}
+
 fn step_page_ring_conn<Stage>(
     server:     server::HttpServer&,
     conn:       i64,
-    peer_ip:    const u8[:],
+    peer_ip:    u8[..64]&,
+    proxy_done: bool&,
     ring:       core::PageRingBuffer&,
     cork:       core::CorkBuffer&,
     peek_chunk: ReactorIngressBuf&,
@@ -582,9 +613,24 @@ fn step_page_ring_conn<Stage>(
     let recvd = ring.page_ring_recv(conn, 65536, recv_ms);
     guard recvd > 0 else { return false; }
     let now_ns = core::monotonic_now().as_nanos();
-    let _, ok_handle = server::handle_connection_page_ring_scratch(
-        server, peer_ip, ring, now_ns, cork, peek_chunk, stage,
-    );
+    var ok_handle = true;
+    if !proxy_done {
+        let _, ok_first = server::handle_connection_page_ring_scratch(
+            server, peer_ip[..], ring, now_ns, cork, peek_chunk, stage,
+        );
+        ok_handle = ok_first;
+        proxy_done = true;
+    } else if ring.count > 0 {
+        ensure_reactor_ingress_buf(peek_chunk);
+        peek_chunk.len = 0;
+        let peek_n = ring.page_ring_peek(peek_chunk.bytes[..]);
+        if peek_n > 0 {
+            let _, ok_next = server::dispatch_page_ring_stripped(
+                server, peer_ip[..], ring, peek_chunk.bytes[..peek_n], now_ns, cork, stage,
+            );
+            ok_handle = ok_next;
+        }
+    }
     let should_close = !ok_handle ||
         server::response_wire_has_connection_close(cork.cork_as_slice()) ||
         core::starts_with(cork.cork_as_slice(), "HTTP/1.1 101 ");
@@ -619,14 +665,18 @@ fn serve_page_ring_loop<Stage>(
             continue;
         }
         let _ = net::tcp_set_nodelay(conn, server.tcp_nodelay);
+        if server.tcp_user_timeout_ms > 0 {
+            let _ = net::tcp_set_user_timeout(conn, server.tcp_user_timeout_ms);
+        }
         defer net::tcp_close(conn);
 
         ring.page_ring_clear();
         cork.cork_reset();
         net::tcp_get_peer_ip(conn, peer_ip);
+        var proxy_done = !server.accept_proxy_protocol;
 
         while !server::should_stop(server) {
-            if !step_page_ring_conn(server, conn, peer_ip[..], ring, cork, peek_chunk, stage) {
+            if !step_page_ring_conn(server, conn, peer_ip, proxy_done, ring, cork, peek_chunk, stage) {
                 break;
             }
         }
@@ -698,13 +748,19 @@ fn serve_pipe_loop<Stage>(
             continue;
         }
         let _ = net::tcp_set_nodelay(conn, server.tcp_nodelay);
+        if server.tcp_user_timeout_ms > 0 {
+            let _ = net::tcp_set_user_timeout(conn, server.tcp_user_timeout_ms);
+        }
         defer net::tcp_close(conn);
 
         pipe.pipe_reset();
         cork.cork_reset();
         net::tcp_get_peer_ip(conn, peer_ip);
         let h2_idx = server::alloc_temp_h2_session(
-            server.pipeline, server.server_name[..], 0, server.max_h2_concurrent_streams,
+            server.pipeline,
+            server.server_name[..],
+            core::monotonic_now().as_nanos(),
+            server.max_h2_concurrent_streams,
         );
         if h2_idx < 0 || h2_idx >= server::REACTOR_MAX_H2_SESSIONS {
             total_served = core::add_sat_i64(total_served, 1);
@@ -726,14 +782,34 @@ fn serve_pipe_loop(server: server::HttpServer&, listener_fd: i64, max_connection
     return serve_pipe_loop(server, listener_fd, max_connections, noop);
 }
 
-// Performs blocking pre-handshake SNI selection when `server::sni_registry_count(server.sni_registry) > 0`
-// by reading ClientHello, matching SNI against `sni_registry`, and falling back to
-// `default_cfg` if configured (else failing closed).
-fn server_accept_tls_handshake(
+inline fn build_sni_server_handshake_config(
+    server:      const server::HttpServer&,
+    sni_host:    const u8[:],
+    default_cfg: const tls::ServerHandshakeConfig&,
+) -> tls::ServerHandshakeConfig {
+    let mtls_pol, has_pol = server::resolve_sni_mtls_policy(server, sni_host);
+    let override_active = has_pol && mtls_pol.has_mtls_override;
+    let eff_req_cert = if override_active { mtls_pol.require_client_cert } else { default_cfg.require_client_cert };
+    let eff_trust = if override_active { mtls_pol.client_trust_store } else { default_cfg.client_trust_store };
+    return tls::ServerHandshakeConfig {
+        alpn:                 default_cfg.alpn,
+        handshake_timeout_ms: default_cfg.handshake_timeout_ms,
+        keylog_file:          default_cfg.keylog_file,
+        require_client_cert:  eff_req_cert,
+        client_trust_store:   eff_trust,
+        ..
+    };
+}
+
+// Performs blocking pre-handshake SNI selection when `server::sni_registry_count(server.sni_registry) > 0`,
+// applies per-SNI mTLS overrides when configured, and reports the client-offered SNI hostname in `out_sni`.
+fn server_accept_tls_handshake_with_sni(
     server:      const server::HttpServer&,
     conn_fd:     i64,
     default_cfg: const tls::ServerHandshakeConfig&,
+    out_sni:     u8[..255]&,
 ) -> u16, bool {
+    out_sni.clear();
     guard conn_fd > 0 else { return 0xFFFF, false; }
     if server::sni_registry_count(server.sni_registry) <= 0 {
         guard default_cfg.cert_der.len > 0 else { return 0xFFFF, false; }
@@ -747,16 +823,10 @@ fn server_accept_tls_handshake(
 
     var sni_host: u8[..255] = [];
     if tls::extract_client_hello_sni(ch_msg[..], sni_host) {
+        let _ = out_sni.try_set(sni_host[..]);
         let creds, ok_sni = server::resolve_sni_credentials(server, sni_host[..]);
         if ok_sni {
-            var sni_cfg = tls::ServerHandshakeConfig {
-                alpn:                 default_cfg.alpn,
-                handshake_timeout_ms: default_cfg.handshake_timeout_ms,
-                keylog_file:          default_cfg.keylog_file,
-                require_client_cert:  default_cfg.require_client_cert,
-                client_trust_store:   default_cfg.client_trust_store,
-                ..
-            };
+            var sni_cfg = build_sni_server_handshake_config(server, sni_host[..], default_cfg);
             defer tls::release_server_credentials(sni_cfg);
             guard tls::load_server_credentials_pem(creds.cert_pem, creds.key_pem, sni_cfg) else {
                 return 0xFFFF, false;
@@ -767,6 +837,15 @@ fn server_accept_tls_handshake(
 
     guard default_cfg.cert_der.len > 0 else { return 0xFFFF, false; }
     return tls::server_handshake_with_ch(conn_fd, ch_msg[..], default_cfg);
+}
+
+fn server_accept_tls_handshake(
+    server:      const server::HttpServer&,
+    conn_fd:     i64,
+    default_cfg: const tls::ServerHandshakeConfig&,
+) -> u16, bool {
+    var unused_sni: u8[..255] = [];
+    return server_accept_tls_handshake_with_sni(server, conn_fd, default_cfg, unused_sni);
 }
 
 fn step_tls_loop_conn(
@@ -866,4 +945,51 @@ inline fn verify_mmap_transfer_complete(
     cur_len:   i64,
 ) -> bool {
     return offset == file_size && cur_len == core::add_sat_i64(core::add_sat_i64(prev_len, hdr_len), file_size as i64);
+}
+
+inline fn init_listener_peer_and_proxy<OutBuf>(
+    conn_fd:  i64,
+    server:   server::HttpServer&,
+    peer_ip:  u8[..64]&,
+    out_wire: OutBuf&,
+) -> bool, bool {
+    let need_peer_ip = server.pipeline.enable_rate_limiter
+        || server.trust_proxy_headers
+        || server.pipeline.trust_proxy_headers
+        || server.accept_proxy_protocol;
+    if need_peer_ip {
+        net::tcp_get_peer_ip(conn_fd, peer_ip);
+    } else {
+        let _ = peer_ip.try_set("127.0.0.1");
+    }
+    if server.accept_proxy_protocol && !server::is_trusted_proxy_protocol_peer(server, peer_ip[..]) {
+        server::serialize_bad_request_error(server.server_name[..], out_wire);
+        flush_http1_cork_buf(conn_fd, out_wire);
+        return false, false;
+    }
+    return !server.accept_proxy_protocol, true;
+}
+
+inline fn drive_listener_proxy_preface<InBuf, OutBuf>(
+    conn_fd:         i64,
+    server:          server::HttpServer&,
+    in_buf:          InBuf&,
+    peer_ip:         u8[..64]&,
+    out_wire:        OutBuf&,
+    recv_timeout_ms: u32,
+    proxy_verified:  bool&,
+) -> bool {
+    guard !proxy_verified && in_buf.len > 0 else { return true; }
+    let stripped, ok_pp = strip_required_proxy_preface(server, in_buf[..], peer_ip, out_wire);
+    guard ok_pp else {
+        flush_http1_cork_buf(conn_fd, out_wire);
+        return false;
+    }
+    let pp_len = core::sub_sat_i64(in_buf.len, stripped.len);
+    if pp_len > 0 {
+        in_buf.compact_wire_buffer(pp_len);
+    }
+    proxy_verified = true;
+    server.pipeline.hdr_scan_cursor = 0;
+    return !try_dispatch_h2_or_invalid_preface_buf(server, conn_fd, in_buf, recv_timeout_ms);
 }

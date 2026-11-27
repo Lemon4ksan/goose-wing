@@ -10,6 +10,8 @@ import std;
 import core;
 import .internal;
 
+extern fn native_tcp_set_ipv6_only(sock_fd: i64, enable: i32) -> i32 = "wing_tcp_set_ipv6_only";
+
 // ---- OS-Level Socket Constants ------------------------------------------
 
 // Protocol Levels
@@ -180,6 +182,8 @@ fn apply_socket_options(fd: i64, opts: const SocketOptions&) -> bool {
     if opts.tcp_fastopen > 0 {
         let _ = native_tcp_set_fastopen(fd, opts.tcp_fastopen);
     }
+    let ipv6_only_flag: i32 = if opts.ipv6_only { 1 } else { 0 };
+    let _ = native_tcp_set_ipv6_only(fd, ipv6_only_flag);
     apply_tcp_keepalive_option(fd, opts);
     return true;
 }

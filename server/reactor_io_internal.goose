@@ -21,6 +21,8 @@ import net.io_host;
 import net.driver;
 import tls.session;
 import tls.handshake;
+import tls.backend;
+import tls.server_handshake;
 import quic.packet;
 import quic.frames;
 import quic.connection;
@@ -105,12 +107,7 @@ fn reactor_load_leftover(
         table.leftover_offs[slot] = -1;
         return;
     }
-    for p in prev_len {
-        let src_idx = core::add_sat_i64(prev_off, p);
-        if p < chunk.bytes.len && src_idx >= 0 && src_idx < leftover_pool.items.len {
-            chunk.bytes[p] = leftover_pool.items[src_idx];
-        }
-    }
+    core::copy_bytes_fast(chunk.bytes[..], 0, leftover_pool.items[prev_off..end_off]);
     chunk.len = prev_len;
     reactor_free_slot_leftover(table, leftover_pool, slot);
 }
@@ -126,8 +123,8 @@ fn reactor_save_leftover(
     reactor_free_slot_leftover(table, leftover_pool, slot);
     guard rem.len > 0 else { return true; }
     let leased = leftover_pool.alloc_slice(rem.len);
-    for m in rem.len {
-        leased[m] = rem[m];
+    if leased.len >= rem.len {
+        core::copy_bytes_fast(leased, 0, rem);
     }
     table.leftover_offs[slot] = leftover_pool.items.range_index(
         leased, "reactor_save_leftover: invalid pool slice",
@@ -184,6 +181,10 @@ fn reactor_handle_h2_ingress<Stage>(
     }
     let h2_idx = table.ensure_h2_session(slot, server.pipeline, server.server_name[..], now_ms);
     guard h2_idx >= 0 && h2_idx < server::g_default_reactor.h2_sessions.len else { return false; }
+    if slot < table.tls_snis.len && table.tls_snis[slot].len > 0 &&
+        server::g_default_reactor.h2_sessions[h2_idx].tls_sni.len == 0 {
+        let _ = server::g_default_reactor.h2_sessions[h2_idx].tls_sni.try_set(table.tls_snis[slot][..]);
+    }
     let peer_ip_slice = reactor_resolve_slot_peer_ip(table, slot, conn);
     let consumed_h2, ok_h2 = server_internal::handle_h2_server_ingress(
         server::g_default_reactor.h2_sessions[h2_idx], server.pipeline, server.timer,
@@ -213,8 +214,7 @@ inline fn reactor_close_and_inc(
     slot_pool:     ReactorSlotPool&,
     total_served:  i64&,
 ) {
-    table.release_h2_session(slot, server.pipeline);
-    reactor_cleanup_slot(epfd, table, leftover_pool, slot, slot_pool);
+    reactor_cleanup_slot(epfd, table, leftover_pool, slot, slot_pool, server.pipeline);
     total_served = core::add_sat_i64(total_served, 1);
 }
 
@@ -229,6 +229,12 @@ inline fn reactor_request_slot_close(
 ) {
     if slot >= 0 && slot < net::REACTOR_ACCEL_SLOTS && server::g_reactor_accel.slot_tx_inflight[slot] {
         server::g_reactor_accel.slot_close_after_tx[slot] = true;
+        if slot < table.half_close_deadlines_ms.len &&
+            server.half_close_timeout_ms > 0 &&
+            table.half_close_deadlines_ms[slot] == 0 {
+            let now_ms = (core::monotonic_now().as_nanos() / 1000000) as i64;
+            table.half_close_deadlines_ms[slot] = core::add_sat_i64(now_ms, server.half_close_timeout_ms);
+        }
         return;
     }
     reactor_close_and_inc(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
@@ -349,7 +355,8 @@ fn reactor_handle_ingress<Stage>(
     let conn = table.fds[slot];
     let prev_len = table.leftover_lens[slot] as i64;
     if server.pipeline.enable_slowloris_timer {
-        table.soa_table_touch(slot, core::tick_timer_arm(timer_wheel, 15));
+        let phase_sec = resolve_slot_phase_timeout_sec(server, table, slot);
+        table.soa_table_touch(slot, core::tick_timer_arm(timer_wheel, phase_sec));
     }
 
     chunk.len = 0;
@@ -360,7 +367,20 @@ fn reactor_handle_ingress<Stage>(
         reactor_close_and_inc(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
         return;
     }
-    if !any_recvd && prev_len == 0 {
+    guard any_recvd || prev_len > 0 else { return; }
+    if slot < table.tls_hs_map.len && table.tls_hs_map[slot] >= 0 {
+        let rx_tmp .= reactor_tls_rx_scratch();
+        guard chunk.len > 0 && chunk.len <= rx_tmp.len else {
+            reactor_request_slot_close(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
+            return;
+        }
+        let rx_len = chunk.len;
+        core::copy_bytes_fast(rx_tmp[..], 0, chunk.bytes[..rx_len]);
+        chunk.len = 0;
+        reactor_step_async_tls_handshake(
+            server, epfd, table, leftover_pool, slot, conn, rx_tmp[..rx_len],
+            slot_pool, now_ns, chunk, cork_wire, total_served, stage,
+        );
         return;
     }
     reactor_process_slot_plaintext(
@@ -456,6 +476,161 @@ fn reactor_unseal_completed_tls_rx<Stage>(
     }
 }
 
+inline fn reactor_try_attach_ktls(
+    server:   const server::HttpServer&,
+    slot:     i64,
+    fd:       i64,
+    tls_slot: u16,
+) {
+    guard server.enable_ktls_offload && slot >= 0 && slot < net::REACTOR_ACCEL_SLOTS &&
+        !server::g_reactor_accel.slot_rx_armed[slot] else {
+        return;
+    }
+    if server::g_default_reactor.ktls_probe_state == 0 {
+        server::g_default_reactor.ktls_probe_state = if net_internal::smartnic_probe_ktls() { 1 } else { -1 };
+    }
+    guard server::g_default_reactor.ktls_probe_state > 0 else { return; }
+    let sess, ok_ktls = tls::try_enable_ktls(tls_slot, fd);
+    if ok_ktls && sess.rx_offloaded && sess.tx_offloaded {
+        server::g_reactor_accel.slot_ktls_rx[slot] = true;
+    }
+}
+
+inline fn reactor_send_slot_raw_wire(slot: i64, conn: i64, wire: const u8[:]) -> bool {
+    guard wire.len > 0 else { return true; }
+    if slot >= 0 && slot < net::REACTOR_ACCEL_SLOTS && server::g_reactor_accel.slot_accel[slot] {
+        return net::reactor_submit_accel_tx(server::g_reactor_accel, slot, conn, wire);
+    }
+    return net::reactor_drain_cork_wire(conn, wire);
+}
+
+inline fn reactor_drain_tls_hs_tx(slot: i64, conn: i64, ep: tls::TlsEndpoint&) -> bool {
+    var tx_buf: u8[8192] = [0; 8192];
+    for _ in 8 {
+        let n, dst = tls::tls_endpoint_drain_wire(ep, tx_buf[..]);
+        guard dst == tls::TlsBackendStatus.Ok else { return false; }
+        if n <= 0 { return true; }
+        guard n <= tx_buf.len && reactor_send_slot_raw_wire(slot, conn, tx_buf[..n]) else { return false; }
+    }
+    return true;
+}
+
+inline fn reactor_finish_async_tls_hs<Stage>(
+    server:        server::HttpServer&,
+    epfd:          i64,
+    table:         server::SoAConnTable&,
+    leftover_pool: slice_pool<u8>&,
+    slot:          i64,
+    conn:          i64,
+    hs_i:          i64,
+    ep:            tls::TlsEndpoint&,
+    rem:           const u8[:],
+    slot_pool:     ReactorSlotPool&,
+    now_ns:        u64,
+    chunk:         ReactorIngressBuf&,
+    cork_wire:     u8[..65536]&,
+    total_served:  i64&,
+    stage:         Stage&,
+) {
+    let trailing_buf .= reactor_tls_seal_scratch();
+    trailing_buf.resize(16648, 0);
+    let sni_host = tls::tls_endpoint_client_sni(ep);
+    let tls_slot, trailing_len, ok_fin = tls::server_handshake_finish_slot(ep, trailing_buf[..]);
+    server::g_default_reactor.tls_hs_in_use[hs_i] = false;
+    table.tls_hs_map[slot] = -1;
+    guard ok_fin else {
+        trailing_buf.clear();
+        reactor_request_slot_close(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
+        return;
+    }
+    table.has_tls[slot] = true;
+    table.tls_slots[slot] = tls_slot;
+    if slot < table.tls_snis.len && sni_host.len > 0 {
+        let _ = table.tls_snis[slot].try_set(sni_host[..]);
+    }
+    if trailing_len == 0 && rem.len == 0 {
+        trailing_buf.clear();
+        reactor_try_attach_ktls(server, slot, conn, tls_slot);
+        return;
+    }
+    var app_ct: u8[..32768] = [];
+    if trailing_len > 0 && (trailing_len > trailing_buf.len || !app_ct.try_append(trailing_buf[..trailing_len])) {
+        trailing_buf.clear();
+        reactor_request_slot_close(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
+        return;
+    }
+    trailing_buf.clear();
+    if rem.len > 0 && !app_ct.try_append(rem) {
+        reactor_request_slot_close(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
+        return;
+    }
+    chunk.len = 0;
+    reactor_unseal_completed_tls_rx(
+        server, epfd, table, leftover_pool, slot, conn, app_ct[..], slot_pool,
+        now_ns, chunk, cork_wire, total_served, stage,
+    );
+}
+
+fn reactor_step_async_tls_handshake<Stage>(
+    server:        server::HttpServer&,
+    epfd:          i64,
+    table:         server::SoAConnTable&,
+    leftover_pool: slice_pool<u8>&,
+    slot:          i64,
+    conn:          i64,
+    rx_raw:        const u8[:],
+    slot_pool:     ReactorSlotPool&,
+    now_ns:        u64,
+    chunk:         ReactorIngressBuf&,
+    cork_wire:     u8[..65536]&,
+    total_served:  i64&,
+    stage:         Stage&,
+) {
+    let hs_i = table.tls_hs_map[slot] as i64;
+    guard hs_i >= 0 && hs_i < REACTOR_MAX_TLS_HANDSHAKES &&
+        server::g_default_reactor.tls_hs_in_use[hs_i] else {
+        reactor_request_slot_close(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
+        return;
+    }
+    var hs_in: u8[..32768] = [];
+    guard hs_in.try_set(rx_raw) else {
+        reactor_request_slot_close(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
+        return;
+    }
+    let ep .= server::g_default_reactor.tls_hs_eps[hs_i];
+    var rem: const u8[:] = hs_in[..];
+    for _ in 8 {
+        if rem.len > 0 {
+            let fed, fst = tls::tls_endpoint_feed_wire(ep, rem);
+            if fst == tls::TlsBackendStatus.Ok {
+                rem = rem[fed..];
+            } else if fst != tls::TlsBackendStatus.WantWrite {
+                reactor_request_slot_close(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
+                return;
+            }
+        }
+        let hst = tls::tls_endpoint_step_handshake(ep);
+        guard reactor_drain_tls_hs_tx(slot, conn, ep) else {
+            reactor_request_slot_close(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
+            return;
+        }
+        if hst == tls::TlsBackendStatus.Ok || tls::tls_endpoint_is_established(ep) {
+            reactor_finish_async_tls_hs(
+                server, epfd, table, leftover_pool, slot, conn, hs_i, ep, rem,
+                slot_pool, now_ns, chunk, cork_wire, total_served, stage,
+            );
+            return;
+        }
+        if hst == tls::TlsBackendStatus.WantRead {
+            if rem.len == 0 { return; }
+            continue;
+        }
+        if hst == tls::TlsBackendStatus.WantWrite { continue; }
+        reactor_request_slot_close(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
+        return;
+    }
+}
+
 fn reactor_handle_completed_rx<Stage>(
     server:        server::HttpServer&,
     epfd:          i64,
@@ -475,7 +650,15 @@ fn reactor_handle_completed_rx<Stage>(
     let conn = table.fds[slot];
     guard conn > 0 else { return; }
     if server.pipeline.enable_slowloris_timer {
-        table.soa_table_touch(slot, core::tick_timer_arm(timer_wheel, 15));
+        let phase_sec = resolve_slot_phase_timeout_sec(server, table, slot);
+        table.soa_table_touch(slot, core::tick_timer_arm(timer_wheel, phase_sec));
+    }
+    if slot < table.tls_hs_map.len && table.tls_hs_map[slot] >= 0 {
+        reactor_step_async_tls_handshake(
+            server, epfd, table, leftover_pool, slot, conn, rx_raw,
+            slot_pool, now_ns, chunk, cork_wire, total_served, stage,
+        );
+        return;
     }
     chunk.len = 0;
     reactor_load_leftover(table, leftover_pool, slot, chunk);
@@ -520,12 +703,15 @@ fn reactor_dispatch_events<Stage>(
         let udata = ready_udata[i];
         if udata == net::EPOLL_LISTENER_TAG {
             reactor_drain_listener(
-                listener_fd, epfd, table, leftover_pool, slot_pool, timer_wheel, total_served,
+                server, listener_fd, epfd, table, leftover_pool, slot_pool, timer_wheel, total_served,
             );
             continue;
         }
 
-        let slot = udata as i64;
+        let slot = (udata & 0xFFFFFFFF) as i64;
+        let gen = ((udata >> 32) & 0xFFFFFFFF) as u32;
+        guard slot >= 0 && slot < table.generations.len else { continue; }
+        guard gen == 0 || table.generations[slot] == gen else { continue; }
         if !is_active_slot(table, slot) {
             continue;
         }
@@ -547,8 +733,45 @@ fn reactor_dispatch_events<Stage>(
     }
 }
 
+inline fn reactor_try_start_async_tls_hs(
+    server:        server::HttpServer&,
+    client_fd:     i64,
+    epfd:          i64,
+    table:         server::SoAConnTable&,
+    leftover_pool: slice_pool<u8>&,
+    slot_pool:     ReactorSlotPool&,
+    timer_wheel:   core::TickTimerWheel&,
+    tls_config:    const tls::ServerHandshakeConfig&,
+    hdr_sec:       u8,
+    total_served:  i64&,
+) -> bool {
+    var ep, ok_start = tls::server_handshake_start(tls_config);
+    guard ok_start else { return false; }
+    let hs_idx = alloc_reactor_tls_hs_slot(ep);
+    guard hs_idx >= 0 else {
+        tls::tls_endpoint_close(ep);
+        return false;
+    }
+    var slot = alloc_reactor_conn_slot(slot_pool, table);
+    if slot < 0 {
+        slot = reactor_evict_stale_slot(
+            epfd, table, leftover_pool, slot_pool, server.pipeline, timer_wheel, total_served,
+        );
+    }
+    if slot >= 0 {
+        reactor_init_slot_record(table, leftover_pool, client_fd, slot, timer_wheel, hdr_sec);
+        table.tls_hs_map[slot] = hs_idx;
+        net::reactor_bind_slot_backend(server::g_reactor_accel, slot, client_fd);
+        return true;
+    }
+    server::g_default_reactor.tls_hs_in_use[hs_idx as i64] = false;
+    tls::tls_endpoint_close(ep);
+    net::tcp_close(client_fd);
+    return true;
+}
+
 fn reactor_accept_single_tls_fd(
-    server:        const server::HttpServer&,
+    server:        server::HttpServer&,
     client_fd:     i64,
     epfd:          i64,
     table:         server::SoAConnTable&,
@@ -558,6 +781,17 @@ fn reactor_accept_single_tls_fd(
     tls_config:    const tls::ServerHandshakeConfig&,
     total_served:  i64&,
 ) {
+    if server.tcp_user_timeout_ms > 0 {
+        let _ = net::tcp_set_user_timeout(client_fd, server.tcp_user_timeout_ms);
+    }
+    let hdr_sec = resolve_reactor_header_sec(server);
+    if reactor_try_start_async_tls_hs(
+        server, client_fd, epfd, table, leftover_pool, slot_pool,
+        timer_wheel, tls_config, hdr_sec, total_served,
+    ) {
+        return;
+    }
+
     let tls_slot, ok_hs = tls::server_handshake(client_fd, tls_config);
     if !ok_hs {
         net::tcp_close(client_fd);
@@ -566,18 +800,15 @@ fn reactor_accept_single_tls_fd(
     }
     var slot = alloc_reactor_conn_slot(slot_pool, table);
     if slot < 0 {
-        slot = reactor_evict_stale_slot(epfd, table, leftover_pool, slot_pool, timer_wheel, total_served);
+        slot = reactor_evict_stale_slot(
+            epfd, table, leftover_pool, slot_pool, server.pipeline, timer_wheel, total_served,
+        );
     }
     if slot >= 0 {
-        reactor_init_slot_record(table, leftover_pool, client_fd, slot, timer_wheel);
+        reactor_init_slot_record(table, leftover_pool, client_fd, slot, timer_wheel, hdr_sec);
         table.has_tls[slot] = true;
         table.tls_slots[slot] = tls_slot;
-        if server.enable_ktls_offload && slot < net::REACTOR_ACCEL_SLOTS {
-            let sess, ok_ktls = tls::try_enable_ktls(tls_slot, client_fd);
-            if ok_ktls && sess.rx_offloaded && sess.tx_offloaded {
-                server::g_reactor_accel.slot_ktls_rx[slot] = true;
-            }
-        }
+        reactor_try_attach_ktls(server, slot, client_fd, tls_slot);
         net::reactor_bind_slot_backend(server::g_reactor_accel, slot, client_fd);
     } else {
         tls::transport_close(client_fd, tls_slot);
@@ -586,7 +817,7 @@ fn reactor_accept_single_tls_fd(
 }
 
 fn reactor_accept_tls_client(
-    server:        const server::HttpServer&,
+    server:        server::HttpServer&,
     listener_fd:   i64,
     epfd:          i64,
     table:         server::SoAConnTable&,
@@ -630,7 +861,10 @@ fn reactor_dispatch_tls_events<Stage>(
             );
             continue;
         }
-        let slot = udata as i64;
+        let slot = (udata & 0xFFFFFFFF) as i64;
+        let gen = ((udata >> 32) & 0xFFFFFFFF) as u32;
+        guard slot >= 0 && slot < table.generations.len else { continue; }
+        guard gen == 0 || table.generations[slot] == gen else { continue; }
         if is_active_slot(table, slot) {
             reactor_handle_ingress(
                 server, epfd, table, leftover_pool, slot, slot_pool,

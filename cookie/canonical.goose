@@ -154,11 +154,12 @@ fn with_value(cookie_ref: CanonicalCookie&, val: const u8[:]) -> CanonicalCookie
 
 // Sets the Domain attribute in-place, stripping any leading dot (RFC 6265 Section 5.2.3).
 fn with_domain(cookie_ref: CanonicalCookie&, domain_val: const u8[:], host_only: bool = false) -> CanonicalCookie& {
-    cookie_ref.has_domain_attr = true;
     let has_lead_dot = domain_val.len > 0 && domain_val[0] == '.';
     let clean_domain = if has_lead_dot { domain_val[1..] } else { domain_val };
     let is_host = if has_lead_dot { false } else { host_only };
-    let _ = cookie_internal::set_normalized_domain(cookie_ref, clean_domain, is_host);
+    if cookie_internal::set_normalized_domain(cookie_ref, clean_domain, is_host) {
+        cookie_ref.has_domain_attr = true;
+    }
     return cookie_ref;
 }
 

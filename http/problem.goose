@@ -14,11 +14,12 @@ import http.message_internal;
 
 // RFC 9457 Section 3: The Problem Details JSON Object.
 struct ProblemDetails {
-    status:   i32       = 0,
-    type_uri: u8[..256] = [],
-    title:    u8[..128] = [],
-    detail:   u8[..512] = [],
-    instance: u8[..256] = [],
+    status:     i32       = 0,
+    type_uri:   u8[..256] = [],
+    title:      u8[..128] = [],
+    detail:     u8[..512] = [],
+    instance:   u8[..256] = [],
+    redact_5xx: bool      = false,
 }
 
 // Formats a ProblemDetails structure into an RFC 9457 JSON byte buffer.
@@ -27,24 +28,30 @@ struct ProblemDetails {
 //   problem = ProblemDetails { status: 404, title: "Resource Not Found" }
 //   returns: {"type":"about:blank","status":404,"title":"Resource Not Found"}
 fn serialize_problem_details<B>(problem: const ProblemDetails&, out: B&) {
+    let has_valid_status = problem.status >= 100 && problem.status <= 599;
+    let eff_status = if has_valid_status { problem.status } else { 500 };
+    let redact = problem.redact_5xx && eff_status >= 500;
+
     out.append("{\"type\":");
-    if problem.type_uri.len > 0 {
+    if problem.type_uri.len > 0 && !http_internal::is_unsafe_uri_scheme(problem.type_uri[..]) {
         core::format_json_string(out, problem.type_uri[..]);
     } else {
         out.append("\"about:blank\"");
     }
-    out.append(",\"status\":");
-    problem.status.format_i64_dec(out);
+    if has_valid_status {
+        out.append(",\"status\":");
+        problem.status.format_i64_dec(out);
+    }
 
     if problem.title.len > 0 {
         out.append(",\"title\":");
         core::format_json_string(out, problem.title[..]);
     }
-    if problem.detail.len > 0 {
+    if !redact && problem.detail.len > 0 {
         out.append(",\"detail\":");
         core::format_json_string(out, problem.detail[..]);
     }
-    if problem.instance.len > 0 {
+    if !redact && problem.instance.len > 0 && !http_internal::is_unsafe_uri_scheme(problem.instance[..]) {
         out.append(",\"instance\":");
         core::format_json_string(out, problem.instance[..]);
     }
@@ -83,16 +90,19 @@ fn parse_problem_details(json_src: const u8[:], out: ProblemDetails&) -> bool {
 
 // Creates an RFC 9457 compliant error Response with application/problem+json.
 fn new_problem_response(problem: const ProblemDetails&) -> Response {
-    var res = Response { status_code: problem.status, .. };
+    let eff_status = if problem.status >= 100 && problem.status <= 599 { problem.status } else { 500 };
+    var res = Response { status_code: eff_status, .. };
     set_header(res, "Content-Type", rfc::MIME_PROBLEM_JSON);
+    set_header(res, "X-Content-Type-Options", "nosniff");
     serialize_problem_details(problem, res.body);
     return res;
 }
 
 // Populates an existing server `Response` in-place with an RFC 9457 `application/problem+json` body.
 fn write_problem_response(res: Response&, problem: const ProblemDetails&) {
-    res.status_code = problem.status;
+    res.status_code = if problem.status >= 100 && problem.status <= 599 { problem.status } else { 500 };
     set_header(res, "Content-Type", rfc::MIME_PROBLEM_JSON);
+    set_header(res, "X-Content-Type-Options", "nosniff");
     res.body.clear();
     serialize_problem_details(problem, res.body);
 }
@@ -105,10 +115,13 @@ fn respond_problem(
     detail:      const u8[:] = "",
     type_uri:    const u8[:] = "",
 ) {
-    var prob = ProblemDetails { status: status_code, .. };
+    let eff_status = if status_code >= 100 && status_code <= 599 { status_code } else { 500 };
+    var prob = ProblemDetails { status: eff_status, .. };
     let _ = prob.title.try_set(title);
     let _ = prob.detail.try_set(detail);
-    let _ = prob.type_uri.try_set(type_uri);
+    if !http_internal::is_unsafe_uri_scheme(type_uri) {
+        let _ = prob.type_uri.try_set(type_uri);
+    }
     write_problem_response(res, prob);
 }
 
@@ -185,14 +198,15 @@ fn serialize_validation_problem<B>(
     out:  B&,
     mode: ValidationDetailMode = ValidationDetailMode.Detailed,
 ) {
+    let st = if vp.problem.status >= 100 && vp.problem.status <= 599 { vp.problem.status } else { 422 };
+    let redact = vp.problem.redact_5xx && st >= 500;
     out.append("{\"type\":");
-    if vp.problem.type_uri.len > 0 {
+    if vp.problem.type_uri.len > 0 && !http_internal::is_unsafe_uri_scheme(vp.problem.type_uri[..]) {
         core::format_json_string(out, vp.problem.type_uri[..]);
     } else {
         out.append("\"about:blank\"");
     }
     out.append(",\"status\":");
-    let st = if vp.problem.status > 0 { vp.problem.status } else { 422 };
     st.format_i64_dec(out);
     out.append(",\"title\":");
     if vp.problem.title.len > 0 {
@@ -200,11 +214,12 @@ fn serialize_validation_problem<B>(
     } else {
         out.append("\"Validation Failed\"");
     }
-    if mode == ValidationDetailMode.Detailed && vp.problem.detail.len > 0 {
+    if mode == ValidationDetailMode.Detailed && !redact && vp.problem.detail.len > 0 {
         out.append(",\"detail\":");
         core::format_json_string(out, vp.problem.detail[..]);
     }
-    if vp.problem.instance.len > 0 {
+    let has_safe_inst = vp.problem.instance.len > 0 && !http_internal::is_unsafe_uri_scheme(vp.problem.instance[..]);
+    if !redact && has_safe_inst {
         out.append(",\"instance\":");
         core::format_json_string(out, vp.problem.instance[..]);
     }
@@ -236,8 +251,9 @@ fn write_validation_problem_response(
     vp:   const ValidationProblem&,
     mode: ValidationDetailMode = ValidationDetailMode.Detailed,
 ) {
-    res.status_code = if vp.problem.status > 0 { vp.problem.status } else { 422 };
+    res.status_code = if vp.problem.status >= 100 && vp.problem.status <= 599 { vp.problem.status } else { 422 };
     set_header(res, "Content-Type", rfc::MIME_PROBLEM_JSON);
+    set_header(res, "X-Content-Type-Options", "nosniff");
     res.body.clear();
     serialize_validation_problem(vp, res.body, mode);
 }

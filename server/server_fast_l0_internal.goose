@@ -609,6 +609,10 @@ fn finish_single_pipeline_turn<Stage, B>(
     total_handled = core::add_sat_i64(total_handled, 1);
     acquire_turn_scratch(server);
     defer release_turn_scratch(server);
+    if try_reject_disallowed_trace(server, g_turn_req.method[..], wire_out) {
+        conn_wants_close = true;
+        return;
+    }
     if try_handle_pipelined_websocket_with_stage(server, g_turn_req, now_ns, g_turn_res, wire_out, stage) {
         conn_wants_close = true;
         return;
@@ -621,7 +625,11 @@ fn finish_single_pipeline_turn<Stage, B>(
 
     let wants_close = check_and_apply_connection_close(g_turn_req, g_turn_res);
     server::serialize_http1_response(
-        g_turn_res, server.server_name[..], wire_out, 0, resolve_server_header_policy(server),
+        g_turn_res,
+        server.server_name[..],
+        wire_out,
+        nanos_to_http_date_sec(now_ns),
+        resolve_server_header_policy(server),
     );
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
 

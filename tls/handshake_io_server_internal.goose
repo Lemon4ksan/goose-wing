@@ -166,6 +166,7 @@ fn parse_server_client_hello(
     quic_mode:           tls::QuicExtensionMode = tls::QuicExtensionMode.Tcp,
     has_hrr_prefix:      bool                   = false,
     hrr_prefix_tr:       const tls::Transcript  = tls::Transcript { .. },
+    ca_policy_hash:      u64                    = 0,
 ) -> bool {
     zeroize_server_ch_choice(out);
     var committed = false;
@@ -199,7 +200,7 @@ fn parse_server_client_hello(
     if has_psk && psk_policy == ServerPskPolicy.AllowResumption {
         let psk_matched, psk_ok = eval_client_hello_psk_entry(
             entries, payload, psk_ext, sel_cs, out.psk_secret, out.selected_psk_id,
-            require_client_cert, out.client_sni[..], has_hrr_prefix, hrr_prefix_tr,
+            require_client_cert, out.client_sni[..], has_hrr_prefix, hrr_prefix_tr, ca_policy_hash,
         );
         guard psk_ok else { return false; }
         out.psk_resumed = psk_matched;

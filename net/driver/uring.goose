@@ -90,6 +90,7 @@ const URING_CQE_F_NOTIF:         u32 = 1 << 3; // IORING_CQE_F_NOTIF (zero-copy 
 
 const URING_ASYNC_CANCEL_ALL: u32 = 1 << 0;
 const URING_ASYNC_CANCEL_FD:  u32 = 1 << 1;
+const URING_MSG_NOSIGNAL:     u32 = 0x4000;
 const URING_ERR_ENOBUFS:      i32 = -105;
 const URING_ERR_ECANCELED:    i32 = -125;
 
@@ -123,7 +124,7 @@ fn uring_prep_send(sqe: UringSqe&, fd: i32, addr: u64, len: u32, tag: u64, zero_
     sqe.off = 0;
     sqe.addr = addr;
     sqe.len = len;
-    sqe.op_flags = 0;
+    sqe.op_flags = URING_MSG_NOSIGNAL;
     sqe.user_data = tag;
     sqe.buf_index = 0;
 }
@@ -144,7 +145,7 @@ fn uring_prep_recv(
     sqe.off = 0;
     sqe.addr = addr;
     sqe.len = len;
-    sqe.op_flags = 0;
+    sqe.op_flags = URING_MSG_NOSIGNAL;
     sqe.user_data = tag;
     sqe.buf_index = 0;
 }

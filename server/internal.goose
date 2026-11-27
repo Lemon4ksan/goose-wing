@@ -395,7 +395,10 @@ inline fn collect_wheel_bucket_expired(
 fn push_inactive_soa_slot(table: server::SoAConnTable&) {
     let slot = table.fds.len;
     table.fds.push(server::SOA_INVALID_FD);
+    table.generations.push(1);
     table.timeout_ticks.push(server::SOA_INVALID_TICK);
+    table.half_close_deadlines_ms.push(0);
+    table.tx_stall_deadlines_ms.push(0);
     table.leftover_lens.push(0);
     table.leftover_offs.push(-1);
     table.tls_ct_lens.push(0);
@@ -405,6 +408,8 @@ fn push_inactive_soa_slot(table: server::SoAConnTable&) {
     table.h2_slot_map.push(-1);
     table.has_tls.push(false);
     table.tls_slots.push(0xFFFF);
+    table.tls_hs_map.push(-1);
+    table.tls_snis.push([]);
     table.has_peer_ip.push(false);
     table.peer_ip_hashes.push(0);
     table.peer_ips.push([]);
@@ -415,6 +420,8 @@ fn push_inactive_soa_slot(table: server::SoAConnTable&) {
 // Resets all parallel SoA columns for `slot`.
 inline fn reset_soa_slot_fields(table: server::SoAConnTable&, slot: i64, fd: i64, timeout_tick: u8) {
     soa_wheel_unlink(table, slot);
+    let next_gen = core::add_sat_u64(table.generations[slot], 1);
+    table.generations[slot] = if next_gen > 0xFFFFFFFF || next_gen == 0 { 1 } else { next_gen as u32 };
     table.fds[slot] = fd;
     if fd > 0 {
         soa_free_mark_used(table, slot);
@@ -423,6 +430,8 @@ inline fn reset_soa_slot_fields(table: server::SoAConnTable&, slot: i64, fd: i64
         soa_free_mark_free(table, slot);
         table.timeout_ticks[slot] = server::SOA_INVALID_TICK;
     }
+    table.half_close_deadlines_ms[slot] = 0;
+    table.tx_stall_deadlines_ms[slot] = 0;
     table.leftover_lens[slot] = 0;
     table.leftover_offs[slot] = -1;
     table.tls_ct_lens[slot] = 0;
@@ -432,6 +441,8 @@ inline fn reset_soa_slot_fields(table: server::SoAConnTable&, slot: i64, fd: i64
     table.h2_slot_map[slot] = -1;
     table.has_tls[slot] = false;
     table.tls_slots[slot] = 0xFFFF;
+    table.tls_hs_map[slot] = -1;
+    table.tls_snis[slot].clear();
     table.has_peer_ip[slot] = false;
     table.peer_ip_hashes[slot] = 0;
     table.peer_ips[slot].clear();

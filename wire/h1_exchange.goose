@@ -497,16 +497,23 @@ fn classify_h1_transfer_encoding(te: const u8[:]) -> i32 {
     return if last_chunked { 1 } else { 2 };
 }
 
-fn pump_eof_response_body(conn: net::PooledConnection&, resp: Response&, leftover: const u8[:], timeout_ms: u32) {
+fn pump_eof_response_body(
+    conn:       net::PooledConnection&,
+    resp:       Response&,
+    leftover:   const u8[:],
+    timeout_ms: u32,
+) -> bool {
     if leftover.len > 0 {
         resp.body.append(leftover);
     }
     var raw_recv: u8[4096] = [0; 4096];
     loop {
         let recvd = conn.transport.recv_slice(raw_recv[..], timeout_ms);
-        if recvd <= 0 { break; }
+        if recvd == 0 { return true; }
+        guard recvd > 0 && recvd <= raw_recv.len else { return false; }
         resp.body.append(raw_recv[..recvd]);
     }
+    return false;
 }
 
 fn pump_response_body(
@@ -561,8 +568,7 @@ fn pump_response_body(
             }
             return ok_chunk, keep_alive;
         }
-        pump_eof_response_body(conn, resp, leftover, timeout_ms);
-        return true, false;
+        return pump_eof_response_body(conn, resp, leftover, timeout_ms), false;
     }
 
     let cl_str = resp.header("Content-Length");
@@ -571,8 +577,7 @@ fn pump_response_body(
         return ok_fixed, keep_alive;
     }
 
-    pump_eof_response_body(conn, resp, leftover, timeout_ms);
-    return true, false;
+    return pump_eof_response_body(conn, resp, leftover, timeout_ms), false;
 }
 
 // Executes an end-to-end HTTP/1.1 exchange over a pooled connection with zero heap allocation.

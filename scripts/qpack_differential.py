@@ -88,20 +88,7 @@ def build_binaries(build_dir: str) -> tuple[str, str]:
     nghttp3_srcs = glob.glob(os.path.join(REPO_ROOT, "vendor", "nghttp3", "lib", "*.c"))
     sfparse_src = os.path.join(REPO_ROOT, "vendor", "sfparse", "sfparse.c")
 
-    gcc_cmd = [
-        "gcc",
-        "-O2",
-        f"-I{build_dir}",
-        f"-I{os.path.join(REPO_ROOT, 'vendor', 'nghttp3', 'lib', 'includes')}",
-        f"-I{os.path.join(REPO_ROOT, 'vendor', 'nghttp3', 'lib')}",
-        f"-I{os.path.join(REPO_ROOT, 'vendor', 'sfparse')}",
-        "-DBUILDING_NGHTTP3=1",
-        "-DNGHTTP3_STATICLIB=1",
-        "-o",
-        oracle_bin,
-        oracle_src,
-        sfparse_src,
-    ] + nghttp3_srcs
+    gcc_cmd = ["gcc", "-O2", f"-I{build_dir}", f"-I{os.path.join(REPO_ROOT, 'vendor', 'nghttp3', 'lib', 'includes')}", f"-I{os.path.join(REPO_ROOT, 'vendor', 'nghttp3', 'lib')}", f"-I{os.path.join(REPO_ROOT, 'vendor', 'sfparse')}", "-DBUILDING_NGHTTP3=1", "-DNGHTTP3_STATICLIB=1", "-o", oracle_bin, oracle_src, sfparse_src, *nghttp3_srcs]
 
     res_gcc = subprocess.run(gcc_cmd, cwd=REPO_ROOT, capture_output=True, text=True)
     if res_gcc.returncode != 0:
@@ -139,22 +126,15 @@ def parse_batch_output(text: str) -> list[tuple[bool, list[tuple[str, str]]]]:
             out.append((True, []))
         elif cmd == "error":
             out.append((False, []))
-        elif cmd == "field":
-            if out and out[-1][0]:
-                n_hex = parts[1] if len(parts) > 1 else "-"
-                v_hex = parts[2] if len(parts) > 2 else "-"
-                out[-1][1].append((n_hex, v_hex))
+        elif cmd == "field" and out and out[-1][0]:
+            n_hex = parts[1] if len(parts) > 1 else "-"
+            v_hex = parts[2] if len(parts) > 2 else "-"
+            out[-1][1].append((n_hex, v_hex))
     return out
 
 
 def generate_canonical_cases(rng: random.Random, num_conns: int) -> list[list[QpackCase]]:
     """Generates synthetic QPACK test scenarios covering static lookups and dynamic insertions."""
-    static_names = [
-        ":authority", ":path", ":method", ":scheme", ":status",
-        "accept", "accept-encoding", "content-type", "content-length",
-        "user-agent", "x-custom-header", "authorization", "cache-control",
-        "cookie", "set-cookie", "if-none-match", "origin", "server"
-    ]
     methods = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"]
     statuses = ["200", "204", "301", "304", "400", "403", "404", "500"]
 
@@ -465,7 +445,7 @@ def main() -> int:
         print(f"  Wing -> nghttp3 (Raw)      : {m_raw}/{tot_raw} passed")
         print(f"  nghttp3 -> Wing (Encode)   : {m_o2w}/{tot_o2w} passed")
         print(f"  Negative wire vectors      : {m_neg}/{tot_neg} passed")
-        print(f"  Vendor Quiche build        : OK (cargo check --no-default-features)")
+        print("  Vendor Quiche build        : OK (cargo check --no-default-features)")
         print(f"  Total matched              : {total_matched}/{total_cases}")
 
         if all_errs:

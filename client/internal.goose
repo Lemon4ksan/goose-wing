@@ -188,11 +188,8 @@ fn validate_redirect_target(
         return core::Url { .. }, client::RedirectError.ForbiddenRedirectScheme;
     }
 
-    if options.cors_mode && parsed_target.has_credentials() {
-        let same_orig = current_url.is_same_origin_url(parsed_target);
-        if !same_orig || options.tainted_origin {
-            return core::Url { .. }, client::RedirectError.CorsCredentialsInRedirectUrl;
-        }
+    if parsed_target.has_credentials() {
+        return core::Url { .. }, client::RedirectError.CorsCredentialsInRedirectUrl;
     }
 
     return parsed_target, client::RedirectError.None;

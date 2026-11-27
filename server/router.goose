@@ -119,10 +119,9 @@ fn insert_route(
 
         if param_start < 0 {
             guard server_internal::traverse_or_insert_static(tree, cur_idx, rem) else { return false; }
-            server_internal::set_endpoint_handler(
+            return server_internal::set_endpoint_handler(
                 tree, cur_idx, handler_id, entries_mask, pso_mask, ingress_mask, egress_mask,
             );
-            return true;
         }
         guard param_end > param_start else { return false; }
         if param_start > 0 {
@@ -153,10 +152,9 @@ fn insert_route(
             rem = suffix_after;
             continue;
         }
-        server_internal::set_endpoint_handler(
+        return server_internal::set_endpoint_handler(
             tree, param_node_idx, handler_id, entries_mask, pso_mask, ingress_mask, egress_mask,
         );
-        return true;
     }
     return true;
 }
@@ -174,8 +172,8 @@ fn canonicalize_route_path<B>(raw_path: const u8[:], out: B&) -> bool {
     }
     out.clear();
 
-    var s = server_internal::strip_query_and_fragment(raw_path);
-    s = server_internal::strip_scheme_and_authority(s);
+    let s, ok_comp = server_internal::extract_valid_route_path_component(raw_path);
+    guard ok_comp else { return false; }
 
     var scan_idx = 0;
     while scan_idx < s.len && s[scan_idx] == '/' {
@@ -198,12 +196,7 @@ fn canonicalize_route_path<B>(raw_path: const u8[:], out: B&) -> bool {
         }
 
         if server_internal::is_dot_dot_segment(seg) {
-            guard out.len > 0 else { continue; }
-            var last_slash: i64 = out.len - 1;
-            while last_slash > 0 && out[last_slash] != '/' {
-                last_slash--;
-            }
-            out.resize(last_slash);
+            server_internal::pop_last_canonical_segment(out);
             continue;
         }
 
@@ -247,8 +240,8 @@ inline fn match_path_resolved(
     params.clear();
 
     var cur_idx = tree.root_idx;
-    var cursor:   u16                                       = 0;
-    var bt_stack: server_internal::RouteBacktrackEntry[..8] = [];
+    var cursor:   u16                                        = 0;
+    var bt_stack: server_internal::RouteBacktrackEntry[..32] = [];
     var skip_pfx = false;
 
     while cur_idx >= 0 {
@@ -298,7 +291,11 @@ fn match_path(
     var canon_path: u8[..2048] = [];
     let eff_path, ok_path = server_internal::resolve_effective_route_path_borrow(path, canon_path);
     guard ok_path else { return RouteMatchResult.NotFound; }
-    return match_path_resolved(tree, eff_path, params);
+    let res = match_path_resolved(tree, eff_path, params);
+    if canon_path.len > 0 && canon_path[..] != path {
+        params.clear();
+    }
+    return res;
 }
 
 // Method-segregated radix routing table supporting static, parameterized, and wildcard routes.
@@ -495,7 +492,11 @@ fn match_route(
     params: http::ZeroAllocParams&,
 ) -> RouteMatchResult {
     var canon_path: u8[..2048] = [];
-    return match_route(router, method, path, params, canon_path);
+    let res = match_route(router, method, path, params, canon_path);
+    if canon_path.len > 0 && canon_path[..] != path {
+        params.clear();
+    }
+    return res;
 }
 
 const ROUTE_ENTRY_CONN: u32 = 1 << 0;

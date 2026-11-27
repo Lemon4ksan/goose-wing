@@ -176,7 +176,68 @@ fn try_race_live_h3_hop(
     return false;
 }
 
+fn hash_tls_policy_for_pool(session: const client::Session&) -> u64 {
+    let min_v: u64 = match session.tls_min_version {
+        Tls12 => 12,
+        Tls13 => 13,
+    };
+    let bk: u64 = match session.tls_backend {
+        PureGoose => 1,
+        SystemOpenSsl => 2,
+        SystemSchannel => 3,
+        SystemSecureTransport => 4,
+        Auto => 5,
+        SystemOnly => 6,
+    };
+    var h: u64 = if session.insecure_skip_verify { 1 } else { 0 };
+    h = core::hash_combine_u64(h, if session.tls_use_system_roots { 1 } else { 0 });
+    h = core::hash_combine_u64(h, if session.tls_enable_pq_hybrid { 1 } else { 0 });
+    h = core::hash_combine_u64(h, if session.tls_require_ocsp_stapling { 1 } else { 0 });
+    h = core::hash_combine_u64(h, session.tls_expired_leaf_grace_sec as! u64);
+    h = core::hash_combine_u64(h, min_v);
+    h = core::hash_combine_u64(h, bk);
+    h = core::hash_combine_u64(h, core::wyhash64(session.tls_client_cert_file[..], 0));
+    h = core::hash_combine_u64(h, core::wyhash64(session.tls_client_key_file[..], 0));
+    h = core::hash_combine_u64(h, core::wyhash64(session.tls_ca_file[..], 0));
+    h = core::hash_combine_u64(h, core::wyhash64(session.tls_crl_file[..], 0));
+    h = core::hash_combine_u64(h, core::wyhash64(session.tls_alpn[..], 0));
+    h = core::hash_combine_u64(h, session.trust_store.anchors.len as u64);
+    return h;
+}
+
+fn hash_socket_auth_binding(session: const client::Session&, headers: const http::HeaderMap&) -> u64 {
+    var h: u64 = 0;
+    if session.creds.has_credentials {
+        h = core::hash_combine_u64(h, core::wyhash64(session.creds.username[..], 1));
+        h = core::hash_combine_u64(h, core::wyhash64(session.creds.password[..], 2));
+    }
+    let auth_hdr = http::get_header(headers, "authorization");
+    if auth_hdr.len > 0 {
+        h = core::hash_combine_u64(h, core::wyhash64(auth_hdr, 3));
+    }
+    let pauth_hdr = http::get_header(headers, "proxy-authorization");
+    if pauth_hdr.len > 0 {
+        h = core::hash_combine_u64(h, core::wyhash64(pauth_hdr, 4));
+    }
+    return h;
+}
+
+fn hash_tenant_id(ctx: const RequestExecutionContext&) -> u64 {
+    var h: u64 = 0;
+    if ctx.has_initiator && ctx.initiator.host.len > 0 {
+        h = core::hash_combine_u64(h, core::wyhash64(ctx.initiator.host[..], ctx.initiator.port as u64));
+    }
+    if ctx.top_frame_origin.host.len > 0 {
+        h = core::hash_combine_u64(
+            h,
+            core::wyhash64(ctx.top_frame_origin.host[..], ctx.top_frame_origin.port as u64),
+        );
+    }
+    return h;
+}
+
 fn build_live_hop_pool_key(
+    session:     const client::Session&,
     ctx:         const RequestExecutionContext&,
     host_str:    const u8[:],
     port_num:    u16,
@@ -192,13 +253,27 @@ fn build_live_hop_pool_key(
     };
     let pool_scheme = if is_https { net::PoolScheme.Https } else { net::PoolScheme.Http };
     let nik = net::new_network_isolation_key(site_site, site_site);
+    let has_mtls_or_ca = session.tls_client_cert_file.len > 0
+        || session.tls_client_key_file.len > 0
+        || session.tls_ca_file.len > 0
+        || session.trust_store.anchors.len > 0
+        || !session.tls_use_system_roots;
+    let proxy_creds_h = if proxy_chain.servers.len > 0 { proxy_chain.servers[0].proxy_creds_hash } else { 0 };
+    let policy = net::TlsAndDnsPolicy {
+        tls_policy_hash:       if is_https { hash_tls_policy_for_pool(session) } else { 0 },
+        tenant_id_hash:        hash_tenant_id(ctx),
+        socket_auth_binding:   hash_socket_auth_binding(session, ctx.headers),
+        proxy_creds_hash:      proxy_creds_h,
+        has_mtls_or_custom_ca: is_https && has_mtls_or_ca,
+        ..
+    };
     return net::new_pool_key(
         pool_scheme,
         host_str,
         port_num,
         proxy_chain,
         net::nik_to_anonymization_key(nik, ctx.had_cross_site_hop),
-        net::TlsAndDnsPolicy { .. },
+        policy,
     );
 }
 
@@ -285,12 +360,12 @@ fn execute_live_network_hop(
         return http::Error { .. };
     }
 
-    let pool_key = build_live_hop_pool_key(ctx, host_str, port_num, is_https, proxy_chain);
+    let pool_key = build_live_hop_pool_key(session, ctx, host_str, port_num, is_https, proxy_chain);
     let first_ip = if dns_candidates.len > 0 { dns_candidates[0].ip[..] } else { "" };
+    let conn_t = calc_phase_timeout_ms(session.connect_timeout_ms, session.timeout_ms, ctx.timeout_ms);
+    let tls_t = calc_phase_timeout_ms(session.tls_handshake_timeout_ms, session.timeout_ms, ctx.timeout_ms);
     var conn_id, has_pooled = session.pool.acquire_pooled_connection(pool_key, first_ip, now_ns);
     if !has_pooled {
-        let conn_t = calc_phase_timeout_ms(session.connect_timeout_ms, session.timeout_ms, ctx.timeout_ms);
-        let tls_t = calc_phase_timeout_ms(session.tls_handshake_timeout_ms, session.timeout_ms, ctx.timeout_ms);
         let new_id, conn_err = establish_pooled_connection(
             session, pool_key, eff_proxy_url[..], proxy_chain, host_str, port_num, is_https,
             dns_candidates[..], ech_list[..], conn_t, tls_t, now_sec, now_ms, now_ns,
@@ -298,9 +373,22 @@ fn execute_live_network_hop(
         guard http::ok(conn_err) else { return conn_err; }
         conn_id = new_id;
     }
-    return dispatch_acquired_pooled_hop(
+    let hop_err = dispatch_acquired_pooled_hop(
         session, conn_id, ctx, current_url, is_https, origin_buf, now_sec, now_ns, resp,
     );
+    if has_pooled && http::ok(hop_err) && resp.status_code == rfc::STATUS_MISDIRECTED_REQUEST {
+        // RFC 9113 Section 9.1.1: Connection Reuse - Retry once on a fresh dedicated uncoalesced socket with exact target SNI.
+        http::reset_response(resp);
+        let ded_id, ded_err = establish_pooled_connection(
+            session, pool_key, eff_proxy_url[..], proxy_chain, host_str, port_num, is_https,
+            dns_candidates[..], ech_list[..], conn_t, tls_t, now_sec, now_ms, now_ns,
+        );
+        guard http::ok(ded_err) else { return ded_err; }
+        return dispatch_acquired_pooled_hop(
+            session, ded_id, ctx, current_url, is_https, origin_buf, now_sec, now_ns, resp,
+        );
+    }
+    return hop_err;
 }
 
 fn execute_mock_or_echo_hop(

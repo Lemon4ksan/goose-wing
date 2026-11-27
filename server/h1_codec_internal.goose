@@ -57,10 +57,23 @@ checkfree fn swar_find_space(s: const u8[:], start: i64) -> i64 {
     return -1;
 }
 
-// RFC 9112 Section 3.2: Request Target - visible ASCII excluding '#' fragment delimiter
+// RFC 9112 Section 3.2: Request Target - visible ASCII excluding '#', '\', and malformed '%XX'
 checkfree fn validate_request_target_chars(path_slice: const u8[:]) -> bool {
-    for b in path_slice {
-        guard b >= 0x21 && b <= 0x7E && b != '#' else { return false; }
+    let n = path_slice.len;
+    var i: i64 = 0;
+    while i < n {
+        let b = path_slice[i];
+        guard b >= 0x21 && b <= 0x7E && b != '#' && b != '\\' else { return false; }
+        if b == '%' {
+            guard i + 2 < n
+                && core::is_ascii_hexdigit(path_slice[i + 1])
+                && core::is_ascii_hexdigit(path_slice[i + 2]) else {
+                return false;
+            }
+            i += 3;
+            continue;
+        }
+        i += 1;
     }
     return true;
 }

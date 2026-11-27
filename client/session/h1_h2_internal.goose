@@ -58,12 +58,18 @@ fn dispatch_pooled_h1_hop(
     );
     guard ok_ex else { return false; }
 
+    let h1_conn .= session.pool.conns[c_idx];
+    let can_pool_h1 = keep_alive
+        && resp.is_http1()
+        && resp.status_code != rfc::STATUS_SWITCHING_PROTOCOLS
+        && h1_conn.rx_buf.len == 0
+        && !h1_conn.source_exhausted;
     resp.effective_url = copy(current_url.href);
     http::copy_headers(ctx.headers, resp.sent_headers);
     ingest_transport_response_headers(
         session, current_url, is_https, origin_buf, curr_path, now_sec, resp,
     );
-    if keep_alive && resp.is_http1() && resp.status_code != rfc::STATUS_SWITCHING_PROTOCOLS {
+    if can_pool_h1 {
         session.pool.release_connection(conn_id, now_ns);
         released = true;
     }

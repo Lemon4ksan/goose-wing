@@ -62,6 +62,30 @@ static void wing_scrub_stack_1024(void) {
     wing_fusion_zeroize(scrub, sizeof(scrub));
 }
 
+#if defined(__x86_64__) || defined(_M_X64)
+#if defined(_MSC_VER) && !defined(__clang__)
+WING_NOINLINE
+static void wing_zero_xmm_regs(void) {
+    __m128i z0 = _mm_setzero_si128();
+    __m128i z1 = _mm_setzero_si128();
+    __m128i z2 = _mm_setzero_si128();
+    __m128i z3 = _mm_setzero_si128();
+    __m128i z4 = _mm_setzero_si128();
+    __m128i z5 = _mm_setzero_si128();
+    volatile __m128i sink = _mm_xor_si128(z0, z1);
+    sink = _mm_xor_si128(sink, z2);
+    sink = _mm_xor_si128(sink, z3);
+    sink = _mm_xor_si128(sink, z4);
+    sink = _mm_xor_si128(sink, z5);
+    (void)sink;
+}
+#else
+static inline void wing_zero_xmm_regs(void) {}
+#endif
+#else
+static inline void wing_zero_xmm_regs(void) {}
+#endif
+
 void wing_ct_declassify(wing_slice s);
 uint8_t wing_ct_declassify_u8(uint8_t v);
 
@@ -1404,6 +1428,7 @@ int64_t wing_chacha_poly_seal_aead(wing_slice key, wing_slice iv, wing_slice src
     wing_store64_le(lens_blk + 8, (uint64_t)src.len);
     wing_poly1305_blocks(&poly, lens_blk, 16, 1ULL << 40);
     wing_poly1305_finish(&poly, tag_out.ptr);
+    wing_zero_xmm_regs();
     wing_scrub_stack_1024();
     return src.len;
 #else
@@ -1479,6 +1504,7 @@ int64_t wing_chacha_poly_open_aead(wing_slice key, wing_slice iv, wing_slice src
         if (src.len > 0) {
             wing_fusion_zeroize(dst.ptr, (size_t)src.len);
         }
+        wing_zero_xmm_regs();
         wing_scrub_stack_1024();
         return -1;
     }
@@ -1488,6 +1514,7 @@ int64_t wing_chacha_poly_open_aead(wing_slice key, wing_slice iv, wing_slice src
         wing_chacha20_xor_state(st0, src.ptr, dst.ptr, src.len);
     }
     wing_fusion_zeroize(st0, sizeof(st0));
+    wing_zero_xmm_regs();
     wing_scrub_stack_1024();
     return src.len;
 #else
@@ -1516,6 +1543,7 @@ int64_t wing_aes_gcm_seal_aead(wing_slice key, wing_slice iv, wing_slice src, wi
     if (wing_cpu_has_aes_pclmul()) {
         int64_t ret =
             wing_aes_gcm_seal_aesni(key.ptr, key.len, iv.ptr, src.ptr, src.len, aad.ptr, aad.len, dst.ptr, tag_out.ptr);
+        wing_zero_xmm_regs();
         wing_scrub_stack_1024();
         return ret;
     }
@@ -1540,6 +1568,7 @@ int64_t wing_aes_gcm_open_aead(wing_slice key, wing_slice iv, wing_slice src, wi
     if (wing_cpu_has_aes_pclmul()) {
         int64_t ret =
             wing_aes_gcm_open_aesni(key.ptr, key.len, iv.ptr, src.ptr, src.len, aad.ptr, aad.len, tag.ptr, dst.ptr);
+        wing_zero_xmm_regs();
         wing_scrub_stack_1024();
         return ret;
     }
@@ -1581,6 +1610,7 @@ int32_t wing_aes_gcm_prepare_key(wing_slice key, wing_slice ctx_out) {
 #if defined(__x86_64__) || defined(_M_X64)
     if (wing_cpu_has_aes_pclmul()) {
         wing_aes_gcm_prepare_aesni(key.ptr, key.len, ctx_out.ptr);
+        wing_zero_xmm_regs();
         wing_scrub_stack_1024();
         return 0;
     }
@@ -1625,6 +1655,7 @@ int64_t wing_aes_gcm_seal_prepared(wing_slice ctx, wing_slice iv, wing_slice src
     int64_t ret =
         wing_aes_gcm_seal_aesni_rk(ctx.ptr, nr, h, iv.ptr, src.ptr, src.len, aad.ptr, aad.len, dst.ptr, tag_out.ptr);
     wing_fusion_zeroize(h, sizeof(h));
+    wing_zero_xmm_regs();
     wing_scrub_stack_1024();
     return ret;
 #else
@@ -1647,6 +1678,7 @@ int64_t wing_aes_gcm_open_prepared(wing_slice ctx, wing_slice iv, wing_slice src
     int64_t ret =
         wing_aes_gcm_open_aesni_rk(ctx.ptr, nr, h, iv.ptr, src.ptr, src.len, aad.ptr, aad.len, tag.ptr, dst.ptr);
     wing_fusion_zeroize(h, sizeof(h));
+    wing_zero_xmm_regs();
     wing_scrub_stack_1024();
     return ret;
 #else

@@ -358,7 +358,7 @@ func runR2H2StatefulSuite(rec *testRecorder, h2specExe, tlsExe string) {
 		return doTLS13Handshake(addr, cfg)
 	}
 
-	// Advertised MAX_CONCURRENT_STREAMS=100 vs real limit of 16 (17th stream REFUSED_STREAM)
+	// Advertised MAX_CONCURRENT_STREAMS vs real stream limit (RFC 9113 s5.1.2)
 	if sess, serr := dialH2TLS(); serr == nil {
 		var pkt []byte
 		pkt = append(pkt, h2Preface...)
@@ -371,13 +371,36 @@ func runR2H2StatefulSuite(rec *testRecorder, h2specExe, tlsExe string) {
 		_ = sess.sendAppData(pkt, false)
 		raw, _ := sess.readAppData(900 * time.Millisecond)
 		sess.close()
-		_, rst, _, sum := summarizeH2Frames(raw)
-		if !rst && !bytes.Contains(raw, []byte{0x00, 0x00, 0x04, 0x03}) {
-			rec.add("r2_h2_stateful", "mux_limits", "h2_advertised_100_streams_vs_17_open", "PASS", "accept 17 concurrent streams when advertising 100", sum, "")
+		ga, rst, _, sum := summarizeH2Frames(raw)
+		var advertisedMax uint32 = 0xffffffff
+		if len(raw) >= 9 && raw[3] == 0x04 && raw[4]&0x01 == 0 {
+			fLen := int(raw[0])<<16 | int(raw[1])<<8 | int(raw[2])
+			if 9+fLen <= len(raw) {
+				payload := raw[9 : 9+fLen]
+				for off := 0; off+6 <= len(payload); off += 6 {
+					id := binary.BigEndian.Uint16(payload[off : off+2])
+					val := binary.BigEndian.Uint32(payload[off+2 : off+6])
+					if id == 0x0003 {
+						advertisedMax = val
+						break
+					}
+				}
+			}
+		}
+		if advertisedMax > 0 && advertisedMax <= 16 {
+			if !ga && rst {
+				rec.add("r2_h2_stateful", "mux_limits", "h2_advertised_100_streams_vs_17_open", "PASS",
+					fmt.Sprintf("RFC 9113 s5.1.2 advertised MAX_CONCURRENT_STREAMS=%d matches slot cap", advertisedMax), sum, "")
+			} else {
+				rec.add("r2_h2_stateful", "mux_limits", "h2_advertised_100_streams_vs_17_open", "FAIL",
+					fmt.Sprintf("refuse >%d concurrent streams without GOAWAY", advertisedMax), sum, "")
+			}
+		} else if !rst && !bytes.Contains(raw, []byte{0x00, 0x00, 0x04, 0x03}) {
+			rec.add("r2_h2_stateful", "mux_limits", "h2_advertised_100_streams_vs_17_open", "PASS", "accept 17 concurrent streams when advertising >16", sum, "")
 		} else {
 			rec.add("r2_h2_stateful", "mux_limits", "h2_advertised_100_streams_vs_17_open", "FAIL",
-				"RFC 9113 s5.1.2 allow up to advertised SETTINGS_MAX_CONCURRENT_STREAMS=100",
-				"refused 17th concurrent stream despite advertising MAX=100: "+sum, "")
+				"RFC 9113 s5.1.2 allow up to advertised SETTINGS_MAX_CONCURRENT_STREAMS",
+				fmt.Sprintf("refused 17th concurrent stream despite advertising MAX=%d: %s", advertisedMax, sum), "")
 		}
 	}
 
@@ -551,16 +574,16 @@ func runR2TLSCapacityAndHRRSuite(rec *testRecorder, tlsExe string) {
 		rec.add("r2_tls_r2", "capacity_cliffs", "max_key_shares_32_vs_33", "INFO", "32 vs 33 key_shares", outKS32.detail+" / "+outKS33.detail, "")
 	}
 
-	// Reversed key_share relative order vs supported_groups (groups=[X25519, P256], key_shares=[P256, X25519])
+	// Reversed key_share relative order vs supported_groups (RFC 8446 s4.2.8 requires matching order)
 	outRevOrder := sendRawAndClassify(addr, mkManyExtCH(6,
 		[]keyShareEntry{{group: GroupP256, key: validP256()}, {group: GroupX25519, key: validX25519()}},
 		[]uint16{GroupX25519, GroupP256}))
-	if outRevOrder.kind == "HANDSHAKE" {
+	if isRejectedOutcome(outRevOrder) {
 		rec.add("r2_tls_r2", "key_share_order", "reversed_key_share_vs_supported_groups", "PASS",
-			"RFC 8446 s4.2.8 allow key_share order independent of supported_groups", outRevOrder.detail, "")
+			"RFC 8446 s4.2.8 reject [P256, X25519] key_shares inconsistent with [X25519, P256] supported_groups", outRevOrder.detail, "")
 	} else {
 		rec.add("r2_tls_r2", "key_share_order", "reversed_key_share_vs_supported_groups", "FAIL",
-			"RFC 8446 s4.2.8 accept [P256, X25519] key_shares regardless of [X25519, P256] order",
+			"RFC 8446 s4.2.8 reject mismatched key_share order relative to supported_groups",
 			outRevOrder.detail, "")
 	}
 

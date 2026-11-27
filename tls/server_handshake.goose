@@ -98,3 +98,27 @@ fn server_handshake_with_ch(
 fn server_handshake(fd: i64, config: const ServerHandshakeConfig&) -> u16, bool {
     return run_blocking_server_handshake(fd, "", config);
 }
+
+// Initializes a non-blocking sans-IO TLS 1.3 server handshake endpoint for event-loop driving (RFC 8446 §4).
+fn server_handshake_start(config: const ServerHandshakeConfig&) -> TlsEndpoint, bool {
+    guard config.cert_der.len > 0 else { return TlsEndpoint { .. }, false; }
+    return tls_internal::pure_open_blocking_server_endpoint(config, "", 0xFFFF);
+}
+
+// Finalizes an established non-blocking TLS 1.3 server handshake, detaching its cipher slot and trailing bytes.
+//
+// Example:
+//   ep = established_server_endpoint, out_trailing_ct = [0; 16648]
+//   returns: slot_idx = 0, trailing_len = 0, ok = true
+fn server_handshake_finish_slot(ep: TlsEndpoint&, out_trailing_ct: u8[:]) -> u16, i64, bool {
+    guard !ep.closed && tls_endpoint_is_established(ep) else { return 0xFFFF, 0, false; }
+    let trailing_len, ok_tr = tls_internal::pure_take_wire_in_leftover(ep, out_trailing_ct);
+    if !ok_tr {
+        tls_endpoint_close(ep);
+        return 0xFFFF, 0, false;
+    }
+    let slot_idx = tls_internal::pure_detach_cipher_slot(ep);
+    tls_endpoint_close(ep);
+    guard slot_idx != 0xFFFF else { return 0xFFFF, 0, false; }
+    return slot_idx, trailing_len, true;
+}

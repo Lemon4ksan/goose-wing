@@ -680,7 +680,8 @@ fn test_spill_mixed_remove_replace_and_order() {
     var w_arena = http::OverflowArena { .. };
     var auth20k: u8[20480] = ['A'; 20480];
     assert(http::append_header_spill(w_map, w_arena, "Authorization", auth20k[..]));
-    assert(!http::has_header(w_map, "Authorization"));
+    assert(http::has_header(w_map, "Authorization"));
+    assert(http::get_header(w_map, "Authorization") == "");
     assert(http::get_inline(w_map, http::WellKnownHeader.Authorization) == "");
     assert(http::has_header_spill(w_map, w_arena, "Authorization"));
     assert(http::get_header_spill(w_map, w_arena, "Authorization") == auth20k[..]);

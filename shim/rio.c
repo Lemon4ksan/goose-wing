@@ -149,17 +149,22 @@ typedef struct {
     HANDLE ev;
     int armed;
     int corrupt;
+    int closing;
+    uint32_t refcount;
 } wing_rio_cq_slot;
 
 typedef struct {
     uint64_t buf_id;
     uint32_t len;
+    uint32_t refcount;
+    int closing;
 } wing_rio_reg_buf_entry;
 
 static WING_RIO_EXTENSION_FUNCTION_TABLE g_rio;
 static WING_LPFN_ACCEPTEX g_acceptex = NULL;
 static wing_rio_cq_slot g_rio_cqs[WING_RIO_MAX_CQS];
 static wing_rio_reg_buf_entry g_rio_reg_bufs[WING_RIO_MAX_REG_BUFS];
+static SRWLOCK g_rio_cqs_lock = SRWLOCK_INIT;
 static SRWLOCK g_rio_reg_lock = SRWLOCK_INIT;
 static int g_rio_initialized = 0;
 static int g_rio_available = 0;
@@ -168,18 +173,21 @@ static int record_rio_reg_buf(uint64_t buf_id, uint32_t len) {
     AcquireSRWLockExclusive(&g_rio_reg_lock);
     int free_idx = -1;
     for (int i = 0; i < WING_RIO_MAX_REG_BUFS; i++) {
-        if (g_rio_reg_bufs[i].buf_id == buf_id) {
+        if (g_rio_reg_bufs[i].buf_id == buf_id && !g_rio_reg_bufs[i].closing) {
             g_rio_reg_bufs[i].len = len;
             ReleaseSRWLockExclusive(&g_rio_reg_lock);
             return 1;
         }
-        if (free_idx < 0 && g_rio_reg_bufs[i].buf_id == 0) {
+        if (free_idx < 0 && g_rio_reg_bufs[i].buf_id == 0 && !g_rio_reg_bufs[i].closing &&
+            g_rio_reg_bufs[i].refcount == 0) {
             free_idx = i;
         }
     }
     if (free_idx >= 0) {
         g_rio_reg_bufs[free_idx].buf_id = buf_id;
         g_rio_reg_bufs[free_idx].len = len;
+        g_rio_reg_bufs[free_idx].refcount = 0;
+        g_rio_reg_bufs[free_idx].closing = 0;
         ReleaseSRWLockExclusive(&g_rio_reg_lock);
         return 1;
     }
@@ -187,33 +195,48 @@ static int record_rio_reg_buf(uint64_t buf_id, uint32_t len) {
     return 0;
 }
 
-static void remove_rio_reg_buf(uint64_t buf_id) {
+static int acquire_rio_reg_buf(uint64_t buf_id, uint32_t *out_len) {
+    if (buf_id == 0) return 0;
+    AcquireSRWLockExclusive(&g_rio_reg_lock);
+    for (int i = 0; i < WING_RIO_MAX_REG_BUFS; i++) {
+        if (g_rio_reg_bufs[i].buf_id == buf_id && !g_rio_reg_bufs[i].closing) {
+            if (g_rio_reg_bufs[i].refcount == UINT32_MAX) {
+                ReleaseSRWLockExclusive(&g_rio_reg_lock);
+                return 0;
+            }
+            g_rio_reg_bufs[i].refcount++;
+            *out_len = g_rio_reg_bufs[i].len;
+            ReleaseSRWLockExclusive(&g_rio_reg_lock);
+            return 1;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_rio_reg_lock);
+    return 0;
+}
+
+static void release_rio_reg_buf(uint64_t buf_id) {
+    if (buf_id == 0) return;
+    int should_deregister = 0;
     AcquireSRWLockExclusive(&g_rio_reg_lock);
     for (int i = 0; i < WING_RIO_MAX_REG_BUFS; i++) {
         if (g_rio_reg_bufs[i].buf_id == buf_id) {
-            g_rio_reg_bufs[i].buf_id = 0;
-            g_rio_reg_bufs[i].len = 0;
+            if (g_rio_reg_bufs[i].refcount > 0) g_rio_reg_bufs[i].refcount--;
+            if (g_rio_reg_bufs[i].refcount == 0 && g_rio_reg_bufs[i].closing) {
+                g_rio_reg_bufs[i].buf_id = 0;
+                g_rio_reg_bufs[i].len = 0;
+                g_rio_reg_bufs[i].closing = 0;
+                should_deregister = 1;
+            }
             break;
         }
     }
     ReleaseSRWLockExclusive(&g_rio_reg_lock);
-}
-
-static int lookup_rio_reg_buf_len(uint64_t buf_id, uint32_t *out_len) {
-    if (buf_id == 0) return 0;
-    AcquireSRWLockShared(&g_rio_reg_lock);
-    for (int i = 0; i < WING_RIO_MAX_REG_BUFS; i++) {
-        if (g_rio_reg_bufs[i].buf_id == buf_id) {
-            *out_len = g_rio_reg_bufs[i].len;
-            ReleaseSRWLockShared(&g_rio_reg_lock);
-            return 1;
-        }
+    if (should_deregister && g_rio.RIODeregisterBuffer) {
+        g_rio.RIODeregisterBuffer((WING_RIO_BUFFERID)(uintptr_t)buf_id);
     }
-    ReleaseSRWLockShared(&g_rio_reg_lock);
-    return 0;
 }
 
-static wing_rio_cq_slot *find_rio_cq_slot(WING_RIO_CQ cq) {
+static wing_rio_cq_slot *find_rio_cq_slot_locked(WING_RIO_CQ cq) {
     if (!cq) return NULL;
     for (int i = 0; i < WING_RIO_MAX_CQS; i++) {
         if (g_rio_cqs[i].cq == cq) {
@@ -221,6 +244,41 @@ static wing_rio_cq_slot *find_rio_cq_slot(WING_RIO_CQ cq) {
         }
     }
     return NULL;
+}
+
+static wing_rio_cq_slot *acquire_rio_cq_slot(WING_RIO_CQ cq) {
+    if (!cq) return NULL;
+    AcquireSRWLockExclusive(&g_rio_cqs_lock);
+    wing_rio_cq_slot *slot = find_rio_cq_slot_locked(cq);
+    if (slot != NULL && !slot->closing && slot->refcount < UINT32_MAX) {
+        slot->refcount++;
+    } else {
+        slot = NULL;
+    }
+    ReleaseSRWLockExclusive(&g_rio_cqs_lock);
+    return slot;
+}
+
+static void release_rio_cq_slot(wing_rio_cq_slot *slot) {
+    if (!slot) return;
+    WING_RIO_CQ close_cq = NULL;
+    HANDLE close_ev = NULL;
+    AcquireSRWLockExclusive(&g_rio_cqs_lock);
+    if (slot->refcount > 0) slot->refcount--;
+    if (slot->refcount == 0 && slot->closing) {
+        close_cq = slot->cq;
+        close_ev = slot->ev;
+        slot->cq = NULL;
+        slot->ev = NULL;
+        slot->armed = 0;
+        slot->corrupt = 0;
+        slot->closing = 0;
+    }
+    ReleaseSRWLockExclusive(&g_rio_cqs_lock);
+    if (close_ev != NULL) CloseHandle(close_ev);
+    if (close_cq != NULL && g_rio.RIOCloseCompletionQueue) {
+        g_rio.RIOCloseCompletionQueue(close_cq);
+    }
 }
 
 static int init_rio_table(void) {
@@ -315,9 +373,26 @@ uint64_t wing_rio_register_slice(wing_rio_bytes_rw buf) {
 
 void wing_rio_deregister_buffer(uint64_t buf_id) {
     uintptr_t raw = (uintptr_t)buf_id;
-    if (g_rio_available && raw != 0 && raw != WING_RIO_INVALID_BUFFERID_32 && raw != WING_RIO_INVALID_BUFFERID_64 &&
-        g_rio.RIODeregisterBuffer) {
-        remove_rio_reg_buf(buf_id);
+    if (!g_rio_available || raw == 0 || raw == WING_RIO_INVALID_BUFFERID_32 || raw == WING_RIO_INVALID_BUFFERID_64 ||
+        !g_rio.RIODeregisterBuffer) {
+        return;
+    }
+    int should_deregister = 0;
+    AcquireSRWLockExclusive(&g_rio_reg_lock);
+    for (int i = 0; i < WING_RIO_MAX_REG_BUFS; i++) {
+        if (g_rio_reg_bufs[i].buf_id == buf_id && !g_rio_reg_bufs[i].closing) {
+            if (g_rio_reg_bufs[i].refcount == 0) {
+                g_rio_reg_bufs[i].buf_id = 0;
+                g_rio_reg_bufs[i].len = 0;
+                should_deregister = 1;
+            } else {
+                g_rio_reg_bufs[i].closing = 1;
+            }
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_rio_reg_lock);
+    if (should_deregister) {
         g_rio.RIODeregisterBuffer((WING_RIO_BUFFERID)raw);
     }
 }
@@ -327,17 +402,6 @@ uint64_t wing_rio_create_cq(uint32_t queue_size) {
         return 0;
     }
     if (queue_size == 0 || !g_rio.RIOCreateCompletionQueue) {
-        return 0;
-    }
-
-    int slot_idx = -1;
-    for (int i = 0; i < WING_RIO_MAX_CQS; i++) {
-        if (g_rio_cqs[i].cq == NULL) {
-            slot_idx = i;
-            break;
-        }
-    }
-    if (slot_idx < 0) {
         return 0;
     }
 
@@ -360,28 +424,57 @@ uint64_t wing_rio_create_cq(uint32_t queue_size) {
         return 0;
     }
 
-    g_rio_cqs[slot_idx].cq = cq;
-    g_rio_cqs[slot_idx].ev = ev;
-    g_rio_cqs[slot_idx].armed = 0;
-    g_rio_cqs[slot_idx].corrupt = 0;
+    int slot_idx = -1;
+    AcquireSRWLockExclusive(&g_rio_cqs_lock);
+    for (int i = 0; i < WING_RIO_MAX_CQS; i++) {
+        if (g_rio_cqs[i].cq == NULL && !g_rio_cqs[i].closing && g_rio_cqs[i].refcount == 0) {
+            slot_idx = i;
+            g_rio_cqs[i].cq = cq;
+            g_rio_cqs[i].ev = ev;
+            g_rio_cqs[i].armed = 0;
+            g_rio_cqs[i].corrupt = 0;
+            g_rio_cqs[i].closing = 0;
+            g_rio_cqs[i].refcount = 0;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_rio_cqs_lock);
+    if (slot_idx < 0) {
+        if (g_rio.RIOCloseCompletionQueue) g_rio.RIOCloseCompletionQueue(cq);
+        CloseHandle(ev);
+        return 0;
+    }
     return (uint64_t)(uintptr_t)cq;
 }
 
 void wing_rio_close_cq(uint64_t cq_id) {
-    if (g_rio_available && cq_id != 0 && g_rio.RIOCloseCompletionQueue) {
-        WING_RIO_CQ cq = (WING_RIO_CQ)(uintptr_t)cq_id;
-        g_rio.RIOCloseCompletionQueue(cq);
-        wing_rio_cq_slot *slot = find_rio_cq_slot(cq);
-        if (slot) {
-            if (slot->ev != NULL) {
-                CloseHandle(slot->ev);
-            }
+    if (!g_rio_available || cq_id == 0 || !g_rio.RIOCloseCompletionQueue) {
+        return;
+    }
+    WING_RIO_CQ cq = (WING_RIO_CQ)(uintptr_t)cq_id;
+    WING_RIO_CQ close_cq = NULL;
+    HANDLE close_ev = NULL;
+    AcquireSRWLockExclusive(&g_rio_cqs_lock);
+    wing_rio_cq_slot *slot = find_rio_cq_slot_locked(cq);
+    if (slot && !slot->closing) {
+        if (slot->refcount == 0) {
+            close_cq = slot->cq;
+            close_ev = slot->ev;
             slot->cq = NULL;
             slot->ev = NULL;
             slot->armed = 0;
             slot->corrupt = 0;
+            slot->closing = 0;
+        } else {
+            slot->closing = 1;
+            if (slot->ev != NULL) {
+                (void)SetEvent(slot->ev);
+            }
         }
     }
+    ReleaseSRWLockExclusive(&g_rio_cqs_lock);
+    if (close_ev != NULL) CloseHandle(close_ev);
+    if (close_cq != NULL) g_rio.RIOCloseCompletionQueue(close_cq);
 }
 
 int32_t wing_rio_wait_cq(uint64_t cq_id, int32_t timeout_ms) {
@@ -389,29 +482,52 @@ int32_t wing_rio_wait_cq(uint64_t cq_id, int32_t timeout_ms) {
         return -1;
     }
     WING_RIO_CQ cq = (WING_RIO_CQ)(uintptr_t)cq_id;
-    wing_rio_cq_slot *slot = find_rio_cq_slot(cq);
-    if (!slot || slot->ev == NULL || slot->corrupt) {
+    wing_rio_cq_slot *slot = acquire_rio_cq_slot(cq);
+    if (!slot) {
         return -1;
     }
-    if (!slot->armed) {
-        INT rc = g_rio.RIONotify(cq);
-        if (rc == ERROR_SUCCESS || rc == WSAEINVAL) {
-            slot->armed = 1;
-        } else {
-            return -1;
+
+    HANDLE ev = NULL;
+    int prep_err = 0;
+    AcquireSRWLockExclusive(&g_rio_cqs_lock);
+    if (slot->closing || slot->ev == NULL || slot->corrupt) {
+        prep_err = 1;
+    } else {
+        ev = slot->ev;
+        if (!slot->armed) {
+            INT rc = g_rio.RIONotify(cq);
+            if (rc == ERROR_SUCCESS || rc == WSAEINVAL) {
+                slot->armed = 1;
+            } else {
+                prep_err = 1;
+            }
         }
     }
+    ReleaseSRWLockExclusive(&g_rio_cqs_lock);
+    if (prep_err) {
+        release_rio_cq_slot(slot);
+        return -1;
+    }
+
     DWORD wait_ms = (timeout_ms < 0) ? INFINITE : (DWORD)timeout_ms;
-    DWORD w = WaitForSingleObject(slot->ev, wait_ms);
-    if (w == WAIT_OBJECT_0) {
+    DWORD w = WaitForSingleObject(ev, wait_ms);
+
+    int32_t ret = -1;
+    AcquireSRWLockExclusive(&g_rio_cqs_lock);
+    if (slot->closing || slot->corrupt) {
+        ret = -1;
+    } else if (w == WAIT_OBJECT_0) {
         slot->armed = 0;
-        return 1;
+        ret = 1;
+    } else if (w == WAIT_TIMEOUT) {
+        ret = 0;
+    } else {
+        slot->armed = 0;
+        ret = -1;
     }
-    if (w == WAIT_TIMEOUT) {
-        return 0;
-    }
-    slot->armed = 0;
-    return -1;
+    ReleaseSRWLockExclusive(&g_rio_cqs_lock);
+    release_rio_cq_slot(slot);
+    return ret;
 }
 
 int32_t wing_rio_dequeue_slice(uint64_t cq_id, wing_rio_results_rw dst) {
@@ -423,36 +539,43 @@ int32_t wing_rio_dequeue_slice(uint64_t cq_id, wing_rio_results_rw dst) {
     }
 
     WING_RIO_CQ cq = (WING_RIO_CQ)(uintptr_t)cq_id;
-    wing_rio_cq_slot *slot = find_rio_cq_slot(cq);
-    if (slot && slot->corrupt) {
+    wing_rio_cq_slot *slot = acquire_rio_cq_slot(cq);
+    if (!slot) {
         return -1;
     }
+
     WING_RIO_RESULT aligned_batch[256];
     int64_t total = 0;
+    int corrupt = 0;
 
-    while (total < dst.len) {
-        ULONG cap = (dst.len - total > 256) ? 256 : (ULONG)(dst.len - total);
-        ULONG n = g_rio.RIODequeueCompletion(cq, aligned_batch, cap);
-        if (n == WING_RIO_CORRUPT_CQ) {
-            if (slot) {
+    AcquireSRWLockExclusive(&g_rio_cqs_lock);
+    if (slot->closing || slot->corrupt) {
+        corrupt = 1;
+    } else {
+        while (total < dst.len) {
+            ULONG cap = (dst.len - total > 256) ? 256 : (ULONG)(dst.len - total);
+            ULONG n = g_rio.RIODequeueCompletion(cq, aligned_batch, cap);
+            if (n == WING_RIO_CORRUPT_CQ) {
                 slot->corrupt = 1;
+                corrupt = 1;
+                break;
             }
-            return -1;
+            if (n == 0) {
+                break;
+            }
+            memcpy(dst.data + total, aligned_batch, (size_t)n * sizeof(WING_RIO_RESULT));
+            total += (int64_t)n;
+            if (n < cap) {
+                break;
+            }
         }
-        if (n == 0) {
-            break;
-        }
-        memcpy(dst.data + total, aligned_batch, (size_t)n * sizeof(WING_RIO_RESULT));
-        total += (int64_t)n;
-        if (n < cap) {
-            break;
+        if (!corrupt && total > 0) {
+            slot->armed = 0;
         }
     }
-
-    if (total > 0 && slot) {
-        slot->armed = 0;
-    }
-    return (int32_t)total;
+    ReleaseSRWLockExclusive(&g_rio_cqs_lock);
+    release_rio_cq_slot(slot);
+    return corrupt ? -1 : (int32_t)total;
 }
 
 uint64_t wing_rio_create_rq_ctx(int64_t sock_fd, uint32_t max_recv, uint32_t max_send, uint64_t recv_cq,
@@ -477,7 +600,11 @@ int32_t wing_rio_post_recv(uint64_t rq_id, uint64_t buf_id, uint32_t offset, uin
         return -1;
     }
     uint32_t reg_len = 0;
-    if (!lookup_rio_reg_buf_len(buf_id, &reg_len) || offset > reg_len || length > reg_len - offset) {
+    if (!acquire_rio_reg_buf(buf_id, &reg_len)) {
+        return -EINVAL;
+    }
+    if (offset > reg_len || length > reg_len - offset) {
+        release_rio_reg_buf(buf_id);
         return -EINVAL;
     }
     WING_RIO_BUF buf;
@@ -485,7 +612,9 @@ int32_t wing_rio_post_recv(uint64_t rq_id, uint64_t buf_id, uint32_t offset, uin
     buf.Offset = offset;
     buf.Length = length;
     BOOL ok = g_rio.RIOReceive((WING_RIO_RQ)(uintptr_t)rq_id, &buf, 1, 0, (PVOID)(uintptr_t)req_ctx);
-    return ok ? 0 : (int32_t)WSAGetLastError();
+    int32_t rc = ok ? 0 : (int32_t)WSAGetLastError();
+    release_rio_reg_buf(buf_id);
+    return rc;
 }
 
 int32_t wing_rio_post_send(uint64_t rq_id, uint64_t buf_id, uint32_t offset, uint32_t length, uint64_t req_ctx) {
@@ -493,7 +622,11 @@ int32_t wing_rio_post_send(uint64_t rq_id, uint64_t buf_id, uint32_t offset, uin
         return -1;
     }
     uint32_t reg_len = 0;
-    if (!lookup_rio_reg_buf_len(buf_id, &reg_len) || offset > reg_len || length > reg_len - offset) {
+    if (!acquire_rio_reg_buf(buf_id, &reg_len)) {
+        return -EINVAL;
+    }
+    if (offset > reg_len || length > reg_len - offset) {
+        release_rio_reg_buf(buf_id);
         return -EINVAL;
     }
     WING_RIO_BUF buf;
@@ -501,7 +634,9 @@ int32_t wing_rio_post_send(uint64_t rq_id, uint64_t buf_id, uint32_t offset, uin
     buf.Offset = offset;
     buf.Length = length;
     BOOL ok = g_rio.RIOSend((WING_RIO_RQ)(uintptr_t)rq_id, &buf, 1, 0, (PVOID)(uintptr_t)req_ctx);
-    return ok ? 0 : (int32_t)WSAGetLastError();
+    int32_t rc = ok ? 0 : (int32_t)WSAGetLastError();
+    release_rio_reg_buf(buf_id);
+    return rc;
 }
 
 typedef struct {
@@ -612,7 +747,7 @@ int64_t wing_rio_listen(wing_rio_str_ro host, uint16_t port, int32_t backlog) {
     int opt = 1;
     setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&opt, sizeof(opt));
     if (family == AF_INET6) {
-        int v6only = 0;
+        int v6only = (strcmp(h, "::") == 0) ? 0 : 1;
         (void)setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&v6only, sizeof(v6only));
     }
 

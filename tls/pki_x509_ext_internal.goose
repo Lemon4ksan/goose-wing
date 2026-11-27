@@ -74,6 +74,8 @@ fn read_tbs_sig_alg(
     return inner_span, true;
 }
 
+const RFC5280_GENERALIZED_TIME_MIN_EPOCH: i64 = 2524608000; // 2050-01-01T00:00:00Z (RFC 5280 Section 4.1.2.5)
+
 fn read_tbs_validity(raw_cert: const u8[:], tbs_seq: core::ByteCursor&, out: tls::ParsedCert&) -> bool {
     var validity = core::cursor_from(raw_cert[..0]);
     if !tls::get_asn1_element(tbs_seq, rfc::ASN1_TAG_SEQUENCE, validity) { return false; }
@@ -82,6 +84,10 @@ fn read_tbs_validity(raw_cert: const u8[:], tbs_seq: core::ByteCursor&, out: tls
     if !tls::get_any_asn1_element(validity, nb_tag, nb_val) { return false; }
     let nb_time, ok_nb = tls::parse_asn1_time(nb_tag, nb_val.buf);
     guard ok_nb else { return false; }
+    // RFC 5280 Section 4.1.2.5: Validity - Dates through 2049 MUST use UTCTime; GeneralizedTime MUST be >= 2050.
+    if nb_tag == rfc::ASN1_TAG_GENERALIZED_TIME && nb_time < RFC5280_GENERALIZED_TIME_MIN_EPOCH {
+        return false;
+    }
     out.validity_not_before = nb_time;
 
     var na_val = core::cursor_from(raw_cert[..0]);
@@ -89,6 +95,9 @@ fn read_tbs_validity(raw_cert: const u8[:], tbs_seq: core::ByteCursor&, out: tls
     if !tls::get_any_asn1_element(validity, na_tag, na_val) { return false; }
     let na_time, ok_na = tls::parse_asn1_time(na_tag, na_val.buf);
     guard ok_na else { return false; }
+    if na_tag == rfc::ASN1_TAG_GENERALIZED_TIME && na_time < RFC5280_GENERALIZED_TIME_MIN_EPOCH {
+        return false;
+    }
     out.validity_not_after = na_time;
 
     // RFC 5280 §4.1.2.5: Validity period inversion check (notBefore <= notAfter)

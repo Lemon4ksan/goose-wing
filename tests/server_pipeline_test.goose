@@ -2315,7 +2315,11 @@ fn test_srv_reg3_r2_pipeline_and_pool(t: lit::T&) {
         // F006b: Forwarded multi-element & X-Forwarded-For port stripping + ConnectionTimer activity reset
         var req_ip = http::new_request("GET", "/");
         http::set_header(req_ip, "Forwarded", "proto=https, for=\"[2001:db8::1]:8443\"");
-        let ip_out = server::extract_effective_client_ip(true, "127.0.0.1", req_ip);
+        var trusted_cidrs: u8[..64][..8] = [];
+        var c_loop:        u8[..64]      = [];
+        let _ = c_loop.try_set("127.0.0.1/32");
+        trusted_cidrs.push(c_loop);
+        let ip_out = server::extract_effective_client_ip(true, "127.0.0.1", req_ip, trusted_cidrs);
         sub.assert_eq(ip_out, "2001:db8::1", "Forwarded second element for= extracted and port stripped");
 
         var ctimer = server_internal::new_connection_timer(2000, 100);

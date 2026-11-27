@@ -406,6 +406,115 @@ fn extract_rfc7239_forwarded_for(
     return last_trusted;
 }
 
+inline fn step_forwarded_header_rtl(
+    fwd:                 const u8[:],
+    trusted_proxy_cidrs: const u8[..64][..8],
+) -> const u8[:], bool {
+    var last_trusted = fwd[0..0];
+    var starts: i64[..32] = [];
+    var ends:   i64[..32] = [];
+    var offset: i64       = 0;
+    while offset < fwd.len {
+        let comma_rel = fwd[offset..].find_unquoted_byte(',');
+        let elem_end = core::add_sat_i64(offset, comma_rel);
+        guard starts.try_push(offset) && ends.try_push(elem_end) else { return "", true; }
+        offset = if elem_end < fwd.len { core::add_sat_i64(elem_end, 1) } else { fwd.len };
+    }
+    var i = starts.len;
+    while i > 0 {
+        i -= 1;
+        let ip = server_internal::extract_forwarded_element_ip(fwd[starts[i]..ends[i]]);
+        guard ip.len > 0 && ip.len <= 48 else { return last_trusted, true; }
+        if server_internal::is_ip_in_cidr_list(ip, trusted_proxy_cidrs) {
+            last_trusted = ip;
+            continue;
+        }
+        return ip, true;
+    }
+    return last_trusted, false;
+}
+
+inline fn step_xff_header_rtl(
+    xff:                 const u8[:],
+    trusted_proxy_cidrs: const u8[..64][..8],
+) -> const u8[:], bool {
+    var last_trusted = xff[0..0];
+    var end = xff.len;
+    while end > 0 {
+        let comma_idx = xff[..end].last_index_of_byte(',');
+        let seg_start = if comma_idx >= 0 { core::add_sat_i64(comma_idx, 1) } else { 0 };
+        let token = xff[seg_start..end].trim_lws();
+        end = if comma_idx >= 0 { comma_idx } else { 0 };
+        guard token.len > 0 else { return last_trusted, true; }
+        let ip = server_internal::normalize_forwarded_ip(token);
+        guard ip.len > 0 && ip.len <= 48 else { return last_trusted, true; }
+        if server_internal::is_ip_in_cidr_list(ip, trusted_proxy_cidrs) {
+            last_trusted = ip;
+            continue;
+        }
+        return ip, true;
+    }
+    return last_trusted, false;
+}
+
+inline fn resolve_multi_forwarded_rtl(
+    req:                 const http::Request&,
+    trusted_proxy_cidrs: const u8[..64][..8],
+    out_has_hdr:         bool&,
+) -> const u8[:] {
+    out_has_hdr = false;
+    var fallback_idx: i64 = -1;
+    var i = req.headers.entries.len;
+    while i > 0 {
+        i -= 1;
+        let ent .= req.headers.entries[i];
+        guard http::entry_name(req.headers, ent).eq_ascii_fold(rfc::HEADER_FORWARDED) else { continue; }
+        out_has_hdr = true;
+        let resolved, done = step_forwarded_header_rtl(http::entry_value(req.headers, ent), trusted_proxy_cidrs);
+        if done {
+            if resolved.len > 0 { return resolved; }
+            break;
+        }
+        if resolved.len > 0 { fallback_idx = i; }
+    }
+    if fallback_idx >= 0 {
+        let fb, _ = step_forwarded_header_rtl(
+            http::entry_value(req.headers, req.headers.entries[fallback_idx]), trusted_proxy_cidrs,
+        );
+        return fb;
+    }
+    return "";
+}
+
+inline fn resolve_multi_xff_rtl(
+    req:                 const http::Request&,
+    trusted_proxy_cidrs: const u8[..64][..8],
+    out_has_hdr:         bool&,
+) -> const u8[:] {
+    out_has_hdr = false;
+    var fallback_idx: i64 = -1;
+    var i = req.headers.entries.len;
+    while i > 0 {
+        i -= 1;
+        let ent .= req.headers.entries[i];
+        guard http::entry_name(req.headers, ent).eq_ascii_fold(rfc::HEADER_X_FORWARDED_FOR) else { continue; }
+        out_has_hdr = true;
+        let resolved, done = step_xff_header_rtl(http::entry_value(req.headers, ent), trusted_proxy_cidrs);
+        if done {
+            if resolved.len > 0 { return resolved; }
+            break;
+        }
+        if resolved.len > 0 { fallback_idx = i; }
+    }
+    if fallback_idx >= 0 {
+        let fb, _ = step_xff_header_rtl(
+            http::entry_value(req.headers, req.headers.entries[fallback_idx]), trusted_proxy_cidrs,
+        );
+        return fb;
+    }
+    return "";
+}
+
 // Extracts the effective client IP, checking proxy forwarding headers only from trusted peers.
 // Priority: RFC 7239 Forwarded (right-to-left), X-Forwarded-For (right-to-left), X-Real-IP, client_ip.
 //
@@ -422,25 +531,19 @@ fn extract_effective_client_ip(
         server_internal::has_custom_forwarding_header(req.headers) else {
         return client_ip;
     }
-    let fwd = http::header(req, rfc::HEADER_FORWARDED);
-    if fwd.len > 0 {
-        let fwd_ip = extract_rfc7239_forwarded_for(fwd, trusted_proxy_cidrs);
-        if fwd_ip.len > 0 && fwd_ip.len <= 48 {
-            return fwd_ip;
-        }
+    var has_fwd = false;
+    let fwd_ip = resolve_multi_forwarded_rtl(req, trusted_proxy_cidrs, has_fwd);
+    if has_fwd {
+        return if fwd_ip.len > 0 { fwd_ip } else { client_ip };
     }
-    let xff = http::header(req, rfc::HEADER_X_FORWARDED_FOR);
-    if xff.len > 0 {
-        let xff_ip = server_internal::extract_xff_right_to_left(xff, trusted_proxy_cidrs);
-        if xff_ip.len > 0 && xff_ip.len <= 48 {
-            return xff_ip;
-        }
+    var has_xff = false;
+    let xff_ip = resolve_multi_xff_rtl(req, trusted_proxy_cidrs, has_xff);
+    if has_xff {
+        return if xff_ip.len > 0 { xff_ip } else { client_ip };
     }
-    if fwd.len == 0 && xff.len == 0 {
-        let real_ip = server_internal::normalize_forwarded_ip(http::header(req, rfc::HEADER_X_REAL_IP).trim_lws());
-        if real_ip.len > 0 && real_ip.len <= 48 {
-            return real_ip;
-        }
+    let real_ip = server_internal::normalize_forwarded_ip(http::header(req, rfc::HEADER_X_REAL_IP).trim_lws());
+    if real_ip.len > 0 && real_ip.len <= 48 {
+        return real_ip;
     }
     return client_ip;
 }
@@ -712,8 +815,10 @@ fn execute_server_pipeline_async<UserStage>(
 
     let e_idx = ext_slot_idx as i64;
     let _ = cfg.ext_pool.slots[e_idx].peer_ip.try_set(eff_ip[..min(eff_ip.len, 48)]);
-    cfg.ext_pool.slots[e_idx].canon_url.clear();
     cfg.ext_pool.slots[e_idx].start_time_ns = now_ns;
+    guard server_internal::canonicalize_pipeline_ingress_url(req, cfg.ext_pool.slots[e_idx], res) else {
+        return PipelineOutcome.Handled;
+    }
 
     sctx.ext_slot_idx = ext_slot_idx;
     sctx.handler_id = -1;
@@ -739,7 +844,7 @@ fn execute_server_pipeline_async<UserStage>(
         _ => {},
     };
 
-    if cfg.security_txt.is_valid && http::is_security_txt_path(req.url[..]) &&
+    if cfg.security_txt.is_valid && http::is_security_txt_path(cfg.ext_pool.slots[e_idx].canon_url[..]) &&
        (req.method[..] == "GET" || req.method[..] == "HEAD") {
         res.status_code = rfc::STATUS_OK;
         http::set_header(res, "Content-Type", "text/plain; charset=utf-8");

@@ -238,7 +238,7 @@ static inline int wing_compress_cpu_caps(void) {
     return caps;
 #elif defined(_MSC_VER) && defined(_M_X64)
     static volatile long cached = -1;
-    long v = cached;
+    long v = _InterlockedCompareExchange(&cached, -1, -1);
     if (v >= 0) return (int)v;
     int caps = 0;
     int info[4] = {0};
@@ -246,13 +246,15 @@ static inline int wing_compress_cpu_caps(void) {
     int max_leaf = info[0];
     if (max_leaf >= 1) {
         __cpuid(info, 1);
+        int has_xsave = (info[2] & (1 << 26)) != 0;
         int has_osxsave = (info[2] & (1 << 27)) != 0;
+        int has_avx = (info[2] & (1 << 28)) != 0;
         int has_ssse3 = (info[2] & (1 << 9)) != 0;
         int has_sse41 = (info[2] & (1 << 19)) != 0;
         int has_pclmul = (info[2] & (1 << 1)) != 0;
         if (has_ssse3) caps |= WING_CAP_SSSE3;
         if (has_sse41 && has_pclmul) caps |= WING_CAP_PCLMUL;
-        if (has_osxsave && max_leaf >= 7) {
+        if (has_xsave && has_osxsave && has_avx && max_leaf >= 7) {
             uint64_t xcr0 = _xgetbv(0);
             if ((xcr0 & 0x6ULL) == 0x6ULL) {
                 int info7[4] = {0};
@@ -265,7 +267,7 @@ static inline int wing_compress_cpu_caps(void) {
             }
         }
     }
-    cached = caps;
+    _InterlockedExchange(&cached, (long)caps);
     return caps;
 #else
     return 0;

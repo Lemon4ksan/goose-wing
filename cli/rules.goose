@@ -59,7 +59,7 @@ fn parse_status_spec(
     if has_x && f_code_str.len > 0 {
         let f_code, ok1 = f_code_str.parse_u64_dec();
         let f_cnt, ok2 = f_cnt_str.parse_u64_dec();
-        guard ok1 && ok2 && f_code >= 100 && f_code <= 599 else { return false; }
+        guard ok1 && ok2 && f_code >= 100 && f_code <= 599 && f_cnt <= 0xFFFFFFFF else { return false; }
         out_rule.fail_status = f_code as i32;
         out_rule.fail_count = f_cnt as u32;
 

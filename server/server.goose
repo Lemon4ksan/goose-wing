@@ -85,6 +85,10 @@ struct HttpServer {
     so_reuseport:                 bool                             = false,
     listen_backlog:               i32                              = 128,
     tcp_nodelay:                  bool                             = true,
+    allow_trace:                  bool                             = false,
+    tcp_user_timeout_ms:          u32                              = 30000,
+    half_close_timeout_ms:        i64                              = 15000,
+    zero_window_stall_timeout_ms: i64                              = 10000,
 }
 
 // Listening TCP socket tuning options applied by `set_server_socket_options` and `listen_http_server`.
@@ -500,6 +504,54 @@ inline fn reset_server_request(sreq: ServerRequest&) {
     sreq.raw_header_arena.clear();
 }
 
+fn handle_wire_pipelined_stream_inner<Stage, B>(
+    server:    HttpServer&,
+    client_ip: const u8[:],
+    raw_in:    const u8[:],
+    now_ns:    u64,
+    wire_out:  B&,
+    stage:     Stage&,
+) -> i64, i64, bool, bool {
+    let wire_in_len = raw_in.len;
+    var total_handled:    i64  = 0;
+    var total_consumed:   i64  = 0;
+    var conn_wants_close: bool = false;
+
+    if server_internal::can_try_fast_l0_static(server, stage) {
+        let _, fast_done = server_internal::drain_fast_l0_static_stream(
+            server, raw_in, now_ns, wire_out, total_handled, total_consumed, conn_wants_close,
+        );
+        if fast_done {
+            return total_handled, total_consumed, true, conn_wants_close;
+        }
+    }
+
+    let rem_off = min(total_consumed, raw_in.len);
+    var has_fast_req = false;
+    let is_fast = server_internal::try_prepare_single_pipeline_turn(
+        server, raw_in[rem_off..], wire_out, total_consumed, has_fast_req,
+    );
+    var local_ip: u8[..64] = [];
+    let _ = local_ip.try_set(client_ip[..min(client_ip.len, 64)]);
+    if !is_fast {
+        var req = http::new_request("GET", "");
+        var res = http::Response { .. };
+        let ok = server_internal::drain_pipelined_stream_turns(
+            server, local_ip[..], raw_in[rem_off..], wire_in_len, now_ns,
+            req, res, wire_out,
+            total_handled, total_consumed, conn_wants_close, stage,
+        );
+        return total_handled, total_consumed, ok, conn_wants_close;
+    }
+    if has_fast_req {
+        server_internal::finish_single_pipeline_turn(
+            server, local_ip[..], wire_in_len, now_ns, wire_out,
+            total_handled, total_consumed, conn_wants_close, stage,
+        );
+    }
+    return total_handled, total_consumed, true, conn_wants_close;
+}
+
 // Processes an incoming connection stream that may contain multiple pipelined HTTP requests with `<Stage>`.
 // Returns (total_requests_processed, total_bytes_consumed, ok, wants_close).
 fn handle_connection_wire_pipelined_stream<Stage, B>(
@@ -513,44 +565,31 @@ fn handle_connection_wire_pipelined_stream<Stage, B>(
     g_h1_parse_cache.enabled = server.enable_header_memoization;
     if server.trust_proxy_headers { server.pipeline.trust_proxy_headers = true; }
     wire_out.clear();
-    let wire_in_len = wire_in.len;
-    var total_handled:    i64  = 0;
-    var total_consumed:   i64  = 0;
-    var conn_wants_close: bool = false;
 
-    if server_internal::can_try_fast_l0_static(server, stage) {
-        let _, fast_done = server_internal::drain_fast_l0_static_stream(
-            server, wire_in, now_ns, wire_out, total_handled, total_consumed, conn_wants_close,
-        );
-        if fast_done {
-            return total_handled, total_consumed, true, conn_wants_close;
+    var eff_ip: u8[..64] = [];
+    let _ = eff_ip.try_set(client_ip[..min(client_ip.len, 64)]);
+    var raw_in = wire_in;
+    var proxy_prefix_len: i64 = 0;
+
+    if server.accept_proxy_protocol {
+        guard is_trusted_proxy_protocol_peer(server, eff_ip[..]) else {
+            serialize_bad_request_error(server.server_name[..], wire_out);
+            return 0, 0, false, true;
         }
+        let stripped, ok_proxy = server_internal::strip_required_proxy_preface(
+            server, wire_in, eff_ip, wire_out,
+        );
+        guard ok_proxy else {
+            return 0, 0, false, true;
+        }
+        proxy_prefix_len = core::sub_sat_i64(wire_in.len, stripped.len);
+        raw_in = stripped;
     }
 
-    let rem_off = min(total_consumed, wire_in.len);
-    var has_fast_req = false;
-    let is_fast = server_internal::try_prepare_single_pipeline_turn(
-        server, wire_in[rem_off..], wire_out, total_consumed, has_fast_req,
+    let handled, consumed, ok, wants_close = handle_wire_pipelined_stream_inner(
+        server, eff_ip[..], raw_in, now_ns, wire_out, stage,
     );
-    var local_ip: u8[..64] = [];
-    let _ = local_ip.try_set(client_ip[..min(client_ip.len, 64)]);
-    if !is_fast {
-        var req = http::new_request("GET", "");
-        var res = http::Response { .. };
-        let ok = server_internal::drain_pipelined_stream_turns(
-            server, local_ip[..], wire_in[rem_off..], wire_in_len, now_ns,
-            req, res, wire_out,
-            total_handled, total_consumed, conn_wants_close, stage,
-        );
-        return total_handled, total_consumed, ok, conn_wants_close;
-    }
-    if has_fast_req {
-        server_internal::finish_single_pipeline_turn(
-            server, local_ip[..], wire_in_len, now_ns, wire_out,
-            total_handled, total_consumed, conn_wants_close, stage,
-        );
-    }
-    return total_handled, total_consumed, true, conn_wants_close;
+    return handled, core::add_sat_i64(proxy_prefix_len, consumed), ok, wants_close;
 }
 
 // Processes an incoming connection stream that may contain multiple pipelined HTTP requests.
@@ -594,6 +633,59 @@ fn handle_connection_wire_pipelined<B>(
     return count, ok;
 }
 
+inline fn consume_pipe_proxy_preface<B>(
+    server:           const HttpServer&,
+    pipe:             core::PipeBuffer&,
+    unread_len:       i64&,
+    eff_ip:           u8[..64]&,
+    proxy_prefix_end: i64&,
+    wire_out:         B&,
+) -> bool {
+    guard is_trusted_proxy_protocol_peer(server, eff_ip[..]) else {
+        serialize_bad_request_error(server.server_name[..], wire_out);
+        return false;
+    }
+    let init_slice = pipe.readable_slice();
+    let stripped, ok_pp = server_internal::strip_required_proxy_preface(
+        server, init_slice, eff_ip, wire_out,
+    );
+    guard ok_pp else {
+        pipe.advance_to(0, unread_len);
+        return false;
+    }
+    let pp_len = core::sub_sat_i64(init_slice.len, stripped.len);
+    if pp_len > 0 {
+        pipe.advance_to(pp_len, pp_len);
+        proxy_prefix_end = pp_len;
+    }
+    unread_len = pipe.readable_len();
+    return true;
+}
+
+inline fn drain_pipelined_pipe_http1<Stage, B>(
+    server:        HttpServer&,
+    eff_ip:        const u8[:],
+    pipe:          core::PipeBuffer&,
+    now_ns:        u64,
+    total_handled: i64&,
+    wire_out:      B&,
+    stage:         Stage&,
+) -> bool {
+    var req = http::new_request("GET", "");
+    var res = http::Response { .. };
+    while pipe.readable_len() > 0 {
+        let res_step = server_internal::process_pipelined_pipe_step(
+            server, eff_ip, pipe, req, res, now_ns, total_handled, wire_out, stage,
+        );
+        if res_step == server_internal::PipeStepResult.Error {
+            return false;
+        } else if res_step == server_internal::PipeStepResult.Stop {
+            break;
+        }
+    }
+    return true;
+}
+
 // Incremental Sans-IO pipeline handler using PipeBuffer and `<Stage>`.
 fn handle_connection_pipe<Stage, B>(
     server:    HttpServer&,
@@ -608,48 +700,48 @@ fn handle_connection_pipe<Stage, B>(
     if server.trust_proxy_headers {
         server.pipeline.trust_proxy_headers = true;
     }
-    let unread_len = pipe.readable_len();
+    var unread_len = pipe.readable_len();
     guard unread_len > 0 else { return 0, true; }
+
+    var eff_ip: u8[..64] = [];
+    let _ = eff_ip.try_set(client_ip[..min(client_ip.len, 64)]);
+    var proxy_prefix_end: i64 = 0;
+
+    if server.accept_proxy_protocol && pipe.consumed == 0 {
+        guard consume_pipe_proxy_preface(server, pipe, unread_len, eff_ip, proxy_prefix_end, wire_out) else {
+            return 0, false;
+        }
+        guard unread_len > 0 else { return 0, true; }
+    }
 
     var total_handled: i64 = 0;
 
     if h2_sess.preface_handled {
         return server_internal::handle_h2_pipe_ingress(
-            server, client_ip, pipe, h2_sess, now_ns, unread_len, wire_out, stage,
+            server, eff_ip[..], pipe, h2_sess, now_ns, unread_len, wire_out, stage,
         );
     }
 
     // Sliced H2 preface: wait for the remaining bytes instead of parsing as HTTP/1.1
-    if pipe.consumed == 0 && is_partial_h2_client_preface(pipe.readable_slice()) {
+    if pipe.consumed <= proxy_prefix_end && is_partial_h2_client_preface(pipe.readable_slice()) {
         return 0, true;
     }
 
     // Check for HTTP/2 connection preface if at the very start of the stream
-    if pipe.consumed == 0 && unread_len >= 24 && is_h2_client_preface(pipe.readable_slice()) {
+    if pipe.consumed <= proxy_prefix_end && unread_len >= 24 && is_h2_client_preface(pipe.readable_slice()) {
         return server_internal::handle_h2_pipe_ingress(
-            server, client_ip, pipe, h2_sess, now_ns, unread_len, wire_out, stage,
+            server, eff_ip[..], pipe, h2_sess, now_ns, unread_len, wire_out, stage,
         );
     }
 
-    if pipe.consumed == 0 && server_internal::is_invalid_connection_preface(pipe.readable_slice()) {
+    if pipe.consumed <= proxy_prefix_end && server_internal::is_invalid_connection_preface(pipe.readable_slice()) {
         return 0, false;
     }
 
-    var req = http::new_request("GET", "");
-    var res = http::Response { .. };
-
-    while pipe.readable_len() > 0 {
-        let res_step = server_internal::process_pipelined_pipe_step(
-            server, client_ip, pipe, req, res, now_ns, total_handled, wire_out, stage,
-        );
-        if res_step == server_internal::PipeStepResult.Error {
-            return total_handled, false;
-        } else if res_step == server_internal::PipeStepResult.Stop {
-            break;
-        }
-    }
-
-    return total_handled, true;
+    let ok_pipe = drain_pipelined_pipe_http1(
+        server, eff_ip[..], pipe, now_ns, total_handled, wire_out, stage,
+    );
+    return total_handled, ok_pipe;
 }
 
 // Incremental Sans-IO pipeline handler using PipeBuffer (RFC 9112 & System.IO.Pipelines model).
@@ -715,6 +807,12 @@ fn dispatch_server_request_with_stage<UserStage>(
     res:        http::Response&,
     user_stage: UserStage&,
 ) -> PipelineOutcome {
+    if !server.allow_trace && req.method[..] == "TRACE" {
+        res.status_code = rfc::STATUS_METHOD_NOT_ALLOWED;
+        http::set_header(res, "Connection", "close");
+        server.requests_processed++;
+        return PipelineOutcome.MethodNotAllowed;
+    }
     if server.trust_proxy_headers {
         server.pipeline.trust_proxy_headers = true;
     }
@@ -813,17 +911,18 @@ fn serve_http_connection_on_listener_buf<Stage, InBuf, FragBuf, OutBuf>(
     var peer_ip:    u8[..64] = [];
     var idle_ticks: u64      = 0;
     server.pipeline.hdr_scan_cursor = 0;
-    let need_peer_ip = server.pipeline.enable_rate_limiter
-        || server.trust_proxy_headers
-        || server.pipeline.trust_proxy_headers;
-    if need_peer_ip {
-        net::tcp_get_peer_ip(conn_fd, peer_ip);
-    } else {
-        let _ = peer_ip.try_set("127.0.0.1");
-    }
+    var proxy_verified, ok_peer = server_internal::init_listener_peer_and_proxy(
+        conn_fd, server, peer_ip, out_wire,
+    );
+    guard ok_peer else { return server.is_running; }
     let poll_ms: u32 = min(max(recv_timeout_ms, 1), 100);
 
     loop {
+        guard server_internal::drive_listener_proxy_preface(
+            conn_fd, server, in_buf, peer_ip, out_wire, recv_timeout_ms, proxy_verified,
+        ) else {
+            break;
+        }
         if server_internal::is_http1_ingress_ready_or_over_limit(server, in_buf[..]) {
             idle_ticks = 0;
             if server_internal::process_ready_http1_connection_buf(
@@ -866,6 +965,9 @@ fn serve_http_listener_buf<Stage, InBuf, FragBuf, OutBuf>(
             continue;
         }
         let _ = net::tcp_set_nodelay(conn, server.tcp_nodelay);
+        if server.tcp_user_timeout_ms > 0 {
+            let _ = net::tcp_set_user_timeout(conn, server.tcp_user_timeout_ms);
+        }
         let _ = serve_http_connection_on_listener_buf(
             listener_fd, conn, server, stage, in_buf, ws_frag_buf, out_wire, recv_timeout_ms,
         );
@@ -1161,6 +1263,55 @@ fn accept_tls_backend_connection(
     return net::Transport.TlsBackend { fd: client_fd, endpoint_slot: ep_slot }, neg_alpn, tls::TlsBackendStatus.Ok;
 }
 
+inline fn serve_single_tls_conn(
+    server:     HttpServer&,
+    conn:       i64,
+    tls_config: const tls::ServerHandshakeConfig&,
+    pipe:       core::PipeBuffer&,
+    cork:       core::CorkBuffer&,
+    peer_ip:    u8[..64]&,
+) {
+    let _ = net::tcp_set_nodelay(conn, server.tcp_nodelay);
+    if server.tcp_user_timeout_ms > 0 {
+        let _ = net::tcp_set_user_timeout(conn, server.tcp_user_timeout_ms);
+    }
+    peer_ip.clear();
+    if server.accept_proxy_protocol {
+        guard server_internal::consume_tls_socket_proxy_protocol(server, conn, peer_ip) else {
+            net::tcp_close(conn);
+            return;
+        }
+    }
+    var negotiated_sni: u8[..255] = [];
+    let slot_idx, ok_hs = server_internal::server_accept_tls_handshake_with_sni(
+        server, conn, tls_config, negotiated_sni,
+    );
+    guard ok_hs else {
+        net::tcp_close(conn);
+        return;
+    }
+    defer tls::transport_close(conn, slot_idx);
+    pipe.pipe_reset();
+    cork.cork_reset();
+    if peer_ip.len == 0 {
+        net::tcp_get_peer_ip(conn, peer_ip);
+    }
+    let h2_idx = alloc_temp_h2_session(
+        server.pipeline,
+        server.server_name[..],
+        core::monotonic_now().as_nanos(),
+        server.max_h2_concurrent_streams,
+    );
+    guard h2_idx >= 0 && h2_idx < REACTOR_MAX_H2_SESSIONS else { return; }
+    defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
+    let _ = g_default_reactor.h2_sessions[h2_idx].tls_sni.try_set(negotiated_sni[..]);
+    while !should_stop(server) {
+        if !server_internal::step_tls_loop_conn(server, conn, slot_idx, peer_ip[..], pipe, cork, h2_idx) {
+            break;
+        }
+    }
+}
+
 // Executes a live TLS 1.3 HTTPS accept and dispatch loop using PipeBuffer and TLS record AEAD.
 fn serve_tls(
     server:          HttpServer&,
@@ -1179,37 +1330,45 @@ fn serve_tls(
     while !should_stop(server) && (eff_max == 0 || total_served < eff_max) {
         let conn = net::tcp_accept(listener_fd, 200);
         if conn <= 0 { continue; }
-        let _ = net::tcp_set_nodelay(conn, server.tcp_nodelay);
-
-        let slot_idx, ok_hs = server_internal::server_accept_tls_handshake(server, conn, tls_config);
-        if !ok_hs {
-            net::tcp_close(conn);
-            total_served = core::add_sat_i64(total_served, 1);
-            continue;
-        }
-        defer tls::transport_close(conn, slot_idx);
-
-        pipe.pipe_reset();
-        cork.cork_reset();
-        net::tcp_get_peer_ip(conn, peer_ip);
-        let h2_idx = alloc_temp_h2_session(
-            server.pipeline, server.server_name[..], 0, server.max_h2_concurrent_streams,
-        );
-        if h2_idx < 0 || h2_idx >= REACTOR_MAX_H2_SESSIONS {
-            total_served = core::add_sat_i64(total_served, 1);
-            continue;
-        }
-        defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
-
-        while !should_stop(server) {
-            if !server_internal::step_tls_loop_conn(server, conn, slot_idx, peer_ip[..], pipe, cork, h2_idx) {
-                break;
-            }
-        }
+        serve_single_tls_conn(server, conn, tls_config, pipe, cork, peer_ip);
         total_served = core::add_sat_i64(total_served, 1);
     }
     server.is_running = false;
     return total_served;
+}
+
+fn dispatch_page_ring_stripped<Stage, B>(
+    server:    HttpServer&,
+    eff_ip:    const u8[:],
+    ring:      core::PageRingBuffer&,
+    eff_slice: const u8[:],
+    now_ns:    u64,
+    wire_out:  B&,
+    stage:     Stage&,
+) -> i64, bool {
+    if is_partial_h2_client_preface(eff_slice) || is_h2_client_preface(eff_slice) {
+        var h2_done = false;
+        var h2_ok = true;
+        let h2_cnt = server_internal::handle_page_ring_h2_preface(
+            server, eff_ip, ring, eff_slice, now_ns, wire_out, h2_done, h2_ok, stage,
+        );
+        return h2_cnt, h2_ok;
+    }
+
+    let total_handled, total_consumed, ok_pipe, wants_close = handle_wire_pipelined_stream_inner(
+        server, eff_ip, eff_slice, now_ns, wire_out, stage,
+    );
+    if !ok_pipe {
+        ring.page_ring_clear();
+        return total_handled, false;
+    }
+    if total_consumed > 0 {
+        ring.page_ring_discard(total_consumed);
+    }
+    if wants_close {
+        ring.page_ring_clear();
+    }
+    return total_handled, true;
 }
 
 fn handle_connection_page_ring_scratch<Stage, B>(
@@ -1230,31 +1389,34 @@ fn handle_connection_page_ring_scratch<Stage, B>(
     peek_chunk.len = 0;
     let peek_n = ring.page_ring_peek(peek_chunk.bytes[..]);
     guard peek_n > 0 else { return 0, true; }
-    let peek_slice = peek_chunk.bytes[..peek_n];
+    var eff_slice: const u8[:] = peek_chunk.bytes[..peek_n];
+    var eff_ip:    u8[..64]    = [];
+    let _ = eff_ip.try_set(client_ip[..min(client_ip.len, 64)]);
 
-    if is_partial_h2_client_preface(peek_slice) || is_h2_client_preface(peek_slice) {
-        var h2_done = false;
-        var h2_ok = true;
-        let h2_cnt = server_internal::handle_page_ring_h2_preface(
-            server, client_ip, ring, peek_slice, now_ns, wire_out, h2_done, h2_ok, stage,
+    if server.accept_proxy_protocol {
+        guard is_trusted_proxy_protocol_peer(server, eff_ip[..]) else {
+            serialize_bad_request_error(server.server_name[..], wire_out);
+            ring.page_ring_clear();
+            return 0, false;
+        }
+        let stripped, ok_pp = server_internal::strip_required_proxy_preface(
+            server, eff_slice, eff_ip, wire_out,
         );
-        return h2_cnt, h2_ok;
+        guard ok_pp else {
+            ring.page_ring_clear();
+            return 0, false;
+        }
+        let pp_len = core::sub_sat_i64(eff_slice.len, stripped.len);
+        if pp_len > 0 {
+            ring.page_ring_discard(pp_len);
+        }
+        eff_slice = stripped;
+        guard eff_slice.len > 0 else { return 0, true; }
     }
 
-    let total_handled, total_consumed, ok_pipe, wants_close = handle_connection_wire_pipelined_stream(
-        server, client_ip, peek_slice, now_ns, wire_out, stage,
+    return dispatch_page_ring_stripped(
+        server, eff_ip[..], ring, eff_slice, now_ns, wire_out, stage,
     );
-    if !ok_pipe {
-        ring.page_ring_clear();
-        return total_handled, false;
-    }
-    if total_consumed > 0 {
-        ring.page_ring_discard(total_consumed);
-    }
-    if wants_close {
-        ring.page_ring_clear();
-    }
-    return total_handled, true;
 }
 
 fn handle_connection_page_ring<Stage, B>(

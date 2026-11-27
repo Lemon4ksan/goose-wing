@@ -83,7 +83,7 @@ struct Dplpmtud {
 }
 
 // RFC 8899 Section 5.1.2: The Searching State - Handles acknowledgement of probe
-fn on_probe_acked(d: Dplpmtud&, acked_size: u32) -> bool {
+fn on_probe_acked(d: Dplpmtud&, acked_size: u32, now_ms: u64 = 0) -> bool {
     guard acked_size == d.probed_size else { return false; }
     d.current_pmtu = max(d.current_pmtu, acked_size);
     d.probe_count = 0;
@@ -101,7 +101,7 @@ fn on_probe_acked(d: Dplpmtud&, acked_size: u32) -> bool {
             d.probed_size = quic_internal::get_candidate_pmtu(d.probe_idx);
         } else {
             d.state = DplpmtudState.SearchComplete;
-            d.search_timer_ms = d.pmtu_raise_timer_ms;
+            d.search_timer_ms = core::add_sat_u64(now_ms, d.pmtu_raise_timer_ms);
         }
         return true;
     }
@@ -110,8 +110,11 @@ fn on_probe_acked(d: Dplpmtud&, acked_size: u32) -> bool {
 }
 
 // RFC 8899 Section 5.1.4: The Error State - Handles loss / timeout of probe packet
-fn on_probe_lost(d: Dplpmtud&, lost_size: u32) -> bool {
-    guard lost_size == d.probed_size else { return false; }
+fn on_probe_lost(d: Dplpmtud&, lost_size: u32, now_ms: u64 = 0) -> bool {
+    guard lost_size == d.probed_size
+        || (d.state == DplpmtudState.SearchComplete && lost_size == d.current_pmtu) else {
+        return false;
+    }
     d.probe_count += 1;
 
     if d.probe_count >= d.max_probes {
@@ -121,7 +124,16 @@ fn on_probe_lost(d: Dplpmtud&, lost_size: u32) -> bool {
         }
         if d.state == DplpmtudState.Search {
             d.state = DplpmtudState.SearchComplete;
-            d.search_timer_ms = d.pmtu_raise_timer_ms;
+            d.search_timer_ms = core::add_sat_u64(now_ms, d.pmtu_raise_timer_ms);
+            return false;
+        }
+        if d.state == DplpmtudState.SearchComplete {
+            d.state = DplpmtudState.Base;
+            d.current_pmtu = rfc::PMTU_BASE;
+            d.probed_size = rfc::PMTU_BASE;
+            d.probe_count = 0;
+            d.probe_idx = 0;
+            d.search_timer_ms = core::add_sat_u64(now_ms, d.pmtu_raise_timer_ms);
             return false;
         }
     }

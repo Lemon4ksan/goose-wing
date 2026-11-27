@@ -121,8 +121,8 @@ fn check_probe_rtt(bbr: BbrState&, now_us: u64, rtt_sample_us: u64) {
     }
 }
 
-// Updates pacing rate and cwnd according to active BBR state.
-fn update_pacing_and_cwnd(bbr: BbrState&) {
+// Updates pacing rate and cwnd according to active BBR state, bounding growth by acknowledged bytes.
+fn update_pacing_and_cwnd(bbr: BbrState&, acked_bytes: u64 = 0xFFFFFFFFFFFFFFFF) {
     let eff_bw = if bbr.bw_hi_bps > 0 { bbr.bw_hi_bps } else { 10000000 };
     var gain_num:   u64 = 1000;
     var gain_denom: u64 = 1000;
@@ -169,6 +169,10 @@ fn update_pacing_and_cwnd(bbr: BbrState&) {
         if bbr.inflight_hi_bytes > 0 && cwnd > bbr.inflight_hi_bytes {
             cwnd = max(bbr.inflight_hi_bytes, BBR_MIN_CWND_BYTES);
         }
+        let max_cwnd = core::add_sat_u64(bbr.cwnd_bytes, acked_bytes);
+        if cwnd > max_cwnd {
+            cwnd = max(max_cwnd, BBR_MIN_CWND_BYTES);
+        }
         bbr.cwnd_bytes = cwnd;
     }
 }
@@ -212,7 +216,7 @@ fn on_congestion_signal(
 }
 
 // Advances BBR cycle phase transitions.
-fn advance_cycle(bbr: BbrState&, round_done: bool) {
+fn advance_cycle(bbr: BbrState&, round_done: bool, acked_bytes: u64 = 0xFFFFFFFFFFFFFFFF) {
     guard round_done else { return; }
     match bbr.mode {
         Startup => {
@@ -235,7 +239,7 @@ fn advance_cycle(bbr: BbrState&, round_done: bool) {
         },
         _ => {},
     }
-    update_pacing_and_cwnd(bbr);
+    update_pacing_and_cwnd(bbr, acked_bytes);
 }
 
 // ---- cubic congestion control (rfc 9438) & app-limited freeze -------------
@@ -248,15 +252,17 @@ struct CubicState {
     app_limited:       bool = false,
     last_update_us:    u64  = 0,
     recovery_start_us: u64  = 0,
+    ack_credit_bytes:  u64  = 0,
 }
 
-// Updates CUBIC window with app-limited freeze (draft-ietf-ccwg-ratelimited-increase-11).
+// Updates CUBIC window with app-limited freeze and byte-bounded ACK growth.
 fn on_ack(
     cubic:           CubicState&,
     now_us:          u64,
     rtt_us:          u64,
     bytes_in_flight: u64,
     mss_bytes:       u64 = 1200,
+    acked_bytes:     u64 = 0xFFFFFFFFFFFFFFFF,
 ) -> u64 {
     let cur_cwnd_bytes = core::mul_sat_u64(cubic.cwnd_segments, mss_bytes);
     // App-limited check: pipe utilization < 75%
@@ -305,9 +311,23 @@ fn on_ack(
     let w_est = ((cubic.w_max_segments * 7) / 10) + reno_inc;
 
     let target_segments = max(w_cubic, w_est);
-    cubic.cwnd_segments = max(target_segments, 2);
+    var next_segments = max(target_segments, 2);
+    if next_segments > cubic.cwnd_segments && acked_bytes < 0xFFFFFFFFFFFFFFFF {
+        let total_credit = core::add_sat_u64(cubic.ack_credit_bytes, acked_bytes);
+        let safe_mss = max(mss_bytes, 1);
+        let max_inc_segs = total_credit / safe_mss;
+        let max_segs = core::add_sat_u64(cubic.cwnd_segments, max_inc_segs);
+        if next_segments > max_segs {
+            next_segments = max_segs;
+        }
+        let used_segs = core::sub_sat_u64(next_segments, cubic.cwnd_segments);
+        cubic.ack_credit_bytes = core::sub_sat_u64(total_credit, core::mul_sat_u64(used_segs, safe_mss));
+    } else if next_segments <= cubic.cwnd_segments {
+        cubic.ack_credit_bytes = 0;
+    }
+    cubic.cwnd_segments = next_segments;
     cubic.last_update_us = now_us;
-    return cubic.cwnd_segments * mss_bytes;
+    return core::mul_sat_u64(cubic.cwnd_segments, mss_bytes);
 }
 
 // RFC 9002 Section 7.3.2: Recovery - Enter congestion recovery at most once per round trip.

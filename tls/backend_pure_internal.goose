@@ -79,6 +79,11 @@ struct PureTlsSlot {
     cipher_slot:               u16                        = 0xFFFF,
     cipher_suite:              u16                        = rfc::TLS_CIPHER_AES_128_GCM_SHA256,
     key_len:                   u16                        = 16,
+    port:                      u16                        = 0,
+    tenant_hash:               u64                        = 0,
+    alpn_hash:                 u64                        = 0,
+    policy_hash:               u64                        = 0,
+    ca_policy_hash:            u64                        = 0,
     server_name:               u8[..256]                  = [],
     alpn_csv:                  u8[..255]                  = [],
     selected_alpn:             u8[..255]                  = [],
@@ -356,6 +361,24 @@ fn pure_detach_cipher_slot(ep: tls::TlsEndpoint&) -> u16 {
     return cs;
 }
 
+// Copies unconsumed trailing inbound wire bytes from `ep.wire_in` into `out_dst` and clears `wire_in`.
+fn pure_take_wire_in_leftover(ep: tls::TlsEndpoint&, out_dst: u8[:]) -> i64, bool {
+    guard !ep.closed && ep.active_kind == tls::TlsBackendKind.PureGoose else { return 0, false; }
+    let idx = ep.pure_slot as i64;
+    guard idx >= 0 &&
+        idx < g_pure_tls_slots.len &&
+        is_live_pure_slot(g_pure_tls_slots[idx], ep.pure_gen) else {
+        return 0, false;
+    }
+    let slot .= g_pure_tls_slots[idx];
+    let rem_len = slot.wire_in.len;
+    guard rem_len > 0 else { return 0, true; }
+    guard rem_len <= out_dst.len else { return 0, false; }
+    core::copy_bytes_fast(out_dst, 0, slot.wire_in[..rem_len]);
+    slot.wire_in.clear();
+    return rem_len, true;
+}
+
 enum PureHsMsgRead {
     Ready,
     NeedMore,
@@ -598,6 +621,7 @@ fn pure_install_app_keys(slot: PureTlsSlot&) -> bool {
             let _ = cs.negotiated_alpn.try_set(slot.selected_alpn[..]);
             cs.resumed = slot.psk_resumed;
             cs.client_authenticated = slot.require_client_cert;
+            cs.ca_policy_hash = slot.ca_policy_hash;
         }
     } else {
         tls_setup_client_cipher_slot(
@@ -606,7 +630,12 @@ fn pure_install_app_keys(slot: PureTlsSlot&) -> bool {
             slot.server_name[..], slot.selected_alpn[..], slot.psk_resumed,
         );
         if c_slot_i >= 0 && c_slot_i < tls::g_tls_cipher_slots.len {
-            tls::g_tls_cipher_slots[c_slot_i].enable_session_tickets = slot.client_cfg.enable_session_tickets;
+            let cs .= tls::g_tls_cipher_slots[c_slot_i];
+            cs.enable_session_tickets = slot.client_cfg.enable_session_tickets;
+            cs.port = slot.port;
+            cs.tenant_hash = slot.tenant_hash;
+            cs.alpn_hash = slot.alpn_hash;
+            cs.policy_hash = slot.policy_hash;
             if slot.peer_leaf_der.len > 0 {
                 let _ = tls::populate_slot_san_hosts_from_der(cs_idx, slot.peer_leaf_der[..]);
             }

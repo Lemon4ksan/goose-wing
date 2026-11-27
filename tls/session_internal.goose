@@ -115,6 +115,11 @@ fn wipe_and_reset_tls_cipher_slot(slot: tls::CipherSlot&) {
     slot.bytes_sent = 0;
     slot.empty_app_records = 0;
     slot.warning_alerts = 0;
+    slot.port = 0;
+    slot.tenant_hash = 0;
+    slot.alpn_hash = 0;
+    slot.policy_hash = 0;
+    slot.ca_policy_hash = 0;
     slot.key_update_tracker = tls::KeyUpdateTracker { .. };
     slot.ticket_cache = tls::SessionTicketCache { .. };
 }

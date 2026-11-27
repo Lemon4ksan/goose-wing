@@ -76,6 +76,9 @@ struct CliConfig {
     verbose:          bool                = false,
     no_color:         bool                = false,
     raw_profile:      bool                = false,
+    raw_output:       bool                = false,
+    ssrf_guard:       bool                = false,
+    allow_loopback:   bool                = false,
     bind_host:        u8[..64]            = "127.0.0.1",
     port:             u16                 = 8080,
     max_reqs:         u64                 = 0,
@@ -102,12 +105,12 @@ fn set_cli_error(cfg: CliConfig&, msg: const u8[:], arg: const u8[:] = "") -> bo
 fn parse_header_flag(raw: const u8[:], cfg: CliConfig&) -> bool {
     let raw_name, raw_val, has_col = raw.split_once_byte(':');
     guard has_col && raw_name.len > 0 else {
-        return set_cli_error(cfg, "invalid header format, expected 'Name: Value'", raw);
+        return set_cli_error(cfg, "invalid header format, expected 'Name: Value'");
     }
     let name = raw_name.trim_lws();
     let val = raw_val.trim_lws();
     guard http::is_valid_header_name(name) && http::is_valid_header_value(val) else {
-        return set_cli_error(cfg, "invalid header name or value", raw);
+        return set_cli_error(cfg, "invalid header name or value");
     }
     var pair = HeaderPair { .. };
     guard pair.name.try_set(name) && pair.value.try_set(val) else {
@@ -154,10 +157,18 @@ fn apply_header_or_file_flag(raw: const u8[:], cfg: CliConfig&) -> bool {
 fn parse_user_flag(raw: const u8[:], cfg: CliConfig&) -> bool {
     let user, pass, has_col = raw.split_once_byte(':');
     guard has_col && user.len > 0 else {
-        return set_cli_error(cfg, "invalid -u credentials, expected 'user:password'", raw);
+        return set_cli_error(cfg, "invalid -u credentials, expected 'user:password'");
     }
     guard cfg.basic_user.try_set(user) && cfg.basic_pass.try_set(pass) else {
         return set_cli_error(cfg, "credentials exceed capacity");
+    }
+    return true;
+}
+
+fn load_secret_file(path: const u8[:], out: u8[>..]&, cfg: CliConfig&) -> bool {
+    out.clear();
+    guard path.len > 0 && read_file(path, out) else {
+        return set_cli_error(cfg, "cannot read secret file", path);
     }
     return true;
 }
@@ -315,7 +326,7 @@ fn parse_form_flag(raw: const u8[:], cfg: CliConfig&, literal_only: bool = false
         field.is_file = true;
         let fpath = rhs[1..];
         let base_fn = extract_path_basename(fpath);
-        guard fpath.len > 0 && field.value.try_set(fpath) && field.filename.try_set(base_fn) else {
+        guard fpath.len > 0 && field.value.try_set(fpath) && field.filename.try_set(base_fn[..]) else {
             return set_cli_error(cfg, "-F file path invalid or too long");
         }
     } else {
@@ -414,32 +425,119 @@ fn apply_data_urlencode_arg(raw: const u8[:], cfg: CliConfig&) -> bool {
     return true;
 }
 
-// Extracts the trailing filename segment from a filesystem or URL path without stripping `?` or `#`.
+// Single-pass URL percent-decoder rejecting raw NULs, `%00`, and malformed `%XX` escapes.
 //
 // Example:
-//   clean = "dir/#notes.txt"
-//   returns: "#notes.txt"
-fn extract_path_basename(clean: const u8[:]) -> const u8[:] {
-    if clean.len == 0 || core::ends_with(clean, "/") || core::ends_with(clean, "\\") {
-        return "index.html";
+//   raw = "dir%2Fhello%20world.txt", out = []
+//   returns: true, out = "dir/hello world.txt"
+fn single_percent_decode_strict<B>(raw: const u8[:], out: B&) -> bool {
+    out.clear();
+    var i: i64 = 0;
+    while i < raw.len {
+        let b = raw[i];
+        guard b != 0 else {
+            out.clear();
+            return false;
+        }
+        if b == '%' {
+            guard i + 2 < raw.len else {
+                out.clear();
+                return false;
+            }
+            let hi = core::hex_digit_to_val(raw[i + 1]);
+            let lo = core::hex_digit_to_val(raw[i + 2]);
+            guard hi >= 0 && lo >= 0 else {
+                out.clear();
+                return false;
+            }
+            let dec = ((hi << 4) | lo) as u8;
+            guard dec != 0 else {
+                out.clear();
+                return false;
+            }
+            guard out.try_push(dec) else {
+                out.clear();
+                return false;
+            }
+            i = core::add_sat_i64(i, 3);
+            continue;
+        }
+        guard out.try_push(b) else {
+            out.clear();
+            return false;
+        }
+        i = core::add_sat_i64(i, 1);
     }
-    var last_slash: i64 = -1;
-    for i in clean.len {
-        if clean[i] == '/' || clean[i] == '\\' { last_slash = i; }
-    }
-    let seg = if last_slash >= 0 { clean[core::add_sat_i64(last_slash, 1)..] } else { clean };
-    if seg.len == 0 || seg == "." || seg == ".." {
-        return "index.html";
-    }
-    return seg;
+    return true;
 }
 
-// Extracts the trailing filename segment from a URL or file path for `-O / --remote-name`.
+fn is_windows_dos_device_name(seg: const u8[:]) -> bool {
+    let stem, _, _ = seg.split_once_byte('.');
+    let clean = stem.trim_end_byte(' ');
+    if clean.eq_ascii_fold("CON") || clean.eq_ascii_fold("PRN") ||
+       clean.eq_ascii_fold("AUX") || clean.eq_ascii_fold("NUL") ||
+       clean.eq_ascii_fold("CLOCK$") {
+        return true;
+    }
+    if clean.len == 4 && (clean[..3].eq_ascii_fold("COM") || clean[..3].eq_ascii_fold("LPT")) {
+        return core::is_ascii_digit(clean[3]);
+    }
+    if clean.len == 5 && (clean[..3].eq_ascii_fold("COM") || clean[..3].eq_ascii_fold("LPT")) {
+        return clean[3] == 0xC2 && (clean[4] == 0xB9 || clean[4] == 0xB2 || clean[4] == 0xB3);
+    }
+    return false;
+}
+
+fn is_safe_basename_segment(seg: const u8[:]) -> bool {
+    guard seg.len > 0 && seg != "." && seg != ".." else { return false; }
+    guard seg[0] != '.' && seg[0] != ' ' else { return false; }
+    let last_b = seg[seg.len - 1];
+    guard last_b != '.' && last_b != ' ' else { return false; }
+    for b in seg {
+        guard b >= 0x20 && b != 0x7F else { return false; }
+        if b == ':' || b == '<' || b == '>' || b == '*' || b == '?' || b == '"' || b == '|' {
+            return false;
+        }
+    }
+    return !is_windows_dos_device_name(seg);
+}
+
+// Decodes `%XX` once, strips directories up to the last `/` or `\`, and validates the basename.
+//
+// Example:
+//   clean = "dir%2F..%2Fnotes.txt"
+//   returns: "notes.txt"
+fn extract_path_basename(clean: const u8[:]) -> u8[..256] {
+    var fallback: u8[..256] = "index.html";
+    guard clean.len > 0 && !core::ends_with(clean, "/") && !core::ends_with(clean, "\\") else {
+        return fallback;
+    }
+    var decoded: u8[..512] = [];
+    guard single_percent_decode_strict(clean, decoded) else {
+        return fallback;
+    }
+    let dec_view = decoded[..];
+    guard dec_view.len > 0 && !core::ends_with(dec_view, "/") && !core::ends_with(dec_view, "\\") else {
+        return fallback;
+    }
+    var last_slash: i64 = -1;
+    for i in dec_view.len {
+        if dec_view[i] == '/' || dec_view[i] == '\\' { last_slash = i; }
+    }
+    let seg = if last_slash >= 0 { dec_view[core::add_sat_i64(last_slash, 1)..] } else { dec_view };
+    var out: u8[..256] = [];
+    guard is_safe_basename_segment(seg) && out.try_set(seg) else {
+        return fallback;
+    }
+    return out;
+}
+
+// Extracts a safe local filename from a URL or path for `-O / --remote-name`.
 //
 // Example:
 //   url = "https://raw.githubusercontent.com/github/gitignore/main/Go.gitignore?raw=1"
 //   returns: "Go.gitignore"
-fn extract_remote_filename(url: const u8[:]) -> const u8[:] {
+fn extract_remote_filename(url: const u8[:]) -> u8[..256] {
     let clean_q, _, _ = url.split_once_byte('?');
     let clean_h, _, _ = clean_q.split_once_byte('#');
     var clean = clean_h;
@@ -448,7 +546,8 @@ fn extract_remote_filename(url: const u8[:]) -> const u8[:] {
     if has_scheme {
         let _, path_part, has_slash = after_scheme.split_once_byte('/');
         if !has_slash {
-            return "index.html";
+            var fallback: u8[..256] = "index.html";
+            return fallback;
         }
         clean = path_part;
     }
@@ -524,6 +623,18 @@ fn apply_cli_behavior_bool_flag(arg: const u8[:], cfg: CliConfig&) -> bool {
         cfg.raw_profile = true;
         return true;
     }
+    if arg == "--raw" {
+        cfg.raw_output = true;
+        return true;
+    }
+    if arg == "--ssrf-guard" {
+        cfg.ssrf_guard = true;
+        return true;
+    }
+    if arg == "--allow-loopback" {
+        cfg.allow_loopback = true;
+        return true;
+    }
     return false;
 }
 
@@ -595,8 +706,23 @@ fn apply_cli_auth_or_serve_string_opt(arg: const u8[:], val: const u8[:], cfg: C
     if arg == "--bearer" {
         return true, cfg.bearer_token.try_set(val) || set_cli_error(cfg, "token too long");
     }
+    if arg == "--bearer-file" {
+        var raw_tok: u8[>..] = [];
+        defer core::secure_zeroize_slice(raw_tok[..]);
+        guard load_secret_file(val, raw_tok, cfg) else { return true, false; }
+        let tok = raw_tok[..].trim_end_bytes("\r\n");
+        guard tok.len > 0 else { return true, set_cli_error(cfg, "bearer token file is empty"); }
+        return true, cfg.bearer_token.try_set(tok) || set_cli_error(cfg, "token too long");
+    }
     if arg == "-u" || arg == "--user" {
         return true, parse_user_flag(val, cfg);
+    }
+    if arg == "--user-file" {
+        var raw_cred: u8[>..] = [];
+        defer core::secure_zeroize_slice(raw_cred[..]);
+        guard load_secret_file(val, raw_cred, cfg) else { return true, false; }
+        let cred = raw_cred[..].trim_end_bytes("\r\n");
+        return true, parse_user_flag(cred, cfg);
     }
     if arg == "-x" || arg == "--proxy" {
         return true, cfg.proxy_url.try_set(val) || set_cli_error(cfg, "proxy URL too long");
@@ -826,7 +952,7 @@ fn finalize_cli_config(cfg: CliConfig&) -> bool {
 
     if cfg.remote_name && cfg.output_file.len == 0 && cfg.url.len > 0 {
         let fname = extract_remote_filename(cfg.url[..]);
-        let _ = cfg.output_file.try_set(fname);
+        let _ = cfg.output_file.try_set(fname[..]);
     }
     return true;
 }

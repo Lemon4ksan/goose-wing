@@ -95,7 +95,7 @@ fn test_multipart_writer_and_roundtrip() {
         parsed.parts[0].name[..] == "chat_id" &&
         parsed.parts[0].data == "987654" &&
         parsed.parts[1].name[..] == "document" &&
-        parsed.parts[1].filename[..] == "my \"file\"\\1.pdf" &&
+        parsed.parts[1].filename[..] == "1.pdf" &&
         parsed.parts[1].content_type[..] == "application/pdf" &&
         parsed.parts[1].data == pdf_bytes &&
         parsed.parts[2].name[..] == "raw" &&

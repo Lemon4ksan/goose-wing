@@ -147,6 +147,11 @@ fn store_slot_nst_global(slot: const tls::CipherSlot&, nst: const tls::NewSessio
             nst.ticket_age_add,
             nst.ticket_lifetime,
             slot.cipher_suite,
+            0,
+            slot.port,
+            slot.tenant_hash,
+            slot.alpn_hash,
+            slot.policy_hash,
         );
     }
 }
@@ -626,7 +631,7 @@ fn dispatch_post_handshake_record(slot_idx: u16, hs_bytes: const u8[:]) -> tls::
 }
 
 // Reads and decrypts a single application-layer TLS 1.3 ciphertext record from `fd`.
-// Returns: >0 (decrypted payload length in `plain_dec`), 0 (clean EOF), -2 (timeout), -1 (error).
+// Returns: >0 (decrypted payload length in `plain_dec`), -2 (timeout), -1 (error or unclean TCP EOF).
 fn tls_read_and_unseal_app_record(
     fd:             i64,
     slot_idx:       u16,
@@ -638,10 +643,7 @@ fn tls_read_and_unseal_app_record(
     var hdr_buf: u8[5] = [0; 5];
     let hdr_st = tls_read_exact_status(fd, hdr_buf[..], timeout_ms);
     if hdr_st == -2 { return -2; }
-    if hdr_st == 0 {
-        tls::g_tls_cipher_slots[idx].peer_closed = true;
-        return 0;
-    }
+    // RFC 8446 Section 6.1: Closure Alerts - TCP EOF before receiving encrypted close_notify is an unclean EOF.
     guard hdr_st == 1 else { return -1; }
 
     let ct, _, payload_len_u16, alert, ok_p = tls::parse_record_header(hdr_buf[..]);

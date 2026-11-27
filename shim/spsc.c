@@ -22,6 +22,7 @@
 #if defined(_MSC_VER) && !defined(__clang__)
 #define WING_ALIGN_CACHE __declspec(align(128))
 #include <windows.h>
+#include <intrin.h>
 #else
 #define WING_ALIGN_CACHE __attribute__((aligned(128)))
 #if __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_ATOMICS__)
@@ -50,7 +51,11 @@ typedef struct {
 
 static inline uint64_t spsc_load_relaxed(const volatile uint64_t *p) {
 #if defined(_MSC_VER) && !defined(__clang__)
-    return *p;
+#if defined(_M_X64) || defined(_M_ARM64)
+    return (uint64_t)ReadNoFence64((const volatile LONG64 *)p);
+#else
+    return (uint64_t)_InterlockedOr64((volatile LONG64 *)p, 0);
+#endif
 #else
     return __atomic_load_n(p, __ATOMIC_RELAXED);
 #endif
@@ -60,10 +65,10 @@ static inline uint64_t spsc_load_acquire(const volatile uint64_t *p) {
 #if defined(_MSC_VER) && !defined(__clang__)
 #if defined(_M_ARM64)
     return (uint64_t)__ldar64((const volatile unsigned __int64 *)p);
+#elif defined(_M_X64)
+    return (uint64_t)ReadAcquire64((const volatile LONG64 *)p);
 #else
-    uint64_t v = *p;
-    _ReadWriteBarrier();
-    return v;
+    return (uint64_t)_InterlockedOr64((volatile LONG64 *)p, 0);
 #endif
 #else
     return __atomic_load_n(p, __ATOMIC_ACQUIRE);
@@ -74,9 +79,10 @@ static inline void spsc_store_release(volatile uint64_t *p, uint64_t v) {
 #if defined(_MSC_VER) && !defined(__clang__)
 #if defined(_M_ARM64)
     __stlr64((volatile unsigned __int64 *)p, v);
+#elif defined(_M_X64)
+    WriteRelease64((volatile LONG64 *)p, (LONG64)v);
 #else
-    _ReadWriteBarrier();
-    *p = v;
+    (void)_InterlockedExchange64((volatile LONG64 *)p, (LONG64)v);
 #endif
 #else
     __atomic_store_n(p, v, __ATOMIC_RELEASE);

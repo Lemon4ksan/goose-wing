@@ -1267,6 +1267,9 @@ fn test_f002_multi_via_and_xff_overflow() {
     assert(http::append_header(xff_headers, "X-Forwarded-For", big_xff[..]));
     assert(http::append_header(xff_headers, "X-Forwarded-For", big_xff[..]));
     cfg.trust_incoming_xff = true;
+    var xff_cidr: u8[..64] = [];
+    let _ = xff_cidr.try_set("192.0.2.0/24");
+    cfg.trusted_proxy_cidrs.push(xff_cidr);
     var out_xff = http::HeaderMap { .. };
     let ok_xff = proxy::filter_and_forward_headers(xff_headers, out_xff, "192.0.2.1", "https", "backend:8080", cfg);
     assert(!ok_xff);
@@ -1695,6 +1698,7 @@ fn test_reverse_proxy_xff_chaining() {
     var out_headers = http::HeaderMap { .. };
     var cfg = proxy::Config { .. };
     cfg.trust_incoming_xff = true;
+    let _ = cfg.trusted_proxy_cidrs.try_push("192.0.2.0/24");
 
     proxy::filter_and_forward_headers(
         in_headers,

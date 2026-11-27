@@ -269,14 +269,17 @@ fn stage_client_dict_negotiate(
 }
 
 fn stage_client_auth_header(
-    pipeline:       client::InterceptorPipeline&,
-    headers:        http::HeaderMap&,
-    href:           const u8[:],
-    method:         const u8[:],
-    body_len:       i64,
-    redirect_count: i64,
+    pipeline:                client::InterceptorPipeline&,
+    headers:                 http::HeaderMap&,
+    href:                    const u8[:],
+    method:                  const u8[:],
+    body_len:                i64,
+    redirect_count:          i64,
+    allow_sensitive_headers: bool = true,
 ) -> wire::StageVerdict {
-    client::apply_network_interceptors_request(pipeline, headers, href, method, body_len, redirect_count);
+    client::apply_network_interceptors_request(
+        pipeline, headers, href, method, body_len, redirect_count, allow_sensitive_headers,
+    );
     return wire::StageVerdict.Continue;
 }
 

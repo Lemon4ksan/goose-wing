@@ -64,6 +64,9 @@ fn reactor_listen_accelerated(server: const HttpServer&, backlog: i32 = 0) -> i6
         let _ = net::tcp_set_reuseport(fd, true);
     }
     let _ = net::tcp_set_nodelay(fd, server.tcp_nodelay);
+    if server.tcp_user_timeout_ms > 0 {
+        let _ = net::tcp_set_user_timeout(fd, server.tcp_user_timeout_ms);
+    }
     return fd;
 }
 
@@ -194,7 +197,7 @@ inline fn step_plain_reactor_turn<Stage>(
     turn_counter = core::add_sat_i64(turn_counter, 1);
     let poll_hint: i32 = if n_ready > 0 || prev_had_work { 1 } else { 0 };
     server_internal::reactor_poll_sweep(
-        epfd, table, leftover_pool, slot_pool, timer_wheel, poll_hint, turn_counter,
+        epfd, table, leftover_pool, slot_pool, server.pipeline, timer_wheel, poll_hint, turn_counter,
         last_sweep_sec, total_served, cached_now_ns, cached_now_sec, server.pipeline.enable_slowloris_timer,
     );
     if n_ready > 0 {
@@ -258,7 +261,9 @@ fn serve_reactor_with_stage<Stage>(
         );
     }
     let _ = net::reactor_flush_uring_sqes(g_reactor_accel);
-    server_internal::reactor_cleanup_all(g_reactor_accel.epfd, table, leftover_pool, slot_pool);
+    server_internal::reactor_cleanup_all(
+        g_reactor_accel.epfd, table, leftover_pool, slot_pool, server.pipeline,
+    );
     return total_served;
 }
 
@@ -291,7 +296,7 @@ inline fn step_tls_reactor_turn<Stage>(
     turn_counter = core::add_sat_i64(turn_counter, 1);
     let poll_hint: i32 = if n_ready > 0 || prev_had_work { 1 } else { 0 };
     server_internal::reactor_poll_sweep(
-        epfd, table, leftover_pool, slot_pool, timer_wheel, poll_hint, turn_counter,
+        epfd, table, leftover_pool, slot_pool, server.pipeline, timer_wheel, poll_hint, turn_counter,
         last_sweep_sec, total_served, cached_now_ns, cached_now_sec, server.pipeline.enable_slowloris_timer,
     );
     if n_ready > 0 {
@@ -358,7 +363,9 @@ fn serve_reactor_tls_with_stage<Stage>(
         );
     }
     let _ = net::reactor_flush_uring_sqes(g_reactor_accel);
-    server_internal::reactor_cleanup_all(g_reactor_accel.epfd, table, leftover_pool, slot_pool);
+    server_internal::reactor_cleanup_all(
+        g_reactor_accel.epfd, table, leftover_pool, slot_pool, server.pipeline,
+    );
     return total_served;
 }
 
@@ -382,6 +389,7 @@ fn handle_h3_server_datagram<B>(
     rx_wire:   const u8[:],
     now_ns:    u64,
     tx_wire:   B&,
+    tls_sni:   const u8[:] = "",
 ) -> bool {
     tx_wire.clear();
     if server.trust_proxy_headers {
@@ -405,6 +413,15 @@ fn handle_h3_server_datagram<B>(
     for &e in req.headers.entries {
         let known_id = http::identify_known_header(http::entry_name(req.headers, e));
         req.presence_mask |= http::header_id_to_bit(known_id);
+    }
+    if tls_sni.len > 0 && server_internal::h2_stream_conflicts_with_sni(
+        tls_sni, h3_conn.streams[s_idx].req_authority[..], req.headers,
+    ) {
+        let empty_hdrs = http::HeaderMap { .. };
+        let empty_trl = http::HeaderMap { .. };
+        return http3::send_response_headers_body_and_trailers(
+            h3_conn, stream_id, rfc::STATUS_MISDIRECTED_REQUEST, empty_hdrs, "", empty_trl, tx_wire,
+        );
     }
     let _ = http3::copy_stream_trailers(h3_conn, stream_id, req.trailers);
     if h3_conn.streams[s_idx].received_body.len > 0 {
@@ -479,6 +496,7 @@ fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64 {
 struct H3ServerEndpoint {
     conn:               http3::Connection = http3::Connection { .. },
     allow_plaintext_h3: bool              = false,
+    tls_sni:            u8[..255]         = [],
 }
 
 fn new_h3_server_endpoint(

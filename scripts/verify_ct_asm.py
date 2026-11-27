@@ -126,7 +126,6 @@ def main() -> int:
     lit_src = root / "tests" / "lit" / "verify_constant_time_dudect.goose"
     c_out = cache_dir / "ct_asm.c"
     h_out = cache_dir / "ct_asm.h"
-    s_out = cache_dir / "ct_asm.s"
 
     # 1. Emit standalone C from Goose
     cmd_goose = ["goose", "--standalone", "--header", str(h_out), "-o", str(c_out), str(lit_src)]
@@ -135,20 +134,23 @@ def main() -> int:
         sys.stderr.write(f"goose C emission failed:\n{res.stdout}\n{res.stderr}\n")
         return 1
 
-    # 2. Compile C to optimized x86_64 assembly (-O3 -S)
-    cmd_cc = [args.cc, "-O3", "-S", str(c_out), "-o", str(s_out)]
-    res = subprocess.run(cmd_cc, cwd=root, capture_output=True, text=True)
-    if res.returncode != 0:
-        sys.stderr.write(f"Assembly generation failed:\n{res.stdout}\n{res.stderr}\n")
-        return 1
-
-    asm_text = s_out.read_text(encoding="utf-8", errors="replace")
-    for fn_prefix in ("core_ct_eq_tag16", "core_ct_eq_tag32"):
-        symbol, ins = extract_asm_function(asm_text, fn_prefix)
-        ok, report = analyze_tag_compare_asm(fn_prefix, symbol, ins)
-        print(report)
-        if not ok:
+    # 2. Compile C to optimized x86_64 assembly (-O2, -O3, -Os -S)
+    for opt_flag in ("-O2", "-O3", "-Os"):
+        opt_tag = opt_flag.lstrip("-")
+        s_out = cache_dir / f"ct_asm_{opt_tag}.s"
+        cmd_cc = [args.cc, opt_flag, "-S", str(c_out), "-o", str(s_out)]
+        res = subprocess.run(cmd_cc, cwd=root, capture_output=True, text=True)
+        if res.returncode != 0:
+            sys.stderr.write(f"Assembly generation ({opt_flag}) failed:\n{res.stdout}\n{res.stderr}\n")
             return 1
+
+        asm_text = s_out.read_text(encoding="utf-8", errors="replace")
+        for fn_prefix in ("core_ct_eq_tag16", "core_ct_eq_tag32"):
+            symbol, ins = extract_asm_function(asm_text, fn_prefix)
+            ok, report = analyze_tag_compare_asm(fn_prefix, symbol, ins)
+            print(f"[{opt_flag}] {report}")
+            if not ok:
+                return 1
 
     # 3. Execute native LIT suite (Dudect Welch t-test + KeySlot zeroization)
     res_lit = subprocess.run(["goose-lit", str(lit_src)], cwd=root, capture_output=True, text=True)

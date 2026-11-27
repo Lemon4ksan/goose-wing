@@ -19,14 +19,20 @@ enum ProxyScheme {
 
 // Specification of a single proxy node.
 struct ProxyServer {
-    scheme:     ProxyScheme = ProxyScheme.Direct,
-    host:       u8[..256]   = [],
-    port:       u16         = 0,
-    overflowed: bool        = false,
+    scheme:           ProxyScheme = ProxyScheme.Direct,
+    host:             u8[..256]   = [],
+    port:             u16         = 0,
+    proxy_creds_hash: u64         = 0,
+    overflowed:       bool        = false,
 }
 
-fn new_proxy_server(scheme_val: ProxyScheme, host_str: const u8[:], port_num: u16) -> ProxyServer {
-    var ps = ProxyServer { scheme: scheme_val, port: port_num, .. };
+fn new_proxy_server(
+    scheme_val:       ProxyScheme,
+    host_str:         const u8[:],
+    port_num:         u16,
+    proxy_creds_hash: u64 = 0,
+) -> ProxyServer {
+    var ps = ProxyServer { scheme: scheme_val, port: port_num, proxy_creds_hash: proxy_creds_hash, .. };
     if ps.host.try_set(host_str) {
         to_lower(ps.host[..]);
     } else {
@@ -37,7 +43,10 @@ fn new_proxy_server(scheme_val: ProxyScheme, host_str: const u8[:], port_num: u1
 
 fn proxy_server_equals(a: const ProxyServer&, b: const ProxyServer&) -> bool {
     guard !a.overflowed && !b.overflowed else { return false; }
-    return a.scheme == b.scheme && a.port == b.port && a.host[..].eq_ascii_fold(b.host[..]);
+    return a.scheme == b.scheme &&
+           a.port == b.port &&
+           a.proxy_creds_hash == b.proxy_creds_hash &&
+           a.host[..].eq_ascii_fold(b.host[..]);
 }
 
 // Ordered proxy chain (direct or multi-hop forwarding route).

@@ -218,7 +218,7 @@ fn resolve_https_svcb_record<B>(
     out_ech_list: B&,
 ) -> bool {
     let https_entry, h_stat = session.dns_cache.lookup(host_str, rfc::DNS_QTYPE_HTTPS, now_sec);
-    guard https_entry && h_stat != dns::CacheStatus.Expired && https_entry.https_records.len > 0 else {
+    guard https_entry && h_stat == dns::CacheStatus.Fresh && https_entry.https_records.len > 0 else {
         return true;
     }
     var got_svcb = false;
@@ -230,8 +230,8 @@ fn resolve_https_svcb_record<B>(
             task.https_status = net::DnsQueryStatus.Success;
             got_svcb = true;
         }
-        if (session.enable_ech || session.auto_ech_discovery) &&
-            rec.has_ech && rec.ech_config_list.len > 0 && out_ech_list.len == 0 {
+        if (session.enable_ech || session.auto_ech_discovery) && rec.has_ech && out_ech_list.len == 0 {
+            guard rec.ech_config_list.len > 0 else { return false; }
             guard out_ech_list.try_set(rec.ech_config_list[..]) else { return false; }
         }
         guard collect_https_svcb_hint_candidates(session.ssrf_guard, meta, eff_port, task) else {
@@ -329,13 +329,28 @@ fn collect_cached_address_candidates(
     return true;
 }
 
+fn has_fresh_https_ech_flag(session: client::Session&, host_str: const u8[:], now_sec: i64) -> bool {
+    let https_entry, h_stat = session.dns_cache.lookup(host_str, rfc::DNS_QTYPE_HTTPS, now_sec);
+    guard https_entry && h_stat == dns::CacheStatus.Fresh else { return false; }
+    for &rec in https_entry.https_records {
+        if rec.has_ech { return true; }
+    }
+    return false;
+}
+
 fn ensure_ech_config_if_required<B>(
     session:      client::Session&,
     host_str:     const u8[:],
     now_sec:      i64,
     out_ech_list: B&,
 ) -> http::Error {
-    guard session.enable_ech && out_ech_list.len == 0 else { return http::Error { .. }; }
+    let svcb_mandates_ech = if session.auto_ech_discovery && out_ech_list.len == 0 {
+        has_fresh_https_ech_flag(session, host_str, now_sec)
+    } else {
+        false
+    };
+    let need_ech = session.enable_ech || (session.auto_ech_discovery && svcb_mandates_ech);
+    guard need_ech && out_ech_list.len == 0 else { return http::Error { .. }; }
     let disc_ech, ok_disc = client::resolve_ech_config(session, host_str, now_sec);
     if ok_disc && disc_ech.len > 0 {
         guard out_ech_list.try_set(disc_ech[..]) else {
@@ -413,7 +428,9 @@ fn resolve_and_validate_live_host<B>(
     guard collect_cached_address_candidates(session, host_str, port_num, now_sec, task) else {
         return http::make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: DNS rebinding to private IP blocked");
     }
-    guard resolve_https_svcb_record(session, host_str, port_num, now_sec, task, out_ech_list) else {
+    guard resolve_https_svcb_record(
+        session, host_str, port_num, now_sec, task, out_ech_list,
+    ) else {
         return http::make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: HTTPS SVCB hint or ECH rejected");
     }
     if require_ech {
@@ -528,6 +545,15 @@ fn resolve_env_proxy_url(is_https: bool, out_url: u8[..256]&) -> bool {
     return read_first_non_empty_env(http_vars[..], out_url);
 }
 
+fn hash_proxy_url_creds(p_url: const core::Url&) -> u64 {
+    let user = p_url.username();
+    let pass = p_url.password();
+    guard user.len > 0 || pass.len > 0 else { return 0; }
+    var h = core::wyhash64(user, 0x517cc1b727220a95);
+    h = core::hash_combine_u64(h, core::wyhash64(pass, 0x9e3779b97f4a7c15));
+    return if h == 0 { 1 } else { h };
+}
+
 fn build_proxy_chain_from_url(proxy_url: const u8[:]) -> net::ProxyChain, bool {
     guard proxy_url.len > 0 else { return net::new_direct_proxy_chain(), true; }
     let p_url = core::new_url(proxy_url);
@@ -553,7 +579,7 @@ fn build_proxy_chain_from_url(proxy_url: const u8[:]) -> net::ProxyChain, bool {
     } else {
         80
     };
-    let ps = net::new_proxy_server(p_scheme, p_url.hostname(), p_port);
+    let ps = net::new_proxy_server(p_scheme, p_url.hostname(), p_port, hash_proxy_url_creds(p_url));
     guard !ps.overflowed else { return net::new_direct_proxy_chain(), false; }
     return net::new_single_proxy_chain(ps), true;
 }
@@ -587,7 +613,7 @@ fn resolve_hop_proxy_chain(session: const client::Session&) -> net::ProxyChain, 
     } else {
         80
     };
-    let ps = net::new_proxy_server(p_scheme, p_url.hostname(), p_port);
+    let ps = net::new_proxy_server(p_scheme, p_url.hostname(), p_port, hash_proxy_url_creds(p_url));
     guard !ps.overflowed else { return net::new_direct_proxy_chain(), false; }
     return net::new_single_proxy_chain(ps), true;
 }

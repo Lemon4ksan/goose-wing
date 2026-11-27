@@ -452,5 +452,6 @@ fn append_known_isolation_header(
         name_hash:     hname,
     });
     map.header_contains_comma.push(contains_comma);
+    map.bloom.add_header(name);
     return true;
 }

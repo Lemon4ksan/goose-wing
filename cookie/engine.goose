@@ -44,14 +44,20 @@ struct CanonicalCookieJar {
     strict_secure_cookies:      bool = false,
     access_update_threshold_us: i64  = cookie_internal::K_ACCESS_UPDATE_THRESHOLD_US,
 
-    cookies: CanonicalCookie[>..] = [],
+    rejected_scratch: CanonicalCookie      = CanonicalCookie { .. },
+    cookies:          CanonicalCookie[>..] = [],
 }
 
 // Appends a new cookie directly to the jar for fluent chaining.
+// Rejects prohibited control characters and tabs without adding to `jar.cookies`.
 fn add(jar: CanonicalCookieJar&, name: const u8[:], val: const u8[:]) -> CanonicalCookie& {
+    let bad_name = cookie_internal::has_prohibited_ctl(name) || name.contains_byte('\t');
+    let bad_val = cookie_internal::has_prohibited_ctl(val) || val.contains_byte('\t');
     var new_cookie = CanonicalCookie { .. };
-    let _ = new_cookie.name.try_set(name);
-    let _ = new_cookie.value.try_set(val);
+    if bad_name || bad_val || !new_cookie.name.try_set(name) || !new_cookie.value.try_set(val) {
+        jar.rejected_scratch = CanonicalCookie { .. };
+        return jar.rejected_scratch;
+    }
     new_cookie.creation_seq = jar.seq_counter;
     jar.seq_counter = core::add_sat_i64(jar.seq_counter, 1);
     return jar.cookies.push(new_cookie);

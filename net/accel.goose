@@ -22,13 +22,18 @@ enum ReactorAccelMode {
     PollFallback,
 }
 
-const REACTOR_ACCEL_SLOTS:       i64 = 1024;
-const REACTOR_RIO_SLOTS:         i64 = 256;
-const REACTOR_ACCEL_BUF_SIZE:    i64 = 4096;
-const REACTOR_URING_TX_BUF_SIZE: i64 = 32768;
-const REACTOR_ACCEL_SLAB_BYTES:  i64 = 2097152;
-const REACTOR_URING_SLAB_BYTES:  i64 = 33554432;
-const REACTOR_TLS_CT_CAP:        i64 = 16648;
+const REACTOR_ACCEL_SLOTS:          i64 = 2048;
+const REACTOR_RIO_SLOTS:            i64 = 256;
+const REACTOR_ACCEL_BUF_SIZE:       i64 = 4096;
+const REACTOR_URING_TX_BUF_SIZE:    i64 = 32768;
+const REACTOR_URING_SMALL_TX_COUNT: i64 = 256;
+const REACTOR_URING_SMALL_TX_SIZE:  i64 = 4096;
+const REACTOR_URING_LARGE_TX_COUNT: i64 = 64;
+const REACTOR_URING_LARGE_TX_SIZE:  i64 = 32768;
+const REACTOR_URING_LARGE_TX_BASE:  i64 = 1048576;
+const REACTOR_ACCEL_SLAB_BYTES:     i64 = 2097152;
+const REACTOR_URING_SLAB_BYTES:     i64 = 3145728;
+const REACTOR_TLS_CT_CAP:           i64 = 16648;
 
 const REACTOR_REQ_RX_TAG: u64 = 1;
 const REACTOR_REQ_TX_TAG: u64 = 2;
@@ -59,17 +64,22 @@ struct ReactorAccelRuntime {
     rio_listener_fd:       i64                           = -1,
     active_accel_slots:    i64                           = 0,
     epfd_registered_count: i32                           = 0,
-    slot_accel:            bool[1024]                    = [false; 1024],
-    slot_ktls_rx:          bool[1024]                    = [false; 1024],
-    slot_rio_rq:           u64[1024]                     = [0; 1024],
-    slot_gen:              u16[1024]                     = [1; 1024],
-    slot_rx_inflight:      bool[1024]                    = [false; 1024],
-    slot_rx_armed:         bool[1024]                    = [false; 1024],
-    slot_rx_canceling:     bool[1024]                    = [false; 1024],
-    slot_tx_inflight:      bool[1024]                    = [false; 1024],
-    slot_tx_notif_pending: bool[1024]                    = [false; 1024],
-    slot_close_after_tx:   bool[1024]                    = [false; 1024],
-    slot_quarantined:      bool[1024]                    = [false; 1024],
+    slot_accel:            bool[2048]                    = [false; 2048],
+    slot_ktls_rx:          bool[2048]                    = [false; 2048],
+    slot_rio_rq:           u64[2048]                     = [0; 2048],
+    slot_gen:              u16[2048]                     = [1; 2048],
+    slot_rx_inflight:      bool[2048]                    = [false; 2048],
+    slot_rx_armed:         bool[2048]                    = [false; 2048],
+    slot_rx_canceling:     bool[2048]                    = [false; 2048],
+    slot_tx_inflight:      bool[2048]                    = [false; 2048],
+    slot_tx_notif_pending: bool[2048]                    = [false; 2048],
+    slot_close_after_tx:   bool[2048]                    = [false; 2048],
+    slot_quarantined:      bool[2048]                    = [false; 2048],
+    slot_tx_buf_id:        i16[2048]                     = [-1; 2048],
+    tx_small_free:         i16[256]                      = [0; 256],
+    tx_small_free_len:     i32                           = 0,
+    tx_large_free:         i16[64]                       = [0; 64],
+    tx_large_free_len:     i32                           = 0,
     rio_tx_close_queue:    i64[..256]                    = [],
     uring_sqe_batch:       net_internal::UringSqe[..512] = [],
     slab:                  u8[>..]                       = [],
@@ -128,6 +138,62 @@ inline fn ensure_reactor_accel_slab(accel: ReactorAccelRuntime&) {
 inline fn ensure_uring_tx_slab(accel: ReactorAccelRuntime&) {
     if accel.slab.len < REACTOR_URING_SLAB_BYTES {
         accel.slab.resize(REACTOR_URING_SLAB_BYTES, 0);
+    }
+}
+
+fn init_uring_tx_pool(accel: ReactorAccelRuntime&) {
+    ensure_uring_tx_slab(accel);
+    for i in REACTOR_ACCEL_SLOTS {
+        accel.slot_tx_buf_id[i] = -1;
+    }
+    for i in REACTOR_URING_SMALL_TX_COUNT {
+        accel.tx_small_free[i] = core::sub_sat_i64(REACTOR_URING_SMALL_TX_COUNT - 1, i) as i16;
+    }
+    accel.tx_small_free_len = REACTOR_URING_SMALL_TX_COUNT as i32;
+    for i in REACTOR_URING_LARGE_TX_COUNT {
+        let rev = core::sub_sat_i64(REACTOR_URING_LARGE_TX_COUNT - 1, i);
+        accel.tx_large_free[i] = core::add_sat_i64(REACTOR_URING_SMALL_TX_COUNT, rev) as i16;
+    }
+    accel.tx_large_free_len = REACTOR_URING_LARGE_TX_COUNT as i32;
+}
+
+inline fn alloc_uring_tx_buf(accel: ReactorAccelRuntime&, need_len: i64) -> i16, i64 {
+    if need_len <= REACTOR_URING_SMALL_TX_SIZE && accel.tx_small_free_len > 0 {
+        let top = core::sub_sat_i64(accel.tx_small_free_len, 1);
+        accel.tx_small_free_len = top as i32;
+        let bid = accel.tx_small_free[top];
+        return bid, core::shl_sat_u64(bid as u64, 12) as i64;
+    }
+    if need_len <= REACTOR_URING_LARGE_TX_SIZE && accel.tx_large_free_len > 0 {
+        let top = core::sub_sat_i64(accel.tx_large_free_len, 1);
+        accel.tx_large_free_len = top as i32;
+        let bid = accel.tx_large_free[top];
+        let lidx = core::sub_sat_i64(bid, REACTOR_URING_SMALL_TX_COUNT);
+        return bid, core::add_sat_i64(
+            REACTOR_URING_LARGE_TX_BASE,
+            core::shl_sat_u64(lidx as u64, 15) as i64,
+        );
+    }
+    return -1, 0;
+}
+
+fn release_uring_tx_buf(accel: ReactorAccelRuntime&, slot: i64) {
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS else { return; }
+    let bid = accel.slot_tx_buf_id[slot];
+    guard bid >= 0 else { return; }
+    accel.slot_tx_buf_id[slot] = -1;
+    let bid_i = bid as i64;
+    if bid_i < REACTOR_URING_SMALL_TX_COUNT {
+        if accel.tx_small_free_len < REACTOR_URING_SMALL_TX_COUNT {
+            accel.tx_small_free[accel.tx_small_free_len as i64] = bid;
+            accel.tx_small_free_len = core::add_sat_i64(accel.tx_small_free_len, 1) as i32;
+        }
+        return;
+    }
+    let total_bufs = core::add_sat_i64(REACTOR_URING_SMALL_TX_COUNT, REACTOR_URING_LARGE_TX_COUNT);
+    if bid_i < total_bufs && accel.tx_large_free_len < REACTOR_URING_LARGE_TX_COUNT {
+        accel.tx_large_free[accel.tx_large_free_len as i64] = bid;
+        accel.tx_large_free_len = core::add_sat_i64(accel.tx_large_free_len, 1) as i32;
     }
 }
 
@@ -255,6 +321,7 @@ inline fn reactor_slot_inflight_any(accel: const ReactorAccelRuntime&, slot: i64
 }
 
 inline fn reactor_clear_accel_slot_fields(accel: ReactorAccelRuntime&, slot: i64) {
+    release_uring_tx_buf(accel, slot);
     if accel.slot_accel[slot] {
         accel.active_accel_slots = max(core::sub_sat_i64(accel.active_accel_slots, 1), 0);
     }
@@ -361,6 +428,11 @@ fn reactor_close_accel(accel: ReactorAccelRuntime&) {
     }
     accel.kq_changes.clear();
     accel.uring_sqe_batch.clear();
+    accel.tx_small_free_len = 0;
+    accel.tx_large_free_len = 0;
+    for i in REACTOR_ACCEL_SLOTS {
+        accel.slot_tx_buf_id[i] = -1;
+    }
     accel.active_accel_slots = 0;
     accel.epfd_registered_count = 0;
     accel.mode = ReactorAccelMode.PollFallback;
@@ -485,29 +557,41 @@ fn reactor_drain_rio_tx_cq(accel: ReactorAccelRuntime&) -> i32 {
     return n;
 }
 
+inline fn try_submit_uring_tx(accel: ReactorAccelRuntime&, slot: i64, conn: i64, wire: const u8[:]) -> bool {
+    guard wire.len <= REACTOR_URING_TX_BUF_SIZE &&
+        !accel.slot_tx_inflight[slot] &&
+        !accel.slot_tx_notif_pending[slot] else {
+        return false;
+    }
+    let tx_bid, tx_off = alloc_uring_tx_buf(accel, wire.len);
+    guard tx_bid >= 0 else { return false; }
+    let tx_end = core::add_sat_i64(tx_off, wire.len);
+    if tx_end <= accel.slab.len {
+        copy_bytes_to_slab(accel.slab[tx_off..tx_end], wire);
+        var sqe = net_internal::UringSqe { .. };
+        let tok = reactor_accel_slot_token(accel, slot);
+        net_internal::uring_prep_send_slice(
+            sqe, conn as i32, accel.slab[tx_off..tx_end], REACTOR_URING_TAG_SEND | tok,
+        );
+        if reactor_queue_uring_sqe(accel, sqe) {
+            accel.slot_tx_buf_id[slot] = tx_bid;
+            accel.slot_tx_inflight[slot] = true;
+            return true;
+        }
+    }
+    accel.slot_tx_buf_id[slot] = tx_bid;
+    release_uring_tx_buf(accel, slot);
+    return false;
+}
+
 fn reactor_submit_accel_tx(accel: ReactorAccelRuntime&, slot: i64, conn: i64, wire: const u8[:]) -> bool {
     guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS && !accel.slot_quarantined[slot] else { return false; }
     if accel.mode == ReactorAccelMode.Rio && accel.slot_rio_rq[slot] != 0 {
         return net_internal::reactor_submit_rio_tx(accel, slot, wire);
     }
     let can_uring = accel.mode == ReactorAccelMode.IoUring && accel.uring_fd >= 0;
-    if can_uring && wire.len <= REACTOR_URING_TX_BUF_SIZE && !accel.slot_tx_inflight[slot] &&
-        !accel.slot_tx_notif_pending[slot] {
-        ensure_uring_tx_slab(accel);
-        let tx_off = core::shl_sat_u64(slot as u64, 15) as i64;
-        let tx_end = core::add_sat_i64(tx_off, wire.len);
-        if tx_end <= accel.slab.len {
-            copy_bytes_to_slab(accel.slab[tx_off..tx_end], wire);
-            var sqe = net_internal::UringSqe { .. };
-            let tok = reactor_accel_slot_token(accel, slot);
-            net_internal::uring_prep_send_slice(
-                sqe, conn as i32, accel.slab[tx_off..tx_end], REACTOR_URING_TAG_SEND | tok,
-            );
-            if reactor_queue_uring_sqe(accel, sqe) {
-                accel.slot_tx_inflight[slot] = true;
-                return true;
-            }
-        }
+    if can_uring && try_submit_uring_tx(accel, slot, conn, wire) {
+        return true;
     }
     if can_uring && accel.uring_sqe_batch.len > 0 {
         let _ = reactor_flush_uring_sqes(accel);

@@ -111,13 +111,19 @@ fn is_valid_field_value(s: const u8[:]) -> bool {
     return true;
 }
 
-// RFC 9112 Section 3.2: Request Target - visible ASCII excluding '#' fragment delimiter.
+// RFC 9112 Section 3.2: Request Target - visible ASCII excluding '#', '\', and malformed '%XX' triplets.
 fn is_valid_request_target(target: const u8[:], method: const u8[:]) -> bool {
     guard target.len > 0 else { return false; }
     let valid_start = target[0] == '/' || (target.len == 1 && target[0] == '*' && method == "OPTIONS");
     guard valid_start else { return false; }
-    for b in target {
-        guard b >= 0x21 && b <= 0x7E && b != '#' else { return false; }
+    for b, i in target {
+        guard b >= 0x21 && b <= 0x7E && b != '#' && b != '\\' else { return false; }
+        if b == '%' {
+            let valid_pct = i + 2 < target.len &&
+                core::is_ascii_hexdigit(target[i + 1]) &&
+                core::is_ascii_hexdigit(target[i + 2]);
+            guard valid_pct else { return false; }
+        }
     }
     return true;
 }

@@ -1,7 +1,8 @@
 # goose-wing
 
 Zero-allocation HTTP/1.1, HTTP/2, HTTP/3, and TLS 1.3 protocol engine and web
-framework for [Goose](https://github.com/aardappel/goose).
+framework for the [Goose programming
+language](https://github.com/aardappel/goose).
 
 ## Architecture
 
@@ -21,9 +22,10 @@ Protocol decoders read borrowed `const u8[:]` slices and write 9-byte
 `HeaderSpan` offsets and 16-byte `HeaderEntry` records that index directly into
 an 8 KB `HeaderMap` buffer. A 64-slot `inline_slots` index resolves standard
 HTTP headers in $O(1)$ using 32-bit and 64-bit SWAR case-folded word
-comparisons. Before reading `HeaderMap`, a 256-bit `HeaderBloomFilter` hashes
-four case-folded feature bytes from the header name by multiplier `1843993368`
-across four `u64` registers to reject missing headers in 1 to 3 CPU cycles.
+comparisons. Before scanning slots, a 256-bit `HeaderBloomFilter` hashes
+case-folded header names with keyed SipHash-1-3 (per-process random 128-bit key,
+fixed under DST) across four `u64` registers, rejecting missing headers in
+constant time without hash-flood saturation.
 
 Core parsers validate RFC framing rules once at the ingress boundary and contain
 no compatibility workarounds for broken peers. The `wire` package splits
@@ -186,14 +188,13 @@ application code:
   v5 by default; TLS 1.2 + TLS 1.3 fallback only when `min_version =
   TlsMinVersion.Tls12`).
 - `tls::TlsBackendKind.SystemSecureTransport`: macOS native `Security.framework`
-  client context (`dlopen`, zero link flags), available only when `min_version =
-  TlsMinVersion.Tls12` is explicitly set (rejected on default
-  `TlsMinVersion.Tls13` so callers never silently downgrade).
+  client context (`dlopen`, zero link flags). Opt-in only: excluded from `Auto`
+  and `SystemOnly` modes, and accepted only when `min_version =
+  TlsMinVersion.Tls12` is set (rejected on default `TlsMinVersion.Tls13`).
 - `tls::TlsBackendKind.Auto`: selects `SystemOpenSsl` if installed (Linux
   `libssl.so.3`, macOS Homebrew/MacPorts `libssl.3.dylib`, Windows
-  `libssl-3*.dll`), then `SystemSchannel` on Windows client endpoints, then
-  `SystemSecureTransport` on macOS client endpoints only when `min_version =
-  TlsMinVersion.Tls12`, and falls back to `PureGoose` (TLS 1.3 only) otherwise.
+  `libssl-3*.dll`), then `SystemSchannel` on Windows client endpoints, and falls
+  back to `PureGoose` (TLS 1.3 only) otherwise.
 
 ```goose
 import wing;
@@ -335,5 +336,7 @@ and L7 security and caching stages:
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for
+`goose-wing` uses the Apache License, Version 2.0. See [LICENSE](LICENSE) for
 details.
+
+Copyright (c) 2026 Lemon4ksan (Komolov Arsenii).

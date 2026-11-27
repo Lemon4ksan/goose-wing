@@ -158,7 +158,7 @@ struct Client {
     enable_referer:          bool                       = true,
     default_referrer_policy: ReferrerPolicy             = ReferrerPolicy.StrictOriginWhenCrossOrigin,
     default_headers:         http::HeaderMap            = http::HeaderMap { .. },
-    ssrf_guard:              security::SsrfGuardPolicy  = security::SsrfGuardPolicy { enabled: false, .. },
+    ssrf_guard:              security::SsrfGuardPolicy  = security::SsrfGuardPolicy { enabled: true, .. },
     virtual_clock_us:        i64                        = 0,
     trusted_location_hosts:  u8[..128][..8]             = [],
     mock_routes:             MockExchange[..8]          = [],
@@ -268,7 +268,7 @@ fn new_client() -> Client {
         profile:                 def_p.kind,
         profile_spec:            def_p,
         default_headers:         def_hdrs,
-        ssrf_guard:              security::SsrfGuardPolicy { enabled: false, .. },
+        ssrf_guard:              security::SsrfGuardPolicy { enabled: true, .. },
         cache:                   http::Cache { .. },
         enable_cache:            false,
         altsvc:                  http::AltSvcCache { .. },
@@ -306,7 +306,7 @@ fn new_client(cfg: Config) -> Client {
         proxy_url:               proxy_buf,
         timeout_ms:              cfg.timeout_ms,
         default_headers:         def_hdrs,
-        ssrf_guard:              security::SsrfGuardPolicy { enabled: false, .. },
+        ssrf_guard:              security::SsrfGuardPolicy { enabled: true, .. },
         cache:                   http::Cache { options: cfg.cache_options, .. },
         enable_cache:            cfg.enable_cache,
         altsvc:                  http::AltSvcCache { .. },
@@ -349,7 +349,7 @@ fn new_client(base_url: const u8[:]) -> Client {
         profile:                 def_p.kind,
         profile_spec:            def_p,
         default_headers:         def_hdrs,
-        ssrf_guard:              security::SsrfGuardPolicy { enabled: false, .. },
+        ssrf_guard:              security::SsrfGuardPolicy { enabled: true, .. },
         cache:                   http::Cache { .. },
         enable_cache:            false,
         altsvc:                  http::AltSvcCache { .. },
@@ -1044,18 +1044,18 @@ fn resolve_ech_config(
     if ok_disc {
         return disc_ech, true;
     }
-    // Fallback: if discovery failed, check if a stale entry is available.
-    var stale_ech: u8[..512] = [];
-    let cached, stale_status = session.dns_cache.lookup(domain, rfc::DNS_QTYPE_HTTPS, now_sec);
-    if cached && (stale_status == dns::CacheStatus.Fresh || stale_status == dns::CacheStatus.Stale) {
+    // Only accept Fresh cached ECH entries; never fall back to Stale ECH configs.
+    var fresh_ech: u8[..512] = [];
+    let cached, cache_status = session.dns_cache.lookup(domain, rfc::DNS_QTYPE_HTTPS, now_sec);
+    if cached && cache_status == dns::CacheStatus.Fresh {
         for &rec in cached.https_records {
             if rec.has_ech && rec.ech_config_list.len > 0 {
-                let ok_set = stale_ech.try_set(rec.ech_config_list[..]);
-                return stale_ech, ok_set;
+                let ok_set = fresh_ech.try_set(rec.ech_config_list[..]);
+                return fresh_ech, ok_set;
             }
         }
     }
-    return stale_ech, false;
+    return fresh_ech, false;
 }
 
 // ---- 6. Ergonomic Session Control, Credential Wipe, and Problem Decode -----

@@ -136,12 +136,25 @@ fn not_modified() -> Reply<EmptyBody> {
     return Reply<EmptyBody> { status: rfc::STATUS_NOT_MODIFIED, .. };
 }
 
+inline fn is_safe_redirect_location(location: const u8[:]) -> bool {
+    guard location.len > 0 else { return false; }
+    for b in location {
+        guard b > 0x20 && b != 0x7F else { return false; }
+    }
+    return !location.starts_with_fold("javascript:")
+        && !location.starts_with_fold("data:")
+        && !location.starts_with_fold("vbscript:");
+}
+
 fn redirect_to(location: const u8[:], status: i32 = rfc::STATUS_FOUND) -> Reply<EmptyBody> {
     var rep = Reply<EmptyBody> {
         status: if rfc::is_redirect_status(status) { status } else { rfc::STATUS_FOUND },
         ..
     };
-    let _ = rep.location.try_set(location);
+    if !is_safe_redirect_location(location) || !rep.location.try_set(location) {
+        rep.location.clear();
+        rep.headers_overflowed = true;
+    }
     return rep;
 }
 
@@ -224,7 +237,8 @@ fn write_reply<T>(res: http::Response&, rep: const Reply<T>&) {
         return;
     }
     if rfc::is_redirect_status(rep.status) {
-        guard http::respond_redirect(res, rep.location[..], rep.status) else {
+        guard is_safe_redirect_location(rep.location[..])
+            && http::respond_redirect(res, rep.location[..], rep.status) else {
             http::respond_problem(
                 res, rfc::STATUS_INTERNAL_SERVER_ERROR, "Internal Server Error",
                 "invalid redirect target",

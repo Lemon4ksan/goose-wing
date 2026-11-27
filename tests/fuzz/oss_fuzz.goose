@@ -243,7 +243,82 @@ fn fuzz_http1_auth_and_headers(data: const u8[:], sig: u64) -> u64 {
     }
     var jwt_claims = auth::JwtClaims { .. };
     if auth::parse_jwt_claims_json(data, jwt_claims) { s = fuzz_mix_state(s, 0x100B); }
+
+    let parsed_dt, ok_dt = core::parse_http_date(data);
+    if ok_dt {
+        var dt_buf: u8[..64] = [];
+        core::format_http(dt_buf, parsed_dt);
+        let _, ok_rt = core::parse_http_date(dt_buf[..]);
+        if ok_rt { s = fuzz_mix_state(s, 0x1070 ^ (parsed_dt.wall_sec as! u64)); }
+    }
+
+    let cd, ok_cd = http::parse_content_disposition(data);
+    if ok_cd {
+        assert(cd.valid);
+        let p_n = http::param(cd, "name");
+        let p_f = http::param(cd, "filename");
+        let p_fx = http::param(cd, "filename*");
+        s = fuzz_mix_state(s, 0x1071 ^ (p_n.len as u64) ^ (p_f.len as u64) ^ (p_fx.len as u64));
+    }
+
+    var mp_in: u8[..512] = [];
+    let disp_slice = data[..min(data.len, 256)];
+    if mp_in.try_set("--b\r\nContent-Disposition: ") &&
+       mp_in.try_append(disp_slice) &&
+       mp_in.try_append("\r\n\r\nx\r\n--b--\r\n") {
+        let mp_opts = http::MultipartOptions { .. };
+        let mp_cd, err_cd = http::parse_multipart(mp_in[..], "b", mp_opts);
+        if err_cd == http::MultipartError.None {
+            s = fuzz_mix_state(s, 0x1072 ^ (mp_cd.parts.len as u64));
+        }
+    }
     return s;
+}
+
+fn step_stateful_header_map_op(
+    map: http::HeaderMap&,
+    op:  u8,
+    key: const u8[:],
+    val: const u8[:],
+    ser: u8[>..]&,
+) {
+    if op == 0 {
+        let _ = http::parse_headers(val, map, (val.len & 1) != 0);
+    } else if op == 1 {
+        http::set_header(map, key, val, (key.len & 1) != 0);
+    } else if op == 2 {
+        let _ = http::set_or_replace(map, key, val, (key.len & 1) != 0);
+    } else if op == 3 {
+        let _ = http::append_header(map, key, val);
+    } else if op == 4 {
+        let _ = http::remove_header(map, key);
+    } else if op == 5 {
+        http::remove_sensitive_headers(map);
+    } else if op == 6 {
+        ser.clear();
+        http::serialize_headers(map, ser);
+    } else {
+        let _ = http::has_header(map, key);
+        let _ = http::get_header(map, key);
+    }
+    assert(map.entries.len <= map.entries.cap);
+}
+
+fn fuzz_stateful_header_map(data: const u8[:]) -> u64 {
+    var fdp = new_fdp(data);
+    var map = http::HeaderMap { .. };
+    var ser:   u8[>..] = [];
+    var steps: i64     = 0;
+    while fdp_remaining(fdp) > 0 && steps < 20 {
+        steps = core::add_sat_i64(steps, 1);
+        let op = fdp_consume_u8(fdp) & 7;
+        let klen = ((fdp_consume_u8(fdp) & 0x1F) as i64) | 1;
+        let key = fdp_consume_bytes(fdp, klen);
+        let vlen = (fdp_consume_u8(fdp) & 0x3F) as i64;
+        let val = fdp_consume_bytes(fdp, vlen);
+        step_stateful_header_map_op(map, op, key, val, ser);
+    }
+    return 0x1080 ^ (map.entries.len as u64);
 }
 
 fn fuzz_chunk_fsm_stream(data: const u8[:], step_mask: u8, out_body: u8[>..]&) -> http_internal::ChunkFsmStatus {
@@ -342,6 +417,7 @@ fn fuzz_target_http1(data: const u8[:]) -> u64 {
     let _, ok_dig = auth::parse_digest_challenge(data);
     if ok_dig { sig = fuzz_mix_state(sig, 0x1009); }
 
+    sig = fuzz_mix_state(sig, fuzz_stateful_header_map(data));
     return fuzz_http1_auth_and_headers(data, sig);
 }
 
@@ -914,6 +990,59 @@ fn fuzz_bhttp_ohttp_privacypass(data: const u8[:], sig: u64) -> u64 {
     return s;
 }
 
+fn step_stateful_cookie_jar_op(
+    jar:     cookie::CanonicalCookieJar&,
+    op:      u8,
+    arg:     u16,
+    chunk:   const u8[:],
+    now_us:  i64,
+    hdr_out: u8[..2048]&,
+    ser_out: u8[>..]&,
+) {
+    if op == 0 {
+        let _ = cookie::set_cookie_header(jar, "https://example.com/app", chunk, now_us, (arg & 1) != 0);
+    } else if op == 1 {
+        hdr_out.clear();
+        cookie::build_cookie_header(jar, "https://example.com/app", now_us, hdr_out);
+    } else if op == 2 {
+        let _ = cookie::get(jar, chunk);
+    } else if op == 3 {
+        let _ = cookie::purge_expired(jar, now_us);
+    } else if op == 4 {
+        let _ = cookie::delete_session_cookies(jar, (arg & 1) != 0);
+    } else if op == 5 {
+        let _ = cookie::garbage_collect_global(jar, now_us);
+    } else if op == 6 {
+        ser_out.clear();
+        cookie::export_netscape(jar, ser_out);
+        let _ = cookie::import_netscape(jar, ser_out[..], now_us);
+    } else {
+        ser_out.clear();
+        cookie::export_json(jar, ser_out);
+        let _ = cookie::import_json(jar, ser_out[..], now_us);
+    }
+}
+
+fn fuzz_stateful_cookie_jar(data: const u8[:]) -> u64 {
+    var fdp = new_fdp(data);
+    var jar = cookie::CanonicalCookieJar { .. };
+    var hdr_out: u8[..2048] = [];
+    var ser_out: u8[>..]    = [];
+    var now_us:  i64        = 1700000000000000;
+    var steps:   i64        = 0;
+    while fdp_remaining(fdp) > 0 && steps < 16 {
+        steps = core::add_sat_i64(steps, 1);
+        let op = fdp_consume_u8(fdp) & 7;
+        let arg = fdp_consume_u16(fdp);
+        let clen = ((fdp_consume_u8(fdp) & 0x3F) as i64) | 1;
+        let chunk = fdp_consume_bytes(fdp, clen);
+        let delta = core::mul_sat_i64(core::sub_sat_i64(arg, 32768), 1000000);
+        now_us = core::add_sat_i64(now_us, delta);
+        step_stateful_cookie_jar_op(jar, op, arg, chunk, now_us, hdr_out, ser_out);
+    }
+    return 0xC0B0 ^ (hdr_out.len as u64) ^ (ser_out.len as u64);
+}
+
 // ---- Target 12: SFV, Cookie, URL, Compression & BHTTP/OHTTP/PrivacyPass ----
 // Ported from vendor/sfparse/fuzz/parser.cc, vendor/cookie-rs/fuzz/fuzz_targets/parser.rs,
 // vendor/uWebSockets/libdeflate/scripts/libFuzzer & vendor/zstd/tests/fuzz
@@ -938,6 +1067,7 @@ fn fuzz_target_url_cookie_sfv_compress(data: const u8[:]) -> u64 {
     if cookie::set_cookie_header(jar, "https://example.com/path", data, 1700000000000000, true) {
         sig = fuzz_mix_state(sig, 0xC010);
     }
+    sig = fuzz_mix_state(sig, fuzz_stateful_cookie_jar(data));
     let ns_cookie, ns_ok = cookie::try_parse_netscape_cookie_line(data);
     if ns_ok {
         assert(ns_cookie.domain.len > 0 && ns_cookie.domain[0] != '.');
@@ -1364,6 +1494,70 @@ fn feed_and_step_tls_endpoint(ep: tls::TlsEndpoint&, data: const u8[:]) -> u64 {
     return sig;
 }
 
+fn step_stateful_tls_stream_op(
+    cli_st: tls::TlsStream&,
+    p_slot: u16,
+    srv_fd: i64,
+    op:     u8,
+    chunk:  const u8[:],
+    rx_buf: u8[:],
+) -> u64 {
+    if op == 0 {
+        let _ = net::fd_send(srv_fd, chunk);
+        return 0x15100;
+    }
+    if op == 1 {
+        let _ = tls::tls_stream_step_handshake(cli_st);
+        return 0x15101;
+    }
+    if op == 2 {
+        let _, _ = tls::tls_stream_write(cli_st, chunk);
+        return 0x15102;
+    }
+    if op == 3 {
+        let nr, _ = tls::tls_stream_read(cli_st, rx_buf);
+        return 0x15103 ^ (nr as u64);
+    }
+    if op == 4 {
+        let _, _ = tls::tls_stream_flush_wire(cli_st);
+        return 0x15104;
+    }
+    if op == 5 {
+        return 0x15105 ^ (tls::tls_stream_poll_events(cli_st) as u64);
+    }
+    if op == 6 {
+        let _ = tls::tls_stream_shutdown(cli_st);
+        return 0x15106;
+    }
+    let _ = net::virtual_pipe_inject_rst(p_slot, true);
+    return 0x15107;
+}
+
+fn fuzz_stateful_tls_stream(data: const u8[:], cli_cfg: const tls::TlsBackendConfig&) -> u64 {
+    let p_slot, p_ok = net::alloc_virtual_pipe_slot();
+    guard p_ok else { return 0; }
+    defer net::free_virtual_pipe_slot(p_slot);
+
+    let cli_fd = net::virtual_pipe_to_fd(p_slot, false);
+    let srv_fd = net::virtual_pipe_to_fd(p_slot, true);
+    var cli_st, c_open = tls::tls_stream_open(cli_fd, cli_cfg);
+    guard c_open == tls::TlsBackendStatus.Ok else { return 0; }
+    defer tls::tls_stream_close(cli_st);
+
+    var fdp = new_fdp(data);
+    var rx_buf: u8[256] = [0; 256];
+    var sig:    u64     = 0x15100;
+    var steps:  i64     = 0;
+    while fdp_remaining(fdp) > 0 && steps < 8 {
+        steps = core::add_sat_i64(steps, 1);
+        let op = fdp_consume_u8(fdp) & 7;
+        let clen = ((fdp_consume_u8(fdp) & 0x3F) as i64) | 1;
+        let chunk = fdp_consume_bytes(fdp, clen);
+        sig = fuzz_mix_state(sig, step_stateful_tls_stream_op(cli_st, p_slot, srv_fd, op, chunk, rx_buf[..]));
+    }
+    return sig;
+}
+
 // ---- Target 20: PureGoose TlsEndpoint Sans-IO Wire Fuzzing -----------------
 fn fuzz_target_tls_endpoint(data: const u8[:]) -> u64 {
     var sig: u64 = 0x15000;
@@ -1400,6 +1594,7 @@ fn fuzz_target_tls_endpoint(data: const u8[:]) -> u64 {
         tls::tls_endpoint_close(cli_ep);
         assert(!tls::tls_endpoint_is_established(cli_ep));
     }
+    sig = fuzz_mix_state(sig, fuzz_stateful_tls_stream(data, cli_cfg));
     return sig;
 }
 
@@ -1553,7 +1748,9 @@ fn dispatch_dst_fuzz_op(
     }
     if op == 4 {
         net::dst_jump_clock(world, ((arg as u64) & 0x3FF) * 1000);
-        let skew = core::sub_sat_i64((arg as i64) & 0xFF, 128);
+        let wall_delta = core::mul_sat_i64(core::sub_sat_i64(arg & 0xFF, 128), 1000000000);
+        net::dst_step_wall_clock(world, wall_delta);
+        let skew = core::sub_sat_i64(arg & 0xFF, 128);
         let _ = net::dst_set_endpoint_skew(world, ep_a, skew);
         return;
     }

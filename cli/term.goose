@@ -28,6 +28,72 @@ fn c_seq(seq: const u8[:], no_color: bool) -> const u8[:] {
     return if no_color { "" } else { seq };
 }
 
+inline fn is_escaped_terminal_codepoint(cp: i64) -> bool {
+    if cp >= 0x80 && cp <= 0x9F { return true; }
+    if cp >= 0x200E && cp <= 0x200F { return true; }
+    if cp >= 0x202A && cp <= 0x202E { return true; }
+    if cp >= 0x2066 && cp <= 0x2069 { return true; }
+    return cp >= 0xE0000 && cp <= 0xE007F;
+}
+
+inline fn append_escaped_hex_bytes<B>(bytes: const u8[:], out: B&) {
+    for b in bytes {
+        out.append("\\x");
+        b.format_u8_hex(out, true);
+    }
+}
+
+// Escapes C0 controls (except `\n` and `\t`), `DEL`, `ESC`, C1 controls (`0x80..0x9F`),
+// Unicode Bidi controls (`U+200E..U+200F`, `U+202A..U+202E`, `U+2066..U+2069`), and Tag
+// characters (`U+E0000..U+E007F`) as `\xHH` while keeping safe text intact.
+//
+// Example:
+//   input = "hi\x1b]52;c;AA\x07"
+//   appends: "hi\\x1B]52;c;AA\\x07"
+fn sanitize_terminal_text<B>(input: const u8[:], out: B&) {
+    var i: i64 = 0;
+    while i < input.len {
+        let b = input[i];
+        if b < 0x80 {
+            if b == '\n' || b == '\t' || (b >= 0x20 && b != 0x7F) {
+                out.push(b);
+            } else {
+                out.append("\\x");
+                b.format_u8_hex(out, true);
+            }
+            i = core::add_sat_i64(i, 1);
+            continue;
+        }
+        let cp, size, valid = core::decode_utf8(input[i..]);
+        let step = max(1, min(size, core::sub_sat_i64(input.len, i)));
+        let seq = input[i..core::add_sat_i64(i, step)];
+        if !valid || is_escaped_terminal_codepoint(cp) {
+            append_escaped_hex_bytes(seq, out);
+        } else {
+            out.append(seq);
+        }
+        i = core::add_sat_i64(i, step);
+    }
+}
+
+inline fn append_cli_text<B>(src: const u8[:], raw_output: bool, out: B&) {
+    if raw_output {
+        out.append(src);
+    } else {
+        sanitize_terminal_text(src, out);
+    }
+}
+
+inline fn is_redacted_verbose_req_header(name: const u8[:]) -> bool {
+    return name.eq_ascii_fold("authorization") ||
+           name.eq_ascii_fold("proxy-authorization") ||
+           name.eq_ascii_fold("cookie");
+}
+
+inline fn is_redacted_diag_resp_header(name: const u8[:]) -> bool {
+    return name.eq_ascii_fold("set-cookie") || is_redacted_verbose_req_header(name);
+}
+
 fn print_help(no_color: bool) {
     var out: u8[>..] = [];
     out.append(c_seq(ANSI_BOLD, no_color));
@@ -59,7 +125,9 @@ fn print_help(no_color: bool) {
     out.append("  -O, --remote-name          Write response body to file named after URL tail\n");
     out.append("  -D, --dump-header <FILE>   Write received HTTP response headers to file\n");
     out.append("      --bearer <TOKEN>       Set Authorization: Bearer <TOKEN>\n");
+    out.append("      --bearer-file <FILE>   Read Bearer token from file (trailing CR/LF trimmed)\n");
     out.append("  -u, --user <USER:PASS>     Set RFC 7616 Digest / Basic credentials\n");
+    out.append("      --user-file <FILE>     Read USER:PASS credentials from file (CR/LF trimmed)\n");
     out.append("  -x, --proxy <URL>          Use HTTP CONNECT or SOCKS5/5h proxy (or HTTPS_PROXY env)\n");
     out.append("      --noproxy <HOSTS>      Comma-separated proxy bypass list (or NO_PROXY env)\n");
     out.append("      --resolve <H:P:IP>     Pin host:port to IPv4 in wing's in-memory DNS cache\n");
@@ -69,6 +137,8 @@ fn print_help(no_color: bool) {
     out.append("      --h2c                  Use HTTP/2 Prior Knowledge (RFC 9113)\n");
     out.append("      --http1.1              Force HTTP/1.1 ALPN negotiation\n");
     out.append("      --compressed           Request compressed response (zstd, br, gzip; default)\n");
+    out.append("      --ssrf-guard           Enable SSRF guard (use --allow-loopback for localhost)\n");
+    out.append("      --allow-loopback       Allow loopback targets when --ssrf-guard is enabled\n");
     out.append("  -k, --insecure             Skip TLS certificate verification\n");
     out.append("      --cacert <FILE>        CA certificate PEM file to verify peer against\n");
     out.append("  -L, --location             Follow redirects (default; use --no-follow to disable)\n");
@@ -78,6 +148,7 @@ fn print_help(no_color: bool) {
     out.append("                             %{time_total}, %{url_effective}, %{redirect_url}, %{scheme})\n");
     out.append("  -i, --include              Print response status line and headers\n");
     out.append("  -v, --verbose              Print request, JA4/Akamai fingerprints, timings, and headers\n");
+    out.append("      --raw                  Disable terminal control/Bidi escaping on output\n");
     out.append("      --no-color             Disable ANSI colors (or set NO_COLOR=1)\n\n");
 
     out.append(c_seq(ANSI_CYAN, no_color));
@@ -111,22 +182,27 @@ fn print_client_verbose_request(
 
     out.append(c_seq(ANSI_DIM, nc));
     out.append("* Profile: ");
-    out.append(sess.profile.name());
+    sanitize_terminal_text(sess.profile.name(), out);
     out.append(" | JA4: ");
-    out.append(ja4_fp[..]);
+    sanitize_terminal_text(ja4_fp[..], out);
     out.append(" | Akamai-H2: ");
-    out.append(ak_hash[..]);
+    sanitize_terminal_text(ak_hash[..], out);
     out.push('\n');
     out.append("> ");
-    out.append(req.method[..]);
+    sanitize_terminal_text(req.method[..], out);
     out.push(' ');
-    out.append(req.url[..]);
+    sanitize_terminal_text(req.url[..], out);
     out.push('\n');
     for &e in req.headers.entries {
+        let h_name = req.headers.entry_name(e);
         out.append("> ");
-        out.append(req.headers.entry_name(e));
+        sanitize_terminal_text(h_name, out);
         out.append(": ");
-        out.append(req.headers.entry_value(e));
+        if http::is_sensitive(e) || is_redacted_verbose_req_header(h_name) {
+            out.append("<redacted>");
+        } else {
+            sanitize_terminal_text(req.headers.entry_value(e), out);
+        }
         out.push('\n');
     }
     out.append(c_seq(ANSI_RESET, nc));
@@ -168,20 +244,21 @@ fn append_write_out_var<B>(
     req:        const http::Request&,
     res:        const http::Response&,
     elapsed_ms: u64,
+    raw_output: bool,
     out:        B&,
 ) {
     append_write_out_numeric_var(var_name, req, res, elapsed_ms, out);
     if var_name == "url_effective" {
-        out.append(res.effective_url[..]);
+        append_cli_text(res.effective_url[..], raw_output, out);
     } else if var_name == "redirect_url" {
-        out.append(res.header("location"));
+        append_cli_text(res.header("location"), raw_output, out);
     } else if var_name == "http_version" {
-        out.append(res.protocol[..]);
+        append_cli_text(res.protocol[..], raw_output, out);
     } else if var_name == "content_type" {
-        out.append(res.header("content-type"));
+        append_cli_text(res.header("content-type"), raw_output, out);
     } else if var_name == "scheme" {
         let pu, _ = core::parse_url(res.effective_url[..]);
-        out.append(pu.scheme());
+        append_cli_text(pu.scheme(), raw_output, out);
     }
 }
 
@@ -190,6 +267,7 @@ fn format_write_out<B>(
     req:        const http::Request&,
     res:        const http::Response&,
     elapsed_ms: u64,
+    raw_output: bool,
     out:        B&,
 ) {
     var rem = fmt;
@@ -207,7 +285,7 @@ fn format_write_out<B>(
         if core::starts_with(rem, "%{") {
             let var_name, after_brace, has_close = rem[2..].split_once_byte('}');
             if has_close && var_name.len > 0 {
-                append_write_out_var(var_name, req, res, elapsed_ms, out);
+                append_write_out_var(var_name, req, res, elapsed_ms, raw_output, out);
                 rem = after_brace;
                 continue;
             }
@@ -217,6 +295,56 @@ fn format_write_out<B>(
     }
 }
 
+fn append_client_response_headers(
+    cfg:        const CliConfig&,
+    res:        const http::Response&,
+    elapsed_ms: u64,
+    out:        u8[>..]&,
+) {
+    let nc = cfg.no_color;
+    let sc_col = status_color(res.status_code, nc);
+    out.append(c_seq(ANSI_BOLD, nc));
+    append_cli_text(res.protocol[..], cfg.raw_output, out);
+    out.push(' ');
+    out.append(sc_col);
+    res.status_code.format_i64_dec(out);
+    out.push(' ');
+    out.append(rfc::status_phrase(res.status_code));
+    out.append(c_seq(ANSI_RESET, nc));
+
+    if cfg.verbose {
+        out.append(c_seq(ANSI_DIM, nc));
+        out.append(" (");
+        elapsed_ms.format_u64_dec(out);
+        out.append(" ms, ");
+        res.body.len.format_i64_dec(out);
+        out.append(" B");
+        if res.redirect_count > 0 {
+            out.append(", redirects: ");
+            res.redirect_count.format_i64_dec(out);
+        }
+        out.push(')');
+        out.append(c_seq(ANSI_RESET, nc));
+    }
+    out.push('\n');
+
+    for &e in res.headers.entries {
+        let h_name = res.headers.entry_name(e);
+        let h_val = res.headers.entry_value(e);
+        out.append(c_seq(ANSI_CYAN, nc));
+        append_cli_text(h_name, cfg.raw_output, out);
+        out.append(c_seq(ANSI_RESET, nc));
+        out.append(": ");
+        if cfg.verbose && is_redacted_diag_resp_header(h_name) {
+            out.append("<redacted>");
+        } else {
+            append_cli_text(h_val, cfg.raw_output, out);
+        }
+        out.push('\n');
+    }
+    out.push('\n');
+}
+
 fn print_client_response(
     cfg:        const CliConfig&,
     req:        const http::Request&,
@@ -224,52 +352,16 @@ fn print_client_response(
     elapsed_ms: u64,
 ) {
     var out: u8[>..] = [];
-    let nc = cfg.no_color;
-
     if cfg.show_headers {
-        let sc_col = status_color(res.status_code, nc);
-        out.append(c_seq(ANSI_BOLD, nc));
-        out.append(res.protocol[..]);
-        out.push(' ');
-        out.append(sc_col);
-        res.status_code.format_i64_dec(out);
-        out.push(' ');
-        out.append(rfc::status_phrase(res.status_code));
-        out.append(c_seq(ANSI_RESET, nc));
-
-        if cfg.verbose {
-            out.append(c_seq(ANSI_DIM, nc));
-            out.append(" (");
-            elapsed_ms.format_u64_dec(out);
-            out.append(" ms, ");
-            res.body.len.format_i64_dec(out);
-            out.append(" B");
-            if res.redirect_count > 0 {
-                out.append(", redirects: ");
-                res.redirect_count.format_i64_dec(out);
-            }
-            out.push(')');
-            out.append(c_seq(ANSI_RESET, nc));
-        }
-        out.push('\n');
-
-        for &e in res.headers.entries {
-            out.append(c_seq(ANSI_CYAN, nc));
-            out.append(res.headers.entry_name(e));
-            out.append(c_seq(ANSI_RESET, nc));
-            out.append(": ");
-            out.append(res.headers.entry_value(e));
-            out.push('\n');
-        }
-        out.push('\n');
+        append_client_response_headers(cfg, res, elapsed_ms, out);
     }
 
     if cfg.output_file.len == 0 && !cfg.head_only && res.body.len > 0 {
-        out.append(res.body[..]);
-        if !core::ends_with(res.body[..], "\n") { out.push('\n'); }
+        append_cli_text(res.body[..], cfg.raw_output, out);
+        if out.len > 0 && out[out.len - 1] != '\n' { out.push('\n'); }
     }
 
-    if cfg.write_out.len > 0 { format_write_out(cfg.write_out[..], req, res, elapsed_ms, out); }
+    if cfg.write_out.len > 0 { format_write_out(cfg.write_out[..], req, res, elapsed_ms, cfg.raw_output, out); }
     if out.len > 0 { write_stdout(out); }
 }
 
@@ -285,10 +377,10 @@ fn log_server_exchange(
     out.append("[serve] ");
     out.append(c_seq(ANSI_RESET, no_color));
     out.append(c_seq(ANSI_BOLD, no_color));
-    out.append(method);
+    sanitize_terminal_text(method, out);
     out.append(c_seq(ANSI_RESET, no_color));
     out.push(' ');
-    out.append(url);
+    sanitize_terminal_text(url, out);
     out.append(" -> ");
     out.append(status_color(status, no_color));
     status.format_i64_dec(out);
@@ -298,7 +390,7 @@ fn log_server_exchange(
     if note.len > 0 {
         out.append(c_seq(ANSI_DIM, no_color));
         out.append(" (");
-        out.append(note);
+        sanitize_terminal_text(note, out);
         out.push(')');
         out.append(c_seq(ANSI_RESET, no_color));
     }

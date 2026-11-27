@@ -75,6 +75,7 @@ struct PnSpaceState {
     largest_acked_ect1:            u64                   = 0,
     largest_acked_ce:              u64                   = 0,
     tx_ect0_sent:                  u64                   = 0,
+    skipped_pns:                   u64[..16]             = [],
     ecn_state:                     QuicEcnState          = QuicEcnState.Testing,
     has_acked_packets:             bool                  = false,
     largest_recv_pn:               u64                   = 0,
@@ -325,6 +326,32 @@ fn build_ack_frame(ranges: const AckInterval[..64]&, ack_delay: u64, is_ecn: boo
 // Example:
 //   space.largest_sent_pn = 10, ack = AckFrame { largest_acked: 10, first_ack_range: 2 }
 //   returns: ok = true, out = [AckInterval { smallest: 8, largest: 10 }]
+// Records a skipped packet number in a bounded 16-entry FIFO ring for optimistic ACK detection.
+fn record_skipped_pn(space: PnSpaceState&, pn: u64) {
+    if space.skipped_pns.len >= 16 {
+        for i in 15 {
+            space.skipped_pns[i] = space.skipped_pns[i + 1];
+        }
+        space.skipped_pns.resize(15);
+    }
+    guard space.skipped_pns.try_push(pn) else { return; }
+}
+
+fn interval_hits_skipped_pn(space: const PnSpaceState&, iv: AckInterval) -> bool {
+    for i in space.skipped_pns.len {
+        let spn = space.skipped_pns[i];
+        if spn >= iv.smallest && spn <= iv.largest {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Parses and validates an ACK frame against sent packet bounds and skipped PNs (RFC 9000 Section 13.1).
+//
+// Example:
+//   ack = { largest_acked: 5, first_ack_range: 1 }, space.largest_sent_pn = 5
+//   returns: out = [{4, 5}], ok = true
 fn parse_and_validate_ack<B>(
     space: const PnSpaceState&,
     ack:   const AckFrame&,
@@ -336,7 +363,12 @@ fn parse_and_validate_ack<B>(
 
     out.clear();
     let first_smallest = core::sub_sat_u64(ack.largest_acked, ack.first_ack_range);
-    guard out.try_push(AckInterval { smallest: first_smallest, largest: ack.largest_acked }) else {
+    let first_iv = AckInterval { smallest: first_smallest, largest: ack.largest_acked };
+    guard !interval_hits_skipped_pn(space, first_iv) else {
+        out.clear();
+        return false;
+    }
+    guard out.try_push(first_iv) else {
         out.clear();
         return false;
     }
@@ -345,7 +377,7 @@ fn parse_and_validate_ack<B>(
     for i in ack.ranges.len {
         let r = ack.ranges[i];
         let iv, ok_iv = quic_internal::step_descending_ack_range(cur_smallest, r.gap, r.ack_range);
-        guard ok_iv && out.try_push(iv) else {
+        guard ok_iv && !interval_hits_skipped_pn(space, iv) && out.try_push(iv) else {
             out.clear();
             return false;
         }
@@ -472,10 +504,14 @@ fn validate_ecn(
         space.ecn_state = QuicEcnState.Failed;
         return 0, false;
     }
+    if space.ecn_state != QuicEcnState.Capable && ecn_acked_pkts > 0 && ect0_delta == 0 {
+        space.ecn_state = QuicEcnState.Failed;
+        return 0, false;
+    }
     space.largest_acked_ect0 = ack.ect0_count;
     space.largest_acked_ect1 = ack.ect1_count;
     space.largest_acked_ce = ack.ecn_ce_count;
-    if total_delta > 0 && space.ecn_state != QuicEcnState.Capable {
+    if ecn_acked_pkts > 0 && ect0_delta > 0 && space.ecn_state != QuicEcnState.Capable {
         space.ecn_state = QuicEcnState.Capable;
     }
     return ce_delta, true;

@@ -349,14 +349,19 @@ inline fn has_route_cache_blocking_request_headers(req: const http::Request&) ->
     return has_auth || has_cookie || req.body.len > 0;
 }
 
-fn build_route_cache_key(req: const http::Request&, out: u8[..256]&) -> bool {
+fn build_route_cache_key(
+    req:       const http::Request&,
+    out:       u8[..256]&,
+    canon_url: const u8[:] = "",
+) -> bool {
     out.clear();
-    guard !is_bad_route_cache_target(req.url[..]) else { return false; }
+    let eff_url = if canon_url.len > 0 { canon_url } else { req.url[..] };
+    guard !is_bad_route_cache_target(eff_url) else { return false; }
     let raw_host = http::header(req, rfc::HEADER_HOST).trim_lws();
     var host_lower: u8[..256] = [];
     guard raw_host.len <= host_lower.cap else { return false; }
     raw_host.to_lower_ascii(host_lower);
-    return out.try_append(host_lower[..]) && out.try_push(0) && out.try_append(req.url[..]);
+    return out.try_append(host_lower[..]) && out.try_push(0) && out.try_append(eff_url);
 }
 
 // Stage 10 (Server Ingress): Coalescing route cache lookup via UFCS `cache.cache_lookup(now_ms)`.
@@ -365,7 +370,8 @@ fn stage_server_cache_lookup(
     req:        const http::Request&,
     now_ms:     u64,
     res:        http::Response&,
-    handler_id: i32 = -1,
+    handler_id: i32         = -1,
+    canon_url:  const u8[:] = "",
 ) -> wire::StageVerdict {
     // RFC 9111 Section 3.5: Bypass shared route cache on Authorization, Cookie, body, or no-store/no-cache.
     let req_cc = http::parse_cache_control_headers(
@@ -378,7 +384,7 @@ fn stage_server_cache_lookup(
         return wire::StageVerdict.Continue;
     }
     var cache_key: u8[..256] = [];
-    guard build_route_cache_key(req, cache_key) else {
+    guard build_route_cache_key(req, cache_key, canon_url) else {
         return wire::StageVerdict.Continue;
     }
     let _prof = server_prof::lit_prof_enter("stage.cache_lookup");

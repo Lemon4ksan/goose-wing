@@ -211,6 +211,7 @@ struct H3EdgeSlot {
     ev_data_buf:            u8[..16384]              = [],
     ev_hdr_entries:         http::HeaderEntry[..512] = [],
     ev_hdr_raw:             u8[..65536]              = [],
+    tls_sni:                u8[..255]                = [],
 }
 
 var g_h3_edge_slots:      H3EdgeSlot[>..] = [];
@@ -670,6 +671,64 @@ fn h3_edge_open() -> H3EdgeSession {
     }
     reset_h3_edge_slot(idx, gen);
     return H3EdgeSession { slot_idx: idx, generation: gen };
+}
+
+inline fn normalize_h3_host_slice(raw: const u8[:]) -> const u8[:] {
+    let trimmed = raw.trim_lws();
+    guard trimmed.len > 0 else { return ""; }
+    var host_only = trimmed;
+    if trimmed[0] == '[' {
+        let close_b = trimmed.index_of_byte(']');
+        if close_b > 0 {
+            host_only = trimmed[..core::add_sat_i64(close_b, 1)];
+        }
+    } else {
+        let col = trimmed.last_index_of_byte(':');
+        if col > 0 {
+            host_only = trimmed[..col];
+        }
+    }
+    return if host_only.len > 1 && host_only[host_only.len - 1] == '.' {
+        host_only[..^1]
+    } else {
+        host_only
+    };
+}
+
+// Records the negotiated TLS SNI hostname on an HTTP/3 edge session.
+fn h3_edge_set_tls_sni(sess: H3EdgeSession&, tls_sni: const u8[:]) -> bool {
+    let slot_idx, ok = resolve_h3_edge_slot(sess);
+    guard ok else { return false; }
+    let norm = normalize_h3_host_slice(tls_sni);
+    let slot .= g_h3_edge_slots[slot_idx];
+    slot.tls_sni.clear();
+    guard norm.len == 0 || slot.tls_sni.try_set(norm) else { return false; }
+    return true;
+}
+
+// Checks whether decoded `:authority` or `host` conflicts with `sess.tls_sni`.
+// Returns `421` if misdirected, `0` if valid.
+fn h3_edge_validate_authority_sni(sess: const H3EdgeSession&, headers: const http::HeaderView&) -> i32 {
+    let slot_idx, ok = resolve_h3_edge_slot(sess);
+    guard ok else { return rfc::STATUS_BAD_REQUEST; }
+    let sni_host = normalize_h3_host_slice(g_h3_edge_slots[slot_idx].tls_sni[..]);
+    guard sni_host.len > 0 else { return 0; }
+    var auth_val: const u8[:] = headers.raw[..0];
+    var host_val: const u8[:] = headers.raw[..0];
+    for &ent in headers.entries {
+        let k = http::resolve_entry_name_buf(headers.raw, "", ent);
+        if k == ":authority" {
+            auth_val = http::resolve_entry_value_buf(headers.raw, "", ent);
+        } else if k == "host" {
+            host_val = http::resolve_entry_value_buf(headers.raw, "", ent);
+        }
+    }
+    let eff = if auth_val.len > 0 { auth_val } else { host_val };
+    let auth_host = normalize_h3_host_slice(eff);
+    guard auth_host.len > 0 && auth_host.eq_ascii_fold(sni_host) else {
+        return rfc::STATUS_MISDIRECTED_REQUEST;
+    }
+    return 0;
 }
 
 fn clear_ignored_uni_streams(slot: H3EdgeSlot&) {

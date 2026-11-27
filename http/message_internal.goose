@@ -200,7 +200,18 @@ fn parse_media_parameters(rem_in: const u8[:], mt: http::MediaType&) -> bool {
     return true;
 }
 
-// ---- http/problem.goose internal helpers ----
+// ---- http/problem.goose & redirect internal helpers -------------------------
+
+// Returns true if `uri` contains control characters or an unsafe executable scheme.
+fn is_unsafe_uri_scheme(uri: const u8[:]) -> bool {
+    for b in uri {
+        if b < 0x20 || b == 0x7F { return true; }
+    }
+    let trimmed = uri.trim_ascii_space();
+    return trimmed.starts_with_fold("javascript:") ||
+           trimmed.starts_with_fold("data:") ||
+           trimmed.starts_with_fold("vbscript:");
+}
 
 // RFC 9457 Section 3.1: Members of a Problem Details Object - Ignore members whose JSON type does not match.
 fn read_problem_string_member<B>(reader: json::Reader&, dst: B&, out_err: bool&) {
@@ -239,6 +250,9 @@ fn parse_problem_core_fields(
     }
     if key == "type" {
         read_problem_string_member(reader, out.type_uri, out_err);
+        if !out_err && is_unsafe_uri_scheme(out.type_uri[..]) {
+            out_err = true;
+        }
         return true;
     }
     return false;
@@ -265,6 +279,9 @@ fn parse_problem_descriptive_fields(
     }
     if key == "instance" {
         read_problem_string_member(reader, out.instance, out_err);
+        if !out_err && is_unsafe_uri_scheme(out.instance[..]) {
+            out_err = true;
+        }
         return true;
     }
     return false;

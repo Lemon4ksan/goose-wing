@@ -50,6 +50,8 @@ fn fe_carry(t: Fe10&) {
     var c7 = t.v[7] >> 25; t.v[7] &= 0x1FFFFFF; t.v[8] += c7;
     var c8 = t.v[8] >> 26; t.v[8] &= 0x3FFFFFF; t.v[9] += c8;
     var c9 = t.v[9] >> 25; t.v[9] &= 0x1FFFFFF; t.v[0] += c9 * 19;
+    let c0_2 = t.v[0] >> 26; t.v[0] &= 0x3FFFFFF; t.v[1] += c0_2;
+    let c1_2 = t.v[1] >> 25; t.v[1] &= 0x1FFFFFF; t.v[2] += c1_2;
 }
 
 // Contracts 10 limbs into canonical 32 little-endian bytes in [0, 2^255 - 20].
@@ -198,13 +200,46 @@ fn fe_mul(f: Fe10, g: Fe10) -> Fe10 {
     h.v[9] = f0 * g9 + f1 * g8 + f2 * g7 + f3 * g6 + f4 * g5 + f5 * g4 + f6 * g3 + f7 * g2 + f8 * g1 + f9 * g0;
 
     fe_carry(h);
-    fe_carry(h);
     return h;
 }
 
-// Field squaring: out = f^2 (mod 2^255 - 19).
+// Symmetric field squaring: out = f^2 (mod 2^255 - 19) using 55 multiplies.
+// crap:ignore
 fn fe_sq(f: Fe10) -> Fe10 {
-    return fe_mul(f, f);
+    let f0 = f.v[0]; let f1 = f.v[1]; let f2 = f.v[2]; let f3 = f.v[3]; let f4 = f.v[4];
+    let f5 = f.v[5]; let f6 = f.v[6]; let f7 = f.v[7]; let f8 = f.v[8]; let f9 = f.v[9];
+
+    let f5_19 = f5 * 19;
+    let f6_19 = f6 * 19;
+    let f7_19 = f7 * 19;
+    let f8_19 = f8 * 19;
+    let f9_19 = f9 * 19;
+
+    var h = Fe10 { .. };
+
+    h.v[0] = f0 * f0 +
+             4 * (f1 * f9_19 + f3 * f7_19) +
+             2 * (f5 * f5_19 + f2 * f8_19 + f4 * f6_19);
+    h.v[1] = 2 * (f0 * f1 + f2 * f9_19 + f3 * f8_19 + f4 * f7_19 + f5 * f6_19);
+    h.v[2] = 2 * (f0 * f2 + f1 * f1 + f4 * f8_19) +
+             4 * (f3 * f9_19 + f5 * f7_19) +
+             f6 * f6_19;
+    h.v[3] = 2 * (f0 * f3 + f1 * f2 + f4 * f9_19 + f5 * f8_19 + f6 * f7_19);
+    h.v[4] = 2 * (f0 * f4 + f6 * f8_19 + f7 * f7_19) +
+             4 * (f1 * f3 + f5 * f9_19) +
+             f2 * f2;
+    h.v[5] = 2 * (f0 * f5 + f1 * f4 + f2 * f3 + f6 * f9_19 + f7 * f8_19);
+    h.v[6] = 2 * (f0 * f6 + f2 * f4 + f3 * f3) +
+             4 * (f1 * f5 + f7 * f9_19) +
+             f8 * f8_19;
+    h.v[7] = 2 * (f0 * f7 + f1 * f6 + f2 * f5 + f3 * f4 + f8 * f9_19);
+    h.v[8] = 2 * (f0 * f8 + f2 * f6 + f9 * f9_19) +
+             4 * (f1 * f7 + f3 * f5) +
+             f4 * f4;
+    h.v[9] = 2 * (f0 * f9 + f1 * f8 + f2 * f7 + f3 * f6 + f4 * f5);
+
+    fe_carry(h);
+    return h;
 }
 
 // Multiplication by Curve25519 constant a24 = (486662 - 2) / 4 = 121665.
@@ -214,7 +249,6 @@ fn fe_mul121665(f: Fe10) -> Fe10 {
     for i in 10 {
         h.v[i] = f.v[i] * 121665;
     }
-    fe_carry(h);
     fe_carry(h);
     return h;
 }

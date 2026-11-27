@@ -36,7 +36,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-
 # --- Process RSS Memory Sampling ---
 
 def get_process_rss_mb(pid: int) -> float:
@@ -499,7 +498,7 @@ def run_live_socket_soak(
             tools_toxi = root / "tools" / "toxiproxy"
             if str(tools_toxi) not in sys.path:
                 sys.path.insert(0, str(tools_toxi))
-            from toxiproxy import ChaosProxy, LatencyToxic, SlicerToxic, BandwidthToxic
+            from toxiproxy import BandwidthToxic, ChaosProxy, LatencyToxic, SlicerToxic
             proxy = ChaosProxy(upstream_port=port)
             proxy_port = proxy.start_sync()
             toxiproxy_enabled = True

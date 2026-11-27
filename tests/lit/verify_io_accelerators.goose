@@ -350,6 +350,7 @@ fn test_h3_batched_udp_and_l2_kernel_bypass(srv: server::HttpServer&) {
     assert(net_internal::af_xdp_umem_write(xsk, 0, l2_pkt[..]));
     assert(net_internal::af_xdp_inject_loopback_rx(xsk, 0, l2_pkt.len as u32));
     var h3_ep = server::new_h3_server_endpoint();
+    h3_ep.allow_plaintext_h3 = true;
     let cfg_xdp = server::H3L2Config {
         backend:  server::H3L2Backend.AfXdp,
         local_ep: srv_ep,
@@ -438,6 +439,7 @@ fn test_cross_platform_live_batch_and_accelerators(srv: server::HttpServer&) {
     // 2. Verify UdpFallback path of serve_h3_l2 over live UDP socket
     var dummy_xsk = net_internal::new_af_xdp_socket();
     var h3_ep = server::new_h3_server_endpoint();
+    h3_ep.allow_plaintext_h3 = true;
     let cfg_fb = server::H3L2Config {
         backend: server::H3L2Backend.UdpFallback,
         udp_fd:  udp_srv,

@@ -251,6 +251,7 @@ inline fn set_static_response_content_type(res: http::Response&, ct: const u8[:]
             name_hash:     HASH_HDR_CONTENT_TYPE,
         });
         res.headers.header_contains_comma.push(false);
+        res.headers.bloom.add_header(rfc::HEADER_CONTENT_TYPE);
         res.presence_mask |= http::RES_PRESENCE_CONTENT_TYPE;
         return;
     }
@@ -418,7 +419,20 @@ inline fn match_custom_method_tree<B>(
     guard build_custom_method_route_key(method, eff_path, custom_key) else {
         return server::RouteMatchResult.NotFound;
     }
-    return server::match_path(router.trees[8].tree, custom_key[..], params, dummy_canon);
+    let res = server::match_path(router.trees[8].tree, custom_key[..], params, dummy_canon);
+    guard server::is_match_found(res) else { return res; }
+    let shift = core::add_sat_u64(1, method.len as u64) as u16;
+    for i in params.len {
+        let sp .= params.spans[i];
+        if sp.val_start >= shift && sp.val_end >= sp.val_start {
+            sp.val_start -= shift;
+            sp.val_end -= shift;
+        } else {
+            params.clear();
+            break;
+        }
+    }
+    return res;
 }
 
 inline fn match_tree_with_l0<B>(

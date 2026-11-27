@@ -150,24 +150,31 @@ fn fe_pow22523(z: Fe10) -> Fe10 {
 
 // ---- Extended Twisted Edwards Point Operations ---------------------------
 
-// Point Doubling: 2 * P1 on extended Edwards curve (4S + 4M).
-fn ed25519_point_double(p: EdPoint) -> EdPoint {
+// Point Doubling: 2 * P1 on extended Edwards curve (4S + 4M, optionally omitting T).
+fn ed25519_point_double_mode(p: EdPoint, with_t: bool) -> EdPoint {
     let a = fe_sq(p.X);
     let b = fe_sq(p.Y);
-    let c = fe_add(fe_sq(p.Z), fe_sq(p.Z));
+    let z2 = fe_sq(p.Z);
+    let c = fe_add(z2, z2);
     let d = fe_neg(a);
     let x_plus_y = fe_add(p.X, p.Y);
     let e = fe_sub(fe_sub(fe_sq(x_plus_y), a), b);
     let g = fe_add(d, b);
     let f = fe_sub(g, c);
     let h = fe_sub(d, b);
+    let t = if with_t { fe_mul(e, h) } else { Fe10 { .. } };
 
     return EdPoint {
         X: fe_mul(e, f),
         Y: fe_mul(g, h),
         Z: fe_mul(f, g),
-        T: fe_mul(e, h),
+        T: t,
     };
+}
+
+// Point Doubling: 2 * P1 on extended Edwards curve (4S + 4M).
+fn ed25519_point_double(p: EdPoint) -> EdPoint {
+    return ed25519_point_double_mode(p, true);
 }
 
 // Point Addition: P1 + P2 on extended Edwards curve (8M).
@@ -280,18 +287,41 @@ fn ed25519_point_decompress(b: const u8[32]&, out: EdPoint&) -> bool {
     return true;
 }
 
-// Constant-time scalar multiplication: [scalar] * point.
+// Branchless byte equality check returning 1 when equal and 0 otherwise.
+inline fn ct_eq_u8_bit(a: u8, b: u8) -> u8 {
+    let diff = (a ^ b) as u64;
+    let non_zero = (diff | (0 - diff)) >> 63;
+    return ct_barrier_u8((1 - non_zero) as u8);
+}
+
+// Constant-time linear scan selection over a 16-entry EdPoint window table.
+fn ed25519_table_select_ct(table: const EdPoint[16]&, idx: u8) -> EdPoint {
+    var acc = table[0];
+    for j in 1..16 {
+        let eq = ct_eq_u8_bit(idx, j as u8);
+        acc = ed25519_point_select(eq, table[j], acc);
+    }
+    return acc;
+}
+
+// Constant-time scalar multiplication via 4-bit fixed window: [scalar] * point.
 fn ed25519_scalarmult_ct(p: EdPoint, scalar: const u8[32]&) -> EdPoint {
-    var r = EdPoint { .. };
-    var base = p;
-    for byte_idx in 32 {
-        let b = scalar[byte_idx];
-        for bit_idx in 8 {
-            let bit = (b >> (bit_idx as u8)) & 1;
-            let sum = ed25519_point_add(r, base);
-            r = ed25519_point_select(bit, sum, r);
-            base = ed25519_point_double(base);
-        }
+    var table: EdPoint[16] = [EdPoint { .. }; 16];
+    table[1] = p;
+    for i in 2..16 {
+        table[i] = ed25519_point_add(table[i - 1], p);
+    }
+
+    var r = ed25519_table_select_ct(table, (scalar[31] >> 4) & 0x0F);
+    for step in 1..64 {
+        r = ed25519_point_double_mode(r, false);
+        r = ed25519_point_double_mode(r, false);
+        r = ed25519_point_double_mode(r, false);
+        r = ed25519_point_double(r);
+        let nib_idx = 63 - step;
+        let nibble = (scalar[nib_idx / 2] >> (((nib_idx & 1) * 4) as u8)) & 0x0F;
+        let sel = ed25519_table_select_ct(table, nibble);
+        r = ed25519_point_add(r, sel);
     }
     return r;
 }
@@ -477,26 +507,24 @@ fn ed25519_keypair(seed: const u8[32]&) -> Ed25519KeyPair {
     };
 }
 
-// Signs an arbitrary byte message using a 32-byte seed (RFC 8032 Section 5.1.6).
-// Returns 64-byte signature (R || S).
-fn ed25519_sign(seed: const u8[32]&, message: const u8[:]) -> u8[64] {
-    defer secure_scrub_stack();
+fn ed25519_expand_seed(seed: const u8[32]&, out_s: u8[32]&, out_prefix: u8[32]&) {
     var h = sha512(seed[..]);
-
-    var s:      u8[32] = [0; 32];
-    var prefix: u8[32] = [0; 32];
     for i in 32 {
-        s[i] = h[i];
-        prefix[i] = h[32 + i];
+        out_s[i] = h[i];
+        out_prefix[i] = h[32 + i];
     }
-    s[0] &= 248;
-    s[31] &= 127;
-    s[31] |= 64;
+    out_s[0] &= 248;
+    out_s[31] &= 127;
+    out_s[31] |= 64;
+    secure_zeroize_64(h);
+}
 
-    // Public key A = [s] * B
-    let a_pt = ed25519_scalarmult_base(s);
-    let a_bytes = ed25519_point_compress(a_pt);
-
+fn ed25519_sign_expanded(
+    s:       const u8[32]&,
+    prefix:  const u8[32]&,
+    a_bytes: const u8[32]&,
+    message: const u8[:],
+) -> u8[64] {
     // Nonce r = SHA-512(prefix || message) mod L
     var r_ctx = Sha512Ctx { .. };
     sha512_update(r_ctx, prefix[..]);
@@ -528,9 +556,6 @@ fn ed25519_sign(seed: const u8[32]&, message: const u8[:]) -> u8[64] {
 
     zeroize_sha512_ctx(r_ctx);
     zeroize_sha512_ctx(k_ctx);
-    secure_zeroize_64(h);
-    secure_zeroize_32(s);
-    secure_zeroize_32(prefix);
     secure_zeroize_64(r_hash);
     secure_zeroize_32(r);
     secure_zeroize_64(k_hash);
@@ -541,6 +566,38 @@ fn ed25519_sign(seed: const u8[32]&, message: const u8[:]) -> u8[64] {
         return [0; 64];
     }
     return sig;
+}
+
+// Signs an arbitrary byte message using a 32-byte seed and pre-derived 32-byte public key (RFC 8032 Section 5.1.6).
+// Returns 64-byte signature (R || S).
+fn ed25519_sign_with_pub(
+    seed:    const u8[32]&,
+    pub_key: const u8[32]&,
+    message: const u8[:],
+) -> u8[64] {
+    defer secure_scrub_stack();
+    var s:      u8[32] = [0; 32];
+    var prefix: u8[32] = [0; 32];
+    defer secure_zeroize_32(s);
+    defer secure_zeroize_32(prefix);
+    ed25519_expand_seed(seed, s, prefix);
+    return ed25519_sign_expanded(s, prefix, pub_key, message);
+}
+
+// Signs an arbitrary byte message using a 32-byte seed (RFC 8032 Section 5.1.6).
+// Returns 64-byte signature (R || S).
+fn ed25519_sign(seed: const u8[32]&, message: const u8[:]) -> u8[64] {
+    defer secure_scrub_stack();
+    var s:      u8[32] = [0; 32];
+    var prefix: u8[32] = [0; 32];
+    defer secure_zeroize_32(s);
+    defer secure_zeroize_32(prefix);
+    ed25519_expand_seed(seed, s, prefix);
+
+    // Public key A = [s] * B
+    let a_pt = ed25519_scalarmult_base(s);
+    let a_bytes = ed25519_point_compress(a_pt);
+    return ed25519_sign_expanded(s, prefix, a_bytes, message);
 }
 
 fn compute_ed25519_challenge(r_bytes: const u8[32], public_key: const u8[32], message: const u8[:]) -> u8[32] {

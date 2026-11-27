@@ -32,8 +32,67 @@ _Static_assert(offsetof(wing_dpdk_rw_slice, len) == sizeof(void *), "wing_dpdk_r
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
 
+#define WING_DPDK_MAX_HANDLES 4096
+
 static struct rte_mempool *g_dpdk_mbuf_pool = NULL;
+static uint32_t g_dpdk_mbuf_elem_size = 0;
 static int g_dpdk_eal_ready = 0;
+
+static struct rte_mbuf *g_dpdk_mbufs[WING_DPDK_MAX_HANDLES];
+static uint32_t g_dpdk_mbuf_gen[WING_DPDK_MAX_HANDLES];
+static uint32_t g_dpdk_mbuf_cursor = 0;
+static uint32_t g_dpdk_next_gen = 0;
+static volatile int g_dpdk_handle_lock = 0;
+
+static void dpdk_lock_handles(void) {
+    while (__atomic_test_and_set(&g_dpdk_handle_lock, __ATOMIC_ACQUIRE)) {
+    }
+}
+
+static void dpdk_unlock_handles(void) { __atomic_clear(&g_dpdk_handle_lock, __ATOMIC_RELEASE); }
+
+static uint64_t dpdk_register_mbuf(struct rte_mbuf *m) {
+    if (!m) return 0;
+    dpdk_lock_handles();
+    uint64_t handle = 0;
+    for (uint32_t step = 0; step < WING_DPDK_MAX_HANDLES; step++) {
+        uint32_t idx = (g_dpdk_mbuf_cursor + step) % WING_DPDK_MAX_HANDLES;
+        if (g_dpdk_mbufs[idx] == NULL) {
+            g_dpdk_next_gen = (g_dpdk_next_gen + 1U) & 0x7FFFFFFFU;
+            if (g_dpdk_next_gen == 0U) g_dpdk_next_gen = 1U;
+            g_dpdk_mbufs[idx] = m;
+            g_dpdk_mbuf_gen[idx] = g_dpdk_next_gen;
+            g_dpdk_mbuf_cursor = (idx + 1U) % WING_DPDK_MAX_HANDLES;
+            handle = ((uint64_t)g_dpdk_next_gen << 16) | (uint64_t)(idx + 1U);
+            break;
+        }
+    }
+    dpdk_unlock_handles();
+    return handle;
+}
+
+static struct rte_mbuf *dpdk_lookup_mbuf_locked(uint64_t handle, uint32_t *out_idx) {
+    if (handle == 0) return NULL;
+    uint32_t idx1 = (uint32_t)(handle & 0xFFFFU);
+    uint32_t gen = (uint32_t)(handle >> 16);
+    if (idx1 == 0 || idx1 > WING_DPDK_MAX_HANDLES || gen == 0) return NULL;
+    uint32_t idx = idx1 - 1U;
+    if (g_dpdk_mbufs[idx] == NULL || g_dpdk_mbuf_gen[idx] != gen) return NULL;
+    if (out_idx) *out_idx = idx;
+    return g_dpdk_mbufs[idx];
+}
+
+static struct rte_mbuf *dpdk_take_mbuf(uint64_t handle) {
+    dpdk_lock_handles();
+    uint32_t idx = 0;
+    struct rte_mbuf *m = dpdk_lookup_mbuf_locked(handle, &idx);
+    if (m != NULL) {
+        g_dpdk_mbufs[idx] = NULL;
+        g_dpdk_mbuf_gen[idx] = 0;
+    }
+    dpdk_unlock_handles();
+    return m;
+}
 
 int32_t wing_dpdk_probe(void) {
 #if defined(__linux__)
@@ -57,22 +116,29 @@ int32_t wing_dpdk_eal_init(void) {
 }
 
 uint64_t wing_dpdk_pktmbuf_pool_create(uint32_t n_elements, uint32_t element_size, int32_t socket_id) {
-    if (n_elements == 0 || element_size == 0 || element_size > 65535U) {
+    if (n_elements == 0 || element_size < 256U || element_size > 65535U) {
         return 0;
     }
     if (!g_dpdk_eal_ready && wing_dpdk_eal_init() != 0) {
         return 0;
     }
     if (g_dpdk_mbuf_pool != NULL) {
+        if (element_size != g_dpdk_mbuf_elem_size) {
+            return 0;
+        }
         return (uint64_t)(uintptr_t)g_dpdk_mbuf_pool;
     }
     g_dpdk_mbuf_pool = rte_pktmbuf_pool_create("wing_mbuf_pool", n_elements, 256, 0, (uint16_t)element_size, socket_id);
+    if (g_dpdk_mbuf_pool != NULL) {
+        g_dpdk_mbuf_elem_size = element_size;
+    }
     return (uint64_t)(uintptr_t)g_dpdk_mbuf_pool;
 }
 
 void wing_dpdk_pktmbuf_free(uint64_t mbuf_ptr) {
-    if (mbuf_ptr != 0) {
-        rte_pktmbuf_free((struct rte_mbuf *)(uintptr_t)mbuf_ptr);
+    struct rte_mbuf *m = dpdk_take_mbuf(mbuf_ptr);
+    if (m != NULL) {
+        rte_pktmbuf_free(m);
     }
 }
 
@@ -125,10 +191,19 @@ uint16_t wing_dpdk_rx_burst(uint16_t port_id, uint16_t queue_id, uint64_t *pkts_
         uint16_t batch = (uint16_t)(nb_pkts - total);
         if (batch > 64) batch = 64;
         uint16_t got = rte_eth_rx_burst(port_id, queue_id, bufs, batch);
+        uint16_t stored = 0;
         for (uint16_t i = 0; i < got; i++) {
-            pkts_out[total + i] = (uint64_t)(uintptr_t)bufs[i];
+            uint64_t h = dpdk_register_mbuf(bufs[i]);
+            if (h == 0) {
+                for (uint16_t j = i; j < got; j++) {
+                    rte_pktmbuf_free(bufs[j]);
+                }
+                return (uint16_t)(total + stored);
+            }
+            pkts_out[total + stored] = h;
+            stored++;
         }
-        total = (uint16_t)(total + got);
+        total = (uint16_t)(total + stored);
         if (got < batch) break;
     }
     return total;
@@ -143,10 +218,21 @@ uint16_t wing_dpdk_tx_burst(uint16_t port_id, uint16_t queue_id, const uint64_t 
     while (total < nb_pkts) {
         uint16_t batch = (uint16_t)(nb_pkts - total);
         if (batch > 64) batch = 64;
+        uint16_t valid = 0;
+        dpdk_lock_handles();
         for (uint16_t i = 0; i < batch; i++) {
-            bufs[i] = (struct rte_mbuf *)(uintptr_t)pkts_in[total + i];
+            struct rte_mbuf *m = dpdk_lookup_mbuf_locked(pkts_in[total + i], NULL);
+            if (m == NULL) {
+                break;
+            }
+            bufs[valid++] = m;
         }
-        uint16_t sent = rte_eth_tx_burst(port_id, queue_id, bufs, batch);
+        dpdk_unlock_handles();
+        if (valid == 0) break;
+        uint16_t sent = rte_eth_tx_burst(port_id, queue_id, bufs, valid);
+        for (uint16_t i = 0; i < sent; i++) {
+            (void)dpdk_take_mbuf(pkts_in[total + i]);
+        }
         total = (uint16_t)(total + sent);
         if (sent < batch) break;
     }

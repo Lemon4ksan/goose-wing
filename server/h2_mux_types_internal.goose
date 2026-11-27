@@ -75,6 +75,7 @@ struct H2ServerSession {
     header_accum_rejected_err: u32                  = 0,
     header_accum_end_stream:   bool                 = false,
     header_accum_is_trailer:   bool                 = false,
+    tls_sni:                   u8[..255]            = [],
 }
 
 fn flush_server_control_frames(sess: H2ServerSession&) {
@@ -358,6 +359,16 @@ inline fn calc_data_chunk_size(rem: i64, limit: i64, quota: i64) -> i64 {
     return min(clamped_rem, quota);
 }
 
+inline fn calc_wire_out_avail_payload(out: const u8[>..]&) -> i64 {
+    let _ = out;
+    return 1048576;
+}
+
+inline fn calc_wire_out_avail_payload<B>(out: const B&) -> i64 {
+    let rem = core::sub_sat_i64(out.cap, out.len);
+    return core::sub_sat_i64(rem, rfc::H2_FRAME_HEADER_LEN);
+}
+
 fn emit_one_data_frame<B>(
     sess:       H2ServerSession&,
     stream_id:  u32,
@@ -371,7 +382,11 @@ fn emit_one_data_frame<B>(
     end_stream: bool,
 ) -> i64 {
     let rem = core::sub_sat_i64(body.len, offset);
-    let chunk_size = calc_data_chunk_size(rem, limit, quota);
+    let avail_payload = calc_wire_out_avail_payload(out);
+    guard avail_payload > 0 else { return 0; }
+    let eff_limit = min(limit, avail_payload);
+    let chunk_size = calc_data_chunk_size(rem, eff_limit, quota);
+    guard chunk_size > 0 else { return 0; }
     let next_off = core::add_sat_i64(offset, chunk_size);
     let is_last = (next_off >= body.len);
     let flags: u8 = if is_last && end_stream { rfc::H2_FLAG_END_STREAM } else { 0 };
@@ -411,6 +426,9 @@ fn emit_response_data<B>(
         let chunk_size = emit_one_data_frame(
             sess, stream_id, body, offset, limit, quota, c_idx, found, out, end_stream,
         );
+        if chunk_size <= 0 {
+            break;
+        }
         offset = core::add_sat_i64(offset, chunk_size);
     }
     return offset;

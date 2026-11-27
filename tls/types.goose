@@ -194,6 +194,11 @@ struct CachedSessionTicket {
     lifetime:             u32        = 0,
     cipher_suite:         u16        = 0,
     issued_at_ms:         i64        = 0,
+    port:                 u16        = 0,
+    tenant_hash:          u64        = 0,
+    alpn_hash:            u64        = 0,
+    policy_hash:          u64        = 0,
+    ca_policy_hash:       u64        = 0,
 }
 
 struct TicketStek {
@@ -423,6 +428,11 @@ struct CipherSlot {
     bytes_sent:             u64                = 0,
     empty_app_records:      u8                 = 0,
     warning_alerts:         u8                 = 0,
+    port:                   u16                = 0,
+    tenant_hash:            u64                = 0,
+    alpn_hash:              u64                = 0,
+    policy_hash:            u64                = 0,
+    ca_policy_hash:         u64                = 0,
     key_update_tracker:     KeyUpdateTracker   = KeyUpdateTracker { .. },
     ticket_cache:           SessionTicketCache = SessionTicketCache { .. },
 }
@@ -431,6 +441,8 @@ const MAX_EXPIRED_LEAF_GRACE_SEC: i64 = 2592000;
 
 struct ClientHandshakeConfig {
     server_name:            u8[..256]        = [],
+    port:                   u16              = 0,
+    tenant_hash:            u64              = 0,
     alpn:                   u8[..255]        = [],
     trust_store:            TrustAnchorStore = TrustAnchorStore { .. },
     use_system_roots:       bool             = true,
@@ -601,6 +613,8 @@ struct TlsBackendConfig {
     is_server:              bool             = false,
     defer_sni_credentials:  bool             = false,
     server_name:            u8[..256]        = [],
+    port:                   u16              = 0,
+    tenant_hash:            u64              = 0,
     alpn_wire:              u8[..64]         = [],
     require_alpn_match:     bool             = false,
     insecure_skip_verify:   bool             = false,

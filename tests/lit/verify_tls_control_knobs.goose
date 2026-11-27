@@ -376,8 +376,20 @@ fn test_session_tickets_pure_goose() {
     // 2a. Pre-seed global ticket cache and verify PureGoose backend skips lookup when disabled.
     tls::clear_session_tickets();
     let fake_psk: u8[32] = [0x77; 32];
+    let pre_pol_cfg = tls::ClientHandshakeConfig { insecure_skip_verify: true, .. };
+    let pre_pol_hash = tls_internal::compute_client_policy_hash(pre_pol_cfg);
     tls::store_session_ticket(
-        "tickets.example", "PRE_CACHED_TKT", fake_psk[..], 0x11223344, 3600,
+        "tickets.example",
+        "PRE_CACHED_TKT",
+        fake_psk[..],
+        0x11223344,
+        3600,
+        rfc::TLS_CIPHER_AES_128_GCM_SHA256,
+        0,
+        0,
+        0,
+        0,
+        pre_pol_hash,
     );
 
     var bcfg_no = tls::TlsBackendConfig {
@@ -439,7 +451,11 @@ fn test_session_tickets_pure_goose() {
     var out_psk: u8[..48]  = [];
     var out_age: u32       = 0;
     var out_cs:  u16       = 0;
-    let stored_when_disabled = tls::lookup_session_ticket_full("tickets.example", out_tkt, out_psk, out_age, out_cs);
+    let pol_hash = tls_internal::compute_client_policy_hash(cli_no_cfg);
+    let alpn_hash = tls_internal::compute_alpn_scope_hash(cli_no_cfg.alpn[..]);
+    let stored_when_disabled = tls::lookup_session_ticket_full(
+        "tickets.example", out_tkt, out_psk, out_age, out_cs, 0, 0, 0, alpn_hash, pol_hash,
+    );
 
     // Conn 3: enabled client receives NST and MUST store it globally.
     var cli_yes_cfg = cli_no_cfg;
@@ -451,8 +467,9 @@ fn test_session_tickets_pure_goose() {
     assert(tls::transport_recv_slice(fd3, s3, rx3[..], 5000) == 14 && rx3[..14] == "TICKET-PAYLOAD");
     assert(tls::transport_send(fd3, s3, "OK") == 2);
     tls::transport_close(fd3, s3);
-    let stored_when_enabled = tls::lookup_session_ticket_full("tickets.example", out_tkt, out_psk, out_age, out_cs) &&
-        out_tkt[..] == "SERVER_ISSUED_TKT_STORE_OK";
+    let stored_when_enabled = tls::lookup_session_ticket_full(
+        "tickets.example", out_tkt, out_psk, out_age, out_cs, 0, 0, 0, alpn_hash, pol_hash,
+    ) && out_tkt[..] == "SERVER_ISSUED_TKT_STORE_OK";
 
     assert(thread_wait(tid));
     net::tcp_close(listener);

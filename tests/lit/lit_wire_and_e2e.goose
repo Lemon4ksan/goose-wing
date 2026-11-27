@@ -174,6 +174,7 @@ fn test_reverse_proxy_hop_by_hop_sanitization() {
     var cfg = proxy::Config { .. };
     cfg.preserve_host = false;
     cfg.trust_incoming_xff = true;
+    let _ = cfg.trusted_proxy_cidrs.try_push("203.0.113.0/24");
     cfg.via_pseudonym.clear();
     cfg.via_pseudonym.append("wing-chaos");
 
@@ -707,21 +708,10 @@ fn test_live_proxy_tunnels() {
     assert(srv_conn_c > 0 && srv_conn_s > 0);
 
     g_e2e_client = client::Client { .. };
+    g_e2e_client.ssrf_guard.enabled = false;
     g_e2e_client.virtual_clock_us = 1;
     let _ = g_e2e_client.proxy_url.try_set("http://alice:s3cret@127.0.0.1:18888");
     let proxy_chain = client_internal::resolve_hop_proxy_chain(g_e2e_client);
-    let pkey = net::new_pool_key(
-        net::PoolScheme.Http, "127.0.0.1", srv_port,
-        proxy_chain,
-        net::new_network_anonymization_key("127.0.0.1", false),
-        net::TlsAndDnsPolicy { .. },
-    );
-    let tp_direct_tun: net::Transport = net::Transport.Tcp { fd: srv_conn_c };
-    let cid_tun = net::register_connection(
-        g_e2e_client.pool, pkey, net::NegotiatedProtocol.Http11, tp_direct_tun, "127.0.0.1", 1, 1000,
-    );
-    net::release_connection(g_e2e_client.pool, cid_tun, 1000);
-
     var url_tun: u8[..128] = [];
     url_tun.append("http://127.0.0.1:");
     core::format_u64_dec(srv_port, url_tun);
@@ -731,6 +721,29 @@ fn test_live_proxy_tunnels() {
     // Attach a Proxy-Authorization header that MUST be stripped by `execute_live_network_hop` when `!proxy_chain.is_direct`
     http::set_header(req_tun, "Proxy-Authorization", "Basic YWxpY2U6czNjcmV0");
     http::set_header(req_tun, "Proxy-Connection", "keep-alive");
+
+    let proxy_creds_h = if proxy_chain.servers.len > 0 {
+        proxy_chain.servers[0].proxy_creds_hash
+    } else {
+        0 as u64
+    };
+    let o_tun_h = core::wyhash64("127.0.0.1", srv_port);
+    let ten_tun_h = core::hash_combine_u64(core::hash_combine_u64(0, o_tun_h), o_tun_h);
+    let pkey = net::new_pool_key(
+        net::PoolScheme.Http, "127.0.0.1", srv_port,
+        proxy_chain,
+        net::new_network_anonymization_key("127.0.0.1", false),
+        net::TlsAndDnsPolicy {
+            tenant_id_hash:   ten_tun_h,
+            proxy_creds_hash: proxy_creds_h,
+            ..
+        },
+    );
+    let tp_direct_tun: net::Transport = net::Transport.Tcp { fd: srv_conn_c };
+    let cid_tun = net::register_connection(
+        g_e2e_client.pool, pkey, net::NegotiatedProtocol.Http11, tp_direct_tun, "127.0.0.1", 1, 1000,
+    );
+    net::release_connection(g_e2e_client.pool, cid_tun, 1000);
 
     let canned_origin_resp = "HTTP/1.1 200 OK\r\nContent-Length: 16\r\nX-Origin-Reached: yes\r\n\r\nTUNNEL_ORIGIN_OK";
     assert(net::tcp_send(srv_conn_s, canned_origin_resp) == canned_origin_resp.len);
@@ -764,6 +777,25 @@ fn test_live_proxy_tunnels() {
 
 // ---- 2. Live 401 Digest SHA-256 Challenge-Response + Cookie Jar ------------
 
+struct DigestRetryTarget {
+    listen_fd: i64 = -1,
+    sink_fd:   i64 = -1,
+}
+
+thread_fn digest_retry_server_worker(cfg: DigestRetryTarget) {
+    let conn = net::tcp_accept(cfg.listen_fd, 5000);
+    guard conn > 0 else { return; }
+    defer net::tcp_close(conn);
+    var rx: u8[4096] = [0; 4096];
+    let n = net::tcp_recv_slice(conn, rx[..], 5000);
+    guard n > 0 else { return; }
+    if cfg.sink_fd > 0 {
+        let _ = net::tcp_send(cfg.sink_fd, rx[..n]);
+    }
+    let ok_resp = "HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\nDIGEST_AUTH_OK";
+    let _ = net::tcp_send(conn, ok_resp);
+}
+
 fn test_live_digest_auth_and_cookies() {
     let srv_lfd = net::tcp_listen("127.0.0.1", 0);
     assert(srv_lfd > 0);
@@ -774,16 +806,25 @@ fn test_live_digest_auth_and_cookies() {
     assert(c_fd > 0 && s_fd > 0);
 
     g_e2e_client = client::Client { .. };
+    g_e2e_client.ssrf_guard.enabled = false;
     g_e2e_client.virtual_clock_us = 1700000000000000;
     let _ = g_e2e_client.creds.username.try_set("admin");
     let _ = g_e2e_client.creds.password.try_set("hunter2");
     g_e2e_client.creds.has_credentials = true;
 
+    let empty_auth_h = http::HeaderMap { .. };
+    let sock_auth_dig = client_internal::hash_socket_auth_binding(g_e2e_client, empty_auth_h);
+    let o_dig_h = core::wyhash64("127.0.0.1", srv_port);
+    let ten_dig_h = core::hash_combine_u64(core::hash_combine_u64(0, o_dig_h), o_dig_h);
     let pkey = net::new_pool_key(
         net::PoolScheme.Http, "127.0.0.1", srv_port,
         net::new_direct_proxy_chain(),
         net::new_network_anonymization_key("127.0.0.1", false),
-        net::TlsAndDnsPolicy { .. },
+        net::TlsAndDnsPolicy {
+            tenant_id_hash:      ten_dig_h,
+            socket_auth_binding: sock_auth_dig,
+            ..
+        },
     );
     let tp: net::Transport = net::Transport.Tcp { fd: c_fd };
     let cid_auth = net::register_connection(
@@ -791,15 +832,19 @@ fn test_live_digest_auth_and_cookies() {
     );
     net::release_connection(g_e2e_client.pool, cid_auth, 1700000000000000000);
 
-    // Queue the 2 pipelined HTTP/1.1 Keep-Alive responses on `s_fd` (401 challenge + 200 OK),
-    // then verify the 2 requests emitted by `client::Client` against `handle_digest_protected`!
-    var resp_401_and_200: u8[..1024] = [];
-    resp_401_and_200.append("HTTP/1.1 401 Unauthorized\r\n");
-    resp_401_and_200.append("WWW-Authenticate: Digest realm=\"wing-api\", nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\", qop=\"auth\", algorithm=SHA-256, opaque=\"5ccc069c403ebaf9f0171e9517f40e41\"\r\n");
-    resp_401_and_200.append("Set-Cookie: auth_step=challenged; Path=/\r\n");
-    resp_401_and_200.append("Content-Length: 12\r\n\r\nUNAUTHORIZED");
-    resp_401_and_200.append("HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\nDIGEST_AUTH_OK");
-    assert(net::tcp_send(s_fd, resp_401_and_200[..]) == resp_401_and_200.len);
+    // Queue ONLY the 401 challenge on `s_fd` so `h1_conn.rx_buf` stays empty, and spawn a
+    // dedicated accept worker for the authenticated retry (`socket_auth_binding` isolates auth hops).
+    var resp_401: u8[..1024] = [];
+    resp_401.append("HTTP/1.1 401 Unauthorized\r\n");
+    resp_401.append("WWW-Authenticate: Digest realm=\"wing-api\", nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\", qop=\"auth\", algorithm=SHA-256, opaque=\"5ccc069c403ebaf9f0171e9517f40e41\"\r\n");
+    resp_401.append("Set-Cookie: auth_step=challenged; Path=/\r\n");
+    resp_401.append("Content-Length: 12\r\n\r\nUNAUTHORIZED");
+    assert(net::tcp_send(s_fd, resp_401[..]) == resp_401.len);
+
+    let cap_c = net::tcp_connect("127.0.0.1", srv_port, 200);
+    let cap_s = net::tcp_accept(srv_lfd, 200);
+    assert(cap_c > 0 && cap_s > 0);
+    let t_dig = thread_spawn(digest_retry_server_worker, DigestRetryTarget { listen_fd: srv_lfd, sink_fd: cap_c });
 
     var url_auth: u8[..128] = [];
     url_auth.append("http://127.0.0.1:");
@@ -812,19 +857,21 @@ fn test_live_digest_auth_and_cookies() {
     assert(resp_auth.body[..] == "DIGEST_AUTH_OK");
     assert(cookie::get(g_e2e_client.jar, "auth_step") == "challenged");
 
-    // Read both wire requests emitted by `client::Client` over `s_fd` and replay the 2nd (authenticated) request
-    // against `accept_and_serve_one_e2e` (`handle_digest_protected`)!
-    var wire_both: u8[..4096] = [];
-    let n_both = net::tcp_recv(s_fd, wire_both, 4096, 200);
-    assert(n_both > 0);
-    assert(find_subslice(wire_both[..n_both], "Authorization: Digest ") >= 0);
-    let second_get_pos = find_subslice(wire_both[16..n_both], "GET /digest-protected");
-    assert(second_get_pos >= 0);
-    let req2_slice = wire_both[16 + second_get_pos..n_both];
+    let _ = thread_wait(t_dig);
+
+    var wire_req1: u8[..4096] = [];
+    let n_req1 = net::tcp_recv(s_fd, wire_req1, 4096, 200);
+    assert(n_req1 > 0);
+
+    var wire_req2: u8[..4096] = [];
+    let n_req2 = net::tcp_recv(cap_s, wire_req2, 4096, 200);
+    assert(n_req2 > 0);
+    assert(find_subslice(wire_req2[..n_req2], "Authorization: Digest ") >= 0);
+    assert(find_subslice(wire_req2[..n_req2], "GET /digest-protected") >= 0);
 
     let v_c = net::tcp_connect("127.0.0.1", srv_port, 200);
     assert(v_c > 0);
-    assert(net::tcp_send(v_c, req2_slice) == req2_slice.len);
+    assert(net::tcp_send(v_c, wire_req2[..n_req2]) == n_req2);
     assert(accept_and_serve_one_e2e(srv_lfd));
     var srv_out: u8[..1024] = [];
     let n_so = net::tcp_recv(v_c, srv_out, 1024, 200);
@@ -832,6 +879,8 @@ fn test_live_digest_auth_and_cookies() {
     assert(find_subslice(srv_out[..n_so], "DIGEST_AUTH_OK") >= 0);
 
     net::tcp_close(v_c);
+    net::tcp_close(cap_c);
+    net::tcp_close(cap_s);
     net::tcp_close(c_fd);
     net::tcp_close(s_fd);
     net::tcp_close(srv_lfd);
@@ -850,14 +899,23 @@ fn test_live_http_cache_revalidation() {
     assert(c_fd > 0 && s_fd > 0);
 
     g_e2e_client = client::Client { .. };
+    g_e2e_client.ssrf_guard.enabled = false;
     g_e2e_client.virtual_clock_us = 1000000000; // t = 1000s
     g_e2e_client.enable_cache = true;
 
+    let empty_auth_h = http::HeaderMap { .. };
+    let sock_auth_dig = client_internal::hash_socket_auth_binding(g_e2e_client, empty_auth_h);
+    let o_dig_h = core::wyhash64("127.0.0.1", srv_port);
+    let ten_dig_h = core::hash_combine_u64(core::hash_combine_u64(0, o_dig_h), o_dig_h);
     let pkey = net::new_pool_key(
         net::PoolScheme.Http, "127.0.0.1", srv_port,
         net::new_direct_proxy_chain(),
         net::new_network_anonymization_key("127.0.0.1", false),
-        net::TlsAndDnsPolicy { .. },
+        net::TlsAndDnsPolicy {
+            tenant_id_hash:      ten_dig_h,
+            socket_auth_binding: sock_auth_dig,
+            ..
+        },
     );
     let tp: net::Transport = net::Transport.Tcp { fd: c_fd };
     let cid_cache = net::register_connection(
@@ -865,11 +923,11 @@ fn test_live_http_cache_revalidation() {
     );
     net::release_connection(g_e2e_client.pool, cid_cache, 1000000000000);
 
-    // Queue initial 200 OK (max-age=10, ETag="v42") and subsequent 304 Not Modified on the Keep-Alive socket
-    var wire_200_and_304: u8[..1024] = [];
-    wire_200_and_304.append("HTTP/1.1 200 OK\r\nETag: \"v42\"\r\nCache-Control: max-age=10\r\nX-Cache-Freshened: false\r\nContent-Length: 23\r\n\r\nCACHED_LIVE_PAYLOAD_V42");
-    wire_200_and_304.append("HTTP/1.1 304 Not Modified\r\nETag: \"v42\"\r\nCache-Control: max-age=60\r\nX-Cache-Freshened: true\r\n\r\n");
-    assert(net::tcp_send(s_fd, wire_200_and_304[..]) == wire_200_and_304.len);
+    // Queue initial 200 OK (max-age=10, ETag="v42") before Step 1 so `h1_conn.rx_buf` stays empty,
+    // and queue 304 Not Modified right before Step 3 revalidation.
+    var wire_200: u8[..1024] = [];
+    wire_200.append("HTTP/1.1 200 OK\r\nETag: \"v42\"\r\nCache-Control: max-age=10\r\nX-Cache-Freshened: false\r\nContent-Length: 23\r\n\r\nCACHED_LIVE_PAYLOAD_V42");
+    assert(net::tcp_send(s_fd, wire_200[..]) == wire_200.len);
 
     var url_cache: u8[..128] = [];
     url_cache.append("http://127.0.0.1:");
@@ -896,6 +954,9 @@ fn test_live_http_cache_revalidation() {
 
     // Step 3 (t = 1025s, past max-age=10): Stale -> sends conditional `If-None-Match: "v42"` over live socket,
     // receives `304 Not Modified`, and synthesizes freshened 200 OK with cached body + new headers!
+    var wire_304: u8[..512] = [];
+    wire_304.append("HTTP/1.1 304 Not Modified\r\nETag: \"v42\"\r\nCache-Control: max-age=60\r\nX-Cache-Freshened: true\r\n\r\n");
+    assert(net::tcp_send(s_fd, wire_304[..]) == wire_304.len);
     g_e2e_client.virtual_clock_us = 1025000000;
     let resp3, err3 = client::execute_request(g_e2e_client, req1);
     assert(http::ok(err3) && resp3.status_code == 200);
@@ -1530,11 +1591,19 @@ fn test_h1_client_last_response_header_preserved_seam() {
     let _ = net::tcp_send(srv_fd, head_resp);
 
     g_seam_session.timeout_ms = 200;
+    let empty_auth_h = http::HeaderMap { .. };
+    let sock_auth_dig = client_internal::hash_socket_auth_binding(g_e2e_client, empty_auth_h);
+    let o_dig_h = core::wyhash64("127.0.0.1", srv_port);
+    let ten_dig_h = core::hash_combine_u64(core::hash_combine_u64(0, o_dig_h), o_dig_h);
     let pkey = net::new_pool_key(
         net::PoolScheme.Http, "127.0.0.1", srv_port,
         net::new_direct_proxy_chain(),
         net::new_network_anonymization_key("127.0.0.1", false),
-        net::TlsAndDnsPolicy { .. },
+        net::TlsAndDnsPolicy {
+            tenant_id_hash:      ten_dig_h,
+            socket_auth_binding: sock_auth_dig,
+            ..
+        },
     );
     let tp: net::Transport = net::Transport.Tcp { fd: cli_fd };
     let cid = net::register_connection(g_seam_session.pool, pkey, net::NegotiatedProtocol.Http11, tp, "127.0.0.1", 1, 1000);

@@ -127,7 +127,7 @@ inline fn maybe_arm_last_resort_nat64(
 
 fn launch_next_candidate_attempt(manager: net::AttemptManager&, now_ms: i64) -> bool {
     guard manager.current_attempt_idx < manager.pending_candidates.len else { return false; }
-    guard manager.attempts.len < 16 else { return false; }
+    guard manager.attempts.len < 4 else { return false; }
 
     let cand = manager.pending_candidates[manager.current_attempt_idx];
     manager.current_attempt_idx = core::add_sat_i64(manager.current_attempt_idx, 1);
@@ -533,7 +533,8 @@ fn try_handoff_to_group_waiter(
     c:          net::PooledConnection&,
     out_waiter: net::WantConn&,
 ) -> bool {
-    guard !pool.disable_keepalive && !c.no_new_exchanges && !c.remote_rst && !c.source_exhausted else {
+    guard !pool.disable_keepalive && !c.no_new_exchanges && !c.remote_rst && !c.source_exhausted &&
+          !(c.protocol == net::NegotiatedProtocol.Http11 && c.rx_buf.len > 0) else {
         return false;
     }
     let grp_idx = pool.find_group_index(c.key);
@@ -549,7 +550,8 @@ fn try_handoff_to_group_waiter(
 }
 
 fn finalize_idle_or_draining_conn(pool: net::StreamPool&, c: net::PooledConnection&, now_ns: i64) {
-    if pool.disable_keepalive || c.no_new_exchanges || c.remote_rst || c.source_exhausted {
+    if pool.disable_keepalive || c.no_new_exchanges || c.remote_rst || c.source_exhausted ||
+       (c.protocol == net::NegotiatedProtocol.Http11 && c.rx_buf.len > 0) {
         group_record_closed(pool, c.key, true);
         c.transport.close();
         net::release_hpack_slot(c);

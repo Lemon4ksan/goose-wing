@@ -21,6 +21,8 @@ import net.io_host;
 import net.driver;
 import tls.session;
 import tls.handshake;
+import tls.backend;
+import tls.server_handshake;
 import quic.packet;
 import quic.frames;
 import quic.connection;
@@ -238,12 +240,39 @@ struct ReactorSlotPool {
     free_slots: i64[>..<] = [],
 }
 
+const REACTOR_MAX_TLS_HANDSHAKES: i64 = 512;
+
 struct ReactorState {
     h2_in_use:             bool[128]                             = [false; 128],
+    tls_hs_in_use:         bool[512]                             = [false; 512],
+    ktls_probe_state:      i8                                    = 0,
     leftover_leased_bytes: i64                                   = 0,
     leftover_leased_slots: i64                                   = 0,
     leftover_pool_hwm:     i64                                   = 0,
+    tls_hs_eps:            tls::TlsEndpoint[512]                 = [tls::TlsEndpoint { .. }; 512],
     h2_sessions:           server_internal::H2ServerSession[>..] = [],
+}
+
+fn alloc_reactor_tls_hs_slot(ep: tls::TlsEndpoint) -> i16 {
+    for i in REACTOR_MAX_TLS_HANDSHAKES {
+        if !server::g_default_reactor.tls_hs_in_use[i] {
+            server::g_default_reactor.tls_hs_in_use[i] = true;
+            server::g_default_reactor.tls_hs_eps[i] = ep;
+            return i as i16;
+        }
+    }
+    return -1;
+}
+
+inline fn reactor_release_slot_tls_hs(table: server::SoAConnTable&, slot: i64) {
+    guard slot >= 0 && slot < table.tls_hs_map.len else { return; }
+    let hs_i = table.tls_hs_map[slot] as i64;
+    table.tls_hs_map[slot] = -1;
+    guard hs_i >= 0 && hs_i < REACTOR_MAX_TLS_HANDSHAKES else { return; }
+    if server::g_default_reactor.tls_hs_in_use[hs_i] {
+        tls::tls_endpoint_close(server::g_default_reactor.tls_hs_eps[hs_i]);
+        server::g_default_reactor.tls_hs_in_use[hs_i] = false;
+    }
 }
 
 const REACTOR_ZERO_PAD: u8[1024] = [0; 1024];
@@ -357,10 +386,8 @@ fn reactor_append_slot_tls_ct(
     let old_end = core::add_sat_i64(old_off, old_len);
     if old_len <= 0 || old_off < 0 || old_end < old_off || old_end > leftover_pool.items.len {
         let leased = leftover_pool.alloc_slice(rx_raw.len);
-        for i in rx_raw.len {
-            if i < leased.len {
-                leased[i] = rx_raw[i];
-            }
+        if leased.len >= rx_raw.len {
+            core::copy_bytes_fast(leased, 0, rx_raw);
         }
         table.tls_ct_offs[slot] = leftover_pool.items.range_index(
             leased, "reactor_append_slot_tls_ct: invalid pool slice",
@@ -371,11 +398,8 @@ fn reactor_append_slot_tls_ct(
     let grown = leftover_pool.realloc_slice(
         leftover_pool.items[old_off..old_end], new_len,
     );
-    for i in rx_raw.len {
-        let dst_idx = core::add_sat_i64(old_len, i);
-        if dst_idx >= 0 && dst_idx < grown.len {
-            grown[dst_idx] = rx_raw[i];
-        }
+    if grown.len >= core::add_sat_i64(old_len, rx_raw.len) {
+        core::copy_bytes_fast(grown, old_len, rx_raw);
     }
     table.tls_ct_offs[slot] = leftover_pool.items.range_index(
         grown, "reactor_append_slot_tls_ct: invalid grown slice",
@@ -422,22 +446,15 @@ fn reactor_consume_slot_tls_ct(
     table.tls_ct_lens[slot] = rem_len as u16;
 }
 
-// Cleans up a connection slot, detaches driver state, closes transport, and returns slot to free pool.
-fn reactor_cleanup_slot(
+inline fn reactor_cleanup_slot_tail(
     epfd:          i64,
     table:         server::SoAConnTable&,
     leftover_pool: slice_pool<u8>&,
     slot_idx:      i64,
     slot_pool:     ReactorSlotPool&,
+    pipeline:      server::ServerPipelineConfig&,
 ) {
-    guard is_valid_slot(table, slot_idx) else { return; }
     let fd = table.fds[slot_idx];
-    reactor_free_slot_leftover(table, leftover_pool, slot_idx);
-    reactor_free_slot_tls_ct(table, leftover_pool, slot_idx);
-    guard fd > 0 else {
-        net::reactor_reset_accel_slot(server::g_reactor_accel, slot_idx);
-        return;
-    }
     if server::g_reactor_accel.kq_fd >= 0 {
         net::reactor_queue_kq_change(server::g_reactor_accel, fd, net_internal::EV_DELETE, slot_idx as u64);
     }
@@ -448,16 +465,60 @@ fn reactor_cleanup_slot(
     var tr = table.slot_transport(slot_idx);
     tr.close();
     let accel_freed = net::reactor_quarantine_or_reset_slot(server::g_reactor_accel, slot_idx);
-    let h2_i = table.h2_slot_map[slot_idx] as i64;
-    if h2_i >= 0 && h2_i < server::REACTOR_MAX_H2_SESSIONS {
-        server::g_default_reactor.h2_in_use[h2_i] = false;
-    }
+    table.release_h2_session(slot_idx, pipeline);
     if table.conn_slots[slot_idx] >= 0 {
         server_internal::free_connection_slot(server::g_reactor_conn_pool, table.conn_slots[slot_idx]);
     }
     table.soa_table_free(slot_idx);
     if accel_freed {
         free_reactor_conn_slot(slot_pool, slot_idx);
+    }
+}
+
+// Unified slot reclamation on socket close, timeout eviction, or reactor teardown.
+// Reclaims leftover/TLS buffers, releases H2 slabs, unregisters epoll/kqueue, and resets SoA state.
+fn reactor_cleanup_slot(
+    epfd:          i64,
+    table:         server::SoAConnTable&,
+    leftover_pool: slice_pool<u8>&,
+    slot_idx:      i64,
+    slot_pool:     ReactorSlotPool&,
+    pipeline:      server::ServerPipelineConfig&,
+) {
+    guard is_valid_slot(table, slot_idx) else { return; }
+    reactor_free_slot_leftover(table, leftover_pool, slot_idx);
+    reactor_free_slot_tls_ct(table, leftover_pool, slot_idx);
+    reactor_release_slot_tls_hs(table, slot_idx);
+    let fd = table.fds[slot_idx];
+    if fd <= 0 {
+        table.soa_table_free(slot_idx);
+        free_reactor_conn_slot(slot_pool, slot_idx);
+        return;
+    }
+    reactor_cleanup_slot_tail(epfd, table, leftover_pool, slot_idx, slot_pool, pipeline);
+}
+
+inline fn sweep_slot_deadlines(
+    epfd:          i64,
+    table:         server::SoAConnTable&,
+    leftover_pool: slice_pool<u8>&,
+    slot_pool:     ReactorSlotPool&,
+    pipeline:      server::ServerPipelineConfig&,
+    now_ms:        i64,
+    total_served:  i64&,
+) {
+    guard now_ms > 0 else { return; }
+    let limit = min(max(table.count, 0), table.fds.len);
+    for s in limit {
+        guard is_active_slot(table, s) else { continue; }
+        let hc_dl = table.half_close_deadlines_ms[s];
+        let tx_dl = table.tx_stall_deadlines_ms[s];
+        let hc_exp = hc_dl > 0 && now_ms >= hc_dl;
+        let tx_exp = tx_dl > 0 && now_ms >= tx_dl;
+        if hc_exp || tx_exp {
+            reactor_cleanup_slot(epfd, table, leftover_pool, s, slot_pool, pipeline);
+            total_served = core::add_sat_i64(total_served, 1);
+        }
     }
 }
 
@@ -468,11 +529,14 @@ fn reactor_sweep_timeouts(
     table:          server::SoAConnTable&,
     leftover_pool:  slice_pool<u8>&,
     slot_pool:      ReactorSlotPool&,
+    pipeline:       server::ServerPipelineConfig&,
     timer_wheel:    core::TickTimerWheel&,
     now_sec:        i64,
+    now_ms:         i64,
     last_sweep_sec: i64&,
     total_served:   i64&,
 ) {
+    sweep_slot_deadlines(epfd, table, leftover_pool, slot_pool, pipeline, now_ms, total_served);
     guard now_sec > last_sweep_sec else { return; }
     let elapsed = if last_sweep_sec == 0 { 1 } else { core::sub_sat_i64(now_sec, last_sweep_sec) as u32 };
     last_sweep_sec = now_sec;
@@ -484,7 +548,7 @@ fn reactor_sweep_timeouts(
         guard n_expired > 0 else { break; }
         for i in n_expired {
             let slot = expired[i];
-            reactor_cleanup_slot(epfd, table, leftover_pool, slot, slot_pool);
+            reactor_cleanup_slot(epfd, table, leftover_pool, slot, slot_pool, pipeline);
             total_served = core::add_sat_i64(total_served, 1);
         }
         if n_expired < expired.len {
@@ -499,6 +563,7 @@ fn reactor_evict_stale_slot(
     table:         server::SoAConnTable&,
     leftover_pool: slice_pool<u8>&,
     slot_pool:     ReactorSlotPool&,
+    pipeline:      server::ServerPipelineConfig&,
     timer_wheel:   core::TickTimerWheel&,
     total_served:  i64&,
 ) -> i64 {
@@ -506,7 +571,7 @@ fn reactor_evict_stale_slot(
     let n = table.soa_table_sweep_expired(timer_wheel, expired[..]);
     if n > 0 {
         let slot = expired[0];
-        reactor_cleanup_slot(epfd, table, leftover_pool, slot, slot_pool);
+        reactor_cleanup_slot(epfd, table, leftover_pool, slot, slot_pool, pipeline);
         total_served = core::add_sat_i64(total_served, 1);
         return alloc_reactor_conn_slot(slot_pool, table);
     }
@@ -519,11 +584,15 @@ inline fn reactor_init_slot_record(
     client_fd:     i64,
     slot:          i64,
     timer_wheel:   core::TickTimerWheel&,
+    timeout_sec:   u8 = 15,
 ) {
     net::reactor_reset_accel_slot(server::g_reactor_accel, slot);
     reactor_free_slot_leftover(table, leftover_pool, slot);
     reactor_free_slot_tls_ct(table, leftover_pool, slot);
-    server_internal::reset_soa_slot_fields(table, slot, client_fd, core::tick_timer_arm(timer_wheel, 15));
+    reactor_release_slot_tls_hs(table, slot);
+    server_internal::reset_soa_slot_fields(
+        table, slot, client_fd, core::tick_timer_arm(timer_wheel, timeout_sec),
+    );
     table.count = advance_high_water_mark(table.count, slot);
     table.conn_slots[slot] = server_internal::alloc_connection_slot(
         server::g_reactor_conn_pool, client_fd, 0,
@@ -538,9 +607,10 @@ inline fn reactor_register_client_slot(
     client_fd:     i64,
     slot:          i64,
     timer_wheel:   core::TickTimerWheel&,
+    timeout_sec:   u8 = 15,
 ) {
     let _ = epfd;
-    reactor_init_slot_record(table, leftover_pool, client_fd, slot, timer_wheel);
+    reactor_init_slot_record(table, leftover_pool, client_fd, slot, timer_wheel, timeout_sec);
     net::reactor_bind_slot_backend(server::g_reactor_accel, slot, client_fd);
 }
 
@@ -555,6 +625,7 @@ inline fn reactor_resolve_slot_peer_ip(table: server::SoAConnTable&, slot: i64, 
 }
 
 fn reactor_accept_plain_fd(
+    server:        server::HttpServer&,
     client_fd:     i64,
     epfd:          i64,
     table:         server::SoAConnTable&,
@@ -563,12 +634,18 @@ fn reactor_accept_plain_fd(
     timer_wheel:   core::TickTimerWheel&,
     total_served:  i64&,
 ) {
+    if server.tcp_user_timeout_ms > 0 {
+        let _ = net::tcp_set_user_timeout(client_fd, server.tcp_user_timeout_ms);
+    }
     var slot = alloc_reactor_conn_slot(slot_pool, table);
     if slot < 0 {
-        slot = reactor_evict_stale_slot(epfd, table, leftover_pool, slot_pool, timer_wheel, total_served);
+        slot = reactor_evict_stale_slot(
+            epfd, table, leftover_pool, slot_pool, server.pipeline, timer_wheel, total_served,
+        );
     }
     if slot >= 0 {
-        reactor_register_client_slot(epfd, table, leftover_pool, client_fd, slot, timer_wheel);
+        let hdr_sec = resolve_reactor_header_sec(server);
+        reactor_register_client_slot(epfd, table, leftover_pool, client_fd, slot, timer_wheel, hdr_sec);
     } else {
         net::tcp_close(client_fd);
     }
@@ -576,6 +653,7 @@ fn reactor_accept_plain_fd(
 
 // Drains non-blocking listener queue and accepts ready incoming connections into free slots.
 fn reactor_drain_listener(
+    server:        server::HttpServer&,
     listener_fd:   i64,
     epfd:          i64,
     table:         server::SoAConnTable&,
@@ -587,7 +665,9 @@ fn reactor_drain_listener(
     loop {
         let client_fd = net::tcp_accept_nonblocking(listener_fd);
         if client_fd <= 0 { break; }
-        reactor_accept_plain_fd(client_fd, epfd, table, leftover_pool, slot_pool, timer_wheel, total_served);
+        reactor_accept_plain_fd(
+            server, client_fd, epfd, table, leftover_pool, slot_pool, timer_wheel, total_served,
+        );
     }
 }
 
@@ -632,10 +712,11 @@ fn reactor_cleanup_all(
     table:         server::SoAConnTable&,
     leftover_pool: slice_pool<u8>&,
     slot_pool:     ReactorSlotPool&,
+    pipeline:      server::ServerPipelineConfig&,
 ) {
     for s in table.fds.len {
         if table.fds[s] > 0 {
-            reactor_cleanup_slot(epfd, table, leftover_pool, s, slot_pool);
+            reactor_cleanup_slot(epfd, table, leftover_pool, s, slot_pool, pipeline);
         }
     }
 }
@@ -645,6 +726,7 @@ inline fn reactor_poll_sweep(
     table:          server::SoAConnTable&,
     leftover_pool:  slice_pool<u8>&,
     slot_pool:      ReactorSlotPool&,
+    pipeline:       server::ServerPipelineConfig&,
     timer_wheel:    core::TickTimerWheel&,
     n:              i32,
     turn:           i64,
@@ -658,9 +740,11 @@ inline fn reactor_poll_sweep(
     let now_mono = core::monotonic_now();
     cached_ns = now_mono.as_nanos();
     cached_sec = nanos_to_http_date_sec(cached_ns);
+    let now_ms = (cached_ns / 1000000) as i64;
     if enable_timer {
         reactor_sweep_timeouts(
-            epfd, table, leftover_pool, slot_pool, timer_wheel, cached_sec, last_sweep_sec, total_served,
+            epfd, table, leftover_pool, slot_pool, pipeline, timer_wheel,
+            cached_sec, now_ms, last_sweep_sec, total_served,
         );
     }
 }
@@ -669,6 +753,13 @@ inline fn reset_reactor_state(state: ReactorState&) {
     for i in state.h2_sessions.len {
         state.h2_in_use[i] = false;
     }
+    for i in REACTOR_MAX_TLS_HANDSHAKES {
+        if state.tls_hs_in_use[i] {
+            tls::tls_endpoint_close(state.tls_hs_eps[i]);
+            state.tls_hs_in_use[i] = false;
+        }
+    }
+    state.ktls_probe_state = 0;
     state.leftover_leased_bytes = 0;
     state.leftover_leased_slots = 0;
     state.leftover_pool_hwm = 0;
@@ -695,8 +786,29 @@ inline fn resolve_reactor_slot_cap(server: const server::HttpServer&) -> i64 {
     return REACTOR_MAX_DYNAMIC_SLOTS;
 }
 
-inline fn resolve_reactor_idle_sec(server: const server::HttpServer&) -> u8 {
-    guard server.idle_timeout_ms > 0 else { return 15; }
-    let sec = max(div_euclid(core::add_sat_u64(server.idle_timeout_ms, 999), 1000), 1);
+inline fn clamp_reactor_timeout_sec(ms: u64, fallback: u8) -> u8 {
+    guard ms > 0 else { return fallback; }
+    let sec = max(div_euclid(core::add_sat_u64(ms, 999), 1000), 1);
     return min(sec, core::TICK_TIMER_MAX_DELTA) as u8;
+}
+
+inline fn resolve_reactor_idle_sec(server: const server::HttpServer&) -> u8 {
+    return clamp_reactor_timeout_sec(server.idle_timeout_ms, 15);
+}
+
+inline fn resolve_reactor_header_sec(server: const server::HttpServer&) -> u8 {
+    return clamp_reactor_timeout_sec(server.read_header_timeout_ms, 15);
+}
+
+inline fn resolve_slot_phase_timeout_sec(
+    server: const server::HttpServer&,
+    table:  const server::SoAConnTable&,
+    slot:   i64,
+) -> u8 {
+    let reading_hs = slot < table.tls_hs_map.len && table.tls_hs_map[slot] >= 0;
+    let partial_rx = slot < table.leftover_lens.len && table.leftover_lens[slot] > 0;
+    if reading_hs || partial_rx {
+        return resolve_reactor_header_sec(server);
+    }
+    return resolve_reactor_idle_sec(server);
 }

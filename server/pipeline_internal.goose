@@ -102,7 +102,7 @@ fn execute_bound_ingress_stage_verdict<UserStage>(
         return stage_server_expect_100(req, res);
     }
     if b.stage_id == wire::STAGE_ID_SRV_IN_EDGE_FILTER {
-        return stage_server_edge_filter(cfg.edge_filter, req, res);
+        return stage_server_edge_filter(cfg.edge_filter, req, res, ext.canon_url[..]);
     }
     if b.stage_id == wire::STAGE_ID_SRV_IN_RATELIMIT_IP {
         let lim .= select_stage_limiter(cfg, b.param_slot);
@@ -324,6 +324,7 @@ fn maybe_store_server_route_cache(
     res:         http::Response&,
     handler_id:  i32,
     egress_mask: u64,
+    canon_url:   const u8[:] = "",
 ) {
     let req_cc = http::parse_cache_control_headers(
         req.headers,
@@ -338,7 +339,7 @@ fn maybe_store_server_route_cache(
     }
     let now_ms, _ = core::div_rem_u64(now_ns, 1000000);
     var cache_key: u8[..256] = [];
-    guard build_route_cache_key(req, cache_key) else {
+    guard build_route_cache_key(req, cache_key, canon_url) else {
         cfg.route_cache.is_updating = false;
         return;
     }
@@ -372,9 +373,10 @@ fn execute_found_route_handler<UserStage>(
         let _ = stage_server_auth_cookie(cfg.private_jar, req, cfg.ext_pool.slots[ext_slot_idx], now_ns);
     }
 
+    let canon_url = cfg.ext_pool.slots[ext_slot_idx].canon_url[..];
     let now_ms = now_ns / 1000000;
     if (f.ingress_mask & wire::STAGE_SRV_IN_CACHE_LOOKUP) != 0 {
-        let c_v = stage_server_cache_lookup(cfg.route_cache, req, now_ms, res, f.handler_id);
+        let c_v = stage_server_cache_lookup(cfg.route_cache, req, now_ms, res, f.handler_id, canon_url);
         let is_cached = match c_v { ShortCircuit _ => true, _ => false };
         if is_cached {
             return server::PipelineOutcome.Handled;
@@ -413,7 +415,9 @@ fn execute_found_route_handler<UserStage>(
         apply_route_payload(cfg, f.handler_id, res);
     }
     server_prof::lit_prof_leave(_prof_h);
-    maybe_store_server_route_cache(cfg, req, now_ns, res, f.handler_id, f.egress_mask);
+    maybe_store_server_route_cache(
+        cfg, req, now_ns, res, f.handler_id, f.egress_mask, cfg.ext_pool.slots[ext_slot_idx].canon_url[..],
+    );
     return server::PipelineOutcome.Handled;
 }
 

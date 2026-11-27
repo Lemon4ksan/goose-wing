@@ -40,6 +40,10 @@ fn tls_backend_available(kind: TlsBackendKind) -> bool {
     if kind == TlsBackendKind.PureGoose || kind == TlsBackendKind.Auto {
         return true;
     }
+    if kind == TlsBackendKind.SystemOnly {
+        return tls_internal::native_tls_backend_available(tls_internal::NATIVE_KIND_OPENSSL) != 0 ||
+            tls_internal::native_tls_backend_available(tls_internal::NATIVE_KIND_SCHANNEL) != 0;
+    }
     return tls_internal::native_tls_backend_available(tls_internal::kind_to_native_i32(kind)) != 0;
 }
 
@@ -174,6 +178,36 @@ fn tls_endpoint_write_app(ep: TlsEndpoint&, plaintext: const u8[:]) -> i64, TlsB
     return take, TlsBackendStatus.Ok;
 }
 
+fn pure_slot_pump_app_in(slot: tls_internal::PureTlsSlot&) -> TlsBackendStatus {
+    guard slot.stage != tls_internal::PureHsStage.Failed else { return TlsBackendStatus.Error; }
+    while core::sub_sat_i64(slot.app_in.len, slot.app_in_pos) == 0 && slot.wire_in.len > 0 && !slot.peer_closed {
+        let prev_wire_len = slot.wire_in.len;
+        let ust = tls_internal::pure_unseal_one_app_record(slot);
+        if ust == TlsBackendStatus.Error { return TlsBackendStatus.Error; }
+        if ust == TlsBackendStatus.WantRead || ust == TlsBackendStatus.Closed { break; }
+        if slot.wire_in.len >= prev_wire_len { break; }
+    }
+    return TlsBackendStatus.Ok;
+}
+
+fn pure_slot_read_app(slot: tls_internal::PureTlsSlot&, dst: u8[:]) -> i64, TlsBackendStatus {
+    let pump_st = pure_slot_pump_app_in(slot);
+    guard pump_st == TlsBackendStatus.Ok else { return 0, pump_st; }
+    let rem = core::sub_sat_i64(slot.app_in.len, slot.app_in_pos);
+    guard rem > 0 else {
+        return 0, if slot.peer_closed { TlsBackendStatus.Closed } else { TlsBackendStatus.WantRead };
+    }
+    let take = min(rem, dst.len);
+    core::ct_copy_bytes(dst[..take], slot.app_in[slot.app_in_pos..core::add_sat_i64(slot.app_in_pos, take)]);
+    slot.app_in_pos = core::add_sat_i64(slot.app_in_pos, take);
+    if slot.app_in_pos >= slot.app_in.len {
+        core::secure_zeroize_slice(slot.app_in[..]);
+        slot.app_in.clear();
+        slot.app_in_pos = 0;
+    }
+    return take, TlsBackendStatus.Ok;
+}
+
 // Decrypts inbound wire ciphertext into `dst`, returning `(bytes_read, status)`.
 fn tls_endpoint_read_app(ep: TlsEndpoint&, dst: u8[:]) -> i64, TlsBackendStatus {
     guard !ep.closed else { return 0, TlsBackendStatus.Closed; }
@@ -190,27 +224,7 @@ fn tls_endpoint_read_app(ep: TlsEndpoint&, dst: u8[:]) -> i64, TlsBackendStatus 
         tls_internal::is_live_pure_slot(tls_internal::g_pure_tls_slots[idx], ep.pure_gen) else {
         return 0, TlsBackendStatus.Closed;
     }
-    let slot .= tls_internal::g_pure_tls_slots[idx];
-    while core::sub_sat_i64(slot.app_in.len, slot.app_in_pos) == 0 && slot.wire_in.len > 0 && !slot.peer_closed {
-        let prev_wire_len = slot.wire_in.len;
-        let ust = tls_internal::pure_unseal_one_app_record(slot);
-        if ust == TlsBackendStatus.Error { return 0, TlsBackendStatus.Error; }
-        if ust == TlsBackendStatus.WantRead || ust == TlsBackendStatus.Closed { break; }
-        if slot.wire_in.len >= prev_wire_len { break; }
-    }
-    let rem = core::sub_sat_i64(slot.app_in.len, slot.app_in_pos);
-    if rem > 0 {
-        let take = min(rem, dst.len);
-        core::ct_copy_bytes(dst[..take], slot.app_in[slot.app_in_pos..core::add_sat_i64(slot.app_in_pos, take)]);
-        slot.app_in_pos = core::add_sat_i64(slot.app_in_pos, take);
-        if slot.app_in_pos >= slot.app_in.len {
-            core::secure_zeroize_slice(slot.app_in[..]);
-            slot.app_in.clear();
-            slot.app_in_pos = 0;
-        }
-        return take, TlsBackendStatus.Ok;
-    }
-    return 0, if slot.peer_closed { TlsBackendStatus.Closed } else { TlsBackendStatus.WantRead };
+    return pure_slot_read_app(tls_internal::g_pure_tls_slots[idx], dst);
 }
 
 // Returns the normalized client-offered SNI hostname extracted from ClientHello (empty if omitted).
@@ -462,7 +476,8 @@ recursive fn endpoint_transport_recv_slice(
         guard st == TlsBackendStatus.WantRead else { return -1; }
 
         let rx_st = tls_internal::endpoint_feed_slot_rx(slot, fd, timeout_ms);
-        if rx_st <= 0 { return rx_st; }
+        if rx_st == -2 { return -2; }
+        if rx_st <= 0 { return -1; }
     }
     return -1;
 }

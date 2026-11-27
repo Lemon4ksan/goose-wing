@@ -213,9 +213,9 @@ fn report_cli_error(cfg: const CliConfig&, err: const http::Error&) {
     if !cfg.silent {
         var err_out: u8[>..] = [];
         err_out.append("wing: (");
-        err_out.append(err.stage[..]);
+        sanitize_terminal_text(err.stage[..], err_out);
         err_out.append(") ");
-        err_out.append(err.message[..]);
+        sanitize_terminal_text(err.message[..], err_out);
         err_out.push('\n');
         write_stderr(err_out);
     }
@@ -226,47 +226,72 @@ fn write_cli_output_file(cfg: const CliConfig&, res: const http::Response&, resu
         return true;
     }
     if resume_off > 0 && res.status_code == 206 {
-        if append_file(cfg.output_file[..], res.body[..]) {
+        if core::write_file_nofollow(cfg.output_file[..], res.body[..], true) {
             return true;
         }
         if !cfg.silent {
-            write_stderr(str("wing: failed to append to output file: ", cfg.output_file[..], "\n"));
+            var err_out: u8[>..] = [];
+            err_out.append("wing: failed to append to output file: ");
+            sanitize_terminal_text(cfg.output_file[..], err_out);
+            err_out.push('\n');
+            write_stderr(err_out);
         }
         return false;
     }
     if resume_off > 0 && res.status_code != 200 {
         return res.status_code == 416 || res.status_code >= 400;
     }
-    if write_file(cfg.output_file[..], res.body[..]) {
+    if core::write_file_nofollow(cfg.output_file[..], res.body[..], false) {
         return true;
     }
     if !cfg.silent {
-        write_stderr(str("wing: failed to write output file: ", cfg.output_file[..], "\n"));
+        var err_out: u8[>..] = [];
+        err_out.append("wing: failed to write output file: ");
+        sanitize_terminal_text(cfg.output_file[..], err_out);
+        err_out.push('\n');
+        write_stderr(err_out);
     }
     return false;
 }
 
 fn write_dump_headers_file(cfg: const CliConfig&, res: const http::Response&) -> bool {
     guard cfg.dump_header_file.len > 0 else { return true; }
+    let to_stdout = cfg.dump_header_file[..] == "-";
     var dump: u8[>..] = [];
-    dump.append(res.protocol[..]);
+    if to_stdout {
+        append_cli_text(res.protocol[..], cfg.raw_output, dump);
+    } else {
+        dump.append(res.protocol[..]);
+    }
     dump.push(' ');
     res.status_code.format_i64_dec(dump);
     dump.push(' ');
     dump.append(rfc::status_phrase(res.status_code));
     dump.append("\r\n");
     for &e in res.headers.entries {
-        dump.append(res.headers.entry_name(e));
-        dump.append(": ");
-        dump.append(res.headers.entry_value(e));
+        let h_name = res.headers.entry_name(e);
+        let h_val = res.headers.entry_value(e);
+        if to_stdout {
+            append_cli_text(h_name, cfg.raw_output, dump);
+            dump.append(": ");
+            if is_redacted_diag_resp_header(h_name) {
+                dump.append("<redacted>");
+            } else {
+                append_cli_text(h_val, cfg.raw_output, dump);
+            }
+        } else {
+            dump.append(h_name);
+            dump.append(": ");
+            dump.append(h_val);
+        }
         dump.append("\r\n");
     }
     dump.append("\r\n");
-    if cfg.dump_header_file[..] == "-" {
+    if to_stdout {
         write_stdout(dump);
         return true;
     }
-    return write_file(cfg.dump_header_file[..], dump);
+    return core::write_file_nofollow(cfg.dump_header_file[..], dump[..], false);
 }
 
 fn load_and_save_cookie_jars(sess: client::Client&, cfg: const CliConfig&, save_phase: bool) {
@@ -309,29 +334,44 @@ fn execute_client_cmd(cfg: const CliConfig&) -> i64 {
         ..
     });
     defer sess.close();
+    defer sess.zeroize_auth();
     let real_now_us = core::now().unix_micro();
     if real_now_us > 0 {
         sess.virtual_clock_us = real_now_us;
     }
 
-    sess.ssrf_guard.enabled = false;
+    if cfg.ssrf_guard {
+        sess.ssrf_guard.enabled = true;
+        sess.set_allow_loopback_ssrf(cfg.allow_loopback);
+    } else {
+        sess.ssrf_guard.enabled = false;
+        sess.set_allow_loopback_ssrf(true);
+    }
     sess.max_redirects = cfg.max_redirects;
     if cfg.insecure_tls { sess.enable_hsts = false; }
     if cfg.cacert_file.len > 0 {
         var ca_pem: u8[>..] = [];
         guard read_file(cfg.cacert_file[..], ca_pem) else {
-            write_stderr(str("wing: cannot read cacert file: ", cfg.cacert_file[..], "\n"));
+            var err_out: u8[>..] = [];
+            err_out.append("wing: cannot read cacert file: ");
+            sanitize_terminal_text(cfg.cacert_file[..], err_out);
+            err_out.push('\n');
+            write_stderr(err_out);
             return 77;
         }
         let _, ok_ca = tls::add_trust_anchors_pem(sess.trust_store, ca_pem[..]);
         if !ok_ca {
-            write_stderr(str("wing: invalid CA PEM bundle: ", cfg.cacert_file[..], "\n"));
+            var err_out: u8[>..] = [];
+            err_out.append("wing: invalid CA PEM bundle: ");
+            sanitize_terminal_text(cfg.cacert_file[..], err_out);
+            err_out.push('\n');
+            write_stderr(err_out);
             return 77;
         }
     }
     sess.http2_prior_knowledge = cfg.http2_prior;
     if cfg.http1_1_only {
-        let _ = sess.profile_spec.tls.alpn.try_set("http/1.1");
+        let _ = sess.set_tls_alpn("http/1.1");
     }
     if !cfg.compressed {
         let _ = sess.default_headers.remove_header("Accept-Encoding");
@@ -369,7 +409,11 @@ fn execute_client_cmd(cfg: const CliConfig&) -> i64 {
 
     load_and_save_cookie_jars(sess, cfg, true);
     if !write_dump_headers_file(cfg, res) && !cfg.silent {
-        write_stderr(str("wing: failed to write dump header file: ", cfg.dump_header_file[..], "\n"));
+        var err_out: u8[>..] = [];
+        err_out.append("wing: failed to write dump header file: ");
+        sanitize_terminal_text(cfg.dump_header_file[..], err_out);
+        err_out.push('\n');
+        write_stderr(err_out);
     }
     guard write_cli_output_file(cfg, res, resume_off) else { return 1; }
 

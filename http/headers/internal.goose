@@ -13,19 +13,84 @@ import http.headers.wire_internal;
 
 // ---- http/headers.goose internal helpers ----
 
-checkfree fn bloom_hash(key: const u8[:]) -> u32 {
-    let len = key.len;
-    guard len >= 2 else { return 0; }
-    let c0 = key[0];
-    let c1 = key[len - 1];
-    let c2 = key[len - 2];
-    let c3 = key[len >> 1];
-    let b0:       u32 = if c0 >= 'A' && c0 <= 'Z' { c0 | 0x20 } else { c0 };
-    let b1:       u32 = if c1 >= 'A' && c1 <= 'Z' { c1 | 0x20 } else { c1 };
-    let b2:       u32 = if c2 >= 'A' && c2 <= 'Z' { c2 | 0x20 } else { c2 };
-    let b3:       u32 = if c3 >= 'A' && c3 <= 'Z' { c3 | 0x20 } else { c3 };
-    let features: u32 = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
-    return features * 1843993368;
+var g_bloom_key_init: bool = false;
+var g_bloom_k0:       u64  = 0;
+var g_bloom_k1:       u64  = 0;
+
+fn ensure_bloom_key() -> u64, u64 {
+    if core::sim_rng_is_active() {
+        return 0x0706050403020100, 0x0f0e0d0c0b0a0908;
+    }
+    if !g_bloom_key_init {
+        let r0, ok0 = core::csprng_u64();
+        let r1, ok1 = core::csprng_u64();
+        let fallback = clock_ns() as! u64;
+        g_bloom_k0 = if ok0 { r0 } else { fallback };
+        g_bloom_k1 = if ok1 { r1 } else { core::rotl64(fallback, 29) };
+        g_bloom_key_init = true;
+    }
+    return g_bloom_k0, g_bloom_k1;
+}
+
+inline fn siphash_round(v0: u64&, v1: u64&, v2: u64&, v3: u64&) {
+    v0 += v1;
+    v1 = core::rotl64(v1, 13);
+    v1 ^= v0;
+    v0 = core::rotl64(v0, 32);
+    v2 += v3;
+    v3 = core::rotl64(v3, 16);
+    v3 ^= v2;
+    v0 += v3;
+    v3 = core::rotl64(v3, 21);
+    v3 ^= v0;
+    v2 += v1;
+    v1 = core::rotl64(v1, 17);
+    v1 ^= v2;
+    v2 = core::rotl64(v2, 32);
+}
+
+inline fn read_le_u64_lower(key: const u8[:], off: i64) -> u64 {
+    var m: u64 = 0;
+    for j in 8 {
+        let b = core::to_lower_ascii_byte(key[off + j]);
+        m |= (b as u64) << ((j * 8) as u32);
+    }
+    return m;
+}
+
+// Keyed SipHash-1-3 over ASCII-lowercased header names (DoS collision defense).
+fn bloom_hash(key: const u8[:]) -> u64 {
+    let k0, k1 = ensure_bloom_key();
+    var v0: u64 = k0 ^ 0x736f6d6570736575;
+    var v1: u64 = k1 ^ 0x646f72616e646f6d;
+    var v2: u64 = k0 ^ 0x6c7967656e657261;
+    var v3: u64 = k1 ^ 0x7465646279746573;
+
+    let n = key.len;
+    let full_blocks = n >> 3;
+    for blk in full_blocks {
+        let m = read_le_u64_lower(key, blk << 3);
+        v3 ^= m;
+        siphash_round(v0, v1, v2, v3);
+        v0 ^= m;
+    }
+
+    let tail_off = full_blocks << 3;
+    let rem = n - tail_off;
+    var b_last: u64 = ((n & 0xFF) as u64) << 56;
+    for j in rem {
+        let ch = core::to_lower_ascii_byte(key[tail_off + j]);
+        b_last |= (ch as u64) << ((j * 8) as u32);
+    }
+    v3 ^= b_last;
+    siphash_round(v0, v1, v2, v3);
+    v0 ^= b_last;
+
+    v2 ^= 0xFF;
+    siphash_round(v0, v1, v2, v3);
+    siphash_round(v0, v1, v2, v3);
+    siphash_round(v0, v1, v2, v3);
+    return v0 ^ v1 ^ v2 ^ v3;
 }
 
 // Parses a single wire header line (name: value) into HeaderMap.
@@ -109,6 +174,7 @@ fn parse_single_header_line(
     link_header_entry(map, wk_id, raw_name, hname, new_idx);
     map.entries.push(new_entry);
     map.header_contains_comma.push(contains_comma);
+    map.bloom.add_header(raw_name);
     return http::HeaderParseError.None;
 }
 
@@ -227,9 +293,14 @@ fn parse_single_overflow_header_line(
         link_header_entry(map, wk_id, raw_name, hname, new_idx, arena.spill_raw[..]);
         map.entries.push(new_entry);
         map.header_contains_comma.push(contains_comma);
+        map.bloom.add_header(raw_name);
         return http::HeaderParseError.None;
     }
-    return append_overflow_spill_entry(map, arena, raw_name, val_trimmed, new_entry);
+    let spill_err = append_overflow_spill_entry(map, arena, raw_name, val_trimmed, new_entry);
+    if spill_err == http::HeaderParseError.None {
+        map.bloom.add_header(raw_name);
+    }
+    return spill_err;
 }
 
 fn process_header_line(

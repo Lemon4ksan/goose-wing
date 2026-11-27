@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
+
 // RUN: goose build -O0 --cc gcc -o %t.exe %s && %t.exe | %FileCheck %s
 
 import std;
@@ -133,6 +134,7 @@ fn verify_live_ws_and_sse_loopback() {
     let th = thread_spawn(ws_sse_server_worker, lfd);
 
     var sess = client::new_session();
+    sess.ssrf_guard.enabled = false;
     sess.timeout_ms = 5000;
 
     var ws_url: u8[..128] = [];

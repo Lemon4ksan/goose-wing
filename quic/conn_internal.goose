@@ -174,7 +174,7 @@ fn calc_lost_bytes(lost_pkts: const quic::SentPacketMeta[..128]&) -> u64 {
 }
 
 inline fn update_bbr_sample_bw(bbr: quic::BbrState&, acked_bytes: u64, eff_rtt: u64) {
-    if acked_bytes > 0 && eff_rtt > 0 {
+    if acked_bytes >= rfc::PMTU_BASE && eff_rtt > 0 {
         let sample_bw = (acked_bytes * 8000000) / eff_rtt;
         if sample_bw > bbr.bw_hi_bps {
             bbr.bw_hi_bps = sample_bw;
@@ -192,7 +192,6 @@ inline fn update_bbr_on_ack(
     round_done:      bool,
 ) {
     if lost_bytes > 0 || ecn_ce_count > 0 {
-        quic::update_pacing_and_cwnd(conn.bbr);
         quic::on_congestion_signal(
             conn.bbr,
             in_flight_bytes,
@@ -201,11 +200,15 @@ inline fn update_bbr_on_ack(
             ecn_ce_count,
             new_acked_pkts,
         );
+        quic::update_pacing_and_cwnd(conn.bbr, 0);
     } else if acked_bytes > 0 {
-        quic::advance_cycle(conn.bbr, round_done);
-        quic::update_pacing_and_cwnd(conn.bbr);
+        if round_done {
+            quic::advance_cycle(conn.bbr, true, acked_bytes);
+        } else {
+            quic::update_pacing_and_cwnd(conn.bbr, acked_bytes);
+        }
     }
-    conn.pacer = conn.bbr.pacer;
+    pacer_set_rate(conn.pacer, conn.bbr.pacer.pacing_rate_bps);
 }
 
 // Processes a validated ACK frame in `space`, updating RTT, loss detection, and BBRv3 congestion control.
@@ -240,7 +243,8 @@ fn process_space_ack(
     let _ = quic::detect_lost_packets(space, conn.rtt, now_us, lost_pkts);
     let lost_bytes = calc_lost_bytes(lost_pkts);
 
-    let new_ecn_ce, _ = quic::validate_ecn(space, ack_frame, ecn_acked_pkts);
+    let new_ecn_ce, ecn_ok = quic::validate_ecn(space, ack_frame, ecn_acked_pkts);
+    let eff_ecn_ce = if ecn_ok { new_ecn_ce } else { 0 };
 
     quic::check_probe_rtt(conn.bbr, now_us, eff_rtt);
     let round_done = space.largest_acked_pn >= space.largest_sent_pn;
@@ -249,7 +253,7 @@ fn process_space_ack(
         in_flight_bytes,
         lost_bytes,
         acked_bytes,
-        new_ecn_ce,
+        eff_ecn_ce,
         new_acked_pkts,
         round_done,
     );
@@ -580,33 +584,195 @@ fn dispatch_flow_control_inbound(conn: quic::QuicConnection&, frame: const quic:
     return quic::ProcessResult { handled: true, needs_ack: true };
 }
 
-inline fn register_peer_reset_token(conn: quic::QuicConnection&, frame: const quic::QuicFrame&) {
-    guard frame.length >= 1 && frame.length <= 20 else { return; }
-    let cid_len = frame.length as i64;
-    guard frame.payload.len >= 17 else { return; }
-    let tok_start = core::sub_sat_u64(frame.payload.len as u64, 16) as i64;
-    guard tok_start == cid_len else { return; }
-    let token_slice = frame.payload[tok_start..];
+inline fn queue_pending_retire_cid(conn: quic::QuicConnection&, seq: u64) -> bool {
+    for i in conn.pending_retire_cids.len {
+        if conn.pending_retire_cids[i] == seq { return true; }
+    }
+    return conn.pending_retire_cids.try_push(seq);
+}
+
+inline fn evict_peer_reset_token_by_seq(conn: quic::QuicConnection&, seq: u64) {
+    var i: i64 = 0;
+    while i < conn.peer_reset_token_seqs.len && i < conn.peer_reset_tokens.len {
+        if conn.peer_reset_token_seqs[i] == seq {
+            conn.peer_reset_token_seqs.remove_at(i);
+            conn.peer_reset_tokens.remove_at(i);
+        } else {
+            i += 1;
+        }
+    }
+}
+
+inline fn evict_peer_cids_prior_to(conn: quic::QuicConnection&, prior_to: u64) -> bool {
+    var i: i64 = 0;
+    while i < conn.peer_cid_seqs.len {
+        if conn.peer_cid_seqs[i] < prior_to {
+            let seq = conn.peer_cid_seqs[i];
+            conn.peer_cid_seqs.remove_at(i);
+            conn.peer_cids.remove_at(i);
+            guard queue_pending_retire_cid(conn, seq) else { return false; }
+        } else {
+            i += 1;
+        }
+    }
+    i = 0;
+    while i < conn.peer_reset_token_seqs.len && i < conn.peer_reset_tokens.len {
+        if conn.peer_reset_token_seqs[i] < prior_to {
+            conn.peer_reset_token_seqs.remove_at(i);
+            conn.peer_reset_tokens.remove_at(i);
+        } else {
+            i += 1;
+        }
+    }
+    return true;
+}
+
+inline fn retire_peer_cid_seq(conn: quic::QuicConnection&, seq: u64) -> bool {
+    evict_peer_reset_token_by_seq(conn, seq);
+    var i: i64 = 0;
+    while i < conn.peer_cid_seqs.len {
+        if conn.peer_cid_seqs[i] == seq {
+            conn.peer_cid_seqs.remove_at(i);
+            conn.peer_cids.remove_at(i);
+        } else {
+            i += 1;
+        }
+    }
+    return queue_pending_retire_cid(conn, seq);
+}
+
+inline fn find_peer_cid_by_seq(conn: const quic::QuicConnection&, seq: u64) -> i64 {
+    for i in conn.peer_cid_seqs.len {
+        if conn.peer_cid_seqs[i] == seq { return i; }
+    }
+    return -1;
+}
+
+inline fn register_peer_cid_and_token(
+    conn:        quic::QuicConnection&,
+    seq:         u64,
+    cid_slice:   const u8[:],
+    token_slice: const u8[:],
+) -> bool {
+    var dup_tok = false;
     for i in conn.peer_reset_tokens.len {
-        if core::ct_eq_bytes(conn.peer_reset_tokens[i][..], token_slice) { return; }
+        if core::ct_eq_bytes(conn.peer_reset_tokens[i][..], token_slice) {
+            dup_tok = true;
+        }
     }
-    if conn.peer_reset_tokens.len >= conn.peer_reset_tokens.cap {
-        conn.peer_reset_tokens.remove_at(0);
+    if !dup_tok {
+        if conn.peer_reset_tokens.len >= conn.peer_reset_tokens.cap {
+            conn.peer_reset_tokens.remove_at(0);
+            if conn.peer_reset_token_seqs.len > 0 { conn.peer_reset_token_seqs.remove_at(0); }
+        }
+        var tok: u8[16] = [0; 16];
+        for i in 16 { tok[i] = token_slice[i]; }
+        guard conn.peer_reset_tokens.try_push(tok) else { return false; }
+        guard conn.peer_reset_token_seqs.try_push(seq) else { return false; }
     }
+    var cid_copy: u8[..20] = [];
+    guard cid_copy.try_set(cid_slice) else { return false; }
+    guard conn.peer_cids.try_push(cid_copy) else { return false; }
+    guard conn.peer_cid_seqs.try_push(seq) else { return false; }
+    return true;
+}
+
+inline fn push_peer_reset_token(
+    conn:        quic::QuicConnection&,
+    seq:         u64,
+    token_slice: const u8[:],
+) -> bool {
     var tok: u8[16] = [0; 16];
     for i in 16 { tok[i] = token_slice[i]; }
-    conn.peer_reset_tokens.push(tok);
+    if conn.peer_reset_tokens.len >= conn.peer_reset_tokens.cap {
+        conn.peer_reset_tokens.remove_at(0);
+        if conn.peer_reset_token_seqs.len > 0 { conn.peer_reset_token_seqs.remove_at(0); }
+    }
+    return conn.peer_reset_tokens.try_push(tok) && conn.peer_reset_token_seqs.try_push(seq);
+}
+
+inline fn handle_new_connection_id_frame(
+    conn:  quic::QuicConnection&,
+    frame: const quic::QuicFrame&,
+) -> quic::ProcessResult {
+    // RFC 9000 Section 19.15: Zero-length DCID or retire_prior_to > sequence_number is PROTOCOL_VIOLATION.
+    let seq = frame.stream_id;
+    let retire_prior_to = frame.offset;
+    guard conn.dcid.len > 0 && retire_prior_to <= seq else {
+        quic::close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
+        return quic::ProcessResult { handled: false, needs_ack: false };
+    }
+    guard frame.length >= 1 && frame.length <= 20 && (frame.payload.len as u64) == frame.length + 16 else {
+        quic::close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
+        return quic::ProcessResult { handled: false, needs_ack: false };
+    }
+    let cid_len = frame.length as i64;
+    let cid_slice = frame.payload[..cid_len];
+    let token_slice = frame.payload[cid_len..];
+
+    if seq < conn.peer_retire_prior_to {
+        guard queue_pending_retire_cid(conn, seq) else {
+            quic::close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
+            return quic::ProcessResult { handled: false, needs_ack: false };
+        }
+        return quic::ProcessResult { handled: true, needs_ack: true };
+    }
+    if seq == conn.active_peer_cid_seq {
+        guard cid_slice == conn.dcid[..] else {
+            quic::close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
+            return quic::ProcessResult { handled: false, needs_ack: false };
+        }
+        return quic::ProcessResult { handled: true, needs_ack: true };
+    }
+    let dup_idx = find_peer_cid_by_seq(conn, seq);
+    if dup_idx >= 0 {
+        guard conn.peer_cids[dup_idx][..] == cid_slice else {
+            quic::close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
+            return quic::ProcessResult { handled: false, needs_ack: false };
+        }
+        return quic::ProcessResult { handled: true, needs_ack: true };
+    }
+
+    var active_dcid_retired = false;
+    if retire_prior_to > conn.peer_retire_prior_to {
+        guard evict_peer_cids_prior_to(conn, retire_prior_to) else {
+            quic::close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
+            return quic::ProcessResult { handled: false, needs_ack: false };
+        }
+        if conn.active_peer_cid_seq < retire_prior_to {
+            active_dcid_retired = true;
+            guard queue_pending_retire_cid(conn, conn.active_peer_cid_seq) else {
+                quic::close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
+                return quic::ProcessResult { handled: false, needs_ack: false };
+            }
+        }
+        conn.peer_retire_prior_to = retire_prior_to;
+    }
+
+    let eff_active_base: u64 = if active_dcid_retired { 0 } else { 1 };
+    let new_total_cids = eff_active_base + (conn.peer_cids.len as u64) + 1;
+    guard new_total_cids <= conn.active_connection_id_limit else {
+        quic::close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
+        return quic::ProcessResult { handled: false, needs_ack: false };
+    }
+    if active_dcid_retired {
+        guard conn.dcid.try_set(cid_slice) && push_peer_reset_token(conn, seq, token_slice) else {
+            quic::close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
+            return quic::ProcessResult { handled: false, needs_ack: false };
+        }
+        conn.active_peer_cid_seq = seq;
+        return quic::ProcessResult { handled: true, needs_ack: true };
+    }
+    guard register_peer_cid_and_token(conn, seq, cid_slice, token_slice) else {
+        quic::close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
+        return quic::ProcessResult { handled: false, needs_ack: false };
+    }
+    return quic::ProcessResult { handled: true, needs_ack: true };
 }
 
 inline fn dispatch_conn_id_frame(conn: quic::QuicConnection&, frame: const quic::QuicFrame&) -> quic::ProcessResult {
     if frame.frame_type == quic::QuicFrameType.NewConnectionId {
-        // RFC 9000 Section 19.15: NEW_CONNECTION_ID Frames - An endpoint that is sending packets with a zero-length Destination Connection ID MUST treat receipt of a NEW_CONNECTION_ID frame as a connection error of type PROTOCOL_VIOLATION.
-        if conn.dcid.len == 0 {
-            quic::close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
-            return quic::ProcessResult { handled: false, needs_ack: false };
-        }
-        register_peer_reset_token(conn, frame);
-        return quic::ProcessResult { handled: true, needs_ack: true };
+        return handle_new_connection_id_frame(conn, frame);
     }
     if frame.frame_type == quic::QuicFrameType.RetireConnectionId {
         // RFC 9000 Section 19.16: RETIRE_CONNECTION_ID Frames - Zero-length SCID or unissued sequence
@@ -615,6 +781,7 @@ inline fn dispatch_conn_id_frame(conn: quic::QuicConnection&, frame: const quic:
             quic::close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
             return quic::ProcessResult { handled: false, needs_ack: false };
         }
+        evict_peer_reset_token_by_seq(conn, frame.stream_id);
         if frame.stream_id >= 1 {
             let alt_i = (frame.stream_id - 1) as i64;
             if alt_i >= 0 && alt_i < conn.alt_scids.len {
@@ -765,9 +932,11 @@ fn dispatch_inbound_ack_frame(
     };
     if frame.payload.len > 0 {
         let decoded, _, ok = quic::decode_ack_frame(frame.payload, 0);
-        if ok {
-            ack_f = decoded;
+        guard ok else {
+            quic::close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
+            return false;
         }
+        ack_f = decoded;
     }
     let space_id = header_type_to_space_id(htype);
     var has_sent = conn.app_space.has_sent_packets;

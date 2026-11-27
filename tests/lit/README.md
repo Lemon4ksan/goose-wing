@@ -124,7 +124,7 @@ conditions:
 Enforce function flatness and proven index bounds before compilation:
 
 ```bash
-goose-lit gate auth/pkce.goose 25 --cov 0.85
+goose-lit gate auth/pkce.goose 25
 ```
 
 ### 6. Bug regression reproducers
@@ -224,6 +224,8 @@ Use `goose-lit gate` to enforce the G-CRAP complexity ceiling and bounds-check
 elimination invariants on production modules:
 
 ```bash
-goose-lit gate auth/jwks.goose 25 --cov 0.85
-goose-lit crap . --baseline .lit/baseline --cov 0.85 --delta 5.0
+goose-lit gate auth/jwks.goose 25
+goose-lit cov auth --tests tests/auth_test.goose --out .lit/cache/cov/auth.gcrap-cov
+goose-lit gate auth/jwks.goose 25 --cov .lit/cache/cov/auth.gcrap-cov
+goose-lit crap . --baseline .lit/baseline --delta 5.0
 ```

@@ -8,6 +8,7 @@ namespace quic;
 
 import std;
 import core;
+import security.ssrf;
 import .internal;
 
 // ---- Path Validation States & Endpoint Representation -------------------
@@ -189,6 +190,28 @@ fn start_probing(
     mgr.has_probing_path = true;
 }
 
+fn format_pref_ipv4_str<B>(ip: const u8[4]&, out: B&) {
+    out.clear();
+    for i in 4 {
+        if i > 0 {
+            guard out.try_push('.') else { return; }
+        }
+        (ip[i] as u64).format_u64_dec(out);
+    }
+}
+
+fn format_pref_ipv6_str<B>(ip: const u8[16]&, out: B&) {
+    out.clear();
+    for i in 8 {
+        if i > 0 {
+            guard out.try_push(':') else { return; }
+        }
+        let hi = (ip[i * 2] as u64) << 8;
+        let lo = ip[i * 2 + 1] as u64;
+        (hi | lo).format_u64_hex(out, false);
+    }
+}
+
 // RFC 9000 Section 9.6: Server's Preferred Address - Initiates client probing toward server preferred address
 fn probe_preferred_address(
     mgr:         QuicMigrationManager&,
@@ -201,6 +224,18 @@ fn probe_preferred_address(
     let has_v6 = pref.ipv6_port != 0;
     let has_v4 = pref.ipv4_port != 0;
     guard has_v6 || has_v4 else { return false; }
+
+    // RFC 9000 Section 9.6 / Section 21.5: Reject private, loopback, link-local, or reserved preferred addresses.
+    if has_v4 {
+        var v4_str: u8[..24] = [];
+        format_pref_ipv4_str(pref.ipv4, v4_str);
+        guard !security::is_private_or_reserved_ip(v4_str[..]) else { return false; }
+    }
+    if has_v6 {
+        var v6_str: u8[..64] = [];
+        format_pref_ipv6_str(pref.ipv6, v6_str);
+        guard !security::is_private_or_reserved_ip(v6_str[..]) else { return false; }
+    }
 
     let use_v6 = if prefer_ipv6 && has_v6 { true } else { !has_v4 };
     let target = if use_v6 {

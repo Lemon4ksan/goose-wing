@@ -662,7 +662,12 @@ inline fn send_accel_slab_tx(host: net::Host&, slot: i64, data: const u8[:]) -> 
         let tx_tag = host_uring_tag(HOST_URING_OP_SEND, host.links[slot].gen, slot);
         uring_prep_send_slice(sqe, host.links[slot].fd as i32, host.accel_slab[tx_off..tx_end], tx_tag);
         var b: UringSqe[1] = [sqe];
-        guard uring_submit_sqes(host.uring_fd, b[..]) > 0 else { return 0, core::IoError.Closed; }
+        let sub_rc = uring_submit_sqes(host.uring_fd, b[..]);
+        if sub_rc == -11 || sub_rc == -16 {
+            host.links[slot].want_write = true;
+            return 0, core::IoError.WouldBlock;
+        }
+        guard sub_rc > 0 else { return 0, core::IoError.Closed; }
     }
     host.links[slot].tx_inflight = true;
     if chunk_len < data.len {

@@ -1091,16 +1091,17 @@ fn test_h2_edge_zero_data_and_chunk_reclaim() {
     dump.clear();
     let _ = http2::h2_edge_drain_wire(s, dump);
 
-    // Send 147370-byte body on stream 1 across 16384-byte chunks so remaining wire_out capacity is < 9 bytes.
+    // Send 143279-byte body on stream 1 across 16384-byte chunks so remaining wire_out capacity
+    // reaches the 4096-byte control-frame headroom reserve (WB1-008).
     var big_fill: u8[>..] = [];
-    for _ in 147370 { big_fill.push('x'); }
+    for _ in 143279 { big_fill.push('x'); }
     let sent_fill, ok_fill = http2::h2_edge_send_data(s, 1, big_fill[..], false);
-    assert(ok_fill && sent_fill == 147370);
-    // Ensure remaining free room in wire_out is strictly < 9 bytes.
+    assert(ok_fill && sent_fill == 143279);
+    // Ensure remaining free room in wire_out is within H2_EDGE_CTRL_HEADROOM (4096) + 9 bytes.
     let s_slot_idx = s.slot_idx;
     let wire_cap = http2::g_h2_edge_slots[s_slot_idx].wire_out.cap;
     let rem_room = wire_cap - http2::g_h2_edge_slots[s_slot_idx].wire_out.len;
-    assert(rem_room < rfc::H2_FRAME_HEADER_LEN);
+    assert(rem_room >= 4096 && rem_room < 4096 + rfc::H2_FRAME_HEADER_LEN);
 
     let nz, ok_z = http2::h2_edge_send_data(s, 3, "", true);
     assert(!ok_z && nz == 0);

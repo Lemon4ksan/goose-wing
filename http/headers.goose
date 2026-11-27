@@ -99,11 +99,10 @@ fn escape_diagnostic_control_chars<B>(input: const u8[:], out: B&) {
     }
 }
 
-// ---- 256-bit Header Bloom Filter (uWebSockets Fast-Path) -------------------
+// ---- 256-bit Header Bloom Filter (Keyed SipHash-1-3 Fast-Path) ------------
 
-// 256-bit fast-rejection Bloom filter for HTTP headers (Alex Hultman / uWebSockets algorithm).
-// Uses 4 distinct feature bytes from the header name and perfect hash multiplier 1843993368.
-// Intrinsic case-insensitivity allows 3-cycle non-existence verification without string comparisons.
+// 256-bit fast-rejection Bloom filter for HTTP headers using keyed SipHash-1-3 (k = 2).
+// Intrinsic case-insensitivity allows O(1) non-existence verification without string comparisons.
 struct HeaderBloomFilter {
     bits: u64[4] = [0; 4],
 }
@@ -116,23 +115,23 @@ checkfree fn is_empty(bf: const HeaderBloomFilter&) -> bool {
     return (bf.bits[0] | bf.bits[1] | bf.bits[2] | bf.bits[3]) == 0;
 }
 
-checkfree fn add_header(bf: HeaderBloomFilter&, key: const u8[:]) {
-    guard key.len >= 2 else { return; }
+fn add_header(bf: HeaderBloomFilter&, key: const u8[:]) {
+    guard key.len > 0 else { return; }
     let h = http_internal::bloom_hash(key);
-    for i in 4 {
-        let p = ((h >> ((i * 8) as u32)) & 0xFF) as i64;
-        bf.bits[(p >> 6) & 3] |= (1 as u64) << (p & 63);
-    }
+    let p0 = (h & 0xFF) as i64;
+    let p1 = ((h >> 8) & 0xFF) as i64;
+    bf.bits[(p0 >> 6) & 3] |= (1 as u64) << (p0 & 63);
+    bf.bits[(p1 >> 6) & 3] |= (1 as u64) << (p1 & 63);
 }
 
-checkfree fn might_have_header(bf: const HeaderBloomFilter&, key: const u8[:]) -> bool {
-    guard key.len >= 2 else { return true; }
+fn might_have_header(bf: const HeaderBloomFilter&, key: const u8[:]) -> bool {
+    guard key.len > 0 else { return false; }
     let h = http_internal::bloom_hash(key);
-    for i in 4 {
-        let p = ((h >> ((i * 8) as u32)) & 0xFF) as i64;
-        guard (bf.bits[(p >> 6) & 3] & ((1 as u64) << (p & 63))) != 0 else { return false; }
-    }
-    return true;
+    let p0 = (h & 0xFF) as i64;
+    let p1 = ((h >> 8) & 0xFF) as i64;
+    let b0 = (bf.bits[(p0 >> 6) & 3] & ((1 as u64) << (p0 & 63))) != 0;
+    let b1 = (bf.bits[(p1 >> 6) & 3] & ((1 as u64) << (p1 & 63))) != 0;
+    return b0 && b1;
 }
 
 // ---- header bitmask flags & persistence constants --------------------------
@@ -414,6 +413,7 @@ struct HeaderMap {
     entries:               HeaderEntry[..128] = [],
     inline_slots:          u8[64]             = [0xFF; 64],
     header_contains_comma: bool[..128]        = [],
+    bloom:                 HeaderBloomFilter  = HeaderBloomFilter { .. },
     status_code:           i32                = 200,
     http_major:            i32                = 1,
     http_minor:            i32                = 1,
@@ -433,6 +433,7 @@ checkfree fn reset_for_keep_alive(map: HeaderMap&) {
     map.raw_buf.clear();
     map.entries.clear();
     map.header_contains_comma.clear();
+    map.bloom.clear();
     map.status_code = rfc::STATUS_OK;
     map.http_major = 1;
     map.http_minor = 1;
@@ -799,9 +800,9 @@ fn has_header(map: const HeaderMap&, name: const u8[:]) -> bool {
     if wk_id != WellKnownHeader.Unknown {
         let slot = well_known_to_slot(wk_id);
         let idx = map.inline_slots[slot];
-        guard idx != 0xFF && idx < map.entries.len else { return false; }
-        return map.entries[idx as i64].reserved == HEADER_SRC_STACK;
+        return idx != 0xFF && idx < map.entries.len;
     }
+    guard map.bloom.might_have_header(name) else { return false; }
     let hname = hash_header_name(name);
     for &entry in map.entries {
         if entry.name_hash == hname {
@@ -825,6 +826,7 @@ fn get_header(map: const HeaderMap&, name: const u8[:]) -> const u8[:] {
         }
         return "";
     }
+    guard map.bloom.might_have_header(name) else { return ""; }
 
     let hname = hash_header_name(name);
     for &entry in map.entries {
@@ -988,6 +990,7 @@ fn get_header_slices(
             return resolve_entry_value_buf(map.raw_buf[..], spill_raw, map.entries[idx as i64]);
         }
     }
+    guard map.bloom.might_have_header(name) else { return ""; }
     let hname = hash_header_name(name);
     let val1 = http_internal::find_entry_in_entries(map.entries[..], map.raw_buf[..], spill_raw, name, hname);
     if val1.len > 0 { return val1; }
@@ -1008,6 +1011,7 @@ fn has_header_slices(
             return true;
         }
     }
+    guard map.bloom.might_have_header(name) else { return false; }
     let hname = hash_header_name(name);
     return entries_have_header_name(map.entries[..], map.raw_buf[..], spill_raw, name, hname) ||
         entries_have_header_name(spill_entries, map.raw_buf[..], spill_raw, name, hname);
@@ -1090,6 +1094,7 @@ fn append_to_stack_raw(
     http_internal::link_header_entry(map, wk_id, name, hname, new_idx, spill_raw);
     map.entries.push(entry);
     map.header_contains_comma.push((entry.flags & HEADER_FLAG_CONTAINS_COMMA) != 0);
+    map.bloom.add_header(name);
 }
 
 fn append_validated_header(map: HeaderMap&, name: const u8[:], trimmed: const u8[:]) -> bool {
@@ -1148,6 +1153,7 @@ fn append_validated_header_spill(
     } else {
         arena.spill_entries.push(entry);
     }
+    map.bloom.add_header(name);
     committed = true;
     return true;
 }
@@ -1218,6 +1224,7 @@ fn append_known_pipeline_header(
         name_hash:     hname,
     });
     map.header_contains_comma.push(contains_comma);
+    map.bloom.add_header(name);
     return true;
 }
 
@@ -1375,6 +1382,13 @@ fn finish_compaction(
     core::secure_zeroize_slice(new_raw[..]);
     new_raw.clear();
     http_internal::rebuild_inline_slots_and_chains(map, spill_raw);
+    map.bloom.clear();
+    for &e in map.entries {
+        let ename = resolve_entry_name_buf(map.raw_buf[..], spill_raw, e);
+        if ename.len > 0 {
+            map.bloom.add_header(ename);
+        }
+    }
 }
 
 fn relocate_arena_entry(entry: HeaderEntry&, src_raw: const u8[:], dst_raw: u8[>..]&) {
@@ -1466,6 +1480,12 @@ fn remove_header_spill(map: HeaderMap&, arena: OverflowArena&, name: const u8[:]
         arena.spill_entries.resize(spill_write);
         compact_arena_spill_raw(map, arena, write_entry_i);
         finish_compaction(map, write_entry_i, new_raw, arena.spill_raw[..]);
+        for &se in arena.spill_entries {
+            let sname = entry_name_spill(map, arena, se);
+            if sname.len > 0 {
+                map.bloom.add_header(sname);
+            }
+        }
     }
     return found;
 }
@@ -1929,12 +1949,12 @@ fn is_hop_by_hop_header_name(name: const u8[:]) -> bool {
     return false;
 }
 
-const PROTECTED_E2E_HEADER_NAMES: const u8[:][57] = [
+const PROTECTED_E2E_HEADER_NAMES: const u8[:][60] = [
     "host", "content-length", "content-type", "authorization", "cookie",
     "set-cookie", "set-cookie2", "origin", "referer", "vary",
     "cache-control", "date", "etag", "location", "content-encoding",
     "content-range", "range", "if-match", "if-none-match",
-    "if-modified-since", "if-unmodified-since", "content-digest",
+    "if-modified-since", "if-unmodified-since", "if-range", "content-digest",
     "repr-digest", "want-content-digest", "want-repr-digest", "digest",
     "signature", "signature-input", "dpop", "dpop-nonce",
     "www-authenticate", "forwarded", "x-forwarded-for", "x-forwarded-host",
@@ -1945,6 +1965,7 @@ const PROTECTED_E2E_HEADER_NAMES: const u8[:][57] = [
     "x-authenticated-user", "x-api-key", "x-frame-options",
     "x-content-type-options", "x-csrf-token", "x-xsrf-token",
     "x-request-id", "strict-transport-security", "x-webkit-csp",
+    "cache-groups", "cache-group-invalidation",
 ];
 
 // RFC 9110 Section 7.6.1: Protects framing, security, and forwarding headers

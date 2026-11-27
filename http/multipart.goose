@@ -33,10 +33,15 @@ fn is_ok(err: MultipartError) -> bool {
 }
 
 struct MultipartOptions {
-    max_parts:         i32 = 64,
-    max_memory_bytes:  i64 = 12582912,      // 12 MB in-memory field buffering quota (ovr framework style)
-    max_payload_bytes: i64 = 67108864,      // 64 MB maximum overall payload
-    max_header_bytes:  i64 = 8192,          // 8 KB per-part header block
+    max_parts:                i32 = 64,
+    max_memory_bytes:         i64 = 12582912, // 12 MB in-memory field buffering quota (ovr framework style)
+    max_payload_bytes:        i64 = 67108864, // 64 MB maximum overall payload
+    max_header_bytes:         i64 = 8192,     // 8 KB per-part header block
+    max_preamble_bytes:       i64 = 4096,
+    max_epilogue_bytes:       i64 = 4096,
+    max_headers_per_part:     i64 = 32,
+    max_total_part_headers:   i64 = 1024,
+    max_non_file_field_bytes: i64 = 65536,
 }
 
 // ---- multipart part and message model --------------------------------------
@@ -370,18 +375,24 @@ fn parse_multipart(
     var shift_table: u16[256] = [0; 256];
     build_bmh_shift_table(part_delim[..], shift_table);
 
-    var cursor = http_internal::find_initial_boundary(body, init_delim[..]);
+    var cursor = http_internal::find_initial_boundary(body, init_delim[..], options.max_preamble_bytes);
     guard cursor >= 0 else {
         msg.valid = false;
         return msg, MultipartError.MissingBoundaryDelimiter;
     }
     cursor += init_delim.len;
 
-    var total_memory_used: i64 = 0;
+    var total_memory_used:  i64 = 0;
+    var total_part_headers: i64 = 0;
     var has_closing_delimiter = false;
 
     while cursor < body.len {
         if http_internal::is_closing_boundary_at(body, cursor) {
+            let epilogue_len = http_internal::epilogue_bytes_after_closing(body, cursor);
+            guard epilogue_len <= options.max_epilogue_bytes else {
+                msg.valid = false;
+                return msg, MultipartError.ExceededMaxPayload;
+            }
             has_closing_delimiter = true;
             break; // Valid closing boundary reached
         }
@@ -391,7 +402,7 @@ fn parse_multipart(
         cursor += rem.len - after_pad.len;
 
         let p_err = http_internal::parse_multipart_part(
-            body, cursor, part_delim[..], shift_table, options, total_memory_used, msg,
+            body, cursor, part_delim[..], shift_table, options, total_memory_used, total_part_headers, msg,
         );
         guard p_err == MultipartError.None else {
             msg.valid = false;
@@ -561,6 +572,7 @@ fn evaluate_if_range(
     }
 
     // Otherwise, parse as HTTP-date (IMF-fixdate, RFC 850, or asctime)
+    guard mod_unix_sec > 0 else { return false; }
     let parsed_date, date_ok = core::parse_http_date(trimmed);
     guard date_ok else { return false; }
 
@@ -607,6 +619,22 @@ fn validate_byterange_patch(content_range_val: const u8[:], body_len: i64) -> i6
     return start_val, end_val, true;
 }
 
+inline fn serve_full_200_response<OpenFn: fn(i64, i64, u8[>..]&)>(
+    resource_len: i64,
+    content_type: const u8[:],
+    out_status:   i32&,
+    out_headers:  HeaderMap&,
+    out_body:     u8[>..]&,
+) {
+    out_body.clear();
+    out_status = 200;
+    insert_header(out_headers, "content-type", content_type);
+    var len_str: u8[..32] = [];
+    format(len_str, resource_len);
+    insert_header(out_headers, "content-length", len_str[..]);
+    OpenFn(0, resource_len, out_body);
+}
+
 // Handles an RFC 9110 range request, writing status, headers, and body slices.
 // Serves an HTTP GET range request, writing status code, headers, and payload (RFC 9110 Section 14).
 fn serve_range_request<OpenFn: fn(i64, i64, u8[>..]&)>(
@@ -624,30 +652,34 @@ fn serve_range_request<OpenFn: fn(i64, i64, u8[>..]&)>(
     out_body.clear();
     insert_header(out_headers, "accept-ranges", "bytes");
 
+    if req_range_header.trim_lws().len == 0 {
+        serve_full_200_response(resource_len, content_type, out_status, out_headers, out_body) { off, len, out =>
+            OpenFn(off, len, out);
+        };
+        return;
+    }
+
     // Check If-Range if present
     if if_range_header.len > 0 {
         let is_match = evaluate_if_range(if_range_header, etag, mod_unix_sec);
         if !is_match {
-            out_status = 200;
-            insert_header(out_headers, "content-type", content_type);
-            var len_str: u8[..32] = [];
-            format(len_str, resource_len);
-            insert_header(out_headers, "content-length", len_str[..]);
-            OpenFn(0, resource_len, out_body);
+            serve_full_200_response(resource_len, content_type, out_status, out_headers, out_body) { off, len, out =>
+                OpenFn(off, len, out);
+            };
             return;
         }
     }
 
     // Parse and coalesce ranges
     let rs, r_err = parse_range_header(req_range_header, resource_len, true, 16);
-    if r_err == RangeError.InvalidUnit || r_err == RangeError.ExceededMaxRanges {
-        // RFC 9110 Section 14.1.2 & Go #81508 / #81858 Range header DoS defense: Unrecognized unit or excessive ranges (>16) must be ignored and served with 200 OK
-        out_status = 200;
-        insert_header(out_headers, "content-type", content_type);
-        var len_str: u8[..32] = [];
-        format(len_str, resource_len);
-        insert_header(out_headers, "content-length", len_str[..]);
-        OpenFn(0, resource_len, out_body);
+    let ignore_to_200 = r_err == RangeError.InvalidUnit || r_err == RangeError.ExceededMaxRanges ||
+        r_err == RangeError.EmptyRange || r_err == RangeError.MalformedRange ||
+        r_err == RangeError.TooManyEmptyElements;
+    if ignore_to_200 {
+        // RFC 9110 Section 14.2: Ignore syntactically invalid or unrecognized Range headers and serve 200 OK
+        serve_full_200_response(resource_len, content_type, out_status, out_headers, out_body) { off, len, out =>
+            OpenFn(off, len, out);
+        };
         return;
     }
     if !rs.is_satisfiable || !is_ok(r_err) {
@@ -700,18 +732,24 @@ fn serve_range_set<OpenFn: fn(i64, i64, u8[>..]&)>(
         OpenFn(r.start, part_len, out_body);
     } else {
         // Multipart 206 Partial Content: multipart/byteranges; boundary=...
-        out_status = 206;
         let boundary = "goose-byterange-boundary-42";
-        var ct_val: u8[..128] = [];
-        ct_val.append("multipart/byteranges; boundary=");
-        ct_val.append(boundary);
-        insert_header(out_headers, "content-type", ct_val[..]);
-
         http_internal::serve_multipart_ranges(
             rs.ranges, resource_len, content_type, boundary, out_body,
         ) { off, len, out =>
             OpenFn(off, len, out);
         };
+        if (out_body.len as i64) >= resource_len {
+            serve_full_200_response(resource_len, content_type, out_status, out_headers, out_body) { off, len, out =>
+                OpenFn(off, len, out);
+            };
+            return;
+        }
+
+        out_status = 206;
+        var ct_val: u8[..128] = [];
+        ct_val.append("multipart/byteranges; boundary=");
+        ct_val.append(boundary);
+        insert_header(out_headers, "content-type", ct_val[..]);
 
         var len_str: u8[..32] = [];
         format(len_str, out_body.len as i64);

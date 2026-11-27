@@ -43,6 +43,8 @@ struct Config {
     emit_rfc7239_forwarded:      bool          = false,
     preserve_host:               bool          = false,
     trust_incoming_xff:          bool          = false,
+    trusted_proxy_cidrs:         u8[..64][..8] = [],
+    forward_cache_groups:        bool          = false,
     max_active_conns_per_target: i32           = 1024,
     enable_rate_limiting:        bool          = false,
     rate_limit_rps:              u64           = 100,
@@ -109,6 +111,83 @@ fn append_proxy_client_cert_spill(
     return true;
 }
 
+enum ProxyPrepareStatus {
+    Ok,
+    LoopDetected508,
+    MaxForwardsZeroLocal,
+    RateLimited429,
+    BadRequest400,
+}
+
+fn filter_and_forward_headers_status_impl(
+    in_headers:    const http::HeaderMap&,
+    spill_entries: const http::HeaderEntry[:],
+    spill_raw:     const u8[:],
+    out_headers:   http::HeaderMap&,
+    out_arena:     http::OverflowArena&,
+    client_ip:     const u8[:],
+    proto:         const u8[:],
+    upstream_host: const u8[:],
+    config:        const Config&,
+    method:        const u8[:],
+) -> ProxyPrepareStatus {
+    guard proxy_internal::has_consistent_framing_headers_slices(in_headers, spill_entries, spill_raw) else {
+        return ProxyPrepareStatus.BadRequest400;
+    }
+    http::reset_for_keep_alive(out_headers);
+    http::reset_overflow_arena(out_arena);
+    var committed = false;
+    defer if !committed {
+        out_headers.clear();
+        http::reset_overflow_arena(out_arena);
+    };
+
+    guard proxy_internal::copy_filtered_headers_spill(
+        in_headers, spill_entries, spill_raw, out_headers, out_arena, config, method,
+    ) else { return ProxyPrepareStatus.BadRequest400; }
+
+    let allow_ws = proxy_internal::is_valid_websocket_upgrade_headers_slices(
+        in_headers, spill_entries, spill_raw, config, method,
+    );
+    if config.strip_hop_by_hop && allow_ws {
+        guard http::append_header_spill(out_headers, out_arena, "Connection", "Upgrade") else {
+            return ProxyPrepareStatus.BadRequest400;
+        }
+        guard http::append_header_spill(out_headers, out_arena, "Upgrade", "websocket") else {
+            return ProxyPrepareStatus.BadRequest400;
+        }
+    }
+
+    guard append_proxy_client_cert_spill(config, out_headers, out_arena) else {
+        return ProxyPrepareStatus.BadRequest400;
+    }
+
+    if !config.preserve_host && upstream_host.len > 0 {
+        guard http::append_header_spill(out_headers, out_arena, "Host", upstream_host) else {
+            return ProxyPrepareStatus.BadRequest400;
+        }
+    }
+
+    if config.append_forwarded {
+        guard proxy_internal::inject_forwarded_metadata_spill(
+            out_headers, out_arena, in_headers, spill_entries, spill_raw, client_ip, proto, config,
+        ) else { return ProxyPrepareStatus.BadRequest400; }
+    }
+
+    let via_status = proxy_internal::inject_via_header_spill(
+        out_headers,
+        out_arena,
+        in_headers,
+        spill_entries,
+        spill_raw,
+        config.via_pseudonym[..],
+        config.http_version[..],
+    );
+    guard via_status == ProxyPrepareStatus.Ok else { return via_status; }
+    committed = true;
+    return ProxyPrepareStatus.Ok;
+}
+
 fn filter_and_forward_headers_impl(
     in_headers:    const http::HeaderMap&,
     spill_entries: const http::HeaderEntry[:],
@@ -121,52 +200,11 @@ fn filter_and_forward_headers_impl(
     config:        const Config&,
     method:        const u8[:],
 ) -> bool {
-    guard proxy_internal::has_consistent_framing_headers_slices(in_headers, spill_entries, spill_raw) else {
-        return false;
-    }
-    http::reset_for_keep_alive(out_headers);
-    http::reset_overflow_arena(out_arena);
-    var committed = false;
-    defer if !committed {
-        out_headers.clear();
-        http::reset_overflow_arena(out_arena);
-    };
-
-    guard proxy_internal::copy_filtered_headers_spill(
-        in_headers, spill_entries, spill_raw, out_headers, out_arena, config, method,
-    ) else { return false; }
-
-    let allow_ws = proxy_internal::is_valid_websocket_upgrade_headers_slices(
-        in_headers, spill_entries, spill_raw, config, method,
+    let st = filter_and_forward_headers_status_impl(
+        in_headers, spill_entries, spill_raw, out_headers, out_arena,
+        client_ip, proto, upstream_host, config, method,
     );
-    if config.strip_hop_by_hop && allow_ws {
-        guard http::append_header_spill(out_headers, out_arena, "Connection", "Upgrade") else { return false; }
-        guard http::append_header_spill(out_headers, out_arena, "Upgrade", "websocket") else { return false; }
-    }
-
-    guard append_proxy_client_cert_spill(config, out_headers, out_arena) else { return false; }
-
-    if !config.preserve_host && upstream_host.len > 0 {
-        guard http::append_header_spill(out_headers, out_arena, "Host", upstream_host) else { return false; }
-    }
-
-    if config.append_forwarded {
-        guard proxy_internal::inject_forwarded_metadata_spill(
-            out_headers, out_arena, in_headers, spill_entries, spill_raw, client_ip, proto, config,
-        ) else { return false; }
-    }
-
-    guard proxy_internal::inject_via_header_spill(
-        out_headers,
-        out_arena,
-        in_headers,
-        spill_entries,
-        spill_raw,
-        config.via_pseudonym[..],
-        config.http_version[..],
-    ) else { return false; }
-    committed = true;
-    return true;
+    return st == ProxyPrepareStatus.Ok;
 }
 
 // Filters incoming request headers and populates outgoing proxy request headers.
@@ -351,10 +389,15 @@ enum HeaderSpillPolicy {
 }
 
 inline fn check_proxy_ingress_rate_limit(rp: ReverseProxy&, client_ip: const u8[:], effective_now: u64) -> bool {
-    guard rp.config.enable_rate_limiting && client_ip.len > 0 && effective_now > 0 else {
+    guard rp.config.enable_rate_limiting else {
         return true;
     }
-    let dec = security::check_gateway_rate_limit(rp.rate_limiter, client_ip, 1, effective_now);
+    guard effective_now > 0 else {
+        rp.total_dropped = core::add_sat_u64(rp.total_dropped, 1);
+        return false;
+    }
+    let rate_key = if client_ip.len > 0 { client_ip } else { "__empty_ip__" };
+    let dec = security::check_gateway_rate_limit(rp.rate_limiter, rate_key, 1, effective_now);
     if !dec.allowed {
         rp.total_rate_limited = core::add_sat_u64(rp.total_rate_limited, 1);
         rp.total_dropped = core::add_sat_u64(rp.total_dropped, 1);
@@ -377,20 +420,20 @@ fn build_and_serialize_proxy_wire<B>(
     out_wire:      B&,
     mode:          WirePrepareMode,
     spill_policy:  HeaderSpillPolicy,
-) -> bool {
+) -> ProxyPrepareStatus {
     var forward_headers = http::HeaderMap { .. };
     var forward_arena = http::OverflowArena { .. };
     var host_buf: u8[..160] = [];
     guard proxy_internal::format_upstream_authority(
         target.host[..], target.port, rp.config.preserve_host, host_buf,
-    ) else { return false; }
-    guard filter_and_forward_headers_impl(
+    ) else { return ProxyPrepareStatus.BadRequest400; }
+    let hdr_st = filter_and_forward_headers_status_impl(
         in_headers, spill_entries, spill_raw, forward_headers, forward_arena,
         client_ip, proto, host_buf[..], rp.config, method,
-    ) else { return false; }
-    guard proxy_internal::apply_max_forwards_policy_spill(method, forward_headers, forward_arena) else {
-        return false;
-    }
+    );
+    guard hdr_st == ProxyPrepareStatus.Ok else { return hdr_st; }
+    let mf_st = proxy_internal::apply_max_forwards_policy_spill(method, forward_headers, forward_arena);
+    guard mf_st == ProxyPrepareStatus.Ok else { return mf_st; }
 
     let ok_framing = if mode == WirePrepareMode.HeadOnly {
         proxy_internal::ensure_forwarded_head_framing_spill(
@@ -400,17 +443,21 @@ fn build_and_serialize_proxy_wire<B>(
     } else {
         proxy_internal::ensure_forwarded_body_framing_spill(forward_headers, forward_arena, body, method)
     };
-    guard ok_framing else { return false; }
+    guard ok_framing else { return ProxyPrepareStatus.BadRequest400; }
     if spill_policy == HeaderSpillPolicy.StackOnly {
         guard forward_arena.spill_raw.len == 0 && forward_arena.spill_entries.len == 0 else {
-            return false;
+            return ProxyPrepareStatus.BadRequest400;
         }
     }
 
     let wire_body = if mode == WirePrepareMode.HeadOnly { "" } else { body };
-    return serialize_upstream_request_spill(
+    return if serialize_upstream_request_spill(
         method, uri, forward_headers, forward_arena, wire_body, out_wire, rp.config.http_version[..],
-    );
+    ) {
+        ProxyPrepareStatus.Ok
+    } else {
+        ProxyPrepareStatus.BadRequest400
+    };
 }
 
 fn prepare_proxy_wire_impl<B>(
@@ -428,23 +475,23 @@ fn prepare_proxy_wire_impl<B>(
     now_ns:        u64,
     mode:          WirePrepareMode,
     spill_policy:  HeaderSpillPolicy,
-) -> i32, bool {
+) -> i32, ProxyPrepareStatus {
     if mode == WirePrepareMode.FullRequest &&
         rp.config.max_buffered_body_bytes > 0 &&
         body.len > rp.config.max_buffered_body_bytes {
         rp.total_dropped = core::add_sat_u64(rp.total_dropped, 1);
         out_wire.clear();
-        return TARGET_NONE, false;
+        return TARGET_NONE, ProxyPrepareStatus.BadRequest400;
     }
     let effective_now = if now_ns > 0 { now_ns } else { core::as_nanos(core::monotonic_now()) };
     guard check_proxy_ingress_rate_limit(rp, client_ip, effective_now) else {
-        return TARGET_NONE, false;
+        return TARGET_NONE, ProxyPrepareStatus.RateLimited429;
     }
 
     let target_idx, ok = select_upstream_with_key(rp.cluster, hash_key);
     guard ok && target_idx >= 0 && target_idx < rp.cluster.targets.len else {
         rp.total_dropped = core::add_sat_u64(rp.total_dropped, 1);
-        return TARGET_NONE, false;
+        return TARGET_NONE, ProxyPrepareStatus.BadRequest400;
     }
     var committed = false;
     defer if !committed {
@@ -456,19 +503,41 @@ fn prepare_proxy_wire_impl<B>(
     let target .= rp.cluster.targets[target_idx];
     if proxy_internal::is_target_concurrency_saturated(target, rp.config.max_active_conns_per_target) {
         rp.total_overloaded = core::add_sat_u64(rp.total_overloaded, 1);
-        return TARGET_NONE, false;
+        return TARGET_NONE, ProxyPrepareStatus.BadRequest400;
     }
 
-    guard build_and_serialize_proxy_wire(
+    let prep_st = build_and_serialize_proxy_wire(
         rp, target, method, uri, in_headers, spill_entries, spill_raw,
         client_ip, proto, body, out_wire, mode, spill_policy,
-    ) else {
-        return TARGET_NONE, false;
+    );
+    guard prep_st == ProxyPrepareStatus.Ok else {
+        return TARGET_NONE, prep_st;
     }
 
     committed = true;
     rp.total_forwarded = core::add_sat_u64(rp.total_forwarded, 1);
-    return target_idx, true;
+    return target_idx, ProxyPrepareStatus.Ok;
+}
+
+// Companion to `prepare_proxy_request_with_key_at` returning structured `ProxyPrepareStatus`
+// so callers can emit HTTP `508 Loop Detected` on `Via` loop or local `200 OK` on `Max-Forwards: 0`.
+fn prepare_proxy_request_with_status_at<B>(
+    rp:         ReverseProxy&,
+    method:     const u8[:],
+    uri:        const u8[:],
+    in_headers: const http::HeaderMap&,
+    client_ip:  const u8[:],
+    proto:      const u8[:],
+    hash_key:   const u8[:],
+    body:       const u8[:],
+    out_wire:   B&,
+    now_ns:     u64,
+) -> i32, ProxyPrepareStatus {
+    return prepare_proxy_wire_impl(
+        rp, method, uri, in_headers, in_headers.entries[..0], "",
+        client_ip, proto, hash_key, body, out_wire, now_ns,
+        WirePrepareMode.FullRequest, HeaderSpillPolicy.StackOnly,
+    );
 }
 
 // Selects upstream target with optional routing key, applies GCRA rate limiting and
@@ -485,11 +554,12 @@ fn prepare_proxy_request_with_key_at<B>(
     out_wire:   B&,
     now_ns:     u64,
 ) -> i32, bool {
-    return prepare_proxy_wire_impl(
+    let idx, st = prepare_proxy_wire_impl(
         rp, method, uri, in_headers, in_headers.entries[..0], "",
         client_ip, proto, hash_key, body, out_wire, now_ns,
         WirePrepareMode.FullRequest, HeaderSpillPolicy.StackOnly,
     );
+    return idx, st == ProxyPrepareStatus.Ok;
 }
 
 // Selects upstream target with optional routing key and serializes only the HTTP/1.1 request
@@ -505,11 +575,12 @@ fn prepare_proxy_head_with_key_at<B>(
     out_head:   B&,
     now_ns:     u64,
 ) -> i32, bool {
-    return prepare_proxy_wire_impl(
+    let idx, st = prepare_proxy_wire_impl(
         rp, method, uri, in_headers, in_headers.entries[..0], "",
         client_ip, proto, hash_key, "", out_head, now_ns,
         WirePrepareMode.HeadOnly, HeaderSpillPolicy.StackOnly,
     );
+    return idx, st == ProxyPrepareStatus.Ok;
 }
 
 // Selects upstream target with optional routing key and serializes up to 64 KiB request headers
@@ -526,11 +597,12 @@ fn prepare_proxy_head_with_key_at_spill<B>(
     out_head:   B&,
     now_ns:     u64,
 ) -> i32, bool {
-    return prepare_proxy_wire_impl(
+    let idx, st = prepare_proxy_wire_impl(
         rp, method, uri, in_headers, in_arena.spill_entries[..], in_arena.spill_raw[..],
         client_ip, proto, hash_key, "", out_head, now_ns,
         WirePrepareMode.HeadOnly, HeaderSpillPolicy.AllowSpill,
     );
+    return idx, st == ProxyPrepareStatus.Ok;
 }
 
 // Selects upstream target, applies GCRA rate limiting and concurrency backpressure defenses,
@@ -546,11 +618,12 @@ fn prepare_proxy_request_at<B>(
     out_wire:   B&,
     now_ns:     u64,
 ) -> i32, bool {
-    return prepare_proxy_wire_impl(
+    let idx, st = prepare_proxy_wire_impl(
         rp, method, uri, in_headers, in_headers.entries[..0], "",
         client_ip, proto, "", body, out_wire, now_ns,
         WirePrepareMode.FullRequest, HeaderSpillPolicy.StackOnly,
     );
+    return idx, st == ProxyPrepareStatus.Ok;
 }
 
 // Prepares an upstream wire request using the current monotonic clock timestamp.
@@ -827,12 +900,13 @@ fn try_rewrite_upstream_url<B>(
 // Parses `X-Accel-*` control headers, strips hop-by-hop and `X-Accel-*` headers,
 // and rewrites `Location` and `Content-Location` prefixes matching `backend_url_prefix`.
 fn process_and_filter_upstream_response_headers<B>(
-    in_headers:         const http::HeaderMap&,
-    backend_url_prefix: const u8[:],
-    public_url_prefix:  const u8[:],
-    out_headers:        http::HeaderMap&,
-    out_location_buf:   B&,
-    accel:              UpstreamAccelControl&,
+    in_headers:           const http::HeaderMap&,
+    backend_url_prefix:   const u8[:],
+    public_url_prefix:    const u8[:],
+    out_headers:          http::HeaderMap&,
+    out_location_buf:     B&,
+    accel:                UpstreamAccelControl&,
+    forward_cache_groups: bool = false,
 ) -> bool {
     guard proxy_internal::has_consistent_framing_headers(in_headers) else { return false; }
     out_headers.clear();
@@ -859,6 +933,7 @@ fn process_and_filter_upstream_response_headers<B>(
             out_location_buf,
             accel,
             first_loc_entry_idx,
+            forward_cache_groups,
         ) else {
             return false;
         }
@@ -902,7 +977,7 @@ fn run_prepared_exchange_on_conn(
         var loc_buf: u8[..512] = [];
         var accel = UpstreamAccelControl { .. };
         headers_valid = process_and_filter_upstream_response_headers(
-            out_resp.headers, "", "", filtered_hdrs, loc_buf, accel,
+            out_resp.headers, "", "", filtered_hdrs, loc_buf, accel, rp.config.forward_cache_groups,
         );
         if headers_valid {
             out_resp.headers = filtered_hdrs;

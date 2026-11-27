@@ -47,14 +47,15 @@ fn eval_gcra_config(
     let max_cells = core::add_sat_u64(config.max_burst, 1);
     let delta = core::mul_sat_u64(cost, t);
 
-    guard cost <= max_cells && delta <= limit_window else {
-        let over_retry = max(core::sub_sat_u64(delta, limit_window), 1);
+    guard cost > 0 && cost <= max_cells && delta <= limit_window else {
+        let over_retry = if cost == 0 { 0 } else { max(core::sub_sat_u64(delta, limit_window), 1) };
         return security::GcraDecision {
-            allowed:         false,
-            remaining_burst: 0,
-            retry_after_ns:  over_retry,
-            reset_after_ns:  over_retry,
-            tat_ns:          initial_tat,
+            allowed:               false,
+            remaining_burst:       0,
+            retry_after_ns:        over_retry,
+            reset_after_ns:        over_retry,
+            tat_ns:                initial_tat,
+            insufficient_capacity: cost > max_cells || delta > limit_window,
             ..
         }, initial_tat;
     }
@@ -66,14 +67,15 @@ fn eval_gcra_config(
     let retry_after = core::sub_sat_u64(t_allow, now_ns);
 
     guard now_ns >= t_allow else {
+        let clamped_tat = if tat_old < initial_tat { tat_old } else { initial_tat };
         return security::GcraDecision {
             allowed:         false,
             remaining_burst: 0,
             retry_after_ns:  retry_after,
             reset_after_ns:  retry_after,
-            tat_ns:          tat_old,
+            tat_ns:          clamped_tat,
             ..
-        }, tat_old;
+        }, clamped_tat;
     }
 
     let rem = calc_remaining_burst(tau, t, config.max_burst, tat_new, now_ns);
@@ -92,23 +94,23 @@ fn eval_gcra_config(
 // ---- GatewayRateLimiter internal helpers -----------------------------------
 
 fn find_idle_or_oldest_slot(limiter: const security::GatewayRateLimiter&, now_ns: u64) -> i64, bool {
+    guard limiter.entries.len > 0 else { return 0, false; }
+    var idle_idx:  i64 = -1;
+    var idle_seen: u64 = 0xFFFFFFFFFFFFFFFF;
+
     for &entry, i in limiter.entries {
         if !entry.in_use {
             return i, true;
         }
-    }
-    var oldest_idx:  i64  = 0;
-    var found:       bool = false;
-    var oldest_seen: u64  = 0xFFFFFFFFFFFFFFFF;
-
-    for &entry, i in limiter.entries {
-        if entry.cell.tat_ns <= now_ns && entry.last_seen_ns <= oldest_seen {
-            oldest_seen = entry.last_seen_ns;
-            oldest_idx = i;
-            found = true;
+        if entry.cell.tat_ns <= now_ns && entry.last_seen_ns <= idle_seen {
+            idle_seen = entry.last_seen_ns;
+            idle_idx = i;
         }
     }
-    return oldest_idx, found;
+    if idle_idx >= 0 {
+        return idle_idx, true;
+    }
+    return 0, false;
 }
 
 inline fn populate_entry(
@@ -235,10 +237,17 @@ fn allocate_shard_slot(shard: security::GcraShard&, now_ns: u64) -> i64, bool {
     if shard.slots.try_push(security::KeyedGcraSlot { active: false, .. }) {
         return core::sub_sat_i64(shard.slots.len, 1), true;
     }
+    guard shard.slots.len > 0 else { return 0, false; }
+    var idle_idx: i64 = -1;
+    var idle_tat: u64 = 0xFFFFFFFFFFFFFFFF;
     for &slot, idx in shard.slots {
-        if slot.cell.tat_ns <= now_ns {
-            return idx, true;
+        if slot.cell.tat_ns <= now_ns && slot.cell.tat_ns <= idle_tat {
+            idle_tat = slot.cell.tat_ns;
+            idle_idx = idx;
         }
+    }
+    if idle_idx >= 0 {
+        return idle_idx, true;
     }
     return 0, false;
 }
@@ -250,6 +259,19 @@ fn admit_or_reject_new_rate_limit_slot(
     cost_n:    u64,
     now_ns:    u64,
 ) -> security::RateLimitDecision {
+    let t = max(limiter.quota.emission_interval_ns, 1);
+    let limit_window = core::add_sat_u64(limiter.quota.delay_tolerance_ns, t);
+    let max_cells = core::add_sat_u64(limiter.quota.burst, 1);
+    let delta = core::mul_sat_u64(cost_n, t);
+    if cost_n == 0 || cost_n > max_cells || delta > limit_window {
+        let excess = if cost_n == 0 { 0 } else { max(core::sub_sat_u64(delta, limit_window), 1) };
+        return security::RateLimitDecision.Rejected {
+            retry_after_ns:        excess,
+            current_tat_ns:        0,
+            insufficient_capacity: cost_n > max_cells || delta > limit_window,
+        };
+    }
+
     let slot_idx, ok_slot = allocate_shard_slot(limiter.shards[shard_idx], now_ns);
     if ok_slot {
         let slot .= limiter.shards[shard_idx].slots[slot_idx];
@@ -366,6 +388,7 @@ fn set_ratelimit_u64_header(
             name_hash:     hname,
         });
         map.header_contains_comma.push(false);
+        map.bloom.add_header(name);
         return;
     }
     var val_str: u8[..24] = [];
@@ -589,8 +612,12 @@ fn edge_pick_clock_victim(
         idx += 1;
         if idx >= count { idx = 0; }
     }
-    guard idle_idx >= 0 else { return 0, idx, false; }
-    let next_cur = if idle_idx + 1 >= count { 0 } else { idle_idx + 1 };
+    let next_cur = if idle_idx >= 0 {
+        if idle_idx + 1 >= count { 0 } else { idle_idx + 1 }
+    } else {
+        idx
+    };
+    guard idle_idx >= 0 else { return 0, next_cur, false; }
     return idle_idx, next_cur, true;
 }
 

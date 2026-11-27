@@ -60,9 +60,26 @@ fn is_closing_boundary_at(body: const u8[:], cursor: i64) -> bool {
     return false;
 }
 
-fn find_initial_boundary(body: const u8[:], init_delim: const u8[:]) -> i64 {
+fn epilogue_bytes_after_closing(body: const u8[:], cursor: i64) -> i64 {
+    guard cursor + 2 <= body.len else { return 0; }
+    let after_pad = body[cursor + 2..].trim_lws_start();
+    if after_pad.len >= 2 && after_pad[0] == '\r' && after_pad[1] == '\n' {
+        return after_pad.len - 2;
+    }
+    if after_pad.len >= 1 && after_pad[0] == '\n' {
+        return after_pad.len - 1;
+    }
+    return after_pad.len;
+}
+
+fn find_initial_boundary(
+    body:               const u8[:],
+    init_delim:         const u8[:],
+    max_preamble_bytes: i64 = 4096,
+) -> i64 {
+    let limit = min(body.len - init_delim.len, max(0, max_preamble_bytes));
     var cursor: i64 = 0;
-    while cursor + init_delim.len <= body.len {
+    while cursor <= limit {
         let is_line_start = cursor == 0 || body[cursor - 1] == '\n';
         if is_line_start && body[cursor..cursor + init_delim.len] == init_delim[..] {
             let post_init = cursor + init_delim.len;
@@ -127,14 +144,66 @@ fn find_next_boundary_delim(
     return -1;
 }
 
+// Strips directory paths and rejects unsafe multipart filenames (`.`, `..`, empty, NUL, CTLs, `:`).
+//
+// Example:
+//   raw_fn = "../../etc/passwd", out = []
+//   returns: true, out = "passwd"
+fn sanitize_multipart_filename(raw_fn: const u8[:], out: u8[..256]&) -> bool {
+    out.clear();
+    for b in raw_fn {
+        guard b >= 0x20 && b != 0x7F else { return false; }
+    }
+    let slash_idx = raw_fn.last_index_of_byte('/');
+    let bslash_idx = raw_fn.last_index_of_byte('\\');
+    let sep_idx = max(slash_idx, bslash_idx);
+    let base = if sep_idx >= 0 { raw_fn[sep_idx + 1..] } else { raw_fn };
+    guard base.len > 0 && base != "." && base != ".." && !base.contains_byte(':') else {
+        return false;
+    }
+    return out.try_set(base);
+}
+
+// Decodes an RFC 8187 UTF-8 `filename*` ext-value (`UTF-8''...`), validates UTF-8, and sanitizes basename.
+//
+// Example:
+//   ext_val = "UTF-8''hello%20world.txt", out = []
+//   returns: true, out = "hello world.txt"
+fn decode_rfc8187_filename(ext_val: const u8[:], out: u8[..256]&) -> bool {
+    out.clear();
+    let after_cs, has_cs = ext_val.strip_prefix_fold("utf-8'");
+    guard has_cs else { return false; }
+    let _, encoded, has_lang = after_cs.split_once_byte('\'');
+    guard has_lang else { return false; }
+    for b, i in encoded {
+        if b == '%' {
+            let valid_hex = i + 2 < encoded.len &&
+                core::is_ascii_hexdigit(encoded[i + 1]) &&
+                core::is_ascii_hexdigit(encoded[i + 2]);
+            guard valid_hex else { return false; }
+        }
+    }
+    var decoded: u8[..256] = [];
+    guard core::percent_decode(encoded, decoded) && core::validate_utf8(decoded[..]) else {
+        return false;
+    }
+    return sanitize_multipart_filename(decoded[..], out);
+}
+
 fn populate_part_metadata(part_headers: const http::HeaderMap&, part: http::MultipartPart&) -> bool {
     let disp_raw = http::get_header(part_headers, "content-disposition");
     if disp_raw.len > 0 {
         let mt, mt_ok = http::parse_content_disposition(disp_raw);
         guard mt_ok && mt.type_name[..].eq_ascii_fold("form-data") else { return false; }
         let p_name = http::param(mt, "name");
-        let p_fn = http::param(mt, "filename");
-        guard part.name.try_append(p_name) && part.filename.try_append(p_fn) else { return false; }
+        guard part.name.try_append(p_name) else { return false; }
+        if http::has_param(mt, "filename*") {
+            let ext_fn = http::param(mt, "filename*");
+            guard decode_rfc8187_filename(ext_fn, part.filename) else { return false; }
+        } else if http::has_param(mt, "filename") {
+            let raw_fn = http::param(mt, "filename");
+            guard sanitize_multipart_filename(raw_fn, part.filename) else { return false; }
+        }
     }
     let ct_raw = http::get_header(part_headers, "content-type");
     if ct_raw.len > 0 {
@@ -150,20 +219,23 @@ fn populate_part_metadata(part_headers: const http::HeaderMap&, part: http::Mult
 //   body = "\r\nContent-Type: text/plain\r\n\r\nHello\r\n--boundary--", cursor = 0
 //   returns: MultipartError.Ok, advances cursor to end of part body
 fn parse_multipart_part(
-    body:              const u8[:],
-    cursor:            i64&,
-    part_delim:        const u8[:],
-    shift_table:       const u16[256]&,
-    options:           const http::MultipartOptions&,
-    total_memory_used: i64&,
-    msg:               http::MultipartMessage&,
+    body:               const u8[:],
+    cursor:             i64&,
+    part_delim:         const u8[:],
+    shift_table:        const u16[256]&,
+    options:            const http::MultipartOptions&,
+    total_memory_used:  i64&,
+    total_part_headers: i64&,
+    msg:                http::MultipartMessage&,
 ) -> http::MultipartError {
     let saved_cursor = cursor;
     let saved_mem = total_memory_used;
+    let saved_hdrs = total_part_headers;
     var committed = false;
     defer if !committed {
         cursor = saved_cursor;
         total_memory_used = saved_mem;
+        total_part_headers = saved_hdrs;
     };
 
     if cursor + 2 <= body.len && body[cursor] == '\r' && body[cursor + 1] == '\n' {
@@ -208,6 +280,13 @@ fn parse_multipart_part(
             return http::MultipartError.InvalidPartHeaders;
         }
     }
+    guard part_headers.entries.len <= options.max_headers_per_part else {
+        return http::MultipartError.InvalidPartHeaders;
+    }
+    guard options.max_total_part_headers - total_part_headers >= part_headers.entries.len else {
+        return http::MultipartError.InvalidPartHeaders;
+    }
+    total_part_headers += part_headers.entries.len;
 
     // RFC 7578 Section 4.7 & Go #66434 / #63855: Content-Transfer-Encoding is deprecated and MUST be rejected
     if http::has_header(part_headers, "content-transfer-encoding") {
@@ -232,6 +311,9 @@ fn parse_multipart_part(
     let meta_ok = populate_part_metadata(part_headers, part);
     guard meta_ok else {
         return http::MultipartError.InvalidPartHeaders;
+    }
+    if part.filename.len == 0 && part_data.len > options.max_non_file_field_bytes {
+        return http::MultipartError.ExceededMaxMemory;
     }
     msg.parts.push(part);
 

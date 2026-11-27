@@ -541,6 +541,7 @@ fn test_cve_2023_39326_chunk_extension_overflow(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_go_60997_localhost_secure_cookies(t: lit::T&) {
     var session = client::new_session();
+    client::set_allow_loopback_ssrf(session, true);
 
     client::mock_route(session, "GET", "http://localhost:8080/login", 200, "ok");
     client::add_mock_set_cookie(session, "sid=local_secret; Secure; HttpOnly; SameSite=None; Path=/");

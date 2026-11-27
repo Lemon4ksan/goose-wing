@@ -372,12 +372,14 @@ fn build_ech_sealed_client_hello(
         outer_exts[..], ech_state.cfg.maximum_name_length,
     ) else { return false; }
 
+    // RFC 9113 Section 9.2.3: Post-Handshake Authentication - Suppress post_handshake_auth when "h2" is offered.
+    let offer_pha = config.client_cert_der.len > 0 && !alpn_csv_contains_proto(config.alpn[..], "h2");
     var ch_inner_pay: u8[..4096] = [];
     let inner_ech_ext: u8[1] = [rfc::ECH_CLIENT_INNER];
     build_client_hello_payload(
         ech_state.inner_random, client_pub, inner_sni, config.alpn[..],
         ch_inner_pay, "", 0, enable_pq, pq_pub, inner_ech_ext[..],
-        hrr_cookie, config.client_cert_der.len > 0, 32, nist_pub,
+        hrr_cookie, offer_pha, 32, nist_pub,
     );
     guard frame_handshake_msg_4k(rfc::TLS_HS_CLIENT_HELLO, ch_inner_pay[..], ech_state.ch_inner_msg) else {
         return false;
@@ -398,7 +400,7 @@ fn build_ech_sealed_client_hello(
     build_client_hello_payload(
         client_random, client_pub, ech_state.cfg.public_name[..], "",
         ch_outer_pay, "", 0, enable_pq, pq_pub, placeholder_ext[..],
-        hrr_cookie, config.client_cert_der.len > 0, 32, nist_pub,
+        hrr_cookie, offer_pha, 32, nist_pub,
     );
     let pay_off, ok_off = find_ch_outer_ech_payload_offset(ch_outer_pay[..], ct_len);
     guard ok_off else { return false; }

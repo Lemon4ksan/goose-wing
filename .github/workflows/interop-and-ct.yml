@@ -134,7 +134,7 @@ jobs:
       - name: Install toolchain and Goose compiler
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential cmake gcc g++ git curl ca-certificates
+          sudo apt-get install -y --no-install-recommends build-essential clang cmake gcc g++ git curl ca-certificates
           git clone --depth 1 https://github.com/aardappel/goose.git /tmp/goose
           cmake -S /tmp/goose -B /tmp/goose/build -DCMAKE_BUILD_TYPE=Release
           cmake --build /tmp/goose/build -j 2
@@ -150,6 +150,10 @@ jobs:
       - name: Run SanitizerCoverage parser fuzzing smoke pass
         run: |
           python scripts/sancov_runner.py --cc gcc --execs 2000 --check-complexity --max-rss-drift-kb 1024 --max-input-ms 50
+
+      - name: Run ASan+UBSan parser fuzzing smoke pass (-fno-sanitize-recover=all)
+        run: |
+          python scripts/sancov_runner.py --cc clang --asan-ubsan --execs 1000 --max-rss-drift-kb 65536 --max-input-ms 200
 
       - name: Run native fuzz unit verification suite
         run: |

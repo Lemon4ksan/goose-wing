@@ -936,7 +936,7 @@ fn test_cache_groups(t: lit::T&) {
 
         sub.assert_eq(cache.entries.len, 3, "Three grouped entries stored");
 
-        let purged = http::invalidate_group(cache, "catalog");
+        let purged = http::invalidate_group(cache, "catalog", "https://example.com");
         sub.assert_eq(purged, 2, "invalidate_group purges both catalog entries");
         sub.assert_false(cache.entries[0].is_valid, "catalog entry A invalidated");
         sub.assert_false(cache.entries[1].is_valid, "catalog entry B invalidated");

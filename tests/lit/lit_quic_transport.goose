@@ -2135,10 +2135,10 @@ fn test_quic_transport_params_rfc9000() {
 // crap:trusted-bounds
 fn test_quic_preferred_address_migration() {
     var raw_pref: u8[..64] = [];
-    // IPv4: 198.51.100.42:8443 (0x20FB)
-    raw_pref.append([198, 51, 100, 42, 0x20, 0xFB]);
-    // IPv6: 2001:db8::1, port 9443 (0x24E3)
-    raw_pref.append([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    // IPv4: 93.184.216.34:8443 (0x20FB)
+    raw_pref.append([93, 184, 216, 34, 0x20, 0xFB]);
+    // IPv6: 2606:2800:220:1::1, port 9443 (0x24E3)
+    raw_pref.append([0x26, 0x06, 0x28, 0x00, 0x02, 0x20, 0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 1]);
     raw_pref.append([0x24, 0xE3]);
     // CID len = 4, CID = [0xAA, 0xBB, 0xCC, 0xDD]
     raw_pref.append([4, 0xAA, 0xBB, 0xCC, 0xDD]);
@@ -2147,8 +2147,8 @@ fn test_quic_preferred_address_migration() {
 
     let pref, pref_ok = quic::decode_preferred_address(raw_pref[..]);
     assert(pref_ok);
-    assert(pref.ipv4[0] == 198 && pref.ipv4_port == 8443);
-    assert(pref.ipv6[0] == 0x20 && pref.ipv6_port == 9443);
+    assert(pref.ipv4[0] == 93 && pref.ipv4_port == 8443);
+    assert(pref.ipv6[0] == 0x26 && pref.ipv6_port == 9443);
     assert(pref.cid.len == 4 && pref.cid[0] == 0xAA);
     assert(pref.stateless_reset_token[0] == 0x10);
 

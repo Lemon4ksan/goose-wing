@@ -445,5 +445,9 @@ fn match_packed_route(
     let root = find_packed_route_root(arena);
     guard root else { return RouteMatchResult.NotFound; }
     params.clear();
-    return match_packed_node(root, eff_path, 0, false, params);
+    let res = match_packed_node(root, eff_path, 0, false, params);
+    if canon_scratch.len > 0 && canon_scratch[..] != path {
+        params.clear();
+    }
+    return res;
 }

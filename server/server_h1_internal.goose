@@ -73,6 +73,21 @@ inline fn resolve_server_recv_timeout_ms(server: const server::HttpServer&, has_
     return if ms > 0 { ms } else { 5000 };
 }
 
+inline fn try_reject_disallowed_trace<B>(
+    server:   server::HttpServer&,
+    method:   const u8[:],
+    wire_out: B&,
+) -> bool {
+    guard !server.allow_trace && method == "TRACE" else { return false; }
+    var err_resp = http::Response { status_code: rfc::STATUS_METHOD_NOT_ALLOWED, .. };
+    http::set_header(err_resp, "Connection", "close");
+    server::serialize_http1_response(
+        err_resp, server.server_name[..], wire_out, 0, resolve_server_header_policy(server),
+    );
+    server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
+    return true;
+}
+
 inline fn emit_h1_parse_status_error<B>(
     server:   const server::HttpServer&,
     status:   server::H1WireParseStatus,
@@ -321,6 +336,9 @@ fn finish_single_h1_wire_turn<Stage, B>(
 ) -> server::PipelineOutcome {
     acquire_turn_scratch(server);
     defer release_turn_scratch(server);
+    if try_reject_disallowed_trace(server, g_turn_req.method[..], wire_out) {
+        return server::PipelineOutcome.MethodNotAllowed;
+    }
     if server.ws_route_count > 0
         && (g_turn_req.presence_mask & http::HDR_PRESENCE_UPGRADE) != 0
         && realtime::is_websocket_upgrade_request(g_turn_req) {
@@ -354,7 +372,11 @@ fn finish_single_h1_wire_turn<Stage, B>(
     check_and_apply_connection_close(g_turn_req, g_turn_res);
     apply_shutdown_connection_close(server, g_turn_res);
     server::serialize_http1_response(
-        g_turn_res, server.server_name[..], wire_out, 0, resolve_server_header_policy(server),
+        g_turn_res,
+        server.server_name[..],
+        wire_out,
+        nanos_to_http_date_sec(now_ns),
+        resolve_server_header_policy(server),
     );
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
 
@@ -378,6 +400,9 @@ fn execute_single_h1_wire_turn<Stage, B>(
     guard parse_st == server::H1WireParseStatus.Ok else {
         emit_h1_parse_status_error(server, parse_st, wire_out);
         return server::PipelineOutcome.Handled, false;
+    }
+    if try_reject_disallowed_trace(server, req.method[..], wire_out) {
+        return server::PipelineOutcome.MethodNotAllowed, false;
     }
 
     // WebSocket Upgrade Interception (uWebSockets app.ws pattern) with pre-101 auth hook
@@ -416,7 +441,11 @@ fn execute_single_h1_wire_turn<Stage, B>(
     apply_shutdown_connection_close(server, res);
 
     server::serialize_http1_response(
-        res, server.server_name[..], wire_out, 0, resolve_server_header_policy(server),
+        res,
+        server.server_name[..],
+        wire_out,
+        nanos_to_http_date_sec(now_ns),
+        resolve_server_header_policy(server),
     );
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
 
@@ -586,6 +615,9 @@ fn dispatch_pipelined_request<Stage, B>(
     wire_out:  B&,
     stage:     Stage&,
 ) -> bool {
+    if try_reject_disallowed_trace(server, req.method[..], wire_out) {
+        return true;
+    }
     reset_server_response_fast(res);
     var future = server_internal::new_inline_handler_future(0);
     let _ = server::execute_server_pipeline_with_stage(
@@ -594,7 +626,11 @@ fn dispatch_pipelined_request<Stage, B>(
 
     let wants_close = check_and_apply_connection_close(req, res);
     server::serialize_http1_response(
-        res, server.server_name[..], wire_out, 0, resolve_server_header_policy(server),
+        res,
+        server.server_name[..],
+        wire_out,
+        nanos_to_http_date_sec(now_ns),
+        resolve_server_header_policy(server),
     );
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
     return wants_close;

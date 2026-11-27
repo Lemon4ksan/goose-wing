@@ -568,11 +568,24 @@ checkfree fn is_valid_authority(val: const u8[:]) -> bool {
 }
 
 checkfree fn is_valid_path(val: const u8[:]) -> bool {
-    guard val.len > 0 else { return false; }
+    let n = val.len;
+    guard n > 0 else { return false; }
     if val == "*" { return true; }
     guard val[0] == '/' else { return false; }
-    for b in val {
+    var i: i64 = 0;
+    while i < n {
+        let b = val[i];
         guard !h2_internal::is_forbidden_path_byte(b) else { return false; }
+        if b == '%' {
+            guard i + 2 < n
+                && core::is_ascii_hexdigit(val[i + 1])
+                && core::is_ascii_hexdigit(val[i + 2]) else {
+                return false;
+            }
+            i += 3;
+            continue;
+        }
+        i += 1;
     }
     return true;
 }

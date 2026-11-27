@@ -1486,7 +1486,7 @@ fn test_mime_disposition_and_filename_traversal(t: lit::T&) {
         sub.assert_eq(err, http::MultipartError.None, "Multipart with traversal filename parsed safely");
         sub.assert_true(msg.valid, "Valid message");
         sub.assert_eq(msg.parts.len, 1, "1 part extracted");
-        sub.assert_bytes_eq(msg.parts[0].filename[..], "../../etc/passwd", "Filename extracted verbatim without unsafe filesystem execution");
+        sub.assert_bytes_eq(msg.parts[0].filename[..], "passwd", "Traversal prefix stripped to safe basename");
     };
 
     t.run("Empty Field Name Part Ingestion (#63629)") { sub =>

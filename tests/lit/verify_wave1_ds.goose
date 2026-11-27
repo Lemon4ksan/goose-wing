@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RUN: goose %s | %FileCheck %s
 // Wave 1 Data Structures Verification:
 // 1. SWAR 8-way control-tag index (`core::swar_index_*`)

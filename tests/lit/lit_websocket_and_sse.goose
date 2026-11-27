@@ -70,14 +70,14 @@ fn test_wsrt01_permessage_deflate_negotiation() {
         srv_cfg,
     );
     assert(ok1);
-    assert(neg1.server_max_window_bits == 9);
+    assert(neg1.server_max_window_bits == 8);
     assert(neg1.client_max_window_bits == 10);
     assert(neg1.server_no_context_takeover);
     assert(!neg1.client_no_context_takeover);
 
     var resp_hdr: u8[..128] = [];
     realtime::append_permessage_deflate_response(neg1, resp_hdr);
-    assert(resp_hdr[..] == "permessage-deflate; server_no_context_takeover; server_max_window_bits=9; client_max_window_bits=10");
+    assert(resp_hdr[..] == "permessage-deflate; server_no_context_takeover; server_max_window_bits=8; client_max_window_bits=10");
 
     // Reject duplicate parameters, out-of-range window bits, leading zeros, or unknown params
     let _, ok_dup = realtime::negotiate_permessage_deflate(

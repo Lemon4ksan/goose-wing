@@ -126,27 +126,19 @@ fn invalidate_group(
     group:    const u8[:],
     base_url: const u8[:] = "",
 ) -> i64 {
+    guard base_url.len > 0 else { return 0; }
+    let parsed_base, err_base = core::parse_url(base_url);
+    guard err_base == core::UrlParseError.None && parsed_base.valid else { return 0; }
+    let base_orig = core::origin_from_url(parsed_base);
+    guard base_orig.scheme.len > 0 else { return 0; }
+
     var count: i64 = 0;
-    var has_origin = false;
-    var base_orig = core::Origin { .. };
-    if base_url.len > 0 {
-        let parsed_base, err_base = core::parse_url(base_url);
-        guard err_base == core::UrlParseError.None && parsed_base.valid else { return 0; }
-        base_orig = core::origin_from_url(parsed_base);
-        has_origin = base_orig.scheme.len > 0;
-        guard has_origin else { return 0; }
-    } else if cache.options.shared {
-        return 0;
-    }
     for &entry, idx in cache.entries {
-        if !entry.is_valid { continue; }
-        if !entry_has_group(entry, group) { continue; }
-        if has_origin {
-            let entry_url, err_u = core::parse_url(entry.url[..]);
-            if err_u != core::UrlParseError.None || !entry_url.valid { continue; }
-            let entry_orig = core::origin_from_url(entry_url);
-            if !core::is_same_origin(entry_orig, base_orig) { continue; }
-        }
+        guard entry.is_valid && entry_has_group(entry, group) else { continue; }
+        let entry_url, err_u = core::parse_url(entry.url[..]);
+        guard err_u == core::UrlParseError.None && entry_url.valid else { continue; }
+        let entry_orig = core::origin_from_url(entry_url);
+        guard core::is_same_origin(entry_orig, base_orig) else { continue; }
         entry.is_valid = false;
         entry.security_zeroed = true;
         http_internal::lru_detach(cache, idx as i32);

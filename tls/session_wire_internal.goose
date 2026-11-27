@@ -354,7 +354,8 @@ fn sign_certificate_verify<B>(
     rsa_key_gen:  u32 = 0,
 ) -> u16, bool {
     out_sig.clear();
-    let scheme = detect_cert_sig_scheme(cert_der);
+    var ed_pub: u8[32] = [0; 32];
+    let scheme, has_ed_pub = detect_cert_sig_scheme_and_ed25519_pub(cert_der, ed_pub);
     if scheme == rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256 {
         let raw_sig = core::ecdsa_p256_sign(priv_seed, cv_msg);
         var der_sig: u8[..72] = [];
@@ -383,7 +384,11 @@ fn sign_certificate_verify<B>(
         return scheme, true;
     }
     if scheme == rfc::SIG_SCHEME_ED25519 {
-        let ed_sig = core::ed25519_sign(priv_seed, cv_msg);
+        let ed_sig = if has_ed_pub {
+            core::ed25519_sign_with_pub(priv_seed, ed_pub, cv_msg)
+        } else {
+            core::ed25519_sign(priv_seed, cv_msg)
+        };
         guard out_sig.try_set(ed_sig[..]) else { return 0, false; }
         return rfc::SIG_SCHEME_ED25519, true;
     }

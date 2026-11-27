@@ -988,7 +988,7 @@ fn test_tls_stream_mtls_and_tcp_opts() {
     let leg_eof = tls::transport_recv_slice(fd_r, tslot, leg_buf[..], 0);
     tls::free_cipher_slot(tslot);
     net::virtual_fd_close(fd_r);
-    print("legacy_recv_no_spin_ok=", (leg_wb == -2) && (leg_eof == 0));
+    print("legacy_recv_no_spin_ok=", (leg_wb == -2) && (leg_eof == -1));
     // CHECK: legacy_recv_no_spin_ok=true
 
     // 6d. Fail-closed mTLS / PEM config guards (never silently drop PEM credentials or custom CA in Auto)

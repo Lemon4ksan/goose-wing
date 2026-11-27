@@ -33,6 +33,7 @@ const DST_DIGEST_UDP_CORRUPT: u64 = 0x554450434F525204;
 const DST_DIGEST_UDP_REBIND:  u64 = 0x554450524542494E;
 const DST_DIGEST_TIMER:       u64 = 0x54494D4552464952;
 const DST_DIGEST_CLOCK_JUMP:  u64 = 0x434C4F434B4A4D50;
+const DST_DIGEST_WALL_JUMP:   u64 = 0x57414C4C4A554D50;
 
 struct DstEvent {
     deliver_ns:  u64               = 0,
@@ -110,6 +111,8 @@ inline fn dst_sync_clock(world: net::DstWorld&, target_ns: u64) {
     if target_ns > world.now_ns {
         let skipped = core::sub_sat_u64(target_ns, world.now_ns);
         world.stats.virtual_time_skipped_ns = core::add_sat_u64(world.stats.virtual_time_skipped_ns, skipped);
+        let wall_delta = min(skipped, 0x7FFFFFFFFFFFFFFF) as i64;
+        world.wall_ns = core::add_sat_i64(world.wall_ns, wall_delta);
         world.now_ns = target_ns;
     }
     let clamped = min(world.now_ns, 0x7FFFFFFFFFFFFFFF) as i64;

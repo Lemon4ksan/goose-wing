@@ -135,14 +135,14 @@ fn tls_stream_pump_rx(s: TlsStream&) -> i64, TlsBackendStatus {
             return fed0, TlsBackendStatus.Ok;
         }
     }
-    guard !s.rx_eof else { return 0, TlsBackendStatus.Closed; }
+    guard !s.rx_eof else { return 0, TlsBackendStatus.Error; }
 
     var rx_buf: u8[16640] = [0; 16640];
     let recvd = net::fd_recv(s.fd, rx_buf[..], 0);
     if recvd == -2 { return 0, TlsBackendStatus.WantRead; }
     if recvd == 0 {
         s.rx_eof = true;
-        return 0, TlsBackendStatus.Closed;
+        return 0, TlsBackendStatus.Error;
     }
     guard recvd > 0 && recvd <= rx_buf.len else { return 0, TlsBackendStatus.Error; }
 
@@ -174,7 +174,9 @@ fn tls_stream_handshake_turn(s: TlsStream&) -> bool, TlsBackendStatus {
 
     let fed, pst = tls_stream_pump_rx(s);
     if fed > 0 { return true, TlsBackendStatus.Ok; }
-    if pst == TlsBackendStatus.Closed { return false, TlsBackendStatus.HandshakeError; }
+    if pst == TlsBackendStatus.Closed || (pst == TlsBackendStatus.Error && s.rx_eof) {
+        return false, TlsBackendStatus.HandshakeError;
+    }
     return false, if fst1 == TlsBackendStatus.WantWrite { TlsBackendStatus.WantWrite } else { pst };
 }
 
@@ -220,7 +222,7 @@ fn tls_stream_read(s: TlsStream&, dst: u8[:]) -> i64, TlsBackendStatus {
         }
         let fed, pst = tls_stream_pump_rx(s);
         if fed > 0 { continue; }
-        if pst == TlsBackendStatus.Closed { return 0, TlsBackendStatus.Closed; }
+        if pst == TlsBackendStatus.Closed { return 0, TlsBackendStatus.Error; }
         return 0, pst;
     }
     return 0, TlsBackendStatus.WantRead;

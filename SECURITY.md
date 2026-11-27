@@ -60,22 +60,23 @@ across these areas:
 ## TLS backend guidance and audit status
 
 `goose-wing` includes a pure-Goose TLS 1.3 implementation (`PureGoose`)
-alongside plug-and-play bindings to audited OS and system TLS libraries
-(`SystemOpenSsl`, `SystemSchannel`, `SystemSecureTransport`) via
+alongside bindings to OS and system TLS libraries (`SystemOpenSsl`,
+`SystemSchannel`, and opt-in legacy `SystemSecureTransport`) via
 [`tls/backend.goose`](tls/backend.goose) and
 [`shim/tls_backend.c`](shim/tls_backend.c).
 
 - For production deployments, configure `TlsBackendKind.SystemOnly` to force an
-  OS/system TLS library (`SystemOpenSsl`, `SystemSchannel`, or
-  `SystemSecureTransport`) and fail closed (`TlsBackendStatus.Unavailable`) if
-  none is available or a requested feature requires `PureGoose`.
+  OS/system TLS 1.3 library (`SystemOpenSsl` or `SystemSchannel`) and fail
+  closed (`TlsBackendStatus.Unavailable`) if none is present or a requested
+  feature requires `PureGoose`. (`SystemSecureTransport` supports up to TLS 1.2
+  only, is excluded from `SystemOnly` and `Auto`, and requires explicit opt-in
+  with `TlsMinVersion.Tls12`.)
 - By default, `client::Config` and `server::HttpServer` use
-  `TlsBackendKind.Auto`, which prefers `SystemOpenSsl` / `SystemSchannel` /
-  `SystemSecureTransport` when compatible and falls back to `PureGoose` when
-  system libraries are unavailable or `PureGoose`-only features (ECH, virtual
-  clocks, expired-leaf grace, PQ hybrid) are enabled. Use
-  `tls::endpoint_transport_active_kind` or `TlsEndpoint.active_kind` to inspect
-  or assert the active backend at runtime.
+  `TlsBackendKind.Auto`, which prefers `SystemOpenSsl` or `SystemSchannel` when
+  compatible and falls back to `PureGoose` when system libraries are absent or
+  `PureGoose`-only features (ECH, virtual clocks, expired-leaf grace, PQ hybrid)
+  are enabled. Use `tls::endpoint_transport_active_kind` or
+  `TlsEndpoint.active_kind` to inspect or assert the active backend at runtime.
 - Neither `PureGoose` nor its cryptographic primitives in `core/crypto/` have
   undergone a paid third-party cryptographic audit. Automated verification
   covers Wycheproof/CCTV/ACVP test vectors, Valgrind TIMECOP

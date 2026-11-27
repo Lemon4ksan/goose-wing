@@ -53,6 +53,7 @@ fn reactor_try_open_uring(accel: net::ReactorAccelRuntime&, listener_fd: i64) ->
     accel.mode = net::ReactorAccelMode.IoUring;
     accel.uring_fd = rfd;
     accel.uring_pbuf = pbuf;
+    net::init_uring_tx_pool(accel);
     if listener_fd > 0 {
         net::tcp_set_nonblocking(listener_fd, true);
         let _ = net::tcp_set_nodelay(listener_fd, true);

@@ -81,6 +81,9 @@ fn reactor_dispatch_single_rio_result<Stage>(
             return;
         }
         guard is_active_slot(table, slot) else { return; }
+        if slot < table.tx_stall_deadlines_ms.len {
+            table.tx_stall_deadlines_ms[slot] = 0;
+        }
         if res.status != 0 || server::g_reactor_accel.slot_close_after_tx[slot] {
             reactor_close_and_inc(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
         }
@@ -129,23 +132,30 @@ fn reactor_accept_rio_tls_fd<Stage>(
     total_served:  i64&,
     stage:         Stage&,
 ) {
+    if server.tcp_user_timeout_ms > 0 {
+        let _ = net::tcp_set_user_timeout(client_fd, server.tcp_user_timeout_ms);
+    }
     var slot = alloc_reactor_conn_slot(slot_pool, table);
     if slot < 0 {
-        slot = reactor_evict_stale_slot(epfd, table, leftover_pool, slot_pool, timer_wheel, total_served);
+        slot = reactor_evict_stale_slot(
+            epfd, table, leftover_pool, slot_pool, server.pipeline, timer_wheel, total_served,
+        );
     }
     guard slot >= 0 && slot < net::REACTOR_RIO_SLOTS else {
         net::tcp_close(client_fd);
         total_served = core::add_sat_i64(total_served, 1);
         return;
     }
-    reactor_init_slot_record(table, leftover_pool, client_fd, slot, timer_wheel);
+    reactor_init_slot_record(
+        table, leftover_pool, client_fd, slot, timer_wheel, resolve_reactor_header_sec(server),
+    );
     net::ensure_reactor_accel_slab(server::g_reactor_accel);
     let tok = net::reactor_accel_slot_token(server::g_reactor_accel, slot);
     let rq = net_internal::native_rio_create_rq_ctx(
         client_fd, 16, 16, server::g_reactor_accel.rio_cq, server::g_reactor_accel.rio_tx_cq, tok,
     );
     guard rq != 0 else {
-        reactor_cleanup_slot(epfd, table, leftover_pool, slot, slot_pool);
+        reactor_cleanup_slot(epfd, table, leftover_pool, slot, slot_pool, server.pipeline);
         total_served = core::add_sat_i64(total_served, 1);
         return;
     }
@@ -166,7 +176,7 @@ fn reactor_accept_rio_tls_fd<Stage>(
         if hs_rx_inflight {
             server::g_reactor_accel.slot_rx_inflight[slot] = true;
         }
-        reactor_cleanup_slot(epfd, table, leftover_pool, slot, slot_pool);
+        reactor_cleanup_slot(epfd, table, leftover_pool, slot, slot_pool, server.pipeline);
         total_served = core::add_sat_i64(total_served, 1);
         return;
     }
@@ -220,7 +230,7 @@ fn reactor_poll_rio_listener<Stage>(
                 tls_config, now_ns, chunk, cork_wire, total_served, stage,
             );
         } else {
-            reactor_accept_plain_fd(cfd, epfd, table, leftover_pool, slot_pool, timer_wheel, total_served);
+            reactor_accept_plain_fd(server, cfd, epfd, table, leftover_pool, slot_pool, timer_wheel, total_served);
         }
     }
 }
@@ -411,7 +421,8 @@ inline fn reactor_dispatch_uring_plain_recv_cqe<Stage>(
         return;
     }
     if server.pipeline.enable_slowloris_timer {
-        table.soa_table_touch(slot, core::tick_timer_arm(timer_wheel, 15));
+        let phase_sec = resolve_slot_phase_timeout_sec(server, table, slot);
+        table.soa_table_touch(slot, core::tick_timer_arm(timer_wheel, phase_sec));
     }
     chunk.len = 0;
     reactor_load_leftover(table, leftover_pool, slot, chunk);
@@ -498,11 +509,12 @@ fn reactor_dispatch_uring_recv_cqe<Stage>(
         return;
     }
 
-    let is_tls = slot < table.has_tls.len
-        && slot < table.tls_slots.len
-        && table.has_tls[slot]
-        && table.tls_slots[slot] != 0xFFFF;
-    if is_tls {
+    let is_tls_hs = slot < table.tls_hs_map.len && table.tls_hs_map[slot] >= 0;
+    let is_tls = slot < table.has_tls.len &&
+        slot < table.tls_slots.len &&
+        table.has_tls[slot] &&
+        table.tls_slots[slot] != 0xFFFF;
+    if is_tls || is_tls_hs {
         reactor_dispatch_uring_tls_recv_cqe(
             server, epfd, table, leftover_pool, slot, has_buf, bid, cqe.res,
             slot_pool, timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
@@ -522,7 +534,7 @@ fn reactor_dispatch_uring_recv_cqe<Stage>(
 }
 
 fn reactor_dispatch_uring_accept_cqe(
-    server:        const server::HttpServer&,
+    server:        server::HttpServer&,
     listener_fd:   i64,
     draining:      bool,
     tls_config:    const tls::ServerHandshakeConfig&,
@@ -539,12 +551,16 @@ fn reactor_dispatch_uring_accept_cqe(
         let cfd = cqe.res as i64;
         net::tcp_set_nonblocking(cfd, true);
         let _ = net::tcp_set_nodelay(cfd, true);
+        let _ = net::tcp_set_quickack(cfd, true);
+        if server.tcp_user_timeout_ms > 0 {
+            let _ = net::tcp_set_user_timeout(cfd, server.tcp_user_timeout_ms);
+        }
         if is_tls {
             reactor_accept_single_tls_fd(
                 server, cfd, epfd, table, leftover_pool, slot_pool, timer_wheel, tls_config, total_served,
             );
         } else {
-            reactor_accept_plain_fd(cfd, epfd, table, leftover_pool, slot_pool, timer_wheel, total_served);
+            reactor_accept_plain_fd(server, cfd, epfd, table, leftover_pool, slot_pool, timer_wheel, total_served);
         }
     }
     if (cqe.flags & net_internal::URING_CQE_F_MORE) == 0 && !draining && listener_fd > 0 {
@@ -571,6 +587,13 @@ fn reactor_dispatch_uring_send_cqe(
         server::g_reactor_accel.slot_tx_inflight[slot] = false;
         if (cqe.flags & net_internal::URING_CQE_F_MORE) != 0 {
             server::g_reactor_accel.slot_tx_notif_pending[slot] = true;
+        }
+    }
+    if !server::g_reactor_accel.slot_tx_inflight[slot] &&
+        !server::g_reactor_accel.slot_tx_notif_pending[slot] {
+        net::release_uring_tx_buf(server::g_reactor_accel, slot);
+        if slot < table.tx_stall_deadlines_ms.len {
+            table.tx_stall_deadlines_ms[slot] = 0;
         }
     }
     if is_quarantined {
@@ -712,10 +735,25 @@ fn reactor_step_uring_completions<Stage>(
     guard n > 0 else { return 0; }
     let limit = min(n as i64, 256);
     for i in limit {
-        reactor_dispatch_single_uring_cqe(
-            server, listener_fd, draining, tls_config, is_tls, cqes[i], table,
-            leftover_pool, slot_pool, timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
-        );
+        let kind = cqes[i].user_data & net::REACTOR_URING_TAG_KIND_MASK;
+        if kind == net::REACTOR_URING_TAG_SEND || kind == net::REACTOR_URING_TAG_EPOLL {
+            reactor_dispatch_single_uring_cqe(
+                server, listener_fd, draining, tls_config, is_tls, cqes[i], table,
+                leftover_pool, slot_pool, timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
+            );
+        }
+    }
+    for i in limit {
+        let kind = cqes[i].user_data & net::REACTOR_URING_TAG_KIND_MASK;
+        if kind != net::REACTOR_URING_TAG_SEND && kind != net::REACTOR_URING_TAG_EPOLL {
+            reactor_dispatch_single_uring_cqe(
+                server, listener_fd, draining, tls_config, is_tls, cqes[i], table,
+                leftover_pool, slot_pool, timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
+            );
+        }
+    }
+    if server::g_reactor_accel.epfd_registered_count > 0 && server::g_reactor_accel.uring_sqe_batch.len > 0 {
+        let _ = net::reactor_flush_uring_sqes(server::g_reactor_accel);
     }
     return n;
 }
@@ -802,7 +840,9 @@ fn handle_h3_endpoint_request<B>(
     ep.conn.state = http3::ConnState.Active;
     ep.conn.error_code = rfc::H3_ERR_NO_ERROR;
 
-    let ok = server::handle_h3_server_datagram(server, ep.conn, 0, client_ip, datagram, now_ns, out_wire);
+    let ok = server::handle_h3_server_datagram(
+        server, ep.conn, 0, client_ip, datagram, now_ns, out_wire, ep.tls_sni[..],
+    );
     if ok && out_wire.len > 0 {
         return true;
     }

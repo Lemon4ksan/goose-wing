@@ -40,19 +40,26 @@ enum DstEventKind {
 
 // Fault-injection parameters for TCP stream links and UDP datagram links.
 struct DstFaultConfig {
-    min_latency_ns:          u64 = 1000000,
-    max_latency_ns:          u64 = 5000000,
-    tcp_frag_min_bytes:      i64 = 1,
-    tcp_frag_max_bytes:      i64 = 0,
-    tcp_rst_prob_ppm:        u32 = 0,
-    tcp_rst_at_byte:         u64 = 0,
-    tcp_rx_window_bytes:     i64 = 4096,
-    udp_drop_prob_ppm:       u32 = 0,
-    udp_reorder_prob_ppm:    u32 = 0,
-    udp_reorder_spread_ns:   u64 = 15000000,
-    udp_dup_prob_ppm:        u32 = 0,
-    udp_corrupt_prob_ppm:    u32 = 0,
-    udp_nat_rebind_prob_ppm: u32 = 0,
+    min_latency_ns:          u64  = 1000000,
+    max_latency_ns:          u64  = 5000000,
+    tcp_frag_min_bytes:      i64  = 1,
+    tcp_frag_max_bytes:      i64  = 0,
+    tcp_rst_prob_ppm:        u32  = 0,
+    tcp_rst_at_byte:         u64  = 0,
+    tcp_rx_window_bytes:     i64  = 4096,
+    udp_drop_prob_ppm:       u32  = 0,
+    udp_reorder_prob_ppm:    u32  = 0,
+    udp_reorder_spread_ns:   u64  = 15000000,
+    udp_dup_prob_ppm:        u32  = 0,
+    udp_corrupt_prob_ppm:    u32  = 0,
+    udp_nat_rebind_prob_ppm: u32  = 0,
+    short_sendfile:          bool = false,
+    eintr_every_n:           u32  = 0,
+    uring_eagain:            bool = false,
+    mtu_blackhole_bytes:     u16  = 0,
+    ecn_bleach:              bool = false,
+    ecn_ce_all:              bool = false,
+    tls_unclean_eof:         bool = false,
 }
 
 // Virtual network endpoint with independent IPv4 address, port, and clock skew.
@@ -140,6 +147,7 @@ struct DstStepResult {
 root struct DstWorld {
     seed:          u64                                 = 0,
     now_ns:        u64                                 = 0,
+    wall_ns:       i64                                 = 0,
     next_seq:      u64                                 = 1,
     trace_digest:  u64                                 = core::FNV1A_64_OFFSET,
     rng:           core::WyRand                        = core::WyRand { .. },
@@ -209,6 +217,7 @@ fn dst_fault_profile(profile: DstFaultProfile) -> DstFaultConfig {
 fn dst_init(world: DstWorld&, seed: u64, start_ns: u64 = 1000000000) {
     world.seed = seed;
     world.now_ns = start_ns;
+    world.wall_ns = min(start_ns, 0x7FFFFFFFFFFFFFFF) as i64;
     world.next_seq = 1;
     world.trace_digest = core::FNV1A_64_OFFSET ^ seed;
     world.rng = core::new_wyrand(seed);
@@ -293,6 +302,25 @@ fn dst_jump_clock(world: DstWorld&, delta_ns: u64) {
     net_internal::dst_sync_clock(world, next_ns);
     world.stats.clock_jumps = core::add_sat_u64(world.stats.clock_jumps, 1);
     net_internal::dst_mix_event(world, net_internal::DST_DIGEST_CLOCK_JUMP, 0, DstDir.AToB, next_ns, "");
+}
+
+// Adjusts the simulated wall clock by signed `delta_ns` (including backward jumps) without moving `now_ns`.
+fn dst_step_wall_clock(world: DstWorld&, delta_ns: i64) {
+    guard world.active && delta_ns != 0 else { return; }
+    world.wall_ns = core::add_sat_i64(world.wall_ns, delta_ns);
+    world.stats.clock_jumps = core::add_sat_u64(world.stats.clock_jumps, 1);
+    net_internal::dst_mix_event(
+        world, net_internal::DST_DIGEST_WALL_JUMP, 0, DstDir.BToA, world.wall_ns as! u64, "",
+    );
+}
+
+// Positions the virtual monotonic clock `ticks_before_wrap` nanoseconds below `u64` wraparound.
+fn dst_set_monotonic_near_wrap(world: DstWorld&, ticks_before_wrap: u64) {
+    guard world.active else { return; }
+    let target_ns = core::sub_sat_u64(0xFFFFFFFFFFFFFFFF, ticks_before_wrap);
+    net_internal::dst_sync_clock(world, target_ns);
+    world.stats.clock_jumps = core::add_sat_u64(world.stats.clock_jumps, 1);
+    net_internal::dst_mix_event(world, net_internal::DST_DIGEST_CLOCK_JUMP, 0, DstDir.AToB, target_ns, "");
 }
 
 // Opens a bidirectional fault-injecting virtual TCP link between `ep_a` and `ep_b`.
@@ -537,7 +565,8 @@ fn dst_udp_send(world: DstWorld&, link_id: u16, dir: DstDir, data: const u8[:]) 
     let src_ip4 = world.endpoints[ep_idx].ip4;
     let src_port = world.endpoints[ep_idx].port;
 
-    if net_internal::dst_roll_ppm(world.rng, cfg.udp_drop_prob_ppm) {
+    if (cfg.mtu_blackhole_bytes > 0 && data.len > cfg.mtu_blackhole_bytes) ||
+       net_internal::dst_roll_ppm(world.rng, cfg.udp_drop_prob_ppm) {
         world.stats.udp_packets_dropped = core::add_sat_u64(world.stats.udp_packets_dropped, 1);
         net_internal::dst_mix_event(world, net_internal::DST_DIGEST_UDP_DROP, link_id, dir, world.now_ns, data);
         return true;

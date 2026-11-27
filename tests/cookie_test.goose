@@ -1810,14 +1810,14 @@ fn test_rate_limiter_burst_and_concurrency(t: lit::T&) {
         sub.assert_false(security::is_allowed(dec), "Saturated huge cost must be rejected");
     };
 
-    t.run("RATE-04: Zero-cost inspection does not advance TAT") { sub =>
+    t.run("RATE-04: Zero-cost request rejected without advancing TAT") { sub =>
         let quota = security::new_gcra_quota(1, wing::secs(1), 5);
         var cell = security::GcraCell { tat_ns: 10000000000 };
         let now_ns: u64 = 10000000000;
 
         let dec = security::gcra_check_n(quota, cell, 0, now_ns);
-        sub.assert_true(security::is_allowed(dec), "Zero-cost inspection is allowed");
-        sub.assert_eq(cell.tat_ns, 10000000000, "Zero-cost check must not advance TAT");
+        sub.assert_false(security::is_allowed(dec), "Zero-cost request must be rejected");
+        sub.assert_eq(cell.tat_ns, 10000000000, "Zero-cost rejection must not mutate TAT");
     };
 
     t.run("RATE-05: Priority slot reservation (gcra_reserve_n)") { sub =>

@@ -71,6 +71,8 @@ def build_fuzzer(
     opt: str,
     use_libfuzzer: bool,
     debug_no_bce: bool,
+    use_asan_ubsan: bool = False,
+    use_unsigned_overflow: bool = False,
     force: bool = True,
 ) -> Path:
     lit_root = _find_lit_root(root)
@@ -99,6 +101,7 @@ def build_fuzzer(
     driver_c = lit_root / "shim" / "fuzz_driver.c"
     driver_obj = cache_dir / "fuzz_driver.o"
     is_win_gcc = os.name == "nt" and "gcc" in Path(cc).name.lower()
+    is_clang = "clang" in Path(cc).name.lower()
     arch = platform.machine().lower()
     is_x86 = arch in ("x86_64", "amd64", "i386", "i686")
 
@@ -107,6 +110,8 @@ def build_fuzzer(
         drv_cmd.append("-mno-avx")
     if use_libfuzzer:
         drv_cmd.append("-DLIBFUZZER_EXTERNAL_MAIN=1")
+    if use_libfuzzer or use_asan_ubsan:
+        drv_cmd.extend(["-fsanitize=address,undefined", "-fno-sanitize-recover=all"])
     res_drv = subprocess.run(drv_cmd, cwd=root, capture_output=True, text=True)
     if res_drv.returncode != 0:
         sys.stderr.write(f"Driver compilation failed:\n{res_drv.stdout}\n{res_drv.stderr}\n")
@@ -133,9 +138,13 @@ def build_fuzzer(
             ]
         )
     if use_libfuzzer:
-        cc_cmd.extend(["-fsanitize=fuzzer,address,undefined", "-DLIBFUZZER_EXTERNAL_MAIN=1"])
+        san_flags = "fuzzer,address,undefined,unsigned-integer-overflow" if is_clang else "fuzzer,address,undefined"
+        cc_cmd.extend([f"-fsanitize={san_flags}", "-fno-sanitize-recover=all", "-DLIBFUZZER_EXTERNAL_MAIN=1"])
     else:
         cc_cmd.append("-fsanitize-coverage=trace-pc")
+        if use_asan_ubsan:
+            san_flags = "address,undefined,unsigned-integer-overflow" if (is_clang and use_unsigned_overflow) else "address,undefined"
+            cc_cmd.extend([f"-fsanitize={san_flags}", "-fno-sanitize-recover=all"])
 
     cc_cmd.extend([str(c_out), str(driver_obj)])
     for shim in SHIM_SOURCES:
@@ -235,7 +244,17 @@ def main() -> int:
     parser.add_argument(
         "--libfuzzer",
         action="store_true",
-        help="Link against Clang -fsanitize=fuzzer,address,undefined",
+        help="Link against Clang -fsanitize=fuzzer,address,undefined,unsigned-integer-overflow -fno-sanitize-recover=all",
+    )
+    parser.add_argument(
+        "--asan-ubsan",
+        action="store_true",
+        help="Compile with -fsanitize=address,undefined -fno-sanitize-recover=all",
+    )
+    parser.add_argument(
+        "--unsigned-overflow",
+        action="store_true",
+        help="Include Clang -fsanitize=unsigned-integer-overflow with --asan-ubsan",
     )
     parser.add_argument(
         "--debug-no-bce",
@@ -246,7 +265,15 @@ def main() -> int:
 
     root = Path(__file__).resolve().parent.parent
     try:
-        exe_out = build_fuzzer(root, args.cc, args.opt, args.libfuzzer, args.debug_no_bce)
+        exe_out = build_fuzzer(
+            root,
+            args.cc,
+            args.opt,
+            args.libfuzzer,
+            args.debug_no_bce,
+            use_asan_ubsan=args.asan_ubsan,
+            use_unsigned_overflow=args.unsigned_overflow,
+        )
     except RuntimeError:
         return 1
 

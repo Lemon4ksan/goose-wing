@@ -17,47 +17,62 @@ import .engine;
 // ---- chromium sqlite v24 query generator -----------------------------------
 
 // Serializes a CanonicalCookie into a SQLite V24 INSERT OR REPLACE statement.
-// Rejects NUL bytes in string fields without mutating `out`.
+// Rejects NUL bytes in string fields and rolls back `out` on capacity overflow.
 fn generate_sqlite_insert_sql<B>(cookie_val: const CanonicalCookie&, out: B&) -> bool {
     guard cookie_internal::has_valid_sqlite_cookie_fields(cookie_val) else { return false; }
-    out.append("INSERT OR REPLACE INTO cookies (creation_utc, top_frame_site_key, host_key, name, ");
-    out.append("value, encrypted_value, path, expires_utc, is_secure, is_httponly, ");
-    out.append("last_access_utc, has_expires, is_persistent, priority, samesite, source_scheme, ");
-    out.append("source_port, last_update_utc, source_type, has_cross_site_ancestor) VALUES (");
-    cookie_val.creation_utc.format_i64_dec(out);
-    out.append(", ");
-    let _ = cookie_internal::append_sql_escaped_string(cookie_val.partition_key[..], out);
-    out.append(", ");
-    let _ = cookie_internal::append_sqlite_host_key(cookie_val, out);
-    out.append(", ");
-    let _ = cookie_internal::append_sql_escaped_string(cookie_val.name[..], out);
-    out.append(", ");
-    let _ = cookie_internal::append_sql_escaped_string(cookie_val.value[..], out);
-    out.append(", '', ");
-    let _ = cookie_internal::append_sql_escaped_string(cookie_val.path[..], out);
-    out.append(", ");
-    cookie_val.expires_utc.format_i64_dec(out);
-    cookie_internal::append_sqlite_insert_tail(cookie_val, out);
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+
+    guard out.try_append("INSERT OR REPLACE INTO cookies (creation_utc, top_frame_site_key, host_key, name, ")
+        && out.try_append("value, encrypted_value, path, expires_utc, is_secure, is_httponly, ")
+        && out.try_append("last_access_utc, has_expires, is_persistent, priority, samesite, source_scheme, ")
+        && out.try_append("source_port, last_update_utc, source_type, has_cross_site_ancestor) VALUES (")
+        && cookie_internal::try_append_i64_dec(cookie_val.creation_utc, out)
+        && out.try_append(", ")
+        && cookie_internal::append_sql_escaped_string(cookie_val.partition_key[..], out)
+        && out.try_append(", ")
+        && cookie_internal::append_sqlite_host_key(cookie_val, out)
+        && out.try_append(", ")
+        && cookie_internal::append_sql_escaped_string(cookie_val.name[..], out)
+        && out.try_append(", ")
+        && cookie_internal::append_sql_escaped_string(cookie_val.value[..], out)
+        && out.try_append(", '', ")
+        && cookie_internal::append_sql_escaped_string(cookie_val.path[..], out)
+        && out.try_append(", ")
+        && cookie_internal::try_append_i64_dec(cookie_val.expires_utc, out)
+        && cookie_internal::append_sqlite_insert_tail(cookie_val, out) else {
+        return false;
+    }
+    committed = true;
     return true;
 }
 
 // Serializes a CanonicalCookie deletion into a SQLite V24 DELETE statement.
-// Rejects NUL bytes in string fields without mutating `out`.
+// Rejects NUL bytes in string fields and rolls back `out` on capacity overflow.
 fn generate_sqlite_delete_sql<B>(cookie_val: const CanonicalCookie&, out: B&) -> bool {
     guard cookie_internal::has_valid_sqlite_cookie_fields(cookie_val) else { return false; }
-    out.append("DELETE FROM cookies WHERE top_frame_site_key = ");
-    let _ = cookie_internal::append_sql_escaped_string(cookie_val.partition_key[..], out);
-    out.append(" AND host_key = ");
-    let _ = cookie_internal::append_sqlite_host_key(cookie_val, out);
-    out.append(" AND name = ");
-    let _ = cookie_internal::append_sql_escaped_string(cookie_val.name[..], out);
-    out.append(" AND path = ");
-    let _ = cookie_internal::append_sql_escaped_string(cookie_val.path[..], out);
-    out.append(" AND source_scheme = ");
-    cookie_internal::source_scheme_sqlite_code(cookie_val.source_scheme).format_i64_dec(out);
-    out.append(" AND source_port = ");
-    (cookie_val.source_port as i64).format_i64_dec(out);
-    out.append(";\n");
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+
+    let scheme_code = cookie_internal::source_scheme_sqlite_code(cookie_val.source_scheme);
+    guard out.try_append("DELETE FROM cookies WHERE top_frame_site_key = ")
+        && cookie_internal::append_sql_escaped_string(cookie_val.partition_key[..], out)
+        && out.try_append(" AND host_key = ")
+        && cookie_internal::append_sqlite_host_key(cookie_val, out)
+        && out.try_append(" AND name = ")
+        && cookie_internal::append_sql_escaped_string(cookie_val.name[..], out)
+        && out.try_append(" AND path = ")
+        && cookie_internal::append_sql_escaped_string(cookie_val.path[..], out)
+        && out.try_append(" AND source_scheme = ")
+        && cookie_internal::try_append_i64_dec(scheme_code, out)
+        && out.try_append(" AND source_port = ")
+        && cookie_internal::try_append_i64_dec(cookie_val.source_port as i64, out)
+        && out.try_append(";\n") else {
+        return false;
+    }
+    committed = true;
     return true;
 }
 
@@ -240,6 +255,13 @@ fn get_server_cookie(cookies: const CanonicalCookie[:], name: const u8[:]) -> co
 
 // ---- netscape cookies.txt format interop -----------------------------------
 
+inline fn cookie_internal::has_netscape_ctl(s: const u8[:]) -> bool {
+    for b in s {
+        if b < 0x20 || b == 0x7F { return true; }
+    }
+    return false;
+}
+
 // Exports cookies formatted as a standard Netscape cookies.txt file.
 fn export_netscape<B>(jar: const CanonicalCookieJar&, out: B&) {
     out.append("# Netscape HTTP Cookie File\n");
@@ -247,6 +269,13 @@ fn export_netscape<B>(jar: const CanonicalCookieJar&, out: B&) {
     out.append("# This file was generated by goose-wing CanonicalCookieJar\n\n");
 
     for &cookie_val in jar.cookies {
+        let has_unsafe_ctl = cookie_internal::has_netscape_ctl(cookie_val.domain[..])
+            || cookie_internal::has_netscape_ctl(cookie_val.path[..])
+            || cookie_internal::has_netscape_ctl(cookie_val.name[..])
+            || cookie_internal::has_netscape_ctl(cookie_val.value[..]);
+        if has_unsafe_ctl {
+            continue;
+        }
         if cookie_val.httponly {
             out.append("#HttpOnly_");
         }
@@ -501,34 +530,51 @@ fn cookie_internal::source_scheme_sqlite_code(scheme: cookie::SourceScheme) -> i
     };
 }
 
+inline fn cookie_internal::try_append_i64_dec<B>(val: i64, out: B&) -> bool {
+    var num_buf: u8[..32] = [];
+    val.format_i64_dec(num_buf);
+    return out.try_append(num_buf[..]);
+}
+
 fn cookie_internal::append_sqlite_insert_tail<B>(
     cookie_val: const cookie::CanonicalCookie&,
     out:        B&,
-) {
-    out.append(", ");
-    let sec_flag: i64 = if cookie_val.secure { 1 } else { 0 };
-    sec_flag.format_i64_dec(out);
-    out.append(", ");
-    let http_flag: i64 = if cookie_val.httponly { 1 } else { 0 };
-    http_flag.format_i64_dec(out);
-    out.append(", ");
-    cookie_val.last_access_utc.format_i64_dec(out);
-    out.append(", ");
+) -> bool {
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+
+    let sec_flag:     i64 = if cookie_val.secure { 1 } else { 0 };
+    let http_flag:    i64 = if cookie_val.httponly { 1 } else { 0 };
     let persist_flag: i64 = if cookie_val.persistent { 1 } else { 0 };
-    persist_flag.format_i64_dec(out);
-    out.append(", ");
-    persist_flag.format_i64_dec(out);
-    out.append(", ");
-    (cookie_internal::priority_rank(cookie_val.priority) as i64).format_i64_dec(out);
-    out.append(", ");
-    cookie_internal::same_site_sqlite_code(cookie_val.same_site).format_i64_dec(out);
-    out.append(", ");
-    cookie_internal::source_scheme_sqlite_code(cookie_val.source_scheme).format_i64_dec(out);
-    out.append(", ");
-    (cookie_val.source_port as i64).format_i64_dec(out);
-    out.append(", ");
-    cookie_val.last_update_utc.format_i64_dec(out);
-    out.append(", 0, 0);\n");
+    let prio = cookie_internal::priority_rank(cookie_val.priority) as i64;
+    let ss_code = cookie_internal::same_site_sqlite_code(cookie_val.same_site);
+    let src_code = cookie_internal::source_scheme_sqlite_code(cookie_val.source_scheme);
+    guard out.try_append(", ")
+        && cookie_internal::try_append_i64_dec(sec_flag, out)
+        && out.try_append(", ")
+        && cookie_internal::try_append_i64_dec(http_flag, out)
+        && out.try_append(", ")
+        && cookie_internal::try_append_i64_dec(cookie_val.last_access_utc, out)
+        && out.try_append(", ")
+        && cookie_internal::try_append_i64_dec(persist_flag, out)
+        && out.try_append(", ")
+        && cookie_internal::try_append_i64_dec(persist_flag, out)
+        && out.try_append(", ")
+        && cookie_internal::try_append_i64_dec(prio, out)
+        && out.try_append(", ")
+        && cookie_internal::try_append_i64_dec(ss_code, out)
+        && out.try_append(", ")
+        && cookie_internal::try_append_i64_dec(src_code, out)
+        && out.try_append(", ")
+        && cookie_internal::try_append_i64_dec(cookie_val.source_port as i64, out)
+        && out.try_append(", ")
+        && cookie_internal::try_append_i64_dec(cookie_val.last_update_utc, out)
+        && out.try_append(", 0, 0);\n") else {
+        return false;
+    }
+    committed = true;
+    return true;
 }
 
 inline fn cookie_internal::has_valid_sqlite_cookie_fields(c: const cookie::CanonicalCookie&) -> bool {
@@ -538,21 +584,31 @@ inline fn cookie_internal::has_valid_sqlite_cookie_fields(c: const cookie::Canon
 
 inline fn cookie_internal::append_sql_escaped_body<B>(sql_str: const u8[:], out: B&) -> bool {
     guard !sql_str.contains_byte(0) else { return false; }
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
     for char_byte in sql_str {
         if char_byte == '\'' {
-            out.append("''");
+            guard out.try_append("''") else { return false; }
         } else {
-            out.push(char_byte);
+            guard out.try_push(char_byte) else { return false; }
         }
     }
+    committed = true;
     return true;
 }
 
 fn cookie_internal::append_sql_escaped_string<B>(sql_str: const u8[:], out: B&) -> bool {
     guard !sql_str.contains_byte(0) else { return false; }
-    out.push('\'');
-    guard cookie_internal::append_sql_escaped_body(sql_str, out) else { return false; }
-    out.push('\'');
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+    guard out.try_push('\'')
+        && cookie_internal::append_sql_escaped_body(sql_str, out)
+        && out.try_push('\'') else {
+        return false;
+    }
+    committed = true;
     return true;
 }
 
@@ -561,12 +617,18 @@ fn cookie_internal::append_sqlite_host_key<B>(
     out:        B&,
 ) -> bool {
     guard !cookie_val.domain[..].contains_byte(0) else { return false; }
-    out.push('\'');
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+    guard out.try_push('\'') else { return false; }
     if !cookie_val.host_only && (cookie_val.domain.len == 0 || cookie_val.domain[0] != '.') {
-        out.push('.');
+        guard out.try_push('.') else { return false; }
     }
-    guard cookie_internal::append_sql_escaped_body(cookie_val.domain[..], out) else { return false; }
-    out.push('\'');
+    guard cookie_internal::append_sql_escaped_body(cookie_val.domain[..], out)
+        && out.try_push('\'') else {
+        return false;
+    }
+    committed = true;
     return true;
 }
 
@@ -778,7 +840,11 @@ fn cookie_internal::read_json_cookie_scalar_member(
     if key == "secure" { cookie_ref.secure = json::read_bool(json_reader); return true; }
     if key == "httponly" { cookie_ref.httponly = json::read_bool(json_reader); return true; }
     if key == "partitioned" { cookie_ref.partitioned = json::read_bool(json_reader); return true; }
-    if key == "source_port" { cookie_ref.source_port = json::read_int(json_reader) as i32; return true; }
+    if key == "source_port" {
+        let port = json::read_int(json_reader);
+        cookie_ref.source_port = if port >= -1 && port <= 65535 { port as i32 } else { -1 };
+        return true;
+    }
     return false;
 }
 

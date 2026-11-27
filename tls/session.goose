@@ -379,6 +379,8 @@ fn send_new_session_ticket(
                 ticket_lifetime,
                 g_tls_cipher_slots[idx].cipher_suite,
                 g_tls_cipher_slots[idx].client_authenticated,
+                0,
+                g_tls_cipher_slots[idx].ca_policy_hash,
             );
         }
     }

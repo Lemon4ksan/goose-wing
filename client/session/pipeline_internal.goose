@@ -254,6 +254,7 @@ fn dispatch_client_ingress_stage(
     }
     if stage_id == wire::STAGE_ID_CLI_IN_INTERCEPTOR_AUTH {
         apply_client_early_data_and_dpop_headers(session, ctx, current_url, now_sec);
+        let allow_sens = redirect_chain_same_origin_no_downgrade(ctx, current_url);
         let v_auth = stage_client_auth_header(
             session.pipeline,
             ctx.headers,
@@ -261,6 +262,7 @@ fn dispatch_client_ingress_stage(
             ctx.current_method[..],
             ctx.body.len,
             ctx.redirect_count,
+            allow_sens,
         );
         apply_client_request_signature(session, ctx, current_url);
         return v_auth;
@@ -465,6 +467,32 @@ fn run_client_post_hop_stages<UserStage>(
     return wire::StageVerdict.Continue;
 }
 
+fn redirect_chain_same_origin_no_downgrade(
+    ctx:         const RequestExecutionContext&,
+    current_url: const core::Url&,
+) -> bool {
+    guard ctx.redirect_count > 0 else { return true; }
+    guard ctx.url_chain.len > 0 else { return false; }
+    let first_url = ctx.url_chain[0];
+    let first_secure = first_url.is_secure_scheme();
+    if first_secure && !current_url.is_secure_scheme() {
+        return false;
+    }
+    if !first_url.is_same_origin_url(current_url) {
+        return false;
+    }
+    for i in ctx.url_chain.len {
+        let hop_url = ctx.url_chain[i];
+        if hop_url.is_secure_scheme() && !current_url.is_secure_scheme() {
+            return false;
+        }
+        if !hop_url.is_same_origin_url(current_url) {
+            return false;
+        }
+    }
+    return true;
+}
+
 fn execute_client_auth_retry_hop<UserStage>(
     session:              client::Client&,
     ctx:                  RequestExecutionContext&,
@@ -480,9 +508,10 @@ fn execute_client_auth_retry_hop<UserStage>(
 ) -> wire::StageVerdict, bool {
     let retry_start_us = client::effective_clock_us(session);
     if wire::is_ingress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_IN_INTERCEPTOR_AUTH) {
+        let allow_sens = redirect_chain_same_origin_no_downgrade(ctx, current_url);
         let _ = stage_client_auth_header(
             session.pipeline, ctx.headers, current_url.href[..], ctx.current_method[..],
-            ctx.body.len, ctx.redirect_count,
+            ctx.body.len, ctx.redirect_count, allow_sens,
         );
         apply_client_request_signature(session, ctx, current_url);
     }

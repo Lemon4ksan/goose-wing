@@ -218,7 +218,7 @@ jobs:
       - name: Set up toolchain and Goose compiler
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential gcc curl ca-certificates
+          sudo apt-get install -y --no-install-recommends build-essential clang gcc curl ca-certificates
           curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz | sudo tar -xz -C /opt
           sudo ln -sf /opt/goose-v2026.3-linux-x64/goose /usr/local/bin/goose
 
@@ -226,6 +226,10 @@ jobs:
         run: |
           git clone https://github.com/Lemon4ksan/goose-lit.git ../goose-lit
           python scripts/sancov_runner.py --cc gcc --execs 2000 --check-complexity --max-rss-drift-kb 1024 --max-input-ms 50
+
+      - name: Run ASan+UBSan fuzz smoke pass (-fno-sanitize-recover=all)
+        run: |
+          python scripts/sancov_runner.py --cc clang --asan-ubsan --execs 500 --max-rss-drift-kb 65536 --max-input-ms 200
 
   lit-verification:
     name: Native Goose LIT verification

@@ -432,16 +432,19 @@ fn respond_not_found(res: Response&, message: const u8[:] = "Not Found") {
     respond_text(res, rfc::STATUS_NOT_FOUND, message);
 }
 
-// Populates `res` as an HTTP redirect (`301`, `302`, `303`, `307`, `308`) with a CRLF-validated `Location` header.
+// Populates `res` as an HTTP redirect (`301`, `302`, `303`, `307`, `308`) with a validated `Location` header.
 fn respond_redirect(
     res:         Response&,
     location:    const u8[:],
     status_code: i32 = rfc::STATUS_FOUND,
 ) -> bool {
-    guard rfc::is_redirect_status(status_code) && location.len > 0 else { return false; }
-    for b in location {
-        guard b >= 0x20 && b != 0x7F else { return false; }
+    guard rfc::is_redirect_status(status_code) && location.len > 0 && location.len <= 4096 else {
+        return false;
     }
+    for b in location {
+        guard b > 0x20 && b != 0x7F else { return false; }
+    }
+    guard !http_internal::is_unsafe_uri_scheme(location) else { return false; }
     res.status_code = status_code;
     set_header(res, "Location", location);
     res.body.clear();

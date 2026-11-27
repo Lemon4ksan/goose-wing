@@ -41,7 +41,7 @@ fn emit_rate_limited_rst_stream<B>(
     error_code: u32,
     out_wire:   B&,
 ) -> bool {
-    let now_ms = sess.conn.reset_limiter.last_refill_ms;
+    let now_ms = (max(0, core::sim_now_ns()) as u64) / 1000000;
     guard core::token_bucket_consume(sess.conn.reset_limiter, now_ms) else {
         emit_goaway(sess, rfc::H2_ERR_ENHANCE_YOUR_CALM, out_wire);
         return false;

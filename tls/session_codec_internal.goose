@@ -166,12 +166,7 @@ fn validate_ee_solicited_extensions(
     return true;
 }
 
-// Detects the TLS 1.3 SignatureScheme (Ed25519, ECDSA P-256, or RSA-PSS-SHA256)
-// from the leaf certificate's SubjectPublicKeyInfo OID (RFC 8446 Section 4.4.3).
-fn detect_cert_sig_scheme(cert_der: const u8[:]) -> u16 {
-    var cert = tls::ParsedCert { .. };
-    guard cert_der.len > 0 && tls::parse_x509_certificate(cert_der, cert) else { return 0; }
-    let spki_oid = tls::span_slice(cert_der, cert.spki_alg_oid);
+inline fn sig_scheme_from_spki_oid(spki_oid: const u8[:]) -> u16 {
     if spki_oid == rfc::OID_SECP256R1[..] {
         return rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256;
     }
@@ -182,6 +177,32 @@ fn detect_cert_sig_scheme(cert_der: const u8[:]) -> u16 {
         return rfc::SIG_SCHEME_ED25519;
     }
     return 0;
+}
+
+// Detects the TLS 1.3 SignatureScheme (Ed25519, ECDSA P-256, or RSA-PSS-SHA256)
+// from the leaf certificate's SubjectPublicKeyInfo OID (RFC 8446 Section 4.4.3).
+fn detect_cert_sig_scheme(cert_der: const u8[:]) -> u16 {
+    var cert = tls::ParsedCert { .. };
+    guard cert_der.len > 0 && tls::parse_x509_certificate(cert_der, cert) else { return 0; }
+    return sig_scheme_from_spki_oid(tls::span_slice(cert_der, cert.spki_alg_oid));
+}
+
+// Detects the TLS 1.3 SignatureScheme and extracts the 32-byte Ed25519 public key from SPKI when applicable.
+fn detect_cert_sig_scheme_and_ed25519_pub(cert_der: const u8[:], out_pub: u8[32]&) -> u16, bool {
+    out_pub = [0; 32];
+    var cert = tls::ParsedCert { .. };
+    guard cert_der.len > 0 && tls::parse_x509_certificate(cert_der, cert) else { return 0, false; }
+    let scheme = sig_scheme_from_spki_oid(tls::span_slice(cert_der, cert.spki_alg_oid));
+    guard scheme == rfc::SIG_SCHEME_ED25519 else { return scheme, false; }
+    var pk = tls::span_slice(cert_der, cert.spki_pubkey);
+    if pk.len == 33 && pk[0] == 0 {
+        pk = pk[1..];
+    }
+    guard pk.len == 32 else { return scheme, false; }
+    for i in 32 {
+        out_pub[i] = pk[i];
+    }
+    return scheme, true;
 }
 
 inline fn is_client_offered_tls13_suite(cs: u16) -> bool {
@@ -237,13 +258,15 @@ fn try_match_single_psk_binder(
     client_sni:          const u8[:]           = "",
     has_hrr_prefix:      bool                  = false,
     hrr_prefix_tr:       const tls::Transcript = tls::Transcript { .. },
+    ca_policy_hash:      u64                   = 0,
 ) -> bool, bool {
     out_psk.clear();
     var full_psk: u8[..48] = [];
     defer core::secure_zeroize_slice(full_psk[..]);
     var cs: u16 = 0;
-    if !lookup_server_ticket_by_identity(ticket_id, require_client_cert, full_psk, cs, 0, client_sni) ||
-        (full_psk.len != 32 && full_psk.len != 48) {
+    if !lookup_server_ticket_by_identity(
+        ticket_id, require_client_cert, full_psk, cs, 0, client_sni, ca_policy_hash,
+    ) || (full_psk.len != 32 && full_psk.len != 48) {
         return false, true;
     }
     let suite = if cs != 0 { cs } else { rfc::TLS_CIPHER_AES_128_GCM_SHA256 };
@@ -317,6 +340,7 @@ fn eval_client_hello_psk_binders(
     client_sni:          const u8[:]           = "",
     has_hrr_prefix:      bool                  = false,
     hrr_prefix_tr:       const tls::Transcript = tls::Transcript { .. },
+    ca_policy_hash:      u64                   = 0,
 ) -> bool, bool {
     core::secure_zeroize_slice(out_psk[..]);
     out_psk.clear();
@@ -340,6 +364,7 @@ fn eval_client_hello_psk_binders(
             let entry_matched, entry_ok = try_match_single_psk_binder(
                 ticket_id, binder_slice, ch_msg, binders_bytes.len as u16, selected_cs,
                 matched_psk, require_client_cert, client_sni, has_hrr_prefix, hrr_prefix_tr,
+                ca_policy_hash,
             );
             guard entry_ok else { return false, false; }
             if entry_matched {
@@ -381,6 +406,7 @@ fn eval_client_hello_psk_entry(
     client_sni:          const u8[:]           = "",
     has_hrr_prefix:      bool                  = false,
     hrr_prefix_tr:       const tls::Transcript = tls::Transcript { .. },
+    ca_policy_hash:      u64                   = 0,
 ) -> bool, bool {
     let last_idx = core::sub_sat_i64(entries.len, 1);
     guard entries.len > 0 && last_idx >= 0 && last_idx < entries.len else { return false, false; }
@@ -389,7 +415,7 @@ fn eval_client_hello_psk_entry(
     guard has_modes && has_valid_psk_dhe_ke_mode(modes_ext) else { return false, false; }
     return eval_client_hello_psk_binders(
         payload, psk_ext, selected_cs, out_psk, out_selected_id,
-        require_client_cert, client_sni, has_hrr_prefix, hrr_prefix_tr,
+        require_client_cert, client_sni, has_hrr_prefix, hrr_prefix_tr, ca_policy_hash,
     );
 }
 
@@ -522,7 +548,7 @@ inline fn group_bytes_contains(grp_bytes: const u8[:], target: u16) -> bool {
 }
 
 // RFC 8446 Section 4.2.8: Key Share - Every non-GREASE KeyShareEntry group must appear in supported_groups in the same order.
-// RFC 8701 Section 3.3: ClientHello - Servers MUST ignore GREASE values when offered in a ClientHello.
+// RFC 8701 Section 3.2: Server Behavior - Servers MUST ignore GREASE values when offered in a ClientHello.
 fn validate_ch_groups_and_shares(grp_ext: const u8[:], shares: const u8[:]) -> bool {
     var c = core::cursor_from(grp_ext);
     let grp_bytes, ok = c.read_u16_prefixed();

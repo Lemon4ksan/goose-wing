@@ -127,10 +127,15 @@ def load_hpack_stories(source_path: Path) -> list[dict[str, Any]]:
             for st in data["stories"]:
                 if isinstance(st, dict) and "cases" in st:
                     stories.append(st)
-        elif isinstance(data, dict) and "cases" in data and isinstance(data["cases"], list):
-            if data["cases"] and "wire" in data["cases"][0]:
-                label = fp.stem if source_path.is_file() else f"{fp.parent.name}/{fp.stem}"
-                stories.append({"name": label, "cases": data["cases"]})
+        elif (
+            isinstance(data, dict)
+            and "cases" in data
+            and isinstance(data["cases"], list)
+            and data["cases"]
+            and "wire" in data["cases"][0]
+        ):
+            label = fp.stem if source_path.is_file() else f"{fp.parent.name}/{fp.stem}"
+            stories.append({"name": label, "cases": data["cases"]})
     return stories
 
 

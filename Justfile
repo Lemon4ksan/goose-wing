@@ -47,26 +47,16 @@ sloc-ratchet:
     goose-lit sloc . --baseline .lit/sloc-baseline --check-packing --check-smells --sloc-delta 0
 
 # Run live RDTSC cycle correlation against .lit/sloc-map and .lit/sloc-baseline
-[unix]
 sloc-profile target="." benchtime="10":
-    goose-lit sloc "{{ target }}" --map .lit/sloc-map --run-profile --cc gcc --benchtime {{ benchtime }} --baseline .lit/sloc-baseline --check-packing
-
-[windows]
-sloc-profile target="." benchtime="10":
-    $cc = (Resolve-Path tools/gcc_noavx.cmd).Path; goose-lit sloc "{{ target }}" --map .lit/sloc-map --run-profile --cc "$cc" --benchtime {{ benchtime }} --baseline .lit/sloc-baseline --check-packing
+    goose-lit sloc "{{ target }}" --map .lit/sloc-map --run-profile --benchtime {{ benchtime }} --baseline .lit/sloc-baseline --check-packing
 
 # Save static SLOC baseline (preserves existing local RDTSC scope cycles)
 sloc-save:
     goose-lit sloc . --check-packing --save-baseline .lit/sloc-baseline
 
 # Capture live RDTSC cycles and save full .lit/sloc-baseline
-[unix]
 sloc-save-profile benchtime="10":
-    goose-lit sloc . --map .lit/sloc-map --run-profile --cc gcc --benchtime {{ benchtime }} --check-packing --save-baseline .lit/sloc-baseline
-
-[windows]
-sloc-save-profile benchtime="10":
-    $cc = (Resolve-Path tools/gcc_noavx.cmd).Path; goose-lit sloc . --map .lit/sloc-map --run-profile --cc "$cc" --benchtime {{ benchtime }} --check-packing --save-baseline .lit/sloc-baseline
+    goose-lit sloc . --map .lit/sloc-map --run-profile --benchtime {{ benchtime }} --check-packing --save-baseline .lit/sloc-baseline
 
 # Enforce strict code clarity and anti-bloat invariants
 lint-invariants target="":

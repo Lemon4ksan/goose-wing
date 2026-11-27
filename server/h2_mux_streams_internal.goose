@@ -119,7 +119,7 @@ inline fn process_ingress_priority_update<B>(
     frame_payload: const u8[:],
     out_wire:      B&,
 ) -> bool {
-    let now_ms = sess.conn.reset_limiter.last_refill_ms;
+    let now_ms = (max(0, core::sim_now_ns()) as u64) / 1000000;
     guard core::token_bucket_consume(sess.conn.reset_limiter, now_ms) else {
         emit_goaway(sess, rfc::H2_ERR_ENHANCE_YOUR_CALM, out_wire);
         return false;
@@ -388,6 +388,41 @@ fn flush_h2_stream_tails<B>(
     }
 }
 
+inline fn strip_authority_port_and_dot(raw: const u8[:]) -> const u8[:] {
+    let trimmed = raw.trim_lws();
+    guard trimmed.len > 0 else { return ""; }
+    var host_only = trimmed;
+    if trimmed[0] == '[' {
+        let close_b = trimmed.index_of_byte(']');
+        if close_b > 0 {
+            host_only = trimmed[..core::add_sat_i64(close_b, 1)];
+        }
+    } else {
+        let col = trimmed.last_index_of_byte(':');
+        if col > 0 {
+            host_only = trimmed[..col];
+        }
+    }
+    return if host_only.len > 1 && host_only[host_only.len - 1] == '.' {
+        host_only[..^1]
+    } else {
+        host_only
+    };
+}
+
+inline fn h2_stream_conflicts_with_sni(
+    tls_sni:   const u8[:],
+    authority: const u8[:],
+    headers:   const http::HeaderMap&,
+) -> bool {
+    let sni_host = strip_authority_port_and_dot(tls_sni);
+    guard sni_host.len > 0 else { return false; }
+    let raw_auth = if authority.len > 0 { authority } else { http::find_header(headers, rfc::HEADER_HOST) };
+    let auth_host = strip_authority_port_and_dot(raw_auth);
+    guard auth_host.len > 0 else { return true; }
+    return !auth_host.eq_ascii_fold(sni_host);
+}
+
 fn execute_h2_stream_async<Stage, B>(
     sess:       H2ServerSession&,
     stream_idx: i64,
@@ -418,6 +453,13 @@ fn execute_h2_stream_async<Stage, B>(
     }
 
     var res = http::Response { .. };
+    if sess.tls_sni.len > 0 && h2_stream_conflicts_with_sni(
+        sess.tls_sni[..], sess.streams[stream_idx].authority[..], out_req.headers,
+    ) {
+        res.status_code = rfc::STATUS_MISDIRECTED_REQUEST;
+        emit_h2_stream_response(sess, pipeline, stream_idx, target_stream_id, res, out_wire);
+        return server::PipelineOutcome.Handled;
+    }
     var future = server_internal::new_inline_handler_future(0);
     let now_ns = core::mul_sat_u64(now_ms, 1000000);
     out_sctx = server::ServerStageCtx { wake_token: wake_token, now_ns: now_ns, .. };

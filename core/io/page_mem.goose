@@ -30,6 +30,12 @@ extern fn native_mmap_file_send(
 ) -> i32 = "wing_mmap_file_send";
 
 extern fn native_mmap_file_close(handle: u64) = "wing_mmap_file_close";
+extern fn native_disable_core_dumps() -> i32 = "wing_disable_core_dumps";
+extern fn native_write_file_nofollow(
+    path:   const u8[:],
+    data:   const u8[:],
+    append: i32,
+) -> i32 = "wing_write_file_nofollow";
 
 // Memory-mapped read-only file view for zero-copy file serving.
 struct MmapFile {
@@ -101,4 +107,17 @@ fn mmap_file_send(mf: const MmapFile&, offset: u64, len: u32, sock_fd: i64) -> i
     }
 
     return sent, true;
+}
+
+// Disables OS core dump generation for the current process.
+fn disable_core_dumps() -> bool {
+    return native_disable_core_dumps() == 0;
+}
+
+// Writes `data` to `path` without following symlinks (`O_NOFOLLOW` / reparse-point check).
+fn write_file_nofollow(path: const u8[:], data: const u8[:], append: bool) -> bool {
+    guard path.len > 0 && path.len < 4096 && !contains_byte(path, 0) else {
+        return false;
+    }
+    return native_write_file_nofollow(path, data, if append { 1 } else { 0 }) == 0;
 }

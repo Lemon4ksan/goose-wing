@@ -1933,7 +1933,7 @@ fn test_url_regressions(t: lit::T&) {
         let ok_empty_host = core::normalize_http_target_uri("http://:80/path", norm_out);
         sub.assert_false(ok_empty_host, "http://:80/path with empty host rejected");
 
-        sub.assert_false(core::has_query_param_fast("a%20b=1&x=2", "a b"), "raw lookup does not match decoded key without percent-encoding");
+        sub.assert_true(core::has_query_param_fast("a%20b=1&x=2", "a b"), "percent-encoded key 'a%20b' matches decoded lookup 'a b'");
         sub.assert_true(core::has_query_param_fast("a%20b=1&x=2", "a%20b"), "raw key 'a%20b' matches");
 
         var dec_small: u8[..4] = [];

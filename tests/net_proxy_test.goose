@@ -1026,8 +1026,11 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
         sub.assert_true(!core::contains(wire_untrusted[..], "10.0.0.1"), "Spoofed 10.0.0.1 dropped at edge");
         sub.assert_true(core::contains(wire_untrusted[..], "X-Forwarded-For: 203.0.113.195"), "Real client IP injected");
 
-        // 2. Internal proxy mode: trust_incoming_xff is true -> chained
+        // 2. Internal proxy mode: trust_incoming_xff is true with trusted CIDR -> chained
         rp.config.trust_incoming_xff = true;
+        var cidr_buf: u8[..64] = [];
+        let _ = cidr_buf.try_set("203.0.113.0/24");
+        rp.config.trusted_proxy_cidrs.push(cidr_buf);
         var wire_trusted: u8[>..] = [];
         let _, ok2 = proxy::prepare_proxy_request(
             rp,

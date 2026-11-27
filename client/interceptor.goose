@@ -337,12 +337,13 @@ fn apply_app_interceptors_request(
 }
 
 fn apply_network_interceptors_request(
-    pipeline:   InterceptorPipeline&,
-    headers:    http::HeaderMap&,
-    target_url: const u8[:],
-    method:     const u8[:],
-    body_len:   i64,
-    hop_index:  i64,
+    pipeline:                InterceptorPipeline&,
+    headers:                 http::HeaderMap&,
+    target_url:              const u8[:],
+    method:                  const u8[:],
+    body_len:                i64,
+    hop_index:               i64,
+    allow_sensitive_headers: bool = true,
 ) {
     pipeline.metrics.network_hops += 1;
     if body_len > 0 {
@@ -354,6 +355,9 @@ fn apply_network_interceptors_request(
 
     if (mask & INTERCEPTOR_NET_HEADER) != 0 {
         for &hdr in pipeline.net_headers {
+            if !allow_sensitive_headers && http::is_heuristic_sensitive_header(hdr.name[..]) {
+                continue;
+            }
             if !http::has_header(headers, hdr.name[..]) {
                 http::set_header(headers, hdr.name[..], hdr.val[..]);
             }

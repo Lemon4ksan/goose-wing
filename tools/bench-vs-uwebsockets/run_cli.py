@@ -343,8 +343,8 @@ def percentile_from_sorted(vals, q):
     if not vals:
         return None
     idx = (len(vals) - 1) * q
-    lo = int(math.floor(idx))
-    hi = int(math.ceil(idx))
+    lo = math.floor(idx)
+    hi = math.ceil(idx)
     if lo == hi:
         return vals[lo]
     return vals[lo] + (vals[hi] - vals[lo]) * (idx - lo)

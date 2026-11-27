@@ -70,6 +70,70 @@ fn parse_introspection_response(raw_json: const u8[:]) -> IntrospectionResponse,
     return resp, true;
 }
 
+inline fn scope_list_contains(scope_list: const u8[:], target: const u8[:]) -> bool {
+    guard target.len > 0 && !target.contains_byte(' ') else { return false; }
+    var tok = core::make_byte_tokenizer(scope_list, ' ');
+    loop {
+        let item, ok = core::token_next(tok);
+        guard ok else { break; }
+        if item.len > 0 && item == target {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline fn has_required_scopes(resp_scope: const u8[:], required_scope: const u8[:]) -> bool {
+    guard required_scope.len > 0 else { return true; }
+    var saw_req = false;
+    var req_tok = core::make_byte_tokenizer(required_scope, ' ');
+    loop {
+        let req, ok = core::token_next(req_tok);
+        guard ok else { break; }
+        if req.len == 0 {
+            continue;
+        }
+        saw_req = true;
+        guard scope_list_contains(resp_scope, req) else { return false; }
+    }
+    return saw_req;
+}
+
+inline fn matches_introspection_aud(resp: const IntrospectionResponse&, expected_aud: const u8[:]) -> bool {
+    guard expected_aud.len > 0 else { return true; }
+    for &aud_entry in resp.aud {
+        if aud_entry[..] == expected_aud {
+            return true;
+        }
+    }
+    return false;
+}
+
+// RFC 7662 Section 2.2: Validates active state, timestamps, issuer, audience, and required scope membership.
+fn validate_introspection_response(
+    resp:           const IntrospectionResponse&,
+    expected_iss:   const u8[:],
+    expected_aud:   const u8[:],
+    required_scope: const u8[:],
+    now_unix_sec:   i64,
+) -> bool {
+    guard resp.active && now_unix_sec > 0 else { return false; }
+    if resp.exp != -1 {
+        guard resp.exp >= 0 && resp.exp > now_unix_sec else { return false; }
+    }
+    if resp.nbf != -1 {
+        guard resp.nbf >= 0 && resp.nbf <= now_unix_sec else { return false; }
+    }
+    if resp.iat != -1 && resp.iat < 0 {
+        return false;
+    }
+    if expected_iss.len > 0 {
+        guard resp.iss[..] == expected_iss else { return false; }
+    }
+    guard matches_introspection_aud(resp, expected_aud) else { return false; }
+    return has_required_scopes(resp.scope[..], required_scope);
+}
+
 // RFC 6749 Section 2.3.1: Client Password - encodes "Basic base64(urlencode(id):urlencode(secret))" into `out`.
 fn encode_oauth2_basic_auth<B>(
     client_id:     const u8[:],

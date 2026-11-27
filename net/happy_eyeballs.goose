@@ -371,19 +371,19 @@ fn record_preferred_family(
 }
 
 struct AttemptManager {
-    attempts:                ConnectionAttempt[..16] = [],
-    pending_candidates:      DnsCandidate[..32]      = [],
-    effective_cad_ms:        i64                     = rfc::HE_DEFAULT_CAD_MS,
-    next_attempt_start_ms:   i64                     = 0,
-    current_attempt_idx:     i64                     = 0,
-    winner_attempt_id:       i32                     = -1,
-    has_winner:              bool                    = false,
-    alt_svc_broken:          bool                    = false,
-    enable_nat64_synthesis:  bool                    = true,
-    last_resort_armed:       bool                    = false,
-    last_resort_deadline_ms: i64                     = 0,
-    last_resort_triggered:   bool                    = false,
-    next_id:                 i32                     = 1,
+    attempts:                ConnectionAttempt[..4] = [],
+    pending_candidates:      DnsCandidate[..32]     = [],
+    effective_cad_ms:        i64                    = rfc::HE_DEFAULT_CAD_MS,
+    next_attempt_start_ms:   i64                    = 0,
+    current_attempt_idx:     i64                    = 0,
+    winner_attempt_id:       i32                    = -1,
+    has_winner:              bool                   = false,
+    alt_svc_broken:          bool                   = false,
+    enable_nat64_synthesis:  bool                   = true,
+    last_resort_armed:       bool                   = false,
+    last_resort_deadline_ms: i64                    = 0,
+    last_resort_triggered:   bool                   = false,
+    next_id:                 i32                    = 1,
 }
 
 fn new_attempt_manager(cad_ms: i64 = rfc::HE_DEFAULT_CAD_MS) -> AttemptManager {

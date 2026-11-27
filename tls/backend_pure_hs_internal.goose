@@ -42,10 +42,15 @@ fn pure_client_build_initial_ch(
     var psk_suite:   u16        = 0;
     slot.psk_secret.clear();
     let use_ech = slot.client_cfg.ech_config_list.len > 0;
+    slot.port = slot.client_cfg.port;
+    slot.tenant_hash = slot.client_cfg.tenant_hash;
+    slot.alpn_hash = compute_alpn_scope_hash(slot.alpn_csv[..]);
+    slot.policy_hash = compute_client_policy_hash(slot.client_cfg);
     slot.has_psk_ticket = !use_ech &&
         slot.client_cfg.enable_session_tickets &&
         lookup_client_ticket_for_ch(
             slot.client_cfg.server_name[..], psk_ticket, slot.psk_secret, psk_age_add, psk_suite,
+            0, slot.port, slot.tenant_hash, slot.alpn_hash, slot.policy_hash,
         );
     slot.psk_hash_len = if slot.has_psk_ticket && rfc::tls13_cipher_suite_hash_len(psk_suite) == 48 {
         48
@@ -59,11 +64,13 @@ fn pure_client_build_initial_ch(
             pq_pub_slice, "", "", false, slot.ech_state, out_ch,
         );
     }
+    // RFC 9113 Section 9.2.3: Post-Handshake Authentication - Suppress post_handshake_auth when "h2" is offered.
+    let offer_pha = slot.client_cfg.client_cert_der.len > 0 && !alpn_csv_contains_proto(slot.alpn_csv[..], "h2");
     var ch_payload: u8[..4096] = [];
     build_client_hello_payload(
         slot.client_random, slot.eph_pub, slot.client_cfg.server_name[..], slot.alpn_csv[..], ch_payload,
         psk_ticket[..], psk_age_add, slot.offered_pq_ch, pq_pub_slice,
-        "", "", slot.client_cfg.client_cert_der.len > 0, slot.psk_hash_len,
+        "", "", offer_pha, slot.psk_hash_len,
     );
     guard frame_handshake_msg_4k(rfc::TLS_HS_CLIENT_HELLO, ch_payload[..], out_ch) else {
         return false;
@@ -198,11 +205,13 @@ fn pure_client_build_hrr_ch2(
         );
     }
 
+    // RFC 9113 Section 9.2.3: Post-Handshake Authentication - Suppress post_handshake_auth when "h2" is offered.
+    let offer_pha = slot.client_cfg.client_cert_der.len > 0 && !alpn_csv_contains_proto(slot.alpn_csv[..], "h2");
     var ch2_payload: u8[..4096] = [];
     build_client_hello_payload(
         slot.client_random, slot.eph_pub, slot.client_cfg.server_name[..], slot.alpn_csv[..],
         ch2_payload, "", 0, slot.offered_pq_ch, pq_pub_slice,
-        "", sh.hrr_cookie[..], slot.client_cfg.client_cert_der.len > 0, 32, nist_pub,
+        "", sh.hrr_cookie[..], offer_pha, 32, nist_pub,
     );
     return frame_handshake_msg_4k(rfc::TLS_HS_CLIENT_HELLO, ch2_payload[..], out_ch2);
 }
@@ -815,7 +824,7 @@ fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     guard parse_server_client_hello(
         ch_msg[..], slot.alpn_csv[..], req_sig, slot.compressed_cert_algo,
         hrr_mode, ch_choice, slot.require_client_cert, slot.psk_policy, alpn_policy,
-        tls::QuicExtensionMode.Tcp, slot.hrr_sent, slot.transcript,
+        tls::QuicExtensionMode.Tcp, slot.hrr_sent, slot.transcript, slot.ca_policy_hash,
     ) else { return pure_fail_ch_parse(slot, ch_choice.failure_alert); }
 
     if !slot.hrr_sent && ch_choice.needs_hrr {
@@ -990,6 +999,9 @@ fn pure_init_server_credentials(
             guard ok_ca else { return tls::TlsBackendStatus.VerifyError; }
         }
         guard slot.client_cfg.trust_store.anchors.len > 0 else { return tls::TlsBackendStatus.VerifyError; }
+        slot.ca_policy_hash = compute_trust_store_policy_hash(slot.client_cfg.trust_store);
+    } else if cfg.trust_store.anchors.len > 0 {
+        slot.ca_policy_hash = compute_trust_store_policy_hash(cfg.trust_store);
     }
     return tls::TlsBackendStatus.Ok;
 }
@@ -1006,6 +1018,8 @@ fn pure_init_client_credentials(
     slot.client_cfg.enable_pq_hybrid = cfg.enable_pq_hybrid;
     slot.client_cfg.enable_session_tickets = cfg.enable_session_tickets;
     slot.client_cfg.require_ocsp_stapling = cfg.require_ocsp_stapling;
+    slot.client_cfg.port = cfg.port;
+    slot.client_cfg.tenant_hash = cfg.tenant_hash;
     let _ = slot.client_cfg.server_name.try_set(cfg.server_name[..]);
     let _ = slot.client_cfg.alpn.try_set(slot.alpn_csv[..]);
     let _ = slot.client_cfg.crl_der.try_set(cfg.crl_der[..]);
@@ -1061,26 +1075,19 @@ fn open_pure_endpoint(cfg: const tls::TlsBackendConfig&, is_server: bool) -> tls
     }, tls::TlsBackendStatus.Ok;
 }
 
-fn open_endpoint_with_role(
+fn open_native_endpoint_checked(
     cfg:       const tls::TlsBackendConfig&,
     is_server: bool,
+    open_kind: i32,
 ) -> tls::TlsEndpoint, tls::TlsBackendStatus {
-    if should_route_to_pure_backend(cfg, is_server) {
-        return open_pure_endpoint(cfg, is_server);
-    }
-    if cfg.kind != tls::TlsBackendKind.Auto && native_backend_rejects_cfg(cfg, is_server) {
-        return tls::TlsEndpoint { .. }, tls::TlsBackendStatus.Unavailable;
-    }
-
     let clean_sni, is_ip_sni, ok_sni = normalize_native_server_name(cfg.server_name[..]);
     guard ok_sni else {
         return tls::TlsEndpoint { .. }, tls::TlsBackendStatus.VerifyError;
     }
-
     var st_i32:     i32 = 0;
     var active_i32: i32 = 0;
     let nid = native_tls_backend_open(
-        kind_to_native_i32(cfg.kind),
+        open_kind,
         if is_server { 1 } else { 0 },
         pack_native_verify_flags(cfg, is_ip_sni),
         min_version_to_native_i32(cfg.min_version),
@@ -1092,23 +1099,49 @@ fn open_endpoint_with_role(
         st_i32,
         active_i32,
     );
-    if nid > 0 && st_i32 == 0 {
-        if cfg.keylog_file.len > 0 {
-            let _ = native_tls_backend_set_keylog(nid, cfg.keylog_file[..]);
-        }
-        return tls::TlsEndpoint {
-            kind:        cfg.kind,
-            active_kind: native_i32_to_kind(active_i32),
-            is_server:   is_server,
-            established: false,
-            closed:      false,
-            pure_slot:   -1,
-            native_id:   nid,
-        }, tls::TlsBackendStatus.Ok;
+    guard nid > 0 && st_i32 == 0 else {
+        return tls::TlsEndpoint { .. }, native_i32_to_status(st_i32);
     }
-    let native_st = native_i32_to_status(st_i32);
+    let active_kind = native_i32_to_kind(active_i32);
+    let disallow_st = cfg.kind == tls::TlsBackendKind.Auto || cfg.kind == tls::TlsBackendKind.SystemOnly;
+    if disallow_st && active_kind == tls::TlsBackendKind.SystemSecureTransport {
+        native_tls_backend_close(nid);
+        return tls::TlsEndpoint { .. }, tls::TlsBackendStatus.Unavailable;
+    }
+    if cfg.keylog_file.len > 0 {
+        let _ = native_tls_backend_set_keylog(nid, cfg.keylog_file[..]);
+    }
+    return tls::TlsEndpoint {
+        kind:        cfg.kind,
+        active_kind: active_kind,
+        is_server:   is_server,
+        established: false,
+        closed:      false,
+        pure_slot:   -1,
+        native_id:   nid,
+    }, tls::TlsBackendStatus.Ok;
+}
+
+fn open_endpoint_with_role(
+    cfg:       const tls::TlsBackendConfig&,
+    is_server: bool,
+) -> tls::TlsEndpoint, tls::TlsBackendStatus {
+    if should_route_to_pure_backend(cfg, is_server) {
+        return open_pure_endpoint(cfg, is_server);
+    }
+    if cfg.kind != tls::TlsBackendKind.Auto && native_backend_rejects_cfg(cfg, is_server) {
+        return tls::TlsEndpoint { .. }, tls::TlsBackendStatus.Unavailable;
+    }
+    let open_kind, has_native = resolve_native_open_kind(cfg, is_server);
+    if !has_native {
+        if cfg.kind == tls::TlsBackendKind.Auto {
+            return open_pure_endpoint(cfg, is_server);
+        }
+        return tls::TlsEndpoint { .. }, tls::TlsBackendStatus.Unavailable;
+    }
+    let ep, native_st = open_native_endpoint_checked(cfg, is_server, open_kind);
     if cfg.kind == tls::TlsBackendKind.Auto && native_st == tls::TlsBackendStatus.Unavailable {
         return open_pure_endpoint(cfg, is_server);
     }
-    return tls::TlsEndpoint { .. }, native_st;
+    return ep, native_st;
 }

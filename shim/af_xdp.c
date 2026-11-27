@@ -197,6 +197,10 @@ typedef struct {
     uint8_t *umem_base;
     uint64_t umem_len;
     uint32_t chunk_size;
+    uint32_t rx_entries;
+    uint32_t tx_entries;
+    uint32_t fill_entries;
+    uint32_t comp_entries;
     wing_xsk_ring_view fill;
     wing_xsk_ring_view comp;
     wing_xsk_ring_view rx;
@@ -237,9 +241,22 @@ static void unmap_xsk_ring(wing_xsk_ring_view *r) {
 
 static int map_one_xsk_ring(int fd, uint32_t entries, size_t elem_sz, uint64_t pgoff,
                             const struct wing_xdp_ring_offset *off, int has_flags, wing_xsk_ring_view *out) {
+    if (entries == 0 || elem_sz == 0 || (uint64_t)off->desc > (uint64_t)SIZE_MAX ||
+        (size_t)entries > (SIZE_MAX - (size_t)off->desc) / elem_sz) {
+        return -ENOMEM;
+    }
     size_t sz = (size_t)off->desc + (size_t)entries * elem_sz;
-    if (has_flags && (size_t)off->flags + sizeof(uint32_t) > sz) {
-        sz = (size_t)off->flags + sizeof(uint32_t);
+    if (has_flags) {
+        if ((uint64_t)off->flags > (uint64_t)(SIZE_MAX - sizeof(uint32_t))) {
+            return -ENOMEM;
+        }
+        if ((size_t)off->flags + sizeof(uint32_t) > sz) {
+            sz = (size_t)off->flags + sizeof(uint32_t);
+        }
+    }
+    if ((uint64_t)off->producer > (uint64_t)(sz - sizeof(uint32_t)) ||
+        (uint64_t)off->consumer > (uint64_t)(sz - sizeof(uint32_t))) {
+        return -EINVAL;
     }
     void *ptr = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, fd, (off_t)pgoff);
     if (ptr == MAP_FAILED) {
@@ -269,6 +286,12 @@ int32_t wing_af_xdp_mmap_rings(int64_t xsk_fd, uint32_t entries) {
     int has_flags = (optlen >= (socklen_t)sizeof(off));
     wing_xsk_ctx *ctx = ensure_xsk_ctx(xsk_fd);
     if (!ctx) return -ENOMEM;
+    if (ctx->mapped) return -EBUSY;
+    if ((ctx->fill_entries != 0 && ctx->fill_entries != entries) ||
+        (ctx->comp_entries != 0 && ctx->comp_entries != entries) ||
+        (ctx->rx_entries != 0 && ctx->rx_entries != entries) || (ctx->tx_entries != 0 && ctx->tx_entries != entries)) {
+        return -EINVAL;
+    }
 
     if (map_one_xsk_ring((int)xsk_fd, entries, sizeof(uint64_t), XDP_UMEM_PGOFF_FILL_RING, &off.fr, has_flags,
                          &ctx->fill) < 0 ||
@@ -374,6 +397,18 @@ int64_t wing_af_xdp_create_socket(void) {
 }
 
 int32_t wing_af_xdp_register_umem(int64_t xsk_fd, uint64_t addr, uint64_t len, uint32_t chunk_size, uint32_t headroom) {
+    if (xsk_fd < 0) {
+        return -EBADF;
+    }
+    if (addr == 0 || len == 0 || chunk_size < 2048 || (chunk_size & (chunk_size - 1)) != 0 || headroom >= chunk_size ||
+        (len % (uint64_t)chunk_size) != 0 || addr > (uint64_t)UINTPTR_MAX) {
+        return -EINVAL;
+    }
+    wing_xsk_ctx *ctx = ensure_xsk_ctx(xsk_fd);
+    if (!ctx) {
+        return -ENOMEM;
+    }
+
     struct wing_xdp_umem_reg mr;
     memset(&mr, 0, sizeof(mr));
     mr.addr = addr;
@@ -384,23 +419,45 @@ int32_t wing_af_xdp_register_umem(int64_t xsk_fd, uint64_t addr, uint64_t len, u
     if (setsockopt((int)xsk_fd, SOL_XDP, XDP_UMEM_REG, &mr, sizeof(mr)) < 0) {
         return -errno;
     }
-    wing_xsk_ctx *ctx = ensure_xsk_ctx(xsk_fd);
-    if (ctx) {
-        ctx->umem_base = (uint8_t *)(uintptr_t)addr;
-        ctx->umem_len = len;
-        ctx->chunk_size = chunk_size;
-    }
+    ctx->umem_base = (uint8_t *)(uintptr_t)addr;
+    ctx->umem_len = len;
+    ctx->chunk_size = chunk_size;
     return 0;
 }
 
 int32_t wing_af_xdp_set_ring_size(int64_t xsk_fd, int32_t ring_opt, uint32_t entries) {
+    if (xsk_fd < 0) {
+        return -EBADF;
+    }
+    if (entries == 0 || (entries & (entries - 1)) != 0) {
+        return -EINVAL;
+    }
+    if (ring_opt != XDP_RX_RING && ring_opt != XDP_TX_RING && ring_opt != XDP_UMEM_FILL_RING &&
+        ring_opt != XDP_UMEM_COMPLETION_RING) {
+        return -EINVAL;
+    }
+    wing_xsk_ctx *ctx = ensure_xsk_ctx(xsk_fd);
+    if (!ctx) {
+        return -ENOMEM;
+    }
     if (setsockopt((int)xsk_fd, SOL_XDP, ring_opt, &entries, sizeof(entries)) < 0) {
         return -errno;
     }
+    if (ring_opt == XDP_RX_RING) ctx->rx_entries = entries;
+    if (ring_opt == XDP_TX_RING) ctx->tx_entries = entries;
+    if (ring_opt == XDP_UMEM_FILL_RING) ctx->fill_entries = entries;
+    if (ring_opt == XDP_UMEM_COMPLETION_RING) ctx->comp_entries = entries;
     return 0;
 }
 
 int32_t wing_af_xdp_bind(int64_t xsk_fd, uint32_t ifindex, uint32_t queue_id, uint32_t flags) {
+    if (xsk_fd < 0) {
+        return -EBADF;
+    }
+    wing_xsk_ctx *ctx = find_xsk_ctx(xsk_fd);
+    if (!ctx) {
+        return -ENOMEM;
+    }
     struct wing_sockaddr_xdp sxdp;
     memset(&sxdp, 0, sizeof(sxdp));
     sxdp.sxdp_family = AF_XDP;
@@ -411,10 +468,7 @@ int32_t wing_af_xdp_bind(int64_t xsk_fd, uint32_t ifindex, uint32_t queue_id, ui
     if (bind((int)xsk_fd, (struct sockaddr *)&sxdp, sizeof(sxdp)) < 0) {
         return -errno;
     }
-    wing_xsk_ctx *ctx = find_xsk_ctx(xsk_fd);
-    if (ctx) {
-        ctx->need_wakeup = (flags & XDP_USE_NEED_WAKEUP) != 0 ? 1 : 0;
-    }
+    ctx->need_wakeup = (flags & XDP_USE_NEED_WAKEUP) != 0 ? 1 : 0;
     return 0;
 }
 

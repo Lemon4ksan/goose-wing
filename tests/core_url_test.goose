@@ -1096,15 +1096,15 @@ fn test_semicolon_query_splitting_defense(t: lit::T&) {
         sub.assert_bytes_eq(v3[..], "42");
     };
 
-    t.run("QUERY-03: Verbatim query parameter extraction (RFC 3986 §3.4)") { sub =>
+    t.run("QUERY-03: Query parameter extraction preserves '+' and percent-decodes %XX (RFC 3986 §3.4)") { sub =>
         let raw = "?search=hello+world%21&user_id=alice%40example.com";
         var out_search: u8[..64] = [];
         sub.assert_true(core::get_query_param_fast(raw, "search", out_search) == core::QueryParamMatch.Value);
-        sub.assert_bytes_eq(out_search[..], "hello+world%21", "+ preserved verbatim");
+        sub.assert_bytes_eq(out_search[..], "hello+world!", "+ preserved and %21 decoded");
 
         var dec_user: u8[..64] = [];
         sub.assert_true(core::get_query_param_fast(raw, "user_id", dec_user) == core::QueryParamMatch.Value);
-        sub.assert_bytes_eq(dec_user[..], "alice%40example.com");
+        sub.assert_bytes_eq(dec_user[..], "alice@example.com");
     };
 
     t.run("QUERY-04: Empty parameters and flag-only parameters") { sub =>

@@ -115,7 +115,7 @@ fn open_stateless_ticket(
     return out, true;
 }
 
-// Stores a derived TLS 1.3 resumption PSK (32 or 48 bytes) and ticket identity for a server hostname.
+// Stores a derived TLS 1.3 resumption PSK (32 or 48 bytes) and ticket identity for a scoped target.
 fn store_session_ticket(
     server_name:  const u8[:],
     ticket:       const u8[:],
@@ -124,6 +124,10 @@ fn store_session_ticket(
     lifetime:     u32,
     cipher_suite: u16 = rfc::TLS_CIPHER_AES_128_GCM_SHA256,
     issued_at_ms: i64 = 0,
+    port:         u16 = 0,
+    tenant_hash:  u64 = 0,
+    alpn_hash:    u64 = 0,
+    policy_hash:  u64 = 0,
 ) {
     guard server_name.len > 0 && server_name.len <= 255 else { return; }
     guard ticket.len > 0 && ticket.len <= 1536 &&
@@ -138,9 +142,15 @@ fn store_session_ticket(
     tls_internal::native_tls_state_lock(tls_internal::TLS_LOCK_TICKET_CACHE);
     defer tls_internal::native_tls_state_unlock(tls_internal::TLS_LOCK_TICKET_CACHE);
     for &entry in tls_internal::g_tls13_client_tickets {
-        if entry.in_use && entry.server_name[..] == server_name {
+        if entry.in_use &&
+            entry.server_name[..] == server_name &&
+            entry.port == port &&
+            entry.tenant_hash == tenant_hash &&
+            entry.alpn_hash == alpn_hash &&
+            entry.policy_hash == policy_hash {
             tls_internal::populate_cached_ticket_slot(
-                entry, server_name, ticket, psk, age_add, lifetime, cipher_suite, stamp_ms,
+                entry, server_name, ticket, psk, age_add, lifetime,
+                cipher_suite, stamp_ms, false, port, tenant_hash, alpn_hash, policy_hash,
             );
             return;
         }
@@ -148,17 +158,19 @@ fn store_session_ticket(
     for &entry in tls_internal::g_tls13_client_tickets {
         if !entry.in_use {
             tls_internal::populate_cached_ticket_slot(
-                entry, server_name, ticket, psk, age_add, lifetime, cipher_suite, stamp_ms,
+                entry, server_name, ticket, psk, age_add, lifetime,
+                cipher_suite, stamp_ms, false, port, tenant_hash, alpn_hash, policy_hash,
             );
             return;
         }
     }
     tls_internal::populate_cached_ticket_slot(
-        tls_internal::g_tls13_client_tickets[0], server_name, ticket, psk, age_add, lifetime, cipher_suite, stamp_ms,
+        tls_internal::g_tls13_client_tickets[0], server_name, ticket, psk, age_add, lifetime,
+        cipher_suite, stamp_ms, false, port, tenant_hash, alpn_hash, policy_hash,
     );
 }
 
-// Looks up a cached TLS 1.3 session ticket by server hostname, returning the full PSK and cipher suite.
+// Looks up a cached TLS 1.3 session ticket by scoped target, returning the full PSK and cipher suite.
 fn lookup_session_ticket_full<B>(
     server_name:      const u8[:],
     out_ticket:       B&,
@@ -166,6 +178,10 @@ fn lookup_session_ticket_full<B>(
     out_age_add:      u32&,
     out_cipher_suite: u16&,
     now_ms:           i64 = 0,
+    port:             u16 = 0,
+    tenant_hash:      u64 = 0,
+    alpn_hash:        u64 = 0,
+    policy_hash:      u64 = 0,
 ) -> bool {
     var committed = false;
     defer if !committed {
@@ -180,17 +196,23 @@ fn lookup_session_ticket_full<B>(
     tls_internal::native_tls_state_lock(tls_internal::TLS_LOCK_TICKET_CACHE);
     defer tls_internal::native_tls_state_unlock(tls_internal::TLS_LOCK_TICKET_CACHE);
     for &entry in tls_internal::g_tls13_client_tickets {
-        if entry.in_use && entry.server_name[..] == server_name {
-            guard tls_internal::is_cached_ticket_fresh(entry, cur_ms) &&
-                out_ticket.try_set(entry.ticket[..]) &&
-                out_psk.try_set(entry.psk[..]) else {
-                continue;
-            }
-            out_age_add = entry.age_add;
-            out_cipher_suite = entry.cipher_suite;
-            committed = true;
-            return true;
+        guard entry.in_use &&
+            entry.server_name[..] == server_name &&
+            entry.port == port &&
+            entry.tenant_hash == tenant_hash &&
+            entry.alpn_hash == alpn_hash &&
+            entry.policy_hash == policy_hash else {
+            continue;
         }
+        guard tls_internal::is_cached_ticket_fresh(entry, cur_ms) &&
+            out_ticket.try_set(entry.ticket[..]) &&
+            out_psk.try_set(entry.psk[..]) else {
+            continue;
+        }
+        out_age_add = entry.age_add;
+        out_cipher_suite = entry.cipher_suite;
+        committed = true;
+        return true;
     }
     return false;
 }
@@ -235,18 +257,10 @@ fn clear_session_tickets() {
     defer tls_internal::native_tls_state_unlock(tls_internal::TLS_LOCK_TICKET_CACHE);
     for &entry in tls_internal::g_tls13_client_tickets {
         core::secure_zeroize_slice(entry.psk[..]);
-        entry.psk.clear();
-        entry.ticket.clear();
-        entry.server_name.clear();
-        entry.client_authenticated = false;
-        entry.in_use = false;
+        entry = CachedSessionTicket { .. };
     }
     for &entry in tls_internal::g_tls13_server_tickets {
         core::secure_zeroize_slice(entry.psk[..]);
-        entry.psk.clear();
-        entry.ticket.clear();
-        entry.server_name.clear();
-        entry.client_authenticated = false;
-        entry.in_use = false;
+        entry = CachedSessionTicket { .. };
     }
 }

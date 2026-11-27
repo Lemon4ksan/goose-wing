@@ -509,15 +509,27 @@ fn test_server_dos_limits() {
     assert(http::append_header(d_req.headers, "Content-Length", "100"));
     let pipe_cl_413 = server::check_pipeline_dos_limits(srv.pipeline, d_req) == 413;
 
-    // 4f. HTTP/2 SETTINGS_MAX_CONCURRENT_STREAMS advertised on wire as 42
+    // 4f. HTTP/2 SETTINGS_MAX_CONCURRENT_STREAMS: clamped to slot cap (16) above cap, exact below cap
     var h2_out: u8[..4096] = [];
     let _, ok_h2 = server::handle_connection_wire(
         srv, "127.0.0.1", rfc::H2_CLIENT_PREFACE, 1000000000, h2_out,
     );
-    let h2_settings_ok = ok_h2 && h2_out.len >= 15 &&
+    let h2_clamped_ok = ok_h2 && h2_out.len >= 15 &&
         h2_out[3] == rfc::H2_FRAME_SETTINGS &&
         core::read_be_u16(h2_out[..], 9) == rfc::H2_SETTING_MAX_CONCURRENT_STREAMS &&
-        core::read_be_u32(h2_out[..], 11) == 42;
+        core::read_be_u32(h2_out[..], 11) == 16;
+
+    var srv_h2_12 = server::new_http_server("127.0.0.1", 0);
+    server::set_server_limits(srv_h2_12, 128, 32, 4, 12);
+    var h2_out_12: u8[..4096] = [];
+    let _, ok_h2_12 = server::handle_connection_wire(
+        srv_h2_12, "127.0.0.1", rfc::H2_CLIENT_PREFACE, 1000000000, h2_out_12,
+    );
+    let h2_below_ok = ok_h2_12 && h2_out_12.len >= 15 &&
+        h2_out_12[3] == rfc::H2_FRAME_SETTINGS &&
+        core::read_be_u16(h2_out_12[..], 9) == rfc::H2_SETTING_MAX_CONCURRENT_STREAMS &&
+        core::read_be_u32(h2_out_12[..], 11) == 12;
+    let h2_settings_ok = h2_clamped_ok && h2_below_ok;
 
     print("limits_cfg=", cfg_ok, " h431=", wire_431_ok && pipe_431_ok,
         " h413=", cl_413_ok && chunk_413_ok && pipe_cl_413,

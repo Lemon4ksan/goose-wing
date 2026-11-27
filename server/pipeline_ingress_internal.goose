@@ -179,10 +179,7 @@ inline fn is_trusted_proxy_peer(
     client_ip:           const u8[:],
     trusted_proxy_cidrs: const u8[..64][..8] = [],
 ) -> bool {
-    guard trust_proxy_headers else { return false; }
-    if trusted_proxy_cidrs.len == 0 {
-        return true;
-    }
+    guard trust_proxy_headers && trusted_proxy_cidrs.len > 0 else { return false; }
     return is_ip_in_cidr_list(client_ip, trusted_proxy_cidrs);
 }
 
@@ -343,14 +340,16 @@ fn stage_server_expect_100(req: const http::Request&, res: http::Response&) -> w
 
 // Stage 2 (Server Ingress): Zero-allocation L7 `server::EdgeFilter` rule inspection.
 fn stage_server_edge_filter(
-    filter: server::EdgeFilter&,
-    req:    const http::Request&,
-    res:    http::Response&,
+    filter:    server::EdgeFilter&,
+    req:       const http::Request&,
+    res:       http::Response&,
+    canon_url: const u8[:] = "",
 ) -> wire::StageVerdict {
     guard filter.enabled && filter.rules.len > 0 else { return wire::StageVerdict.Continue; }
     let _prof = server_prof::lit_prof_enter("stage.edge_filter");
     defer server_prof::lit_prof_leave(_prof);
-    let verdict = server::evaluate_edge_filter(filter, req.method[..], req.url[..], req.headers);
+    let eff_path = if canon_url.len > 0 { canon_url } else { req.url[..] };
+    let verdict = server::evaluate_edge_filter(filter, req.method[..], eff_path, req.headers);
     return match verdict {
         Pass => wire::StageVerdict.Continue,
         BlockForbidden => {
@@ -368,6 +367,45 @@ fn stage_server_edge_filter(
     };
 }
 
+// Normalizes a rate-limiter IP key by unwrapping IPv4-mapped IPv6 (`::ffff:0:0/96`)
+// to canonical IPv4 `/32` and truncating native IPv6 addresses to `/64` prefix.
+fn normalize_rate_limit_ip_key(ip: const u8[:], out: u8[..64]&) {
+    out.clear();
+    let parsed, ok = core::parse_ip_addr(ip);
+    guard ok else {
+        let _ = out.try_set(ip[..min(ip.len, 48)]);
+        return;
+    }
+    guard parsed.family == core::IpFamily.V6 else {
+        let _ = core::format_ip_addr(parsed, out);
+        return;
+    }
+    let is_v4_mapped = parsed.bytes[0] == 0 && parsed.bytes[1] == 0
+        && parsed.bytes[2] == 0 && parsed.bytes[3] == 0
+        && parsed.bytes[4] == 0 && parsed.bytes[5] == 0
+        && parsed.bytes[6] == 0 && parsed.bytes[7] == 0
+        && parsed.bytes[8] == 0 && parsed.bytes[9] == 0
+        && parsed.bytes[10] == 0xFF && parsed.bytes[11] == 0xFF;
+    if is_v4_mapped {
+        var v4 = core::IpAddr {
+            family: core::IpFamily.V4,
+            bytes: [
+                parsed.bytes[12], parsed.bytes[13],
+                parsed.bytes[14], parsed.bytes[15],
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        };
+        let _ = core::format_ip_addr(v4, out);
+        return;
+    }
+    var v6_64 = parsed;
+    for i in 8..16 {
+        v6_64.bytes[i] = 0;
+    }
+    let _ = core::format_ip_addr(v6_64, out);
+    let _ = out.try_append("/64");
+}
+
 // Stage 3 (Server Ingress): Global GCRA IP rate limiting via UFCS `limiter.check_rate_limit(...)`.
 fn stage_server_ratelimit_ip<Limiter>(
     limiter: Limiter&,
@@ -379,7 +417,9 @@ fn stage_server_ratelimit_ip<Limiter>(
     guard enabled else { return wire::StageVerdict.Continue; }
     let _prof = server_prof::lit_prof_enter("stage.ratelimit_ip");
     defer server_prof::lit_prof_leave(_prof);
-    let rl_decision = limiter.check_rate_limit(peer_ip, 1, now_ns);
+    var rl_ip: u8[..64] = [];
+    normalize_rate_limit_ip_key(peer_ip, rl_ip);
+    let rl_decision = limiter.check_rate_limit(rl_ip[..], 1, now_ns);
     security::apply_rate_limit_headers(res, limiter.quota, rl_decision);
     guard rl_decision.is_allowed() else {
         return wire::StageVerdict.ShortCircuit { status_code: rfc::STATUS_TOO_MANY_REQUESTS as u16 };
@@ -397,7 +437,12 @@ fn stage_server_route_match<Router>(
 ) -> wire::StageVerdict {
     let _prof = server_prof::lit_prof_enter("stage.route_match");
     defer server_prof::lit_prof_leave(_prof);
-    out_match = router.match_route(req.method[..], req.url[..], ext.params, ext.canon_url);
+    if ext.canon_url.len > 0 {
+        var canon_scratch: u8[..2048] = [];
+        out_match = router.match_route(req.method[..], ext.canon_url[..], ext.params, canon_scratch);
+    } else {
+        out_match = router.match_route(req.method[..], req.url[..], ext.params, ext.canon_url);
+    }
     return match out_match {
         NotFound => {
             res.status_code = rfc::STATUS_NOT_FOUND;
@@ -427,8 +472,10 @@ fn stage_server_ratelimit_route<Limiter>(
     guard enabled else { return wire::StageVerdict.Continue; }
     let _prof = server_prof::lit_prof_enter("stage.ratelimit_route");
     defer server_prof::lit_prof_leave(_prof);
+    var rl_ip: u8[..64] = [];
+    normalize_rate_limit_ip_key(peer_ip, rl_ip);
     var composite_key: u8[..128] = [];
-    composite_key.append(peer_ip[..min(peer_ip.len, 48)]);
+    composite_key.append(rl_ip[..min(rl_ip.len, 48)]);
     composite_key.push(':');
     composite_key.append(route_path[..min(route_path.len, 64)]);
     let rl_decision = limiter.check_rate_limit(composite_key[..], 1, now_ns);
@@ -564,4 +611,22 @@ fn stage_server_auth_jwt(
     ext.jwt_claims = out_claims;
     ext.populated_entries |= ENTRY_SECURITY;
     return wire::StageVerdict.Continue;
+}
+
+inline fn canonicalize_pipeline_ingress_url(
+    req: const http::Request&,
+    ext: ServerRequestExtensions&,
+    res: http::Response&,
+) -> bool {
+    ext.canon_url.clear();
+    let url_ok = if req.url[..] == "*" || req.method[..] == "CONNECT" {
+        ext.canon_url.try_set(req.url[..])
+    } else {
+        server::canonicalize_route_path(req.url[..], ext.canon_url)
+    };
+    guard url_ok else {
+        res.status_code = rfc::STATUS_BAD_REQUEST;
+        return false;
+    }
+    return true;
 }

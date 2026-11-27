@@ -50,11 +50,12 @@ fn new_gcra_config(rate_per_sec: u64, burst_capacity: u64) -> GcraConfig {
     };
 }
 
-// Evaluates rate limit admission for cost units at now_ns and advances TAT on success.
-// Clamps backward NTP jumps on `cell.tat_ns` even on rejection to prevent permanent lockouts.
+// Evaluates rate limit admission for cost units at now_ns and advances TAT only when allowed.
 fn gcra_check(config: const GcraConfig&, cell: GcraCell&, cost: u64, now_ns: u64) -> GcraDecision {
     let dec, next_tat = security_internal::eval_gcra_config(config, cell.tat_ns, cost, now_ns);
-    cell.tat_ns = next_tat;
+    if dec.allowed || next_tat < cell.tat_ns {
+        cell.tat_ns = next_tat;
+    }
     return dec;
 }
 

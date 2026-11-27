@@ -300,10 +300,26 @@ fn insert_catch_all_child(
     egress_mask:  u64 = wire::STAGE_SRV_OUT_DEFAULT_MASK,
 ) -> bool {
     guard name.len > 0 && name.len <= 32 else { return false; }
+    let cur = cur_idx as i64;
+    let prev_ca = tree.nodes[cur].catch_all_child;
+    if prev_ca >= 0 {
+        let prev = prev_ca as i64;
+        guard prev < tree.nodes.len else { return false; }
+        let existing_h = tree.nodes[prev].handler_id;
+        guard existing_h < 0 || (existing_h == handler_id && tree.nodes[prev].param_name[..] == name) else {
+            return false;
+        }
+        tree.nodes[prev].handler_id = handler_id;
+        tree.nodes[prev].entries_mask = entries_mask;
+        tree.nodes[prev].pso_mask = pso_mask;
+        tree.nodes[prev].ingress_mask = ingress_mask;
+        tree.nodes[prev].egress_mask = egress_mask;
+        return true;
+    }
+
     let ca_idx = alloc_node(tree, NodeType.CatchAll);
     guard ca_idx >= 0 else { return false; }
     let ca = ca_idx as i64;
-    let cur = cur_idx as i64;
     tree.nodes[ca].param_name.append(name);
     tree.nodes[ca].handler_id = handler_id;
     tree.nodes[ca].entries_mask = entries_mask;
@@ -335,8 +351,12 @@ fn insert_or_update_param_child(
         tree.nodes[cur_idx as i64].param_child = param_node_idx;
         tree.nodes[cur_idx as i64].wild_child = true;
     } else {
-        let updated_type = update_param_suffix_flag(tree.nodes[param_node_idx as i64].node_type, suffix_after);
-        tree.nodes[param_node_idx as i64].node_type = updated_type;
+        let p_i64 = param_node_idx as i64;
+        guard p_i64 < tree.nodes.len && tree.nodes[p_i64].param_name[..] == name else {
+            return false;
+        }
+        let updated_type = update_param_suffix_flag(tree.nodes[p_i64].node_type, suffix_after);
+        tree.nodes[p_i64].node_type = updated_type;
     }
 
     out_param_idx = param_node_idx;
@@ -355,13 +375,16 @@ inline fn set_endpoint_handler(
     pso_mask:     u64,
     ingress_mask: u64 = wire::STAGE_SRV_IN_DEFAULT_MASK,
     egress_mask:  u64 = wire::STAGE_SRV_OUT_DEFAULT_MASK,
-) {
+) -> bool {
     let n = node_idx as i64;
+    let existing = tree.nodes[n].handler_id;
+    guard existing < 0 || existing == handler_id else { return false; }
     tree.nodes[n].handler_id = handler_id;
     tree.nodes[n].entries_mask = entries_mask;
     tree.nodes[n].pso_mask = pso_mask;
     tree.nodes[n].ingress_mask = ingress_mask;
     tree.nodes[n].egress_mask = egress_mask;
+    return true;
 }
 
 inline fn sub_param_offset(param_end: i64&, param_start: i64) {
@@ -524,12 +547,68 @@ inline fn has_non_root_trailing_slash(path: const u8[:]) -> bool {
     return path.len > 1 && path[path.len - 1] == '/';
 }
 
+inline fn is_valid_route_pct_triplet(h1: u8, h2: u8) -> bool {
+    guard core::is_ascii_hexdigit(h1) && core::is_ascii_hexdigit(h2) else {
+        return false;
+    }
+    let lo1 = core::to_lower_ascii_byte(h1);
+    let lo2 = core::to_lower_ascii_byte(h2);
+    let bad = (lo1 == '5' && lo2 == 'c')
+        || (lo1 == '2' && lo2 == 'f')
+        || (lo1 == '3' && lo2 == 'b');
+    return !bad;
+}
+
+inline fn is_valid_canonical_path_component(s: const u8[:]) -> bool {
+    var i: i64 = 0;
+    while i < s.len {
+        let b = s[i];
+        guard b >= 0x20 && b != 0x7F && b != '\\' && b != ';' else {
+            return false;
+        }
+        if b == '%' {
+            guard i + 2 < s.len && is_valid_route_pct_triplet(s[i + 1], s[i + 2]) else {
+                return false;
+            }
+            i += 3;
+            continue;
+        }
+        i += 1;
+    }
+    return true;
+}
+
+// Strips query/fragment and scheme/authority, rejecting raw CTLs, '\', ';',
+// malformed %XX triplets, and encoded %5C/%2F/%3B in the path component.
+//
+// Example:
+//   raw_path = "http://ex.com/a%20b?x=1"
+//   returns: "/a%20b", ok = true
+fn extract_valid_route_path_component(raw_path: const u8[:]) -> const u8[:], bool {
+    var s = strip_query_and_fragment(raw_path);
+    s = strip_scheme_and_authority(s);
+    guard is_valid_canonical_path_component(s) else { return "", false; }
+    return s, true;
+}
+
+inline fn pop_last_canonical_segment<B>(out: B&) {
+    guard out.len > 0 else { return; }
+    var last_slash: i64 = out.len - 1;
+    while last_slash > 0 && out[last_slash] != '/' {
+        last_slash--;
+    }
+    out.resize(last_slash);
+}
+
 inline fn is_already_canonical_route_path(path: const u8[:]) -> bool {
     guard path.len > 0 && path[0] == '/' else { return false; }
     guard !has_non_root_trailing_slash(path) else { return false; }
     for i in 1..path.len {
         let b = path[i];
-        if b == '.' || b == '?' || b == '#' || b == '%' { return false; }
+        if b < 0x20 || b == 0x7F || b == '.' || b == '?' || b == '#' || b == '%'
+            || b == '\\' || b == ';' {
+            return false;
+        }
         if b == '/' && path[i - 1] == '/' { return false; }
     }
     return true;
@@ -584,7 +663,7 @@ inline fn try_backtrack_param_branch(
     rem:      const u8[:],
     bt:       const RouteBacktrackEntry&,
     top_i:    i64,
-    bt_stack: RouteBacktrackEntry[..8]&,
+    bt_stack: RouteBacktrackEntry[..32]&,
     cur_idx:  i32&,
     cursor:   u16&,
     params:   http::ZeroAllocParams&,
@@ -606,7 +685,7 @@ inline fn try_backtrack_param_branch(
 inline fn pop_route_backtrack(
     tree:       const server::RadixTree&,
     eff_path:   const u8[:],
-    bt_stack:   RouteBacktrackEntry[..8]&,
+    bt_stack:   RouteBacktrackEntry[..32]&,
     cur_idx:    i32&,
     cursor:     u16&,
     params:     http::ZeroAllocParams&,
@@ -658,7 +737,7 @@ inline fn push_wildcard_backtrack_if_any(
     cur_idx:     i32,
     cursor:      u16,
     param_len:   i64,
-    bt_stack:    RouteBacktrackEntry[..8]&,
+    bt_stack:    RouteBacktrackEntry[..32]&,
     tried_param: bool = false,
 ) {
     let has_wild = (!tried_param && tree.nodes[cur_idx as i64].param_child >= 0)
@@ -692,7 +771,7 @@ inline fn try_advance_static_or_param_node(
     cursor:   u16&,
     skip_pfx: bool&,
     params:   http::ZeroAllocParams&,
-    bt_stack: RouteBacktrackEntry[..8]&,
+    bt_stack: RouteBacktrackEntry[..32]&,
 ) -> bool {
     let next_child = find_child_by_byte(tree, cur_idx, rem[0]);
     let next_pfx = if next_child >= 0 { tree.nodes[next_child as i64].prefix[..] } else { "" };

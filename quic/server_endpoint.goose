@@ -71,6 +71,7 @@ enum QuicSentChunkKind {
     CryptoHandshake,
     HandshakeDone,
     NewConnectionId,
+    RetireConnectionId,
     StreamData,
     MaxData,
     MaxStreamData,
@@ -110,16 +111,19 @@ struct QuicSrvStatelessTx {
 }
 
 struct QuicSrvEndpointSlot {
-    active:          bool                    = false,
-    generation:      u64                     = 0,
-    max_conns:       i32                     = 256,
-    active_conns:    u32                     = 0,
-    idle_timeout_ms: u64                     = 30000,
-    alpn_wire:       u8[..255]               = [],
-    ev_head:         i64                     = -1,
-    ev_tail:         i64                     = -1,
-    tx_rr_cursor:    i64                     = 0,
-    stateless_tx:    QuicSrvStatelessTx[..4] = [],
+    active:                    bool                    = false,
+    generation:                u64                     = 0,
+    max_conns:                 i32                     = 256,
+    active_conns:              u32                     = 0,
+    idle_timeout_ms:           u64                     = 30000,
+    alpn_wire:                 u8[..255]               = [],
+    ev_head:                   i64                     = -1,
+    ev_tail:                   i64                     = -1,
+    tx_rr_cursor:              i64                     = 0,
+    stateless_tx:              QuicSrvStatelessTx[..4] = [],
+    reset_secret:              u8[32]                  = [0; 32],
+    stateless_reset_window_ns: u64                     = 0,
+    stateless_reset_count:     u32                     = 0,
 }
 
 struct QuicSrvSlab {
@@ -204,6 +208,8 @@ struct QuicSrvConnSlot {
     next_tx_pn_init:             u64                  = 0,
     next_tx_pn_hs:               u64                  = 0,
     next_tx_pn_app:              u64                  = 0,
+    pn_skip_rng:                 core::WyRand         = core::WyRand {},
+    next_app_skip_pn:            u64                  = 0,
     pto_count:                   u32                  = 0,
     idle_timeout_ms:             u64                  = 30000,
     last_activity_ns:            u64                  = 0,
@@ -644,9 +650,16 @@ fn reset_conn_slot_for_initial(
     let eslot .= g_quic_srv_endpoints[ep_idx];
     var scid:      u8[..20] = [];
     var reset_tok: u8[16]   = [0; 16];
-    guard generate_unique_server_cid(ep_idx, eslot.generation, scid) && core::csprng_fill(reset_tok[..]) else {
+    guard generate_unique_server_cid(ep_idx, eslot.generation, scid) else {
         return false;
     }
+    let tok_hmac = core::hmac_sha256(eslot.reset_secret[..], scid[..]);
+    for i in 16 { reset_tok[i] = tok_hmac[i]; }
+    var skip_seed_bytes: u8[8] = [0; 8];
+    if !core::csprng_fill(skip_seed_bytes[..]) {
+        skip_seed_bytes[0] = 1;
+    }
+    let skip_seed = core::read_le_u64(skip_seed_bytes[..], 0) ^ (now_ns | 1);
     var local_tp: u8[..2048] = [];
     guard build_server_local_tp(hdr.dcid[..], scid[..], eslot.idle_timeout_ms, reset_tok, local_tp) else {
         return false;
@@ -662,6 +675,7 @@ fn reset_conn_slot_for_initial(
         conn_id:                 next_srv_gen(g_quic_srv_next_conn_id),
         tls_srv:                 tls_srv,
         peer_port:               peer_port,
+        pn_skip_rng:             core::new_wyrand(skip_seed),
         idle_timeout_ms:         eslot.idle_timeout_ms,
         last_activity_ns:        now_ns,
         max_streams_bidi_tx_val: QUIC_SRV_INIT_MAX_STREAMS_BIDI,
@@ -909,10 +923,12 @@ fn mark_lost_chunks_in_space(cslot: QuicSrvConnSlot&, space_id: PnSpaceId) {
 }
 
 fn handle_inbound_ack_retirement(
-    cslot: QuicSrvConnSlot&,
-    c_idx: i64,
-    htype: QuicHeaderType,
-    frame: const QuicFrame&,
+    eslot:  QuicSrvEndpointSlot&,
+    cslot:  QuicSrvConnSlot&,
+    c_idx:  i64,
+    htype:  QuicHeaderType,
+    frame:  const QuicFrame&,
+    now_ns: u64,
 ) {
     let space_id = quic_internal::header_type_to_space_id(htype);
     var space .= cslot.conn.app_space;
@@ -930,10 +946,23 @@ fn handle_inbound_ack_retirement(
     };
     if frame.payload.len > 0 {
         let dec, _, ok_d = decode_ack_frame(frame.payload, 0);
-        if ok_d { ack_f = dec; }
+        guard ok_d else {
+            close_conn_with_error(
+                eslot, cslot, rfc::QUIC_ERR_PROTOCOL_VIOLATION, "malformed ack frame", false, now_ns,
+            );
+            return;
+        }
+        ack_f = dec;
     }
     var ranges: AckInterval[..65] = [];
-    guard parse_and_validate_ack(space, ack_f, ranges) else { return; }
+    guard parse_and_validate_ack(space, ack_f, ranges) else {
+        if space.skipped_pns.len > 0 {
+            close_conn_with_error(
+                eslot, cslot, rfc::QUIC_ERR_PROTOCOL_VIOLATION, "skipped pn ack", false, now_ns,
+            );
+        }
+        return;
+    }
     retire_acked_chunks_in_space(cslot, c_idx, space_id, ranges);
     cslot.pto_count = 0;
 }
@@ -1111,6 +1140,11 @@ fn handle_reset_stream_frame(
     rx.rx_readable_queued = false;
     rx.rx_reset_received = true;
     rx.rx_reset_error = err_code;
+    let new_md, need_md = check_conn_window_update(cslot.conn.flow_ctrl);
+    if need_md {
+        cslot.need_max_data_tx = true;
+        cslot.max_data_tx_val = new_md;
+    }
     if !rx.rx_reset_delivered {
         rx.rx_reset_delivered = true;
         enqueue_srv_event(eslot, QuicServerEventKind.StreamReset, cslot.conn_id, stream_id, "", err_code);
@@ -1186,6 +1220,20 @@ fn handle_retire_conn_id_frame(
     return true;
 }
 
+fn handle_srv_new_conn_id_frame(
+    eslot:  QuicSrvEndpointSlot&,
+    cslot:  QuicSrvConnSlot&,
+    frame:  const QuicFrame&,
+    now_ns: u64,
+) -> bool {
+    let res = quic_internal::dispatch_conn_id_frame(cslot.conn, frame);
+    guard res.handled else {
+        close_conn_with_error(eslot, cslot, cslot.conn.close_code, "invalid new cid", false, now_ns);
+        return false;
+    }
+    return true;
+}
+
 fn handle_decrypted_plain_frames(
     eslot:    QuicSrvEndpointSlot&,
     cslot:    QuicSrvConnSlot&,
@@ -1201,7 +1249,7 @@ fn handle_decrypted_plain_frames(
         let frame, ok = decode_frame_cursor(plain, idx);
         guard ok else { return; }
         if frame.frame_type == QuicFrameType.Ack || frame.frame_type == QuicFrameType.AckEcn {
-            handle_inbound_ack_retirement(cslot, c_idx, htype, frame);
+            handle_inbound_ack_retirement(eslot, cslot, c_idx, htype, frame, now_ns);
             had_ack = true;
         } else if frame.frame_type == QuicFrameType.Stream {
             ingest_stream_frame_bytes(
@@ -1211,6 +1259,8 @@ fn handle_decrypted_plain_frames(
             handle_reset_stream_frame(eslot, cslot, c_idx, frame.stream_id, frame.error_code);
         } else if frame.frame_type == QuicFrameType.StopSending {
             handle_stop_sending_frame(eslot, cslot, c_idx, frame.stream_id);
+        } else if frame.frame_type == QuicFrameType.NewConnectionId {
+            guard handle_srv_new_conn_id_frame(eslot, cslot, frame, now_ns) else { return; }
         } else if frame.frame_type == QuicFrameType.RetireConnectionId {
             guard handle_retire_conn_id_frame(eslot, cslot, pkt_dcid, frame.stream_id, now_ns) else { return; }
         } else if frame.frame_type == QuicFrameType.PathChallenge && frame.payload.len == 8 {
@@ -1517,6 +1567,18 @@ fn update_authenticated_peer_addr(
     guard ok_tok else { return false; }
     guard cslot.peer_ip.try_set(peer_ip) else { return false; }
     cslot.peer_port = peer_port;
+    // RFC 9000 Section 9.5: Rotate to an unused peer CID on active path migration when available.
+    if cslot.conn.peer_cids.len > 0 {
+        let old_seq = cslot.conn.active_peer_cid_seq;
+        let next_cid = copy(cslot.conn.peer_cids[0]);
+        let next_seq = cslot.conn.peer_cid_seqs[0];
+        cslot.conn.peer_cids.remove_at(0);
+        cslot.conn.peer_cid_seqs.remove_at(0);
+        if cslot.conn.dcid.try_set(next_cid[..]) {
+            cslot.conn.active_peer_cid_seq = next_seq;
+            let _ = quic_internal::retire_peer_cid_seq(cslot.conn, old_seq);
+        }
+    }
     // RFC 9000 Section 9.3.1: Peer Address Change - Reset address validation and AA budget until PATH_RESPONSE.
     cslot.conn.validated_address = false;
     cslot.conn.bytes_received = dgram_len;
@@ -1659,13 +1721,35 @@ fn select_close_space_and_pn(cslot: const QuicSrvConnSlot&) -> PnSpaceId, QuicHe
     return PnSpaceId.Initial, QuicHeaderType.Initial, 0, false;
 }
 
+fn pick_next_app_skip_pn(cslot: QuicSrvConnSlot&, cur_pn: u64) -> u64 {
+    let cwnd_pkts = max(cslot.conn.bbr.cwnd_bytes / 1200, 2);
+    let stride_base = core::add_sat_u64(20, cwnd_pkts / 2);
+    let jitter = core::next_u64(cslot.pn_skip_rng) & 15;
+    return core::add_sat_u64(cur_pn, core::add_sat_u64(stride_base, jitter));
+}
+
+fn advance_app_tx_pn(cslot: QuicSrvConnSlot&) {
+    var next_pn = core::add_sat_u64(cslot.next_tx_pn_app, 1);
+    if next_pn >= 20 {
+        if cslot.next_app_skip_pn == 0 {
+            cslot.next_app_skip_pn = pick_next_app_skip_pn(cslot, next_pn);
+        }
+        if next_pn == cslot.next_app_skip_pn {
+            record_skipped_pn(cslot.conn.app_space, next_pn);
+            next_pn = core::add_sat_u64(next_pn, 1);
+            cslot.next_app_skip_pn = pick_next_app_skip_pn(cslot, next_pn);
+        }
+    }
+    cslot.next_tx_pn_app = next_pn;
+}
+
 fn advance_space_tx_pn(cslot: QuicSrvConnSlot&, space_id: PnSpaceId) {
     if space_id == PnSpaceId.Initial {
         cslot.next_tx_pn_init = core::add_sat_u64(cslot.next_tx_pn_init, 1);
     } else if space_id == PnSpaceId.Handshake {
         cslot.next_tx_pn_hs = core::add_sat_u64(cslot.next_tx_pn_hs, 1);
     } else {
-        cslot.next_tx_pn_app = core::add_sat_u64(cslot.next_tx_pn_app, 1);
+        advance_app_tx_pn(cslot);
     }
 }
 
@@ -2017,6 +2101,19 @@ fn encode_app_control_frames(
             cslot.new_cid_queued = false;
         }
     }
+    while cslot.conn.pending_retire_cids.len > 0
+        && core::add_sat_u64(plain.len as u64, 9) <= max_plain && has_sent_chunk_room(cslot, 1) {
+        let rseq = cslot.conn.pending_retire_cids[0];
+        let mark = plain.len;
+        if encode_retire_conn_id_frame(rseq, plain)
+            && commit_tracked_ctrl_frame(
+                cslot, pn, QuicSentChunkKind.RetireConnectionId, rseq, 0, mark, plain, ack_el,
+            ) {
+                cslot.conn.pending_retire_cids.remove_at(0);
+            } else {
+                break;
+            }
+    }
     encode_app_window_frames(cslot, pn, plain, max_plain, ack_el);
 }
 
@@ -2252,6 +2349,15 @@ fn try_retx_single_app_chunk(
             ack_el = true;
             return true;
         },
+        RetireConnectionId => {
+            guard core::add_sat_u64(plen, 9) <= max_plain
+                && encode_retire_conn_id_frame(copy_ch.stream_id, plain) else {
+                return false;
+            }
+            guard commit_retx_chunk_slot(cslot, ch_idx, pn, 0) else { plain.resize(mark); return false; }
+            ack_el = true;
+            return true;
+        },
         MaxData => {
             return try_retx_window_chunk(cslot, ch_idx, pn, plain, max_plain, ack_el);
         },
@@ -2433,6 +2539,14 @@ fn try_emit_app_packet(
     guard cslot.conn.tx_app_space.keys_installed && cslot.conn.state == QuicConnState.Established else {
         return false;
     }
+    if cslot.conn.pacer.last_pacing_time_us == 0 && now_us > 0 {
+        cslot.conn.pacer.last_pacing_time_us = now_us;
+        cslot.conn.pacer.bucket_balance_us = cslot.conn.pacer.burst_allowance_us;
+    }
+    var pacer_probe = cslot.conn.pacer;
+    let _, ok_pace = pacer_probe.can_send(now_us, 0);
+    guard ok_pace else { return false; }
+
     let hdr_overhead = core::add_sat_u64(19, cslot.conn.dcid.len as u64);
     guard budget > core::add_sat_u64(hdr_overhead, 8) else { return false; }
     let max_plain = core::sub_sat_u64(budget, hdr_overhead);
@@ -2465,10 +2579,13 @@ fn try_emit_app_packet(
 
     var hdr = QuicHeader { header_type: QuicHeaderType.OneRtt, packet_number: pn, .. };
     guard hdr.dcid.try_set(cslot.conn.dcid[..]) else { return false; }
+    let pkt_start = out_pkt.len;
     guard seal_and_track_packet(cslot, PnSpaceId.ApplicationData, hdr, plain, out_ack_el, now_us, out_pkt) else {
         return false;
     }
-    cslot.next_tx_pn_app = core::add_sat_u64(cslot.next_tx_pn_app, 1);
+    let tx_bytes = core::sub_sat_i64(out_pkt.len, pkt_start) as u64;
+    let _, _ = cslot.conn.pacer.can_send(now_us, tx_bytes);
+    advance_app_tx_pn(cslot);
     committed = true;
     return true;
 }
@@ -2704,7 +2821,8 @@ fn quic_server_open(
         idle_timeout_ms: idle_timeout_ms,
         ..
     };
-    guard eslot.alpn_wire.try_set(alpn_wire) else {
+    guard eslot.alpn_wire.try_set(alpn_wire) && core::csprng_fill(eslot.reset_secret[..]) else {
+        core::secure_zeroize_32(eslot.reset_secret);
         eslot = QuicSrvEndpointSlot { .. };
         return QuicServerEndpoint { .. };
     }
@@ -2724,6 +2842,7 @@ fn quic_server_close(ep: QuicServerEndpoint&) {
         }
     }
     clear_ep_event_queue(eslot);
+    core::secure_zeroize_32(eslot.reset_secret);
     eslot = QuicSrvEndpointSlot { .. };
 }
 
@@ -2835,6 +2954,47 @@ fn feed_long_datagram(
     return process_conn_datagram_packets(eslot, c_idx, pkt, peer_ip, peer_port, now_ns, is_new);
 }
 
+const QUIC_SRV_RESET_WINDOW_NS: u64 = 100000000;
+const QUIC_SRV_RESET_BURST_MAX: u32 = 8;
+
+fn maybe_queue_stateless_reset(
+    eslot:     QuicSrvEndpointSlot&,
+    pkt:       const u8[:],
+    dcid:      const u8[:],
+    peer_ip:   const u8[:],
+    peer_port: u16,
+    now_ns:    u64,
+) -> bool {
+    // RFC 9000 Section 10.3: Stateless Reset - Require > 42B trigger and emit strictly shorter response.
+    guard pkt.len > 42 && eslot.stateless_tx.len < eslot.stateless_tx.cap else { return false; }
+    if now_ns < eslot.stateless_reset_window_ns
+        || core::sub_sat_u64(now_ns, eslot.stateless_reset_window_ns) >= QUIC_SRV_RESET_WINDOW_NS {
+        eslot.stateless_reset_window_ns = now_ns;
+        eslot.stateless_reset_count = 0;
+    }
+    guard eslot.stateless_reset_count < QUIC_SRV_RESET_BURST_MAX else { return false; }
+
+    let rand_len = min(core::sub_sat_i64(pkt.len, 17), 25);
+    guard rand_len >= 5 else { return false; }
+    var rand_bytes: u8[..25] = [];
+    rand_bytes.resize(rand_len, 0);
+    guard core::csprng_fill(rand_bytes[..]) else { return false; }
+
+    let tok_hmac = core::hmac_sha256(eslot.reset_secret[..], dcid);
+    var reset_tok: u8[16] = [0; 16];
+    defer core::secure_zeroize_16(reset_tok);
+    for i in 16 { reset_tok[i] = tok_hmac[i]; }
+
+    var item = QuicSrvStatelessTx { peer_port: peer_port, .. };
+    guard item.peer_ip.try_set(peer_ip)
+        && encode_stateless_reset_packet(rand_bytes[..], reset_tok, item.pkt) else {
+        return false;
+    }
+    guard item.pkt.len < pkt.len && eslot.stateless_tx.try_push(item) else { return false; }
+    eslot.stateless_reset_count += 1;
+    return true;
+}
+
 // Feeds an inbound UDP datagram from `(peer_ip, peer_port)` into `ep`, demultiplexing by DCID.
 fn quic_server_feed_datagram(
     ep:        QuicServerEndpoint&,
@@ -2853,7 +3013,9 @@ fn quic_server_feed_datagram(
         guard pkt.len >= QUIC_SRV_SHORT_PKT_MIN_LEN else { return false; }
         let dcid = pkt[1..QUIC_SRV_SHORT_PKT_MIN_LEN];
         let c_idx = find_conn_by_dcid(ep_idx, eslot.generation, dcid, false);
-        guard c_idx >= 0 else { return false; }
+        if c_idx < 0 {
+            return maybe_queue_stateless_reset(eslot, pkt, dcid, peer_ip, peer_port, now_ns);
+        }
         return process_conn_datagram_packets(eslot, c_idx, pkt, peer_ip, peer_port, now_ns, false);
     }
     return feed_long_datagram(eslot, ep_idx, pkt, peer_ip, peer_port, now_ns);

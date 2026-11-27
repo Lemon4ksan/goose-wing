@@ -690,14 +690,22 @@ fn validate_incoming_req_headers(hdrs: const http::HeaderMap&) -> bool {
 }
 
 fn should_skip_h2_req_header(
-    raw_hdrs:  const http::HeaderMap&,
-    low_name:  const u8[:],
-    authority: const u8[:],
+    raw_hdrs:      const http::HeaderMap&,
+    low_name:      const u8[:],
+    authority:     const u8[:],
+    header_filter: H2UpstreamHeaderFilter,
+    proxy_cfg:     const Config&,
 ) -> bool {
     if authority.len > 0 && low_name == "host" {
         return true;
     }
     if low_name == "te" {
+        return true;
+    }
+    if header_filter == H2UpstreamHeaderFilter.DirectHeaders && proxy::is_forwarded_metadata_header(low_name) {
+        return true;
+    }
+    if !proxy_cfg.forward_cache_groups && proxy_internal::is_cache_group_header(low_name) {
         return true;
     }
     if rfc::is_connection_specific_header(low_name) || http::is_hop_by_hop_header_name(low_name) {
@@ -711,12 +719,14 @@ fn should_skip_h2_req_header(
 }
 
 fn calc_up_request_list_size(
-    method:    const u8[:],
-    scheme:    const u8[:],
-    authority: const u8[:],
-    path:      const u8[:],
-    src_hdrs:  const http::HeaderMap&,
-    raw_hdrs:  const http::HeaderMap&,
+    method:        const u8[:],
+    scheme:        const u8[:],
+    authority:     const u8[:],
+    path:          const u8[:],
+    src_hdrs:      const http::HeaderMap&,
+    raw_hdrs:      const http::HeaderMap&,
+    header_filter: H2UpstreamHeaderFilter,
+    proxy_cfg:     const Config&,
 ) -> i64 {
     var total = core::add_sat_i64(H2_UP_PSEUDO_METHOD_BASE, method.len);
     if method != "CONNECT" {
@@ -730,7 +740,7 @@ fn calc_up_request_list_size(
         let raw_name = http::entry_name(src_hdrs, e);
         var low_buf: u8[..256] = [];
         raw_name.to_lower_ascii(low_buf);
-        if !should_skip_h2_req_header(src_hdrs, low_buf[..], authority) {
+        if !should_skip_h2_req_header(src_hdrs, low_buf[..], authority, header_filter, proxy_cfg) {
             let v = http::entry_value(src_hdrs, e);
             let field_sz = core::add_sat_i64(low_buf.len, v.len);
             total = core::add_sat_i64(total, core::add_sat_i64(H2_UP_HEADER_OVERHEAD_I64, field_sz));
@@ -742,12 +752,28 @@ fn calc_up_request_list_size(
     return total;
 }
 
+fn validate_up_te_headers(hdrs: const http::HeaderMap&) -> bool, bool {
+    var has_te = false;
+    for &e in hdrs.entries {
+        if http::entry_name(hdrs, e).eq_ascii_fold("te") {
+            let trimmed = http::entry_value(hdrs, e).trim_lws();
+            guard trimmed.eq_ascii_fold("trailers") else {
+                return false, false;
+            }
+            has_te = true;
+        }
+    }
+    return has_te, true;
+}
+
 fn encode_up_request_entries(
-    enc:       http2::DynamicTable&,
-    src_hdrs:  const http::HeaderMap&,
-    raw_hdrs:  const http::HeaderMap&,
-    authority: const u8[:],
-    out:       u8[..65536]&,
+    enc:           http2::DynamicTable&,
+    src_hdrs:      const http::HeaderMap&,
+    raw_hdrs:      const http::HeaderMap&,
+    authority:     const u8[:],
+    header_filter: H2UpstreamHeaderFilter,
+    proxy_cfg:     const Config&,
+    out:           u8[..65536]&,
 ) -> bool {
     let max_tbl = enc.current_max_size as i64;
     for &e in src_hdrs.entries {
@@ -759,7 +785,7 @@ fn encode_up_request_entries(
         }
         raw_name.to_lower_ascii(low_buf);
         let low_name = low_buf[..];
-        if should_skip_h2_req_header(src_hdrs, low_name, authority) {
+        if should_skip_h2_req_header(src_hdrs, low_name, authority, header_filter, proxy_cfg) {
             continue;
         }
         let sens = http::is_sensitive(e)
@@ -775,8 +801,10 @@ fn encode_up_request_entries(
             return false;
         }
     }
-    // RFC 9113 Section 8.2.2: Connection-Specific Header Fields - preserve lowercase `te: trailers` for gRPC.
-    if http::has_header(raw_hdrs, "te") {
+    // RFC 9113 Section 8.2.2: Connection-Specific Header Fields - reject any TE value other than `trailers`.
+    let has_te, te_valid = validate_up_te_headers(raw_hdrs);
+    guard te_valid else { return false; }
+    if has_te {
         let mode = http2::select_hpack_indexing("te", "trailers", max_tbl);
         guard http2::encode_hpack_field(enc, out, "te", "trailers", mode, true) else {
             return false;
@@ -805,14 +833,16 @@ fn emit_up_hpack_table_updates(slot: H2UpSlot&, out: u8[..65536]&) -> bool {
 }
 
 fn encode_up_request_block(
-    enc:       http2::DynamicTable&,
-    method:    const u8[:],
-    scheme:    const u8[:],
-    authority: const u8[:],
-    path:      const u8[:],
-    src_hdrs:  const http::HeaderMap&,
-    raw_hdrs:  const http::HeaderMap&,
-    out:       u8[..65536]&,
+    enc:           http2::DynamicTable&,
+    method:        const u8[:],
+    scheme:        const u8[:],
+    authority:     const u8[:],
+    path:          const u8[:],
+    src_hdrs:      const http::HeaderMap&,
+    raw_hdrs:      const http::HeaderMap&,
+    header_filter: H2UpstreamHeaderFilter,
+    proxy_cfg:     const Config&,
+    out:           u8[..65536]&,
 ) -> bool {
     guard http2::encode_hpack_field(enc, out, ":method", method, http2::HpackIndexing.Incremental, true) else {
         return false;
@@ -839,7 +869,7 @@ fn encode_up_request_block(
             return false;
         }
     }
-    return encode_up_request_entries(enc, src_hdrs, raw_hdrs, authority, out);
+    return encode_up_request_entries(enc, src_hdrs, raw_hdrs, authority, header_filter, proxy_cfg, out);
 }
 
 // RFC 9113 Section 6.2: HEADERS - fragment encoded header blocks into HEADERS and CONTINUATION frames.
@@ -881,18 +911,21 @@ fn emit_up_header_fragments(
 }
 
 fn open_up_stream_with_hdrs(
-    slot:       H2UpSlot&,
-    sid:        u32,
-    method:     const u8[:],
-    scheme:     const u8[:],
-    authority:  const u8[:],
-    path:       const u8[:],
-    src_hdrs:   const http::HeaderMap&,
-    raw_hdrs:   const http::HeaderMap&,
-    end_stream: bool,
+    slot:          H2UpSlot&,
+    sid:           u32,
+    method:        const u8[:],
+    scheme:        const u8[:],
+    authority:     const u8[:],
+    path:          const u8[:],
+    src_hdrs:      const http::HeaderMap&,
+    raw_hdrs:      const http::HeaderMap&,
+    end_stream:    bool,
+    header_filter: H2UpstreamHeaderFilter,
 ) -> u32, bool {
     let max_list: i64 = min(slot.peer_max_header_list_size, slot.cfg.max_header_list_size);
-    guard calc_up_request_list_size(method, scheme, authority, path, src_hdrs, raw_hdrs) <= max_list else {
+    guard calc_up_request_list_size(
+        method, scheme, authority, path, src_hdrs, raw_hdrs, header_filter, slot.cfg.send_proxy_config,
+    ) <= max_list else {
         return 0, false;
     }
     let saved_enc = slot.hpack_enc;
@@ -918,6 +951,8 @@ fn open_up_stream_with_hdrs(
         path,
         src_hdrs,
         raw_hdrs,
+        header_filter,
+        slot.cfg.send_proxy_config,
         hpack_buf,
     ) else {
         return 0, false;
@@ -971,7 +1006,9 @@ fn h2_upstream_open_stream(
     }
     let end_stream = (stream_end == H2UpstreamStreamEnd.EndStream);
     if header_filter == H2UpstreamHeaderFilter.DirectHeaders {
-        return open_up_stream_with_hdrs(slot, sid, method, scheme, authority, path, in_headers, in_headers, end_stream);
+        return open_up_stream_with_hdrs(
+            slot, sid, method, scheme, authority, path, in_headers, in_headers, end_stream, header_filter,
+        );
     }
     var filtered = http::HeaderMap { .. };
     guard filter_and_forward_headers(
@@ -985,7 +1022,9 @@ fn h2_upstream_open_stream(
     ) else {
         return 0, false;
     }
-    return open_up_stream_with_hdrs(slot, sid, method, scheme, authority, path, filtered, in_headers, end_stream);
+    return open_up_stream_with_hdrs(
+        slot, sid, method, scheme, authority, path, filtered, in_headers, end_stream, header_filter,
+    );
 }
 
 // ---- Outbound DATA, Trailers, Control Frames -------------------------------
