@@ -168,7 +168,8 @@ fn append_decompressed_stream_span(
         new_spans.push(grpc::MessageSpan { offset: offset_start, len: span.len, compressed: false });
         return true;
     }
-    let ok_gz, gz_err = core::gzip_decompress_with_limit(raw_msg, new_wire, max_size);
+    let eff_limit = calc_grpc_gzip_limit(raw_msg.len, max_size);
+    let ok_gz, gz_err = core::gzip_decompress_with_limit(raw_msg, new_wire, eff_limit);
     guard ok_gz else {
         let is_overflow = gz_err == core::CompressError.OutputBufferOverflow;
         let code = if is_overflow {

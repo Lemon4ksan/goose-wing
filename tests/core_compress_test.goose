@@ -503,8 +503,8 @@ fn test_universal_autodetect(t: lit::T&) {
         sub.assert_eq(core::detect_container_format(gz[..]), core::ContainerFormat.Gzip, "Format must be Gzip");
 
         var out_gz: u8[>..] = [];
-        let ok_gz, err_gz = core::decompress_auto(gz[..], out_gz);
-        sub.assert_true(ok_gz, "Auto-decompress Gzip must succeed");
+        let ok_gz, err_gz = core::gzip_decompress(gz[..], out_gz);
+        sub.assert_true(ok_gz, "Decompress Gzip must succeed");
         sub.assert_eq(err_gz, core::CompressError.None, "Error must be None");
         sub.assert_eq(out_gz[..], original, "Gzip output must match original");
 
@@ -514,8 +514,8 @@ fn test_universal_autodetect(t: lit::T&) {
         sub.assert_eq(core::detect_container_format(zb[..]), core::ContainerFormat.Zlib, "Format must be Zlib");
 
         var out_zb: u8[>..] = [];
-        let ok_zb, err_zb = core::decompress_auto(zb[..], out_zb);
-        sub.assert_true(ok_zb, "Auto-decompress Zlib must succeed");
+        let ok_zb, err_zb = core::zlib_decompress(zb[..], out_zb);
+        sub.assert_true(ok_zb, "Decompress Zlib must succeed");
         sub.assert_eq(err_zb, core::CompressError.None, "Error must be None");
         sub.assert_eq(out_zb[..], original, "Zlib output must match original");
 
@@ -525,8 +525,8 @@ fn test_universal_autodetect(t: lit::T&) {
         sub.assert_eq(core::detect_container_format(df[..]), core::ContainerFormat.Raw, "Format must be Raw Deflate");
 
         var out_df: u8[>..] = [];
-        let ok_df, err_df = core::decompress_auto(df[..], out_df);
-        sub.assert_true(ok_df, "Auto-decompress Raw Deflate must succeed");
+        let ok_df, err_df = core::inflate(df[..], out_df);
+        sub.assert_true(ok_df, "Decompress Raw Deflate must succeed");
         sub.assert_eq(err_df, core::CompressError.None, "Error must be None");
         sub.assert_eq(out_df[..], original, "Deflate output must match original");
     };
@@ -895,10 +895,10 @@ fn test_zstandard_rfc8878(t: lit::T&) {
         sub.assert_eq(fmt, core::ContainerFormat.Zstd, "detect_container_format must recognize ContainerFormat.Zstd");
 
         var restored: u8[>..] = [];
-        let ok_d, err_d = core::decompress_auto(wire[..], restored);
-        sub.assert_true(ok_d, "decompress_auto must succeed for Zstd frame");
-        sub.assert_eq(err_d, core::CompressError.None, "Auto-decompress error must be None");
-        sub.assert_eq(restored[..], message, "Auto-decompressed text must match verbatim");
+        let ok_d, err_d = core::zstd_decompress(wire[..], restored);
+        sub.assert_true(ok_d, "zstd_decompress must succeed for Zstd frame");
+        sub.assert_eq(err_d, core::CompressError.None, "Decompress error must be None");
+        sub.assert_eq(restored[..], message, "Decompressed text must match verbatim");
     };
 
     t.run("HTTP Response Content-Encoding: zstd Integration") { sub =>
@@ -1324,7 +1324,7 @@ fn test_rfc1951_bounds_and_error_handling(t: lit::T&) {
         while offset < zb.len {
             let chunk_size = if zb.len - offset < 8 { zb.len - offset } else { 8 };
             let chunk = zb[offset..offset + chunk_size];
-            let err = decompressor.write_with_limit(chunk, restored, quota);
+            let err = core::zstream_decompress_write_limit(decompressor, chunk, restored, quota);
             if err == core::CompressError.OutputBufferOverflow {
                 hit_overflow = true;
                 break;

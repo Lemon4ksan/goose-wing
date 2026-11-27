@@ -9,8 +9,9 @@
 // - cork: CorkBuffer packet coalescing aggregator.
 // - vec: Vectorized Scatter/Gather I/O abstractions.
 // - page_ring: Hardware PageRingBuffer virtual memory mirrored ring.
-// - page_mem: GuardedArena, MmapFile, PinnedBuffer for OS memory pages.
+// - page_mem: MmapFile for OS memory-mapped file access.
 // - cursor: ByteCursor zero-copy slice stream reader and bounded ByteBuilder.
+// - spsc_ring: Cache-line aligned lock-free SPSC ring queue.
 namespace core;
 
 import std;
@@ -24,7 +25,7 @@ import core.io.vec;
 import core.io.page_ring;
 import core.io.page_mem;
 import core.io.cursor;
-import core.io.ring_cursor;
+import core.io.spsc_ring;
 
 // Appends a 16-bit integer in Big-Endian wire order into any appendable buffer.
 fn append_u16_be<B>(out: B&, v: u16) {

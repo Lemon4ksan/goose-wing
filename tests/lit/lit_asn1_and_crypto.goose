@@ -280,30 +280,6 @@ fn test_f002_ecdsa_raw_r_0x30() {
     print("F002_ECDSA_RAW_0X30_OK: 1");
 }
 
-fn test_f003_dudect_edge_cases() {
-    var ctx = core::DudectContext { .. };
-    for i in 10 {
-        assert(core::dudect_push_sample(ctx, 0, 100.0));
-        assert(core::dudect_push_sample(ctx, 1, 500.0));
-    }
-    let is_ct_diff = core::dudect_is_constant_time(ctx, 4.5);
-    assert(!is_ct_diff);
-
-    var ctx_same = core::DudectContext { .. };
-    for i in 10 {
-        assert(core::dudect_push_sample(ctx_same, 0, 100.0));
-        assert(core::dudect_push_sample(ctx_same, 1, 100.0));
-    }
-    assert(core::dudect_is_constant_time(ctx_same, 4.5));
-
-    let s = core::approx_sqrt(0.000000000001);
-    assert(s > 0.00000099 && s < 0.00000101);
-
-    let nan_val = 0.0 / 0.0;
-    assert(!core::dudect_push_sample(ctx_same, 0, nan_val));
-    print("F003_DUDECT_FIXED: 1");
-}
-
 fn test_f004_hkdf_expand_prk_len() {
     var out: u8[32] = [0; 32];
     let short_prk: u8[16] = [0x11; 16];
@@ -387,7 +363,6 @@ fn test_f012_sha512_256_fips_vector() {
 fn run_03_verify_crypto_audit_regressions() {
     test_f001_rsa_exponent_validation();
     test_f002_ecdsa_raw_r_0x30();
-    test_f003_dudect_edge_cases();
     test_f004_hkdf_expand_prk_len();
     test_f005_aes_gcm_open_cork_rollback();
     test_f006_f007_der_strictness_and_transactional_cursor();
@@ -396,7 +371,6 @@ fn run_03_verify_crypto_audit_regressions() {
 
 // CHECK: F001_RSA_EXP_REJECTED: 1
 // CHECK: F002_ECDSA_RAW_0X30_OK: 1
-// CHECK: F003_DUDECT_FIXED: 1
 // CHECK: F004_HKDF_SHORT_PRK_REJECTED: 1
 // CHECK: F005_AES_OPEN_PREFIX_PRESERVED: 1
 // CHECK: F006_F007_DER_STRICT_OK: 1

@@ -115,7 +115,7 @@ fn zeroize_server_ch_choice(c: ServerClientHelloChoice&) {
 }
 
 fn eval_ch_quic_and_alpn(
-    entries:         const tls::ExtensionEntry[..32]&,
+    entries:         const tls::ExtensionEntry[..64]&,
     server_alpn_csv: const u8[:],
     alpn_policy:     ServerAlpnPolicy,
     quic_mode:       tls::QuicExtensionMode,
@@ -175,7 +175,7 @@ fn parse_server_client_hello(
         out.failure_alert = fail_alert;
     };
 
-    var entries: tls::ExtensionEntry[..32] = [];
+    var entries: tls::ExtensionEntry[..64] = [];
     let sel_cs, ok_pre = decode_ch_server_preamble(payload, out.session_id, entries);
     guard ok_pre else { return false; }
     let allow_hrr = hrr_mode == ServerHrrMode.Allow;
@@ -205,7 +205,10 @@ fn parse_server_client_hello(
         out.psk_resumed = psk_matched;
     }
     if !out.psk_resumed && required_sig_scheme != 0 {
-        guard validate_ch_sig_algorithms(sig_ext, required_sig_scheme) else { return false; }
+        guard validate_ch_sig_algorithms(sig_ext, required_sig_scheme) else {
+            fail_alert = tls::Alert.HandshakeFailure;
+            return false;
+        }
     }
     out.cert_comp_algo = select_server_cert_comp_algo_from_entries(entries, config_comp_algo);
     let _ = extract_ch_client_random(payload, out.client_random);

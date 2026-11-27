@@ -128,9 +128,10 @@ fn main() {
 
     var wire_headers: u8[>..] = [];
     let sent_bytes = server::send_http1_response_iov(-1, res, "goose-wing/2.0", iov, wire_headers);
+    let total_payload_bytes = resp_chunk1.len + resp_chunk2.len;
     print("    Response serialized wire headers: ", wire_headers.len, " bytes");
-    print("    Vectorized payload chunks:        ", core::iovec_count(iov), " segments (total ", core::iovec_total_bytes(iov), " bytes)");
-    print("    Total wire transmission:          ", wire_headers.len + core::iovec_total_bytes(iov), " bytes (0 heap allocations)\n");
+    print("    Vectorized payload chunks:        ", core::iovec_count(iov), " segments (total ", total_payload_bytes, " bytes)");
+    print("    Total wire transmission:          ", wire_headers.len + total_payload_bytes, " bytes (0 heap allocations)\n");
 
     // ---- Client Verification of Server Response --------------------------
     print("[5] Client Response Validation:");

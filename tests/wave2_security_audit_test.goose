@@ -64,7 +64,7 @@ fn test_wave2_compression_and_rfc8879(t: lit::T&) {
         for _ in 1200 { gz_bomb.append(member[..]); }
         var dec = core::new_zstream_decompressor(core::ContainerFormat.Gzip);
         var out_gz: u8[>..] = [];
-        let err_gz = dec.write_with_limit(gz_bomb[..], out_gz, 65536);
+        let err_gz = core::zstream_decompress_write_limit(dec, gz_bomb[..], out_gz, 65536);
         sub.assert_eq(err_gz, core::CompressError.CorruptedBitstream, "1200 empty gzip members rejected without recursion overflow");
     };
 
@@ -400,17 +400,6 @@ fn test_wave2_framing_mux_realtime(t: lit::T&) {
 // 4. Parsers (URL, DNS, JSON) & Client H3/Digest/PrivacyPass
 // ----------------------------------------------------------------------------
 fn test_wave2_parsers_and_client(t: lit::T&) {
-    t.run("core::file_path rejects %00, %2f, and %5c traversal sequences") { sub =>
-        let p_nul, err1 = core::parse_url("file:///etc/passwd%00.txt");
-        let p_slash, err2 = core::parse_url("file:///tmp/a%2fb");
-        let p_bslash, err3 = core::parse_url("file:///C:/tmp%5cfoo");
-        sub.require_true(err1 == core::UrlParseError.None && err2 == core::UrlParseError.None && err3 == core::UrlParseError.None);
-        var fp: u8[..256] = [];
-        sub.assert_false(core::file_path(p_nul, fp), "file_path rejects %00 NUL byte");
-        sub.assert_false(core::file_path(p_slash, fp), "file_path rejects %2f encoded slash");
-        sub.assert_false(core::file_path(p_bslash, fp), "file_path rejects %5c encoded backslash");
-    };
-
     t.run("DNS parser rejects pointer compression loop and excessive jump budgets") { sub =>
         // Minimal 12-byte header (QDCOUNT=1) + pointer pointing to offset 12 (self-loop: 0xC0 0x0C)
         let loop_pkt: u8[18] = [

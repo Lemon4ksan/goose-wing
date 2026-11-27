@@ -100,8 +100,59 @@ checkfree fn huff_decode_step(
     return out_idx, true;
 }
 
-// Decodes a Huffman-encoded byte slice directly into any appendable buffer without stack scratch zeroing.
-extern fn native_hpack_huff_decode(src: const u8[:], dst: u8[:], table: const u32[:]) -> i64 = "wing_hpack_huff_decode";
+// Decodes RFC 7541 Appendix B Huffman-encoded `src` into `dst` using the 4096-entry
+// nibble state transition table without scratch allocations.
+// Returns decoded byte count (>= 0) on success, or -1 on invalid encoding or overflow.
+//
+// Example:
+//   src = [0x9C, 0xC5], dst = [0; 4]
+//   returns: 3 (with dst[..3] = "www")
+checkfree fn huff_decode_packed(src: const u8[:], dst: u8[:]) -> i64 {
+    let s_len = src.len;
+    let d_len = dst.len;
+    guard s_len >= 0 && d_len >= 0 else { return -1; }
+    guard s_len > 0 else { return 0; }
+
+    var out_idx:       i64 = 0;
+    var last_sym_byte: i64 = 0;
+    var state:         u32 = 0;
+    var flags:         u32 = 0x01;
+
+    for i in s_len {
+        let c = src[i] as u32;
+        let next_i = i + 1;
+
+        let idx1 = ((state << 4) | (c >> 4)) as i64;
+        guard idx1 >= 0 && idx1 < 4096 else { return -1; }
+        let d1 = h2_internal::HUFF_DECODE_TABLE_PACKED[idx1];
+        let f1 = (d1 >> 8) & 0xFF;
+        if (f1 & 0x04) != 0 { return -1; }
+        if (f1 & 0x02) != 0 {
+            guard out_idx >= 0 && out_idx < d_len else { return -1; }
+            dst[out_idx] = ((d1 >> 16) & 0xFF) as u8;
+            out_idx += 1;
+            last_sym_byte = next_i;
+        }
+        state = d1 & 0xFF;
+
+        let idx2 = ((state << 4) | (c & 0x0F)) as i64;
+        guard idx2 >= 0 && idx2 < 4096 else { return -1; }
+        let d2 = h2_internal::HUFF_DECODE_TABLE_PACKED[idx2];
+        let f2 = (d2 >> 8) & 0xFF;
+        if (f2 & 0x04) != 0 { return -1; }
+        if (f2 & 0x02) != 0 {
+            guard out_idx >= 0 && out_idx < d_len else { return -1; }
+            dst[out_idx] = ((d2 >> 16) & 0xFF) as u8;
+            out_idx += 1;
+            last_sym_byte = next_i;
+        }
+        state = d2 & 0xFF;
+        flags = f2;
+    }
+
+    guard (flags & 0x01) != 0 && last_sym_byte == s_len else { return -1; }
+    return out_idx;
+}
 
 // Decodes a Huffman-encoded byte slice into any bounded appendable buffer without scratch zeroing.
 //
@@ -120,7 +171,7 @@ fn huff_decode_bytes<B>(src: const u8[:], out: B&) -> bool {
     let max_out = core::add_sat_i64(src.len, src.len);
     let probe = min(avail, max_out);
     out.resize(core::add_sat_i64(start_len, probe), 0);
-    let n = native_hpack_huff_decode(src, out[start_len..], h2_internal::HUFF_DECODE_TABLE_PACKED[..]);
+    let n = huff_decode_packed(src, out[start_len..]);
     if n < 0 {
         out.resize(start_len);
         return false;
@@ -146,7 +197,7 @@ fn huff_decode_bytes(src: const u8[:], out: u8[>..]&) -> bool {
         return false;
     }
     out.resize(target_len, 0);
-    let n = native_hpack_huff_decode(src, out[start_len..], h2_internal::HUFF_DECODE_TABLE_PACKED[..]);
+    let n = huff_decode_packed(src, out[start_len..]);
     if n < 0 {
         out.resize(start_len);
         return false;

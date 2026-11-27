@@ -18,18 +18,6 @@ extern fn native_page_ring_create(
 
 extern fn native_page_ring_destroy(handle: u64) = "wing_page_ring_destroy";
 
-extern fn native_page_ring_write(
-    handle:      u64,
-    tail_offset: u64,
-    src:         const u8[:],
-) -> i64 = "wing_page_ring_write";
-
-extern fn native_page_ring_read(
-    handle:      u64,
-    head_offset: u64,
-    dst:         u8[:],
-) -> i64 = "wing_page_ring_read";
-
 extern fn native_page_ring_peek(
     handle:      u64,
     head_offset: u64,
@@ -43,18 +31,6 @@ extern fn native_page_ring_recv(
     sock_fd:     i64,
     timeout_ms:  u32,
 ) -> i32 = "wing_page_ring_recv";
-
-extern fn native_page_ring_find_crlf(
-    handle:      u64,
-    head_offset: u64,
-    len:         u32,
-) -> i64 = "wing_page_ring_find_crlf";
-
-extern fn native_page_ring_find_crlfcrlf(
-    handle:      u64,
-    head_offset: u64,
-    len:         u32,
-) -> i64 = "wing_page_ring_find_crlfcrlf";
 
 // Page-mirrored ring buffer state descriptor.
 struct PageRingBuffer {
@@ -105,14 +81,6 @@ inline fn page_ring_available(pr: const PageRingBuffer&) -> i64 {
     return (pr.capacity - pr.count) as i64;
 }
 
-inline fn page_ring_is_empty(pr: const PageRingBuffer&) -> bool {
-    return pr.count == 0;
-}
-
-inline fn page_ring_is_full(pr: const PageRingBuffer&) -> bool {
-    return pr.count >= pr.capacity;
-}
-
 // Resets read and write cursors without reallocating virtual memory.
 fn page_ring_clear(pr: PageRingBuffer&) {
     pr.head = 0;
@@ -124,38 +92,6 @@ inline fn ring_advance_cursor(current_pos: u64, delta: u64, ring_cap: u32) -> u6
     guard ring_cap > 0 else { return 0; }
     let cap = ring_cap as u64;
     return ((current_pos % cap) + (delta % cap)) % cap;
-}
-
-// Writes bytes into the page-mirrored ring buffer without boundary wrapping logic.
-fn page_ring_write(pr: PageRingBuffer&, src: const u8[:]) -> i64, IoError {
-    guard pr.is_open else { return 0, IoError.Closed; }
-    let avail = page_ring_available(pr);
-    guard src.len > 0 && avail > 0 else {
-        return 0, if avail == 0 { IoError.BufferFull } else { IoError.None };
-    }
-
-    let to_write = min(src.len, avail);
-    let written = native_page_ring_write(pr.handle, pr.tail, src[..to_write]);
-    guard written > 0 else { return 0, IoError.ShortWrite; }
-
-    pr.tail = ring_advance_cursor(pr.tail, written as u64, pr.capacity);
-    pr.count += written as u64;
-    return written, if written < src.len { IoError.ShortWrite } else { IoError.None };
-}
-
-// Reads and consumes bytes from the page-mirrored ring buffer.
-fn page_ring_read(pr: PageRingBuffer&, dst: u8[:]) -> i64, IoError {
-    guard pr.is_open else { return 0, IoError.Closed; }
-    guard dst.len > 0 else { return 0, IoError.None; }
-    guard pr.count > 0 else { return 0, IoError.Eof; }
-
-    let to_read = min(dst.len, pr.count as i64);
-    let n = native_page_ring_read(pr.handle, pr.head, dst[..to_read]);
-    guard n > 0 else { return 0, IoError.None; }
-
-    pr.head = ring_advance_cursor(pr.head, n as u64, pr.capacity);
-    pr.count -= n as u64;
-    return n, IoError.None;
 }
 
 // Inspects bytes without advancing read cursor.
@@ -192,18 +128,4 @@ fn page_ring_recv(
         pr.count += recvd as u64;
     }
     return recvd;
-}
-
-// Scans active readable data for CRLF delimiter using vectorized scanner.
-fn page_ring_find_crlf(pr: const PageRingBuffer&) -> i64 {
-    guard pr.is_open && pr.count >= 2 else { return -1; }
-    let search_len = min(pr.count, pr.capacity) as u32;
-    return native_page_ring_find_crlf(pr.handle, pr.head, search_len);
-}
-
-// Scans active readable data for CRLFCRLF (\r\n\r\n) HTTP delimiter using AVX2/SSE2.
-fn page_ring_find_crlfcrlf(pr: const PageRingBuffer&) -> i64 {
-    guard pr.is_open && pr.count >= 4 else { return -1; }
-    let search_len = min(pr.count, pr.capacity) as u32;
-    return native_page_ring_find_crlfcrlf(pr.handle, pr.head, search_len);
 }

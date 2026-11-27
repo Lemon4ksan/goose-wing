@@ -144,18 +144,37 @@ fn format_u64_hex_fixed<B>(val: u64, width: i64, out: B&, uppercase: bool = fals
     }
 }
 
-extern fn native_fast_u64toa(val: u64, dst: u8[:]) -> i32 = "wing_fast_u64toa";
-extern fn native_fast_u32toa_hex(val: u32, dst: u8[:]) -> i32 = "wing_fast_u32toa_hex";
-
-// Fast integer-to-ASCII serialization into a pre-allocated slice without heap allocations (uWebSockets Utilities.h)
-// Returns number of bytes written.
+// Fast integer-to-ASCII serialization into a pre-allocated slice without heap allocations.
+// Returns number of bytes written, or 0 if `dst` is too small.
 fn fast_u64toa(val: u64, dst: u8[:]) -> i64 {
-    return native_fast_u64toa(val, dst);
-}
-
-// Fast 32-bit integer hexadecimal serialization into a pre-allocated slice without heap allocations
-// (uWebSockets Utilities.h).
-// Returns number of bytes written.
-fn fast_u32toa_hex(val: u32, dst: u8[:]) -> i64 {
-    return native_fast_u32toa_hex(val, dst);
+    guard dst.len >= 1 else { return 0; }
+    if val == 0 {
+        dst[0] = '0';
+        return 1;
+    }
+    var digits: u8[24] = [0; 24];
+    var count:  i64    = 0;
+    var v = val;
+    while v >= 100 {
+        let q = v / 100;
+        let r = (v - q * 100) as i64;
+        v = q;
+        digits[count] = DIGITS_LUT[r * 2 + 1];
+        digits[count + 1] = DIGITS_LUT[r * 2];
+        count += 2;
+    }
+    if v < 10 {
+        digits[count] = '0' + (v as u8);
+        count += 1;
+    } else {
+        let r = v as i64;
+        digits[count] = DIGITS_LUT[r * 2 + 1];
+        digits[count + 1] = DIGITS_LUT[r * 2];
+        count += 2;
+    }
+    guard count <= dst.len else { return 0; }
+    for i in count {
+        dst[i] = digits[count - 1 - i];
+    }
+    return count;
 }

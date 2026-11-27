@@ -61,13 +61,7 @@ inline fn match_l0_swar(
     return -1;
 }
 
-extern fn native_simd_match_l0(
-    path:      const u8[:],
-    method_id: u8,
-    table:     const server::L0RegisterTable&,
-) -> i32 = "wing_simd_match_l0";
-
-// Evaluates an HTTP request wire path against the L0 Register Table using SIMD vector acceleration.
+// Evaluates an HTTP request wire path against the L0 Register Table using scalar SWAR.
 //
 // Example:
 //   path = "/plaintext", method_id = 0 ("GET"), table contains "/plaintext" in slot 0
@@ -77,8 +71,7 @@ inline fn match_l0(
     method_id: u8,
     table:     const server::L0RegisterTable&,
 ) -> i32 {
-    guard path.len <= 16 && table.count > 0 else { return -1; }
-    return native_simd_match_l0(path, method_id, table);
+    return match_l0_swar(path, method_id, table);
 }
 
 // Returns true if path contains no dynamic parameter or wildcard delimiters.

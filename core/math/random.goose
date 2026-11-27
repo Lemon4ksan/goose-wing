@@ -11,8 +11,6 @@ import core.math.arithmetic;
 
 const WYP0_V42: u64 = 0x2d358dccaa6c78a5;
 const WYP1_V42: u64 = 0x8bb84b93962eacc9;
-const WYP2_V42: u64 = 0x4b33a62ed433d4a3;
-const WYP3_V42: u64 = 0x4d5a2da51de1aa47;
 
 // Bijective seed scrambler with Stafford constants (SplitMix64).
 fn splitmix64(seed: u64&) -> u64 {
@@ -41,41 +39,6 @@ inline fn next_u64(rng: WyRand&) -> u64 {
 
 inline fn next_u32(rng: WyRand&) -> u32 {
     return (next_u64(rng) >> 32) as! u32;
-}
-
-// Xoroshiro64** generator for low-state 32-bit random streams.
-struct Xoroshiro64StarStar {
-    s0: u32 = 0x9E3779BB,
-    s1: u32 = 0x85EBCA77,
-}
-
-fn new_xoroshiro64_star_star(seed: u64) -> Xoroshiro64StarStar {
-    var sm = seed;
-    let w = splitmix64(sm);
-    var lo = (w & 0xFFFFFFFF) as! u32;
-    let hi = (w >> 32) as! u32;
-    if lo == 0 && hi == 0 {
-        lo = 0x9E3779BB;
-    }
-    return Xoroshiro64StarStar { s0: lo, s1: hi };
-}
-
-inline fn next_u32(rng: Xoroshiro64StarStar&) -> u32 {
-    let s0 = rng.s0;
-    var s1 = rng.s1;
-    let r5 = rotl32(s0 * 0x9E3779BB, 5);
-    let result = add_checked_u32(rotl32(r5, 2) & 0xFFFFFFFC, r5).value;
-
-    s1 ^= s0;
-    rng.s0 = rotl32(s0, 26) ^ s1 ^ (rotl32(s1, 9) & 0xFFFFFE00);
-    rng.s1 = rotl32(s1, 13);
-    return result;
-}
-
-// Branchless biased Lemire fast-range mapping for interval [0, range).
-inline fn fast_range_biased_u32(random_word: u32, range: u32) -> u32 {
-    let prod = (random_word as u64) * range;
-    return (prod >> 32) as! u32;
 }
 
 // Branchless biased Lemire fast-range mapping for interval [0, range).

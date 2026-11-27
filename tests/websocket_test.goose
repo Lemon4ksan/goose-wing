@@ -976,21 +976,21 @@ fn test_ws_streaming_utf8_invariants(t: lit::T&) {
 
     t.run("WS-SEC-08: Streaming UTF-8 across Split Multi-Byte Characters") { sub =>
         // Euro sign € is 3 bytes: 0xE2 0x82 0xAC
-        // Chunk 1: "a" + [0xE2, 0x82] (incomplete 3-byte sequence, is_final=false)
+        // Chunk 1: "a" + [0xE2, 0x82] (incomplete 3-byte sequence, is_fin=false)
         let chunk1: u8[3] = ['a', 0xE2, 0x82];
-        let valid_len1, ok1 = core::validate_utf8_streaming(chunk1[..], false);
-        sub.assert_true(ok1, "partial UTF-8 sequence accepted when is_final=false");
-        sub.assert_eq(valid_len1, 1, "valid prefix length is 1 ('a')");
+        var dfa_state: u8 = 0;
+        let ok1 = core::validate_utf8_dfa_chunk(chunk1[..], dfa_state, false);
+        sub.assert_true(ok1, "partial UTF-8 sequence accepted when is_fin=false");
 
-        // When is_final=true, partial UTF-8 sequence at end must fail
-        let _, ok1_final = core::validate_utf8_streaming(chunk1[..], true);
-        sub.assert_false(ok1_final, "partial UTF-8 sequence rejected when is_final=true");
+        // When is_fin=true on incomplete sequence, validation must fail
+        var fin_state: u8 = 0;
+        let ok1_final = core::validate_utf8_dfa_chunk(chunk1[..], fin_state, true);
+        sub.assert_false(ok1_final, "partial UTF-8 sequence rejected when is_fin=true");
 
         // Chunk 2: [0xAC] + "b" (completes Euro sign: 0xE2 0x82 0xAC + 'b')
-        let full_msg: u8[5] = ['a', 0xE2, 0x82, 0xAC, 'b'];
-        let valid_full, ok_full = core::validate_utf8_streaming(full_msg[..], true);
+        let chunk2: u8[2] = [0xAC, 'b'];
+        let ok_full = core::validate_utf8_dfa_chunk(chunk2[..], dfa_state, true);
         sub.assert_true(ok_full, "assembled message is fully valid UTF-8");
-        sub.assert_eq(valid_full, 5, "entire 5-byte message validated");
     };
 }
 

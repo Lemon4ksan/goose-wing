@@ -980,26 +980,6 @@ fn test_fast_integer_ascii_serializers(t: lit::T&) {
         let n_large = core::fast_u64toa(1234567890123456789, buf[..]);
         sub.assert_eq(n_large, 19, "Large int length is 19");
         sub.assert_bytes_eq(buf[..n_large], "1234567890123456789", "Large int matches");
-
-        // u32toa_hex zero
-        let h0 = core::fast_u32toa_hex(0, buf[..]);
-        sub.assert_eq(h0, 1, "hex 0 length is 1");
-        sub.assert_bytes_eq(buf[..h0], "0", "hex 0 matches");
-
-        // u32toa_hex 15 ("f")
-        let h15 = core::fast_u32toa_hex(15, buf[..]);
-        sub.assert_eq(h15, 1, "hex 15 length is 1");
-        sub.assert_bytes_eq(buf[..h15], "f", "hex 15 is 'f'");
-
-        // u32toa_hex 16 ("10")
-        let h16 = core::fast_u32toa_hex(16, buf[..]);
-        sub.assert_eq(h16, 2, "hex 16 length is 2");
-        sub.assert_bytes_eq(buf[..h16], "10", "hex 16 is '10'");
-
-        // u32toa_hex 0xDEADBEEF ("deadbeef")
-        let h_dead = core::fast_u32toa_hex(0xDEADBEEF, buf[..]);
-        sub.assert_eq(h_dead, 8, "0xDEADBEEF length is 8");
-        sub.assert_bytes_eq(buf[..h_dead], "deadbeef", "0xDEADBEEF is 'deadbeef'");
     };
 }
 
@@ -1164,28 +1144,6 @@ fn test_tick_timer_wheel(t: lit::T&) {
         core::tick_timer_advance(wheel, 10); // 235 + 10 = 5 mod 240
         sub.assert_eq(wheel.current_tick, 5, "Advanced across 240 boundary to 5");
         sub.assert_true(core::tick_timer_is_expired(wheel, slot_wrap), "Expires at wrapped tick 5");
-    };
-}
-
-// ----------------------------------------------------------------------------
-// 25. Wire Buffer Sentinel Fencing
-// ----------------------------------------------------------------------------
-fn test_buffer_fencing_margin(t: lit::T&) {
-    t.run("1. Wire Buffer Sentinel Fencing") { sub =>
-        var wire_buf: u8[64] = [0; 64];
-        let req_text = "GET /status HTTP/1.1";
-        for i in req_text.len {
-            wire_buf[i] = req_text[i];
-        }
-
-        let ok_fence = core::fence_wire_slice(wire_buf[..], req_text.len);
-        sub.assert_true(ok_fence, "Buffer fenced successfully");
-        sub.assert_eq(wire_buf[req_text.len], '\r', "Byte at len is sentinel CR");
-        sub.assert_eq(wire_buf[req_text.len + 1], 'a', "Byte at len+1 is sentinel 'a' (non-LF)");
-
-        // Out of bounds fence check
-        let bad_fence = core::fence_wire_slice(wire_buf[..], 63);
-        sub.assert_false(bad_fence, "Cannot fence without at least 2 spare bytes margin");
     };
 }
 
@@ -1802,12 +1760,12 @@ fn test_usock_258_windows_connect_rst_immediate_failure(t: lit::T&) {
     // signals the socket via exceptfds or writefds with SO_ERROR set.
     // In #258, libuv/WSAPoll reported writable, and because uWS
     // omitted getsockopt(SO_ERROR), it incorrectly treated connection failure as success (calling on_open).
-    // In wing, native_tcp_connect guards via exceptfds, SO_ERROR inspection, and bounded timeout:
+    // In wing, tcp_connect guards via exceptfds, SO_ERROR inspection, and bounded timeout:
     // 1) Connection to unlistening port with 50ms timeout MUST return -1 (never treated as open).
     // 2) Elapsed time MUST be bounded (< 300ms) without hanging.
 
     let sw = core::stopwatch();
-    let s = net_internal::native_tcp_connect("127.0.0.1", 59999, 50);
+    let s = net::tcp_connect("127.0.0.1", 59999, 50);
     let dur_ms = sw.elapsed().as_millis();
 
     t.assert_eq(s, -1, "Connect to closed port MUST return -1 (never call on_open)");
@@ -2345,7 +2303,6 @@ fn main() {
     lit::run_case(runner, "22. 64-bit Register FSM Chunked Stream Decoder", test_chunked_fsm_decoder);
     lit::run_case(runner, "23. Dual-Expiry Coalescing HTTP Route Cache", test_http_route_cache);
     lit::run_case(runner, "24. 1-Byte Modular Tick Timer Wheel", test_tick_timer_wheel);
-    lit::run_case(runner, "25. Wire Buffer Sentinel Fencing", test_buffer_fencing_margin);
     lit::run_case(runner, "26. TCP QuickACK and Cork Control", test_tcp_quickack_and_cork);
     lit::run_case(runner, "27. #1951 Non-ASCII / UTF-8 Request Target Rejection", test_uweb_1951_non_ascii_url_rejection);
     lit::run_case(runner, "28. #1855 Duplicate Content-Length in HEAD Responses", test_uweb_1855_head_content_length_duplicate);

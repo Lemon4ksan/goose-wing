@@ -73,13 +73,16 @@ fn alloc_reactor_h2_session(
     now_ms:      u64,
     max_streams: u32 = 0,
 ) -> i16 {
-    let eff_streams = if max_streams > 0 {
-        max_streams
-    } else if pipeline.max_h2_concurrent_streams > 0 {
-        pipeline.max_h2_concurrent_streams
-    } else {
-        100
-    };
+    let eff_streams = min(
+        if max_streams > 0 {
+            max_streams
+        } else if pipeline.max_h2_concurrent_streams > 0 {
+            pipeline.max_h2_concurrent_streams
+        } else {
+            16
+        },
+        16,
+    );
     let eff_hdr_list = if pipeline.max_header_bytes > 0 {
         min(pipeline.max_header_bytes, 0x7FFFFFFF) as u32
     } else {
@@ -186,7 +189,7 @@ inline fn step_plain_reactor_turn<Stage>(
     prev_had_work:  bool&,
     stage:          Stage&,
 ) {
-    let wait_ms = server_internal::reactor_epoll_timeout(server.worker_ring);
+    let wait_ms: i32 = 200;
     let n_ready = net::reactor_wait_readiness_events(g_reactor_accel, ready_udata[..], wait_ms);
     turn_counter = core::add_sat_i64(turn_counter, 1);
     let poll_hint: i32 = if n_ready > 0 || prev_had_work { 1 } else { 0 };
@@ -222,7 +225,7 @@ fn serve_reactor_with_stage<Stage>(
     stage:           Stage&,
     max_connections: i64 = 0,
 ) -> i64 {
-    guard listener_fd > 0 || server.worker_ring.is_open else { return 0; }
+    guard listener_fd > 0 else { return 0; }
     guard server_internal::reactor_prepare_loop(server, listener_fd) else { return 0; }
     defer net::reactor_close_accel(g_reactor_accel);
 
@@ -248,11 +251,6 @@ fn serve_reactor_with_stage<Stage>(
         if server_internal::reactor_step_drain_gate(
             server, epfd, listener_fd, table, g_reactor_cork_bufs[0], draining, drain_deadline_ns,
         ) { break; }
-        if !draining && server.worker_ring.is_open {
-            server_internal::reactor_drain_worker_ring(
-                server.worker_ring, epfd, table, leftover_pool, slot_pool, timer_wheel, total_served,
-            );
-        }
         step_plain_reactor_turn(
             server, epfd, listener_fd, draining, table, leftover_pool, slot_pool, timer_wheel, dummy_tls_cfg,
             ready_udata, turn_counter, last_sweep_sec, total_served, cached_now_ns, cached_now_sec,
@@ -479,7 +477,8 @@ fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64 {
 // Public HTTP/3 and QUIC server endpoint state (RFC 9000, RFC 9114, RFC 9204).
 // Encapsulates HTTP/3 connection state, QPACK tables, and QUIC handshake framing.
 struct H3ServerEndpoint {
-    conn: http3::Connection = http3::Connection { .. },
+    conn:               http3::Connection = http3::Connection { .. },
+    allow_plaintext_h3: bool              = false,
 }
 
 fn new_h3_server_endpoint(
@@ -507,7 +506,7 @@ fn handle_h3_quic_datagram<B>(
     guard datagram.len > 0 else { return false; }
     out_wire.clear();
 
-    if (datagram[0] & 0xC0) == 0 {
+    if ep.allow_plaintext_h3 && (datagram[0] & 0xC0) == 0 {
         if server_internal::handle_h3_endpoint_frame(server, ep, client_ip, datagram, now_ns, out_wire) {
             return out_wire.len > 0;
         }
@@ -517,11 +516,15 @@ fn handle_h3_quic_datagram<B>(
     guard ok_qhdr else { return false; }
 
     if quic_hdr.version != rfc::QUIC_VERSION_1 && quic_hdr.version != rfc::QUIC_VERSION_NEGOTIATION {
+        // RFC 9000 Section 6.1: Version Negotiation - Only respond to packets >= 1200 bytes.
+        guard ep.allow_plaintext_h3 || datagram.len >= (rfc::QUIC_MIN_INITIAL_DATAGRAM_LEN as i64) else {
+            return false;
+        }
         server_internal::encode_quic_version_negotiation(quic_hdr, out_wire);
         return out_wire.len > 0;
     }
 
-    if quic_hdr.header_type == quic::QuicHeaderType.Initial {
+    if quic_hdr.header_type == quic::QuicHeaderType.Initial && ep.allow_plaintext_h3 {
         // RFC 9000 Section 14.1: Initial Datagram Size - server MUST discard client Initial < 1200 bytes
         guard datagram.len >= (rfc::QUIC_MIN_INITIAL_DATAGRAM_LEN as i64) else {
             return false;

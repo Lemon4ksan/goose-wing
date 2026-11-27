@@ -590,6 +590,139 @@ inline fn zeroize_aes_gcm_blocks(h: u8[16]&, enc_j0: u8[16]&, tag: u8[16]&) {
     secure_zeroize_16(tag);
 }
 
+inline fn aes_gcm_pure_crypt_block(
+    is256: bool,
+    ks128: const Aes128KeySchedule&,
+    ks256: const Aes256KeySchedule&,
+    blk:   const u8[16]&,
+) -> u8[16] {
+    return if is256 { aes_encrypt_block(ks256, blk) } else { aes128_encrypt_block(ks128, blk) };
+}
+
+fn aes_gcm_pure_prepare(
+    key:     const u8[:],
+    nonce12: const u8[12]&,
+    ks128:   Aes128KeySchedule&,
+    ks256:   Aes256KeySchedule&,
+    h:       u8[16]&,
+    enc_j0:  u8[16]&,
+) -> bool {
+    guard key.len == 16 || key.len == 32 else { return false; }
+    let is256 = key.len == 32;
+    var k128: u8[16] = [0; 16];
+    var k256: u8[32] = [0; 32];
+    if is256 {
+        for i in 32 { k256[i] = key[i]; }
+    } else {
+        for i in 16 { k128[i] = key[i]; }
+    }
+    ks128 = aes128_key_schedule(k128);
+    ks256 = aes256_key_schedule(k256);
+    secure_zeroize_16(k128);
+    secure_zeroize_32(k256);
+
+    var zero_blk: u8[16] = [0; 16];
+    var j0 = init_j0(nonce12);
+    h = aes_gcm_pure_crypt_block(is256, ks128, ks256, zero_blk);
+    enc_j0 = aes_gcm_pure_crypt_block(is256, ks128, ks256, j0);
+    secure_zeroize_16(j0);
+    return true;
+}
+
+fn aes_gcm_pure_apply_ctr(
+    is256:   bool,
+    ks128:   const Aes128KeySchedule&,
+    ks256:   const Aes256KeySchedule&,
+    nonce12: const u8[12]&,
+    src:     const u8[:],
+    dst:     u8[:],
+) {
+    var ctr = init_j0(nonce12);
+    var ks_blk: u8[16] = [0; 16];
+    defer secure_zeroize_16(ctr);
+    defer secure_zeroize_16(ks_blk);
+    var offset: i64 = 0;
+    while offset < src.len {
+        inc_ctr32(ctr);
+        ks_blk = aes_gcm_pure_crypt_block(is256, ks128, ks256, ctr);
+        let take = min(src.len - offset, 16);
+        for i in take {
+            dst[offset + i] = src[offset + i] ^ ks_blk[i];
+        }
+        offset += take;
+    }
+}
+
+// Constant-time pure-Goose AES-128/256-GCM AEAD encryption (NIST SP 800-38D).
+// Supports both out-of-place and in-place (`plaintext` aliasing `dst`) buffers.
+//
+// Example:
+//   key = [0; 16], nonce12 = [0; 12], plaintext = [0; 16], aad = "", dst = [0; 16]
+//   returns: tag16, written = 16, ok = true
+fn aes_gcm_seal_pure(
+    key:       const u8[:],
+    nonce12:   const u8[12]&,
+    plaintext: const u8[:],
+    aad:       const u8[:],
+    dst:       u8[:],
+) -> u8[16], i64, bool {
+    var zero_tag: u8[16] = [0; 16];
+    guard plaintext.len <= AES_GCM_MAX_BYTES && dst.len >= plaintext.len else {
+        return zero_tag, 0, false;
+    }
+    var ks128 = Aes128KeySchedule { .. };
+    var ks256 = Aes256KeySchedule { .. };
+    var h:      u8[16] = [0; 16];
+    var enc_j0: u8[16] = [0; 16];
+    defer zeroize_aes128_ks(ks128);
+    defer zeroize_aes256_ks(ks256);
+    defer secure_zeroize_16(h);
+    defer secure_zeroize_16(enc_j0);
+    guard aes_gcm_pure_prepare(key, nonce12, ks128, ks256, h, enc_j0) else {
+        return zero_tag, 0, false;
+    }
+    aes_gcm_pure_apply_ctr(key.len == 32, ks128, ks256, nonce12, plaintext, dst);
+    let tag = aes_gcm_compute_tag(h, enc_j0, aad, dst[..plaintext.len]);
+    return tag, plaintext.len, true;
+}
+
+// Constant-time pure-Goose AES-128/256-GCM AEAD decryption (NIST SP 800-38D).
+// Verifies the authentication tag before writing plaintext; wipes `dst` on mismatch.
+//
+// Example:
+//   key = [0; 16], nonce12 = [0; 12], ciphertext = [..16], aad = "", tag = tag16, dst = [0; 16]
+//   returns: written = 16, ok = true
+fn aes_gcm_open_pure(
+    key:        const u8[:],
+    nonce12:    const u8[12]&,
+    ciphertext: const u8[:],
+    aad:        const u8[:],
+    tag:        const u8[16]&,
+    dst:        u8[:],
+) -> i64, bool {
+    guard ciphertext.len <= AES_GCM_MAX_BYTES && dst.len >= ciphertext.len else {
+        return 0, false;
+    }
+    var ks128 = Aes128KeySchedule { .. };
+    var ks256 = Aes256KeySchedule { .. };
+    var h:            u8[16] = [0; 16];
+    var enc_j0:       u8[16] = [0; 16];
+    var computed_tag: u8[16] = [0; 16];
+    defer zeroize_aes128_ks(ks128);
+    defer zeroize_aes256_ks(ks256);
+    defer zeroize_aes_gcm_blocks(h, enc_j0, computed_tag);
+    guard aes_gcm_pure_prepare(key, nonce12, ks128, ks256, h, enc_j0) else {
+        return 0, false;
+    }
+    computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, ciphertext);
+    guard ct_declassify_u8(ct_eq_tag16_bit(computed_tag, tag)) == 1 else {
+        secure_zeroize_slice(dst[..ciphertext.len]);
+        return 0, false;
+    }
+    aes_gcm_pure_apply_ctr(key.len == 32, ks128, ks256, nonce12, ciphertext, dst);
+    return ciphertext.len, true;
+}
+
 fn aes_gcm_seal_core(
     key:       const u8[:],
     nonce12:   const u8[12]&,
@@ -602,11 +735,36 @@ fn aes_gcm_seal_core(
         return tag, 0, false;
     }
     let written = native_aes_gcm_seal_aead(key, nonce12[..], plaintext, aad, dst[..plaintext.len], tag[..]);
+    if written == -2 {
+        return aes_gcm_seal_pure(key, nonce12, plaintext, aad, dst);
+    }
     guard written == plaintext.len else {
         secure_zeroize_slice(tag[..]);
         return tag, 0, false;
     }
     return tag, written, true;
+}
+
+fn aes_gcm_open_core_into(
+    key:        const u8[:],
+    nonce12:    const u8[12]&,
+    ciphertext: const u8[:],
+    aad:        const u8[:],
+    tag:        const u8[16]&,
+    dst:        u8[:],
+) -> i64, bool {
+    guard ciphertext.len <= AES_GCM_MAX_BYTES && dst.len >= ciphertext.len else {
+        return 0, false;
+    }
+    let res = native_aes_gcm_open_aead(key, nonce12[..], ciphertext, aad, tag[..], dst[..ciphertext.len]);
+    if res == -2 {
+        return aes_gcm_open_pure(key, nonce12, ciphertext, aad, tag, dst[..ciphertext.len]);
+    }
+    guard res == ciphertext.len else {
+        secure_zeroize_slice(dst[..ciphertext.len]);
+        return 0, false;
+    }
+    return res, true;
 }
 
 fn aes_gcm_open_small<B>(
@@ -619,8 +777,8 @@ fn aes_gcm_open_small<B>(
 ) -> bool {
     guard ciphertext.len <= 2048 else { return false; }
     var tmp: u8[2048] = [0; 2048];
-    let res = native_aes_gcm_open_aead(key, nonce12[..], ciphertext, aad, tag[..], tmp[..ciphertext.len]);
-    guard res == ciphertext.len else {
+    let res, ok_open = aes_gcm_open_core_into(key, nonce12, ciphertext, aad, tag, tmp[..ciphertext.len]);
+    guard ok_open && res == ciphertext.len else {
         secure_zeroize_slice(tmp[..ciphertext.len]);
         return false;
     }
@@ -655,12 +813,7 @@ fn aes256_gcm_open_inplace(
         secure_zeroize_slice(in_out);
         return 0, false;
     }
-    let res = native_aes_gcm_open_aead(key[..], nonce12[..], in_out, aad, tag[..], in_out);
-    guard res == in_out.len else {
-        secure_zeroize_slice(in_out);
-        return 0, false;
-    }
-    return res, true;
+    return aes_gcm_open_core_into(key[..], nonce12, in_out, aad, tag, in_out);
 }
 
 // In-place AES-256-GCM AEAD encryption (NIST SP 800-38D).
@@ -671,14 +824,8 @@ fn aes256_gcm_seal_inplace(
     in_out:  u8[:],
     aad:     const u8[:],
 ) -> u8[16], bool {
-    var tag: u8[16] = [0; 16];
-    guard in_out.len <= AES_GCM_MAX_BYTES else { return tag, false; }
-    let res = native_aes_gcm_seal_aead(key[..], nonce12[..], in_out, aad, in_out, tag[..]);
-    guard res == in_out.len else {
-        secure_zeroize_slice(tag[..]);
-        return tag, false;
-    }
-    return tag, true;
+    let tag, _, ok = aes_gcm_seal_core(key[..], nonce12, in_out, aad, in_out);
+    return tag, ok;
 }
 
 // Out-of-place AES-256-GCM AEAD decryption into caller-provided destination slice (NIST SP 800-38D).
@@ -690,17 +837,7 @@ fn aes256_gcm_open_into(
     tag:        const u8[16]&,
     dst:        u8[:],
 ) -> i64, bool {
-    guard ciphertext.len <= AES_GCM_MAX_BYTES && dst.len >= ciphertext.len else {
-        return 0, false;
-    }
-    let res = native_aes_gcm_open_aead(
-        key[..], nonce12[..], ciphertext, aad, tag[..], dst[..ciphertext.len],
-    );
-    guard res == ciphertext.len else {
-        secure_zeroize_slice(dst[..ciphertext.len]);
-        return 0, false;
-    }
-    return res, true;
+    return aes_gcm_open_core_into(key[..], nonce12, ciphertext, aad, tag, dst);
 }
 
 // Out-of-place AES-256-GCM AEAD encryption into caller-provided destination slice (NIST SP 800-38D).
@@ -784,12 +921,7 @@ fn aes128_gcm_open_inplace(
         secure_zeroize_slice(in_out);
         return 0, false;
     }
-    let res = native_aes_gcm_open_aead(key[..], nonce12[..], in_out, aad, tag[..], in_out);
-    guard res == in_out.len else {
-        secure_zeroize_slice(in_out);
-        return 0, false;
-    }
-    return res, true;
+    return aes_gcm_open_core_into(key[..], nonce12, in_out, aad, tag, in_out);
 }
 
 // In-place AES-128-GCM AEAD encryption (NIST SP 800-38D).
@@ -800,14 +932,8 @@ fn aes128_gcm_seal_inplace(
     in_out:  u8[:],
     aad:     const u8[:],
 ) -> u8[16], bool {
-    var tag: u8[16] = [0; 16];
-    guard in_out.len <= AES_GCM_MAX_BYTES else { return tag, false; }
-    let res = native_aes_gcm_seal_aead(key[..], nonce12[..], in_out, aad, in_out, tag[..]);
-    guard res == in_out.len else {
-        secure_zeroize_slice(tag[..]);
-        return tag, false;
-    }
-    return tag, true;
+    let tag, _, ok = aes_gcm_seal_core(key[..], nonce12, in_out, aad, in_out);
+    return tag, ok;
 }
 
 // Out-of-place AES-128-GCM AEAD decryption into caller-provided destination slice (NIST SP 800-38D).
@@ -819,17 +945,7 @@ fn aes128_gcm_open_into(
     tag:        const u8[16]&,
     dst:        u8[:],
 ) -> i64, bool {
-    guard ciphertext.len <= AES_GCM_MAX_BYTES && dst.len >= ciphertext.len else {
-        return 0, false;
-    }
-    let res = native_aes_gcm_open_aead(
-        key[..], nonce12[..], ciphertext, aad, tag[..], dst[..ciphertext.len],
-    );
-    guard res == ciphertext.len else {
-        secure_zeroize_slice(dst[..ciphertext.len]);
-        return 0, false;
-    }
-    return res, true;
+    return aes_gcm_open_core_into(key[..], nonce12, ciphertext, aad, tag, dst);
 }
 
 // Out-of-place AES-128-GCM AEAD encryption into caller-provided destination slice (NIST SP 800-38D).
@@ -949,9 +1065,10 @@ const AES_GCM_STATE_BYTES: i64 = 320;
 
 // Pre-expanded AES-128/256-GCM key schedule and Karatsuba GHASH powers (H, H^2, H^3, H^4).
 struct AesGcmKey {
-    state:   u8[AES_GCM_STATE_BYTES] = [0; AES_GCM_STATE_BYTES],
-    key_len: u8                      = 0,
-    valid:   bool                    = false,
+    state:     u8[AES_GCM_STATE_BYTES] = [0; AES_GCM_STATE_BYTES],
+    key_len:   u8                      = 0,
+    valid:     bool                    = false,
+    pure_mode: bool                    = false,
 }
 
 // Securely wipes pre-expanded AES-GCM round keys and GHASH subkeys.
@@ -959,6 +1076,7 @@ fn zeroize_aes_gcm_key(ctx: AesGcmKey&) {
     secure_zeroize_slice(ctx.state[..]);
     ctx.key_len = 0;
     ctx.valid = false;
+    ctx.pure_mode = false;
 }
 
 // Pre-expands an AES-128 (16-byte) or AES-256 (32-byte) key into `ctx` for repeated AEAD calls.
@@ -968,12 +1086,23 @@ fn aes_gcm_prepare_key(key: const u8[:], ctx: AesGcmKey&) -> bool {
         return false;
     }
     let rc = native_aes_gcm_prepare_key(key, ctx.state[..]);
+    if rc == -2 {
+        secure_zeroize_slice(ctx.state[..]);
+        for i in key.len {
+            ctx.state[i] = key[i];
+        }
+        ctx.key_len = if key.len == 32 { 32 } else { 16 };
+        ctx.valid = true;
+        ctx.pure_mode = true;
+        return true;
+    }
     guard rc == 0 else {
         zeroize_aes_gcm_key(ctx);
         return false;
     }
     ctx.key_len = if key.len == 32 { 32 } else { 16 };
     ctx.valid = true;
+    ctx.pure_mode = false;
     return true;
 }
 
@@ -992,6 +1121,9 @@ fn aes_gcm_seal_prepared(
     var tag: u8[16] = [0; 16];
     guard ctx.valid && plaintext.len <= AES_GCM_MAX_BYTES && dst.len >= plaintext.len else {
         return tag, 0, false;
+    }
+    if ctx.pure_mode {
+        return aes_gcm_seal_pure(ctx.state[..(ctx.key_len as i64)], iv12, plaintext, aad, dst);
     }
     let n = native_aes_gcm_seal_prepared(
         ctx.state[..], iv12[..], plaintext, aad, dst[..plaintext.len], tag[..],
@@ -1023,6 +1155,11 @@ fn aes_gcm_open_prepared_into(
         secure_zeroize_slice(dst[..ciphertext.len]);
         return 0, false;
     }
+    if ctx.pure_mode {
+        return aes_gcm_open_pure(
+            ctx.state[..(ctx.key_len as i64)], iv12, ciphertext, aad, tag, dst[..ciphertext.len],
+        );
+    }
     let n = native_aes_gcm_open_prepared(
         ctx.state[..], iv12[..], ciphertext, aad, tag[..], dst[..ciphertext.len],
     );
@@ -1047,6 +1184,9 @@ fn aes_gcm_seal_prepared_inplace(
     var tag: u8[16] = [0; 16];
     guard ctx.valid && buf.len <= AES_GCM_MAX_BYTES else {
         return tag, 0, false;
+    }
+    if ctx.pure_mode {
+        return aes_gcm_seal_pure(ctx.state[..(ctx.key_len as i64)], iv12, buf, aad, buf);
     }
     let n = native_aes_gcm_seal_prepared(ctx.state[..], iv12[..], buf, aad, buf, tag[..]);
     guard n == buf.len else {

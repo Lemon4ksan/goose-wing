@@ -564,70 +564,6 @@ fn verify_x25519_rfc7748() {
 }
 
 // crap:ignore
-fn verify_fused_aes_gcm() {
-    var key_buf:     u8[>..] = [];
-    var iv_buf:      u8[>..] = [];
-    var pt_buf:      u8[>..] = [];
-    var aad_buf:     u8[>..] = [];
-    var exp_ct_buf:  u8[>..] = [];
-    var exp_tag_buf: u8[>..] = [];
-
-    // NIST SP 800-38D Test Case 4 (60-byte plaintext + 20-byte AAD)
-    assert(wire_kit::parse_hex("feffe9928665731c6d6a8f9467308308", key_buf));
-    assert(wire_kit::parse_hex("cafebabefacedbaddecaf888", iv_buf));
-    assert(wire_kit::parse_hex(
-        "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39",
-        pt_buf,
-    ));
-    assert(wire_kit::parse_hex("feedfacedeadbeeffeedfacedeadbeefabaddad2", aad_buf));
-    assert(wire_kit::parse_hex(
-        "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091",
-        exp_ct_buf,
-    ));
-    assert(wire_kit::parse_hex("5bc94fbc3221a5db94fae95ae7121a47", exp_tag_buf));
-
-    var key: u8[16] = [0; 16];
-    var iv:  u8[12] = [0; 12];
-    for i in 16 { key[i] = key_buf[i]; }
-    for i in 12 { iv[i] = iv_buf[i]; }
-
-    var ct_out: u8[60] = [0; 60];
-    let tag, enc_len, enc_ok = core::fused_aes_gcm_encrypt(key, iv, pt_buf[..], aad_buf[..], ct_out[..]);
-    assert(enc_ok && enc_len == 60);
-    assert(core::ct_eq_bytes(ct_out[..], exp_ct_buf[..]));
-    assert(core::ct_eq_bytes(tag[..], exp_tag_buf[..]));
-
-    var dec_out: u8[60] = [0; 60];
-    let dec_len, dec_ok = core::fused_aes_gcm_decrypt(key, iv, ct_out[..], aad_buf[..], tag, dec_out[..]);
-    assert(dec_ok && dec_len == 60);
-    assert(core::ct_eq_bytes(dec_out[..], pt_buf[..]));
-
-    // Exercise 4-block (80-byte >= 64-byte) interleaved loop + tampered tag rejection + capacity overflow
-    var pt80: u8[80] = [0; 80];
-    for i in 80 { pt80[i] = ((i * 7 + 3) & 0xFF) as u8; }
-    var ct80: u8[80] = [0; 80];
-    let tag80, enc80_len, enc80_ok = core::fused_aes_gcm_encrypt(key, iv, pt80[..], aad_buf[..], ct80[..]);
-    assert(enc80_ok && enc80_len == 80);
-
-    var dec80: u8[80] = [0; 80];
-    let dec80_len, dec80_ok = core::fused_aes_gcm_decrypt(key, iv, ct80[..], aad_buf[..], tag80, dec80[..]);
-    assert(dec80_ok && dec80_len == 80);
-    assert(core::ct_eq_bytes(dec80[..], pt80[..]));
-
-    var bad_tag = tag80;
-    bad_tag[15] ^= 0x01;
-    let _, bad_ok = core::fused_aes_gcm_decrypt(key, iv, ct80[..], aad_buf[..], bad_tag, dec80[..]);
-    assert(!bad_ok);
-
-    var small_dst: u8[16] = [0; 16];
-    let _, _, small_enc_ok = core::fused_aes_gcm_encrypt(key, iv, pt80[..], aad_buf[..], small_dst[..]);
-    let _, small_dec_ok = core::fused_aes_gcm_decrypt(key, iv, ct80[..], aad_buf[..], tag80, small_dst[..]);
-    assert(!small_enc_ok && !small_dec_ok);
-
-    print("FUSED_AES_GCM_OK: true");
-}
-
-// crap:ignore
 fn verify_tls_record_slice_and_bounds() {
     let wire_bytes: u8[18] = [
         0x17, 0x03, 0x03, 0x00, 0x05,
@@ -690,7 +626,7 @@ fn verify_tls_record_slice_and_bounds() {
     assert(ok_n);
 
     var payload: u8[21] = [0; 21];
-    let rec_tag, _, ok_s = core::fused_aes_gcm_encrypt(key, nonce, inner_pt[..], hdr[..], payload[..5]);
+    let rec_tag, _, ok_s = core::aes128_gcm_seal(key, nonce, inner_pt[..], hdr[..], payload[..5]);
     assert(ok_s);
     for i in 16 { payload[5 + i] = rec_tag[i]; }
 
@@ -875,7 +811,6 @@ fn verify_x509_crl_binary_search() {
 
 fn run_02_verify_tls_fusion() {
     verify_x25519_rfc7748();
-    verify_fused_aes_gcm();
     verify_tls_record_slice_and_bounds();
     verify_mlkem768_decapsulate();
     verify_x509_crl_binary_search();
@@ -883,7 +818,6 @@ fn run_02_verify_tls_fusion() {
 
 // CHECK-NOT: WING_BUFFER_OVERFLOW_SILENT_DROP
 // CHECK: X25519_RFC7748_OK: true
-// CHECK: FUSED_AES_GCM_OK: true
 // CHECK: TLS_RECORD_FUSION_OK: true
 // CHECK: MLKEM768_DECAPS_OK: true
 // CHECK: X509_CRL_BSEARCH_OK: true

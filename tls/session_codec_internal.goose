@@ -134,7 +134,7 @@ inline fn alpn_csv_contains_proto(alpn_csv: const u8[:], target: const u8[:]) ->
 }
 
 fn validate_ee_solicited_extensions(
-    entries:          const tls::ExtensionEntry[..32]&,
+    entries:          const tls::ExtensionEntry[..64]&,
     offered_alpn_csv: const u8[:],
     sni_state:        tls::SniOfferState,
     allow_ech_retry:  bool,
@@ -371,7 +371,7 @@ fn has_valid_psk_dhe_ke_mode(modes_ext: const u8[:]) -> bool {
 }
 
 fn eval_client_hello_psk_entry(
-    entries:             const tls::ExtensionEntry[..32]&,
+    entries:             const tls::ExtensionEntry[..64]&,
     payload:             const u8[:],
     psk_ext:             const u8[:],
     selected_cs:         u16,
@@ -484,7 +484,7 @@ fn select_cipher_suite_from_list(cs_bytes: const u8[:]) -> u16, bool {
     return 0, false;
 }
 
-fn has_forbidden_extension(entries: const tls::ExtensionEntry[..32]&) -> bool {
+fn has_forbidden_extension(entries: const tls::ExtensionEntry[..64]&) -> bool {
     for &e in entries {
         if rfc::is_forbidden_ch_extension(e.ext_type) { return true; }
     }
@@ -521,7 +521,8 @@ inline fn group_bytes_contains(grp_bytes: const u8[:], target: u16) -> bool {
     return false;
 }
 
-// RFC 8446 Section 4.2.8: Key Share - Every KeyShareEntry group must appear in supported_groups in the same order.
+// RFC 8446 Section 4.2.8: Key Share - Every non-GREASE KeyShareEntry group must appear in supported_groups in the same order.
+// RFC 8701 Section 3.3: ClientHello - Servers MUST ignore GREASE values when offered in a ClientHello.
 fn validate_ch_groups_and_shares(grp_ext: const u8[:], shares: const u8[:]) -> bool {
     var c = core::cursor_from(grp_ext);
     let grp_bytes, ok = c.read_u16_prefixed();
@@ -536,6 +537,9 @@ fn validate_ch_groups_and_shares(grp_ext: const u8[:], shares: const u8[:]) -> b
         let ks_grp, ok_g = sc.read_u16();
         let _, ok_k = sc.read_u16_prefixed();
         guard ok_g && ok_k else { return false; }
+        if is_tls_grease_u16(ks_grp) {
+            continue;
+        }
         var matched = false;
         while gc.buf.len >= 2 && !matched {
             let g, ok_grp = gc.read_u16();
@@ -572,7 +576,7 @@ fn decode_ch_legacy_preamble(bc: core::ByteCursor&, out_sid: u8[..32]&) -> const
 fn decode_ch_server_preamble(
     payload:     const u8[:],
     out_sid:     u8[..32]&,
-    out_entries: tls::ExtensionEntry[..32]&,
+    out_entries: tls::ExtensionEntry[..64]&,
 ) -> u16, bool {
     out_sid.clear();
     out_entries.clear();
@@ -604,7 +608,7 @@ fn decode_ch_server_preamble(
 //   entries = [supported_versions, signature_algorithms, supported_groups, key_share]
 //   returns: sig_ext, ok = true, out_group = 0x001D, out_needs_hrr = false
 fn extract_ch_mandatory_exts(
-    entries:       const tls::ExtensionEntry[..32]&,
+    entries:       const tls::ExtensionEntry[..64]&,
     allow_hrr:     bool,
     out_group:     u16&,
     out_needs_hrr: bool&,
@@ -639,7 +643,7 @@ fn extract_ch_mandatory_exts(
 }
 
 fn select_server_cert_comp_algo_from_entries(
-    entries:     const tls::ExtensionEntry[..32]&,
+    entries:     const tls::ExtensionEntry[..64]&,
     server_algo: u16,
 ) -> u16 {
     guard server_algo != 0 && rfc::is_valid_compression_algorithm(server_algo) else { return 0; }

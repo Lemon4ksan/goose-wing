@@ -8,10 +8,8 @@ namespace core;
 import std;
 
 // Fundamental integer boundary constants
-const U32_MAX: u32 = 0xFFFFFFFF;
 const U64_MAX: u64 = 0xFFFFFFFFFFFFFFFF;
 const I32_MIN: i32 = -2147483647 - 1;
-const I32_MAX: i32 = 2147483647;
 const I64_MIN: i64 = -9223372036854775807 - 1;
 const I64_MAX: i64 = 9223372036854775807;
 
@@ -31,12 +29,6 @@ inline fn ct_eq_u32(a: u32, b: u32) -> u32 {
     return 1 ^ (((diff | (0 - diff)) >> 31) & 1);
 }
 
-// Returns 1 if a == b, 0 otherwise (branchless 64-bit).
-inline fn ct_eq_u64(a: u64, b: u64) -> u64 {
-    let diff = a ^ b;
-    return 1 ^ (((diff | (0 - diff)) >> 63) & 1);
-}
-
 // Returns 1 if a < b, 0 otherwise (branchless unsigned 32-bit comparison).
 inline fn ct_lt_u32(a: u32, b: u32) -> u32 {
     let diff = a - b;
@@ -49,16 +41,6 @@ inline fn ct_lt_u64(a: u64, b: u64) -> u64 {
     let diff = a - b;
     let bit = ((~a & b) | ((~a ^ b) & diff)) >> 63;
     return bit & 1;
-}
-
-// Returns 1 if a > b, 0 otherwise (branchless unsigned 32-bit comparison).
-inline fn ct_gt_u32(a: u32, b: u32) -> u32 {
-    return ct_lt_u32(b, a);
-}
-
-// Returns 1 if a > b, 0 otherwise (branchless unsigned 64-bit comparison).
-inline fn ct_gt_u64(a: u64, b: u64) -> u64 {
-    return ct_lt_u64(b, a);
 }
 
 extern fn ct_barrier_u32(val: u32) -> u32 = "wing_ct_barrier_u32";
@@ -82,18 +64,6 @@ inline fn ct_select_u32(mask: u32, if_true: u32, if_false: u32) -> u32 {
 // Constant-time multiplexer: returns if_true when mask is ~0, if_false when mask is 0.
 inline fn ct_select_u64(mask: u64, if_true: u64, if_false: u64) -> u64 {
     return (if_false & (~mask)) | (if_true & mask);
-}
-
-// Branchless unsigned minimum (32-bit).
-inline fn ct_min_u32(a: u32, b: u32) -> u32 {
-    let mask = ct_mask_u32(ct_lt_u32(a, b));
-    return ct_select_u32(mask, a, b);
-}
-
-// Branchless unsigned maximum (32-bit).
-inline fn ct_max_u32(a: u32, b: u32) -> u32 {
-    let mask = ct_mask_u32(ct_lt_u32(b, a));
-    return ct_select_u32(mask, a, b);
 }
 
 // Branchless unsigned minimum (64-bit).
@@ -136,37 +106,7 @@ inline fn ct_abs_i64(x: i64) -> i64 {
     return (((ux ^ umask) - umask) as! i64);
 }
 
-// Branchless signed minimum (32-bit).
-inline fn ct_min_i32(a: i32, b: i32) -> i32 {
-    let ua = a as! u32;
-    let ub = b as! u32;
-    let diff = (ua - ub) as! i32;
-    let s = ((diff ^ ((a ^ b) & (diff ^ a))) >> 31) & 1;
-    let mask = 0 - (s as! u32);
-    return ((ub & (~mask)) | (ua & mask)) as! i32;
-}
-
-// Branchless signed maximum (32-bit).
-inline fn ct_max_i32(a: i32, b: i32) -> i32 {
-    let ua = a as! u32;
-    let ub = b as! u32;
-    let diff = (ub - ua) as! i32;
-    let s = ((diff ^ ((a ^ b) & (diff ^ b))) >> 31) & 1;
-    let mask = 0 - (s as! u32);
-    return ((ub & (~mask)) | (ua & mask)) as! i32;
-}
-
-// Clamps unsigned 32-bit value into [low, high].
-inline fn clamp_u32(val: u32, low: u32, high: u32) -> u32 {
-    return ct_min_u32(ct_max_u32(val, low), high);
-}
-
-// Clamps unsigned 64-bit value into [low, high].
-inline fn clamp_u64(val: u64, low: u64, high: u64) -> u64 {
-    return ct_min_u64(ct_max_u64(val, low), high);
-}
-
 // Clamps signed 64-bit value into [low, high].
 inline fn clamp_i64(val: i64, low: i64, high: i64) -> i64 {
-    return ct_min_i64(ct_max_i64(val, low), high);
+    return min(max(val, low), high);
 }

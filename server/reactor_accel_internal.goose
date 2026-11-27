@@ -155,15 +155,13 @@ fn reactor_accept_rio_tls_fd<Stage>(
 
     let rx_off = core::shl_sat_u64(slot as u64, 13) as u32;
     let tx_off = rx_off | 4096;
-    net_internal::native_rio_hs_begin(
-        client_fd, rq, server::g_reactor_accel.rio_cq, server::g_reactor_accel.rio_tx_cq,
-        server::g_reactor_accel.rio_buf_id, server::g_reactor_accel.slab[..],
-        rx_off, tx_off, net::REACTOR_ACCEL_BUF_SIZE as u32, tok,
+    net_internal::rio_hs_begin(
+        client_fd, rq, server::g_reactor_accel.rio_cq, server::g_reactor_accel.rio_tx_cq, tok,
     );
     let tls_slot, ok_hs = tls::server_handshake(client_fd, tls_config);
-    let hs_rx_inflight = net_internal::native_rio_hs_is_rx_inflight() != 0;
+    let hs_rx_inflight = net_internal::rio_hs_is_rx_inflight();
     var hs_leftover: u8[4096] = [0; 4096];
-    let hs_rem = net_internal::native_rio_hs_end(hs_leftover[..]);
+    let hs_rem = net_internal::rio_hs_end(hs_leftover[..]);
     guard ok_hs else {
         if hs_rx_inflight {
             server::g_reactor_accel.slot_rx_inflight[slot] = true;
@@ -540,6 +538,7 @@ fn reactor_dispatch_uring_accept_cqe(
     if cqe.res > 0 {
         let cfd = cqe.res as i64;
         net::tcp_set_nonblocking(cfd, true);
+        let _ = net::tcp_set_nodelay(cfd, true);
         if is_tls {
             reactor_accept_single_tls_fd(
                 server, cfd, epfd, table, leftover_pool, slot_pool, timer_wheel, tls_config, total_served,

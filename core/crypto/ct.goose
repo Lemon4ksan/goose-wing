@@ -1,20 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// Constant-time primitives, key zeroization, KeySlot secrecy pattern, and Dudect Welch t-test verifier.
+// Constant-time primitives and key zeroization.
 namespace core;
 
 import std;
 import core.io.cork;
 
 // ---- constant-time branchless primitives -----------------------------------
-
-// Returns 1 if a == b, 0 otherwise, using purely branchless bitwise arithmetic.
-inline fn ct_eq_u8(a: u8, b: u8) -> u8 {
-    let diff = (a ^ b) as u32;
-    let non_zero = (diff | (0 - diff)) >> 31;
-    return (1 - non_zero) as u8;
-}
 
 extern fn ct_barrier_u8(val: u8) -> u8 = "wing_ct_barrier_u8";
 extern fn secure_scrub_stack() = "wing_secure_scrub_stack";
@@ -181,131 +174,4 @@ inline fn secure_zeroize_buf_tail(cb: CorkBuffer&, start_len: i64) {
     if start_len >= 0 && start_len < cb.len && cb.len <= CORK_BUFFER_CAP {
         secure_zeroize_slice(cb.storage[start_len..cb.len]);
     }
-}
-
-// KeySlot encapsulates a 256-bit cryptographic master key with rotation metadata.
-struct KeySlot {
-    key_id:         u32    = 0,
-    master_key:     u8[32] = [0; 32],
-    created_at_sec: i64    = 0,
-    expires_at_sec: i64    = 0,
-    revoked:        bool   = false,
-}
-
-fn new_key_slot(key_id: u32, raw_key: const u8[:], created_at_sec: i64 = 0, expires_at_sec: i64 = 0) -> KeySlot {
-    var nonzero: u8 = 0;
-    if raw_key.len == 32 {
-        for idx in 32 { nonzero |= raw_key[idx]; }
-    }
-    guard raw_key.len == 32 && nonzero != 0 else {
-        return KeySlot {
-            key_id:         key_id,
-            master_key:     [0; 32],
-            created_at_sec: created_at_sec,
-            expires_at_sec: expires_at_sec,
-            revoked:        true,
-        };
-    }
-    var slot = KeySlot {
-        key_id:         key_id,
-        master_key:     [0; 32],
-        created_at_sec: created_at_sec,
-        expires_at_sec: expires_at_sec,
-        revoked:        false,
-    };
-    for idx in 32 {
-        slot.master_key[idx] = raw_key[idx];
-    }
-    return slot;
-}
-
-fn zeroize_key_slot(slot: KeySlot&) {
-    secure_zeroize_32(slot.master_key);
-    slot.revoked = true;
-}
-
-// Redacted format hook preventing accidental leakage of secret key bytes into logs.
-fn format<B>(out: B&, slot: const KeySlot&) {
-    out.append("KeySlot { key_id: ");
-    format(out, slot.key_id);
-    out.append(", master_key: [REDACTED], revoked: ");
-    format(out, slot.revoked);
-    out.append(" }");
-}
-
-fn display_redacted<B>(slot: const KeySlot&, out: B&) {
-    format(out, slot);
-}
-
-// ---- dudect statistical constant-time verifier (Welch's t-test) ------------
-
-// Online Welford accumulator for two timing classes with OS preemption outlier cropping.
-struct DudectContext {
-    crop_threshold_ns: f64 = 2000.0,
-    n0:                i64 = 0,
-    n1:                i64 = 0,
-    mean0:             f64 = 0.0,
-    mean1:             f64 = 0.0,
-    m2_0:              f64 = 0.0,
-    m2_1:              f64 = 0.0,
-    cropped_outliers:  i64 = 0,
-}
-
-fn new_dudect_context(crop_threshold_ns: f64 = 2000.0) -> DudectContext {
-    return DudectContext { crop_threshold_ns: crop_threshold_ns, .. };
-}
-
-// Records a timing sample (in nanoseconds) for class 0 or class 1.
-// Samples exceeding crop_threshold_ns are discarded (cropped), never clamped,
-// preserving unbiased sample means per hardware-rust-crypto methodology.
-fn dudect_push_sample(ctx: DudectContext&, class_idx: i32, elapsed_ns: f64) -> bool {
-    guard class_idx == 0 || class_idx == 1 else { return false; }
-    if !(elapsed_ns >= 0.0) || (elapsed_ns - elapsed_ns) != 0.0 ||
-       (ctx.crop_threshold_ns > 0.0 && elapsed_ns > ctx.crop_threshold_ns) {
-        ctx.cropped_outliers += 1;
-        return false;
-    }
-    if class_idx == 0 {
-        ctx.n0 += 1;
-        let delta = elapsed_ns - ctx.mean0;
-        ctx.mean0 += delta / ctx.n0;
-        let delta2 = elapsed_ns - ctx.mean0;
-        ctx.m2_0 += delta * delta2;
-    } else {
-        ctx.n1 += 1;
-        let delta = elapsed_ns - ctx.mean1;
-        ctx.mean1 += delta / ctx.n1;
-        let delta2 = elapsed_ns - ctx.mean1;
-        ctx.m2_1 += delta * delta2;
-    }
-    return true;
-}
-
-// Approximate Newton-Raphson square root for Welch's t-statistic denominator.
-fn approx_sqrt(val: f64) -> f64 {
-    if !(val > 0.0) { return 0.0; }
-    var x = max(1.0, val);
-    for iter in 64 {
-        x = 0.5 * (x + val / x);
-    }
-    return x;
-}
-
-// Computes absolute Welch's |t| statistic between Class 0 and Class 1.
-fn dudect_abs_t(ctx: const DudectContext&) -> f64 {
-    if ctx.n0 < 2 || ctx.n1 < 2 { return 0.0; }
-    let diff = ctx.mean0 - ctx.mean1;
-    let abs_diff = if diff < 0.0 { -diff } else { diff };
-    if abs_diff <= 0.000000000001 { return 0.0; }
-    let var0 = ctx.m2_0 / (ctx.n0 - 1);
-    let var1 = ctx.m2_1 / (ctx.n1 - 1);
-    let denom_sq = (var0 / ctx.n0) + (var1 / ctx.n1);
-    if denom_sq <= 0.000000000001 { return 1000000000.0; }
-    return abs_diff / approx_sqrt(denom_sq);
-}
-
-// Verifies that |t| is strictly below threshold (default 4.5 for 99.999% confidence, or 1.5 for lockstep).
-fn dudect_is_constant_time(ctx: const DudectContext&, max_t: f64 = 4.5) -> bool {
-    guard ctx.n0 >= 2 && ctx.n1 >= 2 else { return false; }
-    return dudect_abs_t(ctx) <= max_t;
 }

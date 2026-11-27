@@ -58,14 +58,11 @@ fn test_root_and_ufcs(t: lit::T&) {
         let ov = core::opt_some(42 as i64);
         sub.assert_true(ov.present && ov.value == 42);
 
-        // UFCS over trimmed/split/token/dyn vec/compact/bitmask
+        // UFCS over trimmed/split/dyn vec/compact
         sub.assert_bytes_eq("xxabxx".trim_byte('x'), "ab");
         sub.assert_eq("a;\"b;c\";d".find_unquoted_byte(';'), 1);
         let sq_l, sq_r, sq_ok = "a;\"b;c\";d".split_once_unquoted_byte(';');
         sub.assert_true(sq_ok && sq_l == "a" && sq_r == "\"b;c\";d");
-        var tok_cnt: i64 = 0;
-        "x..y.".each_non_empty_token('.') { _ => tok_cnt += 1; };
-        sub.assert_eq(tok_cnt, 2);
 
         var dyn: u8[>..] = [];
         sub.assert_true(dyn.try_push(65 as u8) && dyn.try_push(66 as i64));
@@ -84,10 +81,10 @@ fn test_root_and_ufcs(t: lit::T&) {
         sub.assert_true("k=v&f".has_query_param_fast("f"));
 
         var m64: u64 = 0;
-        m64.set_flag(0x0F as u64);
-        sub.assert_true(m64.has_flag(0x01 as u64) && m64.has_all_flags(0x0F as u64));
-        m64.clear_flag(0x02 as u64);
-        sub.assert_false(m64.has_flag(0x02 as u64));
+        m64 |= 0x0F as u64;
+        sub.assert_true((m64 & (0x01 as u64)) != 0 && (m64 & (0x0F as u64)) == (0x0F as u64));
+        m64 &= ~(0x02 as u64);
+        sub.assert_false((m64 & (0x02 as u64)) != 0);
 
         // TickTimerWheel + sim clock/rng edges
         var wheel = core::TickTimerWheel { idle_timeout_sec: 10, .. };
@@ -177,21 +174,17 @@ fn test_io_cursor_vec_pipe_cork_ring(t: lit::T&) {
         sub.assert_true(core::finish_u24_prefix(bb));
         sub.assert_gt(bb.buf.len, 8);
 
-        // IoVecArray: push, compact, flatten, copy_to, consume
+        // IoVecArray: push, compact, consume
         var iov = core::new_iovec_array();
         sub.assert_true(core::iovec_is_empty(iov));
         for i in 16 { sub.assert_true(core::iovec_push(iov, "ab")); }
         sub.assert_false(core::iovec_push(iov, "full"));
         sub.assert_eq(core::iovec_consume(iov, 3), 3);
         sub.assert_true(core::iovec_push(iov, "xy"));
-        sub.assert_eq(core::iovec_total_bytes(iov), 31);
-        var flat: u8[..64] = [];
-        core::iovec_flatten(iov, flat);
-        sub.assert_bytes_eq(flat[..4], "baba");
-        var cp: u8[5] = [0; 5];
-        sub.assert_eq(core::iovec_copy_to(iov, cp[..]), 5);
+        sub.assert_eq(iov.total_bytes, 31);
+        sub.assert_bytes_eq(core::iovec_get(iov, 0), "b");
         sub.assert_bytes_eq(core::iovec_get(iov, -1), "");
-        core::iovec_clear(iov);
+        iov = core::new_iovec_array();
         sub.assert_eq(core::iovec_count(iov), 0);
 
         // CorkBuffer + PipeBuffer + RingBuffer error/edge paths
@@ -293,20 +286,7 @@ fn test_io_reactor_host_and_pagemem(t: lit::T&) {
         sub.assert_eq(core::host_step(mh, chain, 0, 0), 1);
         sub.assert_true(core::host_close(mh, clk) && core::host_close(mh, lk));
 
-        // PageMem & PageRing error paths + MmapFile on existing file
-        let _, ok_ga0 = core::guarded_arena_init(0, 0);
-        sub.assert_false(ok_ga0);
-        var ga, ok_ga = core::guarded_arena_init(4096, 0);
-        if ok_ga {
-            let _, ok_w = core::guarded_arena_write(ga, "abc");
-            var rbuf: u8[4] = [0; 4];
-            let _, ok_r = core::guarded_arena_read(ga, 0, rbuf[..]);
-            let _, ok_ro = core::guarded_arena_read(ga, 100, rbuf[..]);
-            sub.assert_true(ok_w);
-            sub.assert_false(ok_r || ok_ro);
-            let _ = core::guarded_arena_reset(ga);
-            core::guarded_arena_close(ga);
-        }
+        // MmapFile & PageRing error paths on existing file
         let _, ok_mf0 = core::mmap_file_open("");
         sub.assert_false(ok_mf0);
         var mf, ok_mf = core::mmap_file_open("core.goose");
@@ -317,27 +297,13 @@ fn test_io_reactor_host_and_pagemem(t: lit::T&) {
         sub.assert_true(ok_mr && mn == 8 && !ok_ms);
         core::mmap_file_close(mf);
 
-        let _, ok_pb0 = core::pinned_buffer_init(0);
-        sub.assert_false(ok_pb0);
-        var pb, ok_pb = core::pinned_buffer_init(4096);
-        if ok_pb {
-            let _, ok_pw = core::pinned_buffer_write(pb, 0, "dma");
-            var prb: u8[3] = [0; 3];
-            let _, ok_pr = core::pinned_buffer_read(pb, 0, prb[..]);
-            let _, ok_pbad = core::pinned_buffer_write(pb, pb.capacity, "x");
-            sub.assert_true(ok_pw && ok_pr && !ok_pbad);
-            core::pinned_buffer_close(pb);
-        }
-
         var pr = core::PageRingBuffer {};
         sub.assert_eq(core::page_ring_discard(pr, 4), 0);
         sub.assert_eq(core::page_ring_recv(pr, -1), -1);
         if core::page_ring_init(pr, 4096) {
-            let _, e_r0 = core::page_ring_read(pr, io_buf[..]);
-            sub.assert_true(e_r0 == core::IoError.Eof);
-            let _, _ = core::page_ring_write(pr, "hello\r\n\r\n");
-            sub.assert_ge(core::page_ring_find_crlf(pr), 0);
-            sub.assert_eq(core::page_ring_discard(pr, 4), 4);
+            sub.assert_gt(core::page_ring_available(pr), 0);
+            sub.assert_eq(core::page_ring_peek(pr, io_buf[..]), 0);
+            core::page_ring_clear(pr);
             core::page_ring_close(pr);
         }
 
@@ -351,8 +317,7 @@ fn test_io_reactor_host_and_pagemem(t: lit::T&) {
         sub.assert_false(core::aes128_gcm_open(k16, n12, bad_ct[..], "", zero_tag, dec_out));
         var dst8: u8[8] = [0; 8];
         let _, ok_256i = core::aes256_gcm_open_into(k32, n12, bad_ct[..], "", zero_tag, dst8[..]);
-        let _, ok_fus = core::fused_aes_gcm_decrypt(k16, n12, bad_ct[..], "", zero_tag, dst8[..]);
-        sub.assert_false(ok_256i || ok_fus);
+        sub.assert_false(ok_256i);
         sub.assert_false(core::chacha20_poly1305_open(k32, n12, bad_ct[..], "", zero_tag, dec_out));
         let p384_zero: u8[48] = [0; 48];
         let _, ok_p384z = core::p384_ecdh_shared_secret(p384_zero, "bad");

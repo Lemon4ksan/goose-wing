@@ -640,11 +640,11 @@ fn decode_transport_params(
         }
     }
     // RFC 9000 Section 7.3: Authenticating Connection IDs - Reject missing initial_source_connection_id or server original_destination_connection_id.
-    guard tp.seen_mask.has_flag(quic_internal::QUIC_TP_BIT_ISCID)
-        && (!is_server || tp.seen_mask.has_flag(quic_internal::QUIC_TP_BIT_ODCID)) else {
+    guard (tp.seen_mask & quic_internal::QUIC_TP_BIT_ISCID) != 0
+        && (!is_server || (tp.seen_mask & quic_internal::QUIC_TP_BIT_ODCID) != 0) else {
         return QuicTransportParams { .. }, false;
     }
-    if tp.seen_mask.has_flag(quic_internal::QUIC_TP_BIT_MIN_ACK_DELAY) {
+    if (tp.seen_mask & quic_internal::QUIC_TP_BIT_MIN_ACK_DELAY) != 0 {
         let max_delay_us = core::mul_sat_u64(tp.max_ack_delay, 1000);
         guard tp.min_ack_delay_us <= max_delay_us else { return QuicTransportParams { .. }, false; }
     }

@@ -1601,9 +1601,12 @@ fn test_priority_update_empty_field() {
 }
 
 fn test_settings_enable_connect_proto_server() {
-    // Server receives SETTINGS_ENABLE_CONNECT_PROTOCOL from client: MUST reject with PROTOCOL_ERROR
-    let err_srv = http2::validate_settings_parameter(rfc::H2_SETTING_ENABLE_CONNECT_PROTO, 1, false);
-    assert(err_srv == rfc::H2_ERR_PROTOCOL_ERROR);
+    // RFC 8441 Section 3: server MUST accept SETTINGS_ENABLE_CONNECT_PROTOCOL=0/1 from client.
+    let ok_srv = http2::validate_settings_parameter(rfc::H2_SETTING_ENABLE_CONNECT_PROTO, 1, false);
+    assert(ok_srv == rfc::H2_ERR_NO_ERROR);
+
+    let err_srv_val = http2::validate_settings_parameter(rfc::H2_SETTING_ENABLE_CONNECT_PROTO, 2, false);
+    assert(err_srv_val == rfc::H2_ERR_PROTOCOL_ERROR);
 
     // Client receives SETTINGS_ENABLE_CONNECT_PROTOCOL=1 from server: valid
     let err_cli = http2::validate_settings_parameter(rfc::H2_SETTING_ENABLE_CONNECT_PROTO, 1, true);

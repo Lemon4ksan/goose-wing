@@ -276,19 +276,25 @@ python scripts/soak_test.py
 
 ### Benchmarks vs. uWebSockets
 
-Measured on an Intel Core i5-12400F with 12 hardware threads in an Ubuntu 24.04
-container using Linux `epoll` and `gcc -O3 -flto`:
+Measured on an Intel Core i5-12400F (6 P-cores / 12 threads) in an Ubuntu 24.04
+container using Linux `io_uring`/`epoll` and `gcc -O3 -flto` (0 errors and 0
+timeouts across all suites):
 
 | Workload / Benchmark Suite | goose-wing (Goose) | uWebSockets (C++) | Delta |
 | :--- | :---: | :---: | :---: |
-| 1 Worker: Standard Ping-Pong (`wrk`, 64 conns) | 165,874 req/s (25.15 MB/s) | 148,306 req/s (21.64 MB/s) | +11.8% (p50: 358 µs vs 407 µs, -12.0%) |
-| 1 Worker: 32x Pipelined (`wrk`, 64 conns) | 177,853 req/s (26.98 MB/s) | 140,557 req/s (20.51 MB/s) | +26.5% (p99: 756 µs vs 930 µs, -18.7%) |
-| Multi-Core Peak 1M Target (6 workers, `wrk` 128x, 512 conns) | 954,939 req/s (122.94 MB/s) | 785,073 req/s (114.55 MB/s) | +21.6% (p99: 2,090 µs vs 3,980 µs, -47.5%) |
-| 6 Workers: Unbounded C Burst (`bench_burst`, 384 conns) | 25,016,380 req/s (3,793.34 MB/s) | 7,922,812 req/s (1,156.03 MB/s) | +215.8% / 3.16x (+228.1% transfer) |
-| 6 Workers: Unbounded C Burst (`bench_burst`, 512 conns) | 24,039,728 req/s (3,645.25 MB/s) | 7,631,240 req/s (1,113.49 MB/s) | +215.0% / 3.15x (+227.4% transfer) |
-| 8 Workers: High-Concurrency (`wrk`, 256 conns, 64x) | 420,205 req/s (63.72 MB/s) | 404,932 req/s (59.08 MB/s) | +3.8% (+7.9% transfer, p99: 651 µs) |
+| 1 Worker: Ping-Pong (`wrk`, 64 conns) | 178,859 req/s (27.12 MB/s) | 134,802 req/s (19.67 MB/s) | +32.7% (p50: 334 µs vs 445 µs, -24.9%) |
+| 1 Worker: 32x Pipelined (`wrk`, 64 conns) | 176,433 req/s (26.75 MB/s) | 125,263 req/s (18.28 MB/s) | +40.8% (p99: 723 µs vs 1,100 µs, -34.3%) |
+| 3 Workers: Ping-Pong (`wrk`, 96 conns) | 515,458 req/s (78.16 MB/s) | 494,432 req/s (72.14 MB/s) | +4.3% (p50: 102 µs vs 115 µs, -11.3%) |
+| 3 Workers: 32x Pipelined (`wrk`, 96 conns) | 535,148 req/s (81.15 MB/s) | 508,459 req/s (74.19 MB/s) | +5.2% (p99.9: 385 µs vs 466 µs, -17.4%) |
+| 4 Workers: Ping-Pong (`wrk`, 128 conns) | 679,778 req/s (103.08 MB/s) | 659,075 req/s (96.17 MB/s) | +3.1% (p99.9: 680 µs vs 853 µs, -20.3%) |
+| 4 Workers: 32x Pipelined (`wrk`, 128 conns) | 625,234 req/s (94.81 MB/s) | 584,258 req/s (85.25 MB/s) | +7.0% (p50: 109 µs vs 127 µs, -14.2%) |
+| 4 Workers: Keep-Alive 10k conns (`wrk`) | 385,007 req/s (58.38 MB/s) | 376,188 req/s (54.89 MB/s) | +2.3% (p99.9: 21.5 ms vs 25.8 ms, -16.6%) |
+| 4 Workers: Dynamic Route + 2KB JSON (`wrk`, 128 conns) | 460,460 req/s (972.80 MB/s) | 301,484 req/s (635.42 MB/s) | +52.7% (p95: 1,342 µs vs 6,041 µs, -77.8%) |
+| 4 Workers: HTTP/2 h2c (`h2load`, 64c x 16) | 161,184 req/s (6.00 MB/s) | N/A | Full native RFC 9113 |
+| 4 Workers: TLS 1.3 HTTP/2 (`h2load`, 64c x 16) | 183,978 req/s (6.85 MB/s) | N/A | Full native TLS 1.3 + HTTP/2 |
+| 6 Workers: 128x Pipelined (`wrk`, 512 conns) | 830,063 req/s (125.87 MB/s) | 763,720 req/s (111.44 MB/s) | +8.7% (p50: 334 µs vs 376 µs, -11.2%) |
+| 6 Workers: C Burst (`bench_burst`, 512 conns, 64x) | 9,766,267 req/s (1,480.90 MB/s) | 7,944,337 req/s (1,159.18 MB/s) | +22.9% (+27.8% transfer) |
 | Heap allocations per request | 0 B (0 allocs) | 0 B (0 allocs) | Parity |
-| Process RSS footprint | 3.1 MB | 18.2 MB | 5.9x lower |
 
 ### L0 and L7 pipeline CPU clock cycles
 

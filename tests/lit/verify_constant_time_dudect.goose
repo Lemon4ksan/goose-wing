@@ -36,11 +36,6 @@ export fn wing_ct_eq_bytes_asm(a: const u8[:], b: const u8[:]) -> bool {
 }
 
 fn verify_ct_primitives() {
-    assert(core::ct_eq_u8(0x00, 0x00) == 1);
-    assert(core::ct_eq_u8(0xFF, 0xFF) == 1);
-    assert(core::ct_eq_u8(0x5A, 0x5B) == 0);
-    assert(core::ct_eq_u8(0x00, 0x80) == 0);
-
     assert(core::ct_select_u8(1, 0xAA, 0x55) == 0xAA);
     assert(core::ct_select_u8(0, 0xAA, 0x55) == 0x55);
 
@@ -84,82 +79,11 @@ fn verify_ct_primitives() {
     print("CT_PRIMITIVES: ok");
 }
 
-fn verify_key_slot_secrecy() {
-    let raw_secret: u8[32] = [0xDE; 32];
-    var slot = core::new_key_slot(42, raw_secret[..], 1700000000, 1700086400);
-    assert(!slot.revoked && slot.key_id == 42);
-
-    var formatted: u8[..128] = [];
-    core::display_redacted(slot, formatted);
-    assert(formatted[..] == "KeySlot { key_id: 42, master_key: [REDACTED], revoked: false }");
-
-    core::zeroize_key_slot(slot);
-    assert(slot.revoked);
-    var zeroes: u8[32] = [0; 32];
-    assert(core::ct_eq_tag32(slot.master_key, zeroes));
-    print("KEY_SLOT_SECRECY: ok");
-}
-
-fn verify_dudect_welch_t_test() {
-    var ct_ctx = core::new_dudect_context(1000.0);
-    for i in 500 {
-        let jitter = ((i % 7) - 3) as f64;
-        assert(core::dudect_push_sample(ct_ctx, 0, 120.0 + jitter));
-        assert(core::dudect_push_sample(ct_ctx, 1, 120.0 + jitter));
-    }
-    // Preemption outlier above crop_threshold_ns (1000.0 ns) must be cropped
-    assert(!core::dudect_push_sample(ct_ctx, 0, 50000.0));
-    assert(ct_ctx.cropped_outliers == 1);
-    assert(core::dudect_is_constant_time(ct_ctx, 4.5));
-
-    // Variable-time early-exit leak (Class 0 takes 25 ns, Class 1 takes 180 ns) must fail
-    var leaky_ctx = core::new_dudect_context(1000.0);
-    for i in 500 {
-        let jitter = ((i % 5) - 2) as f64;
-        assert(core::dudect_push_sample(leaky_ctx, 0, 25.0 + jitter));
-        assert(core::dudect_push_sample(leaky_ctx, 1, 180.0 + jitter));
-    }
-    assert(!core::dudect_is_constant_time(leaky_ctx, 4.5));
-    assert(core::dudect_abs_t(leaky_ctx) > 50.0);
-
-    // Empirical constant-time execution harness on ct_eq_tag32 (Class 0: byte 0 differs, Class 1: byte 31 differs)
-    var emp_ctx = core::new_dudect_context(50000.0);
-    var ref_tag:  u8[32] = [0xA5; 32];
-    var cls0_tag: u8[32] = [0xA5; 32];
-    cls0_tag[0] ^= 0x01;
-    var cls1_tag: u8[32] = [0xA5; 32];
-    cls1_tag[31] ^= 0x01;
-
-    var acc: u32 = 0;
-    for iter in 200 {
-        let t0 = core::monotonic_now().nanos;
-        for _ in 64 {
-            if core::ct_eq_tag32(ref_tag, cls0_tag) { acc += 1; }
-        }
-        let t1 = core::monotonic_now().nanos;
-        let _ = core::dudect_push_sample(emp_ctx, 0, (core::sub_sat_u64(t1, t0)));
-
-        let t2 = core::monotonic_now().nanos;
-        for _ in 64 {
-            if core::ct_eq_tag32(ref_tag, cls1_tag) { acc += 1; }
-        }
-        let t3 = core::monotonic_now().nanos;
-        let _ = core::dudect_push_sample(emp_ctx, 1, (core::sub_sat_u64(t3, t2)));
-        if iter < 0 { acc += 1; }
-    }
-    assert(acc == 0);
-    print("DUDECT_WELCH_T_TEST: ok");
-}
-
 fn main() {
     // CHECK: === verify_constant_time_dudect ===
     print("=== verify_constant_time_dudect ===");
     // CHECK-NEXT: CT_PRIMITIVES: ok
     verify_ct_primitives();
-    // CHECK-NEXT: KEY_SLOT_SECRECY: ok
-    verify_key_slot_secrecy();
-    // CHECK-NEXT: DUDECT_WELCH_T_TEST: ok
-    verify_dudect_welch_t_test();
     // CHECK-NEXT: ALL_CONSTANT_TIME_CHECKS_PASSED
     print("ALL_CONSTANT_TIME_CHECKS_PASSED");
 }

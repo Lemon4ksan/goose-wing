@@ -163,6 +163,35 @@ fn has_final_connect_header_terminator(buf: const u8[:]) -> bool {
 
 // ---- SOCKS5 Helpers --------------------------------------------------------
 
+// Branchless expected frame length calculation for SOCKS5 request/reply frames.
+// Returns 0 if version is not 0x05 or ATYP is unrecognized, otherwise returns expected wire length.
+fn socks5_expected_frame_len_ct(buf: const u8[:]) -> u32 {
+    if buf.len < 5 {
+        return 0;
+    }
+    let ver = buf[0] as u32;
+    let atyp = buf[3] as u32;
+    let domain_len = buf[4] as u32;
+
+    let is_v5_mask = core::ct_mask_u32(core::ct_eq_u32(ver, 0x05));
+    let m_ipv4 = core::ct_mask_u32(core::ct_eq_u32(atyp, 0x01));
+    let m_domain = core::ct_mask_u32(core::ct_eq_u32(atyp, 0x03));
+    let m_ipv6 = core::ct_mask_u32(core::ct_eq_u32(atyp, 0x04));
+
+    // Domain name must contain 1..255 characters
+    let valid_domain_mask = m_domain & (~core::ct_mask_u32(core::ct_is_zero_u32(domain_len)));
+
+    let len_ipv4:   u32 = 10;             // 4 header + 4 IPv4 + 2 port
+    let len_domain: u32 = 7 + domain_len; // 4 header + 1 len + domain + 2 port
+    let len_ipv6:   u32 = 22;             // 4 header + 16 IPv6 + 2 port
+
+    let selected_len = (m_ipv4 & len_ipv4) |
+        (valid_domain_mask & len_domain) |
+        (m_ipv6 & len_ipv6);
+
+    return selected_len & is_v5_mask;
+}
+
 fn socks5_needed_length(buf: const u8[:], atyp: u8) -> i64, net::Socks5Error {
     if buf[2] != 0 {
         return 0, net::Socks5Error.InvalidReplyHeader;
@@ -174,7 +203,7 @@ fn socks5_needed_length(buf: const u8[:], atyp: u8) -> i64, net::Socks5Error {
         return 0, net::Socks5Error.BufferTruncated;
     }
     if buf.len >= 5 {
-        let expected_len = core::socks5_expected_frame_len_ct(buf);
+        let expected_len = socks5_expected_frame_len_ct(buf);
         if expected_len > 0 {
             return expected_len, net::Socks5Error.None;
         }

@@ -993,7 +993,7 @@ fn parse_quic_encrypted_extensions(
         out_tp.clear();
     };
 
-    var entries: ExtensionEntry[..32] = [];
+    var entries: ExtensionEntry[..64] = [];
     guard parse_extensions_block(ee_body, entries) else { return Alert.DecodeError, false; }
     guard tls_internal::validate_ee_solicited_extensions(
         entries, offered_alpn_csv, sni_state, false, QuicExtensionMode.Quic,

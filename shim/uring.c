@@ -105,6 +105,9 @@ uint64_t wing_uring_slice_addr(wing_uring_bytes_ro buf) { return (uint64_t)(uint
 #ifndef IORING_SETUP_SQPOLL
 #define IORING_SETUP_SQPOLL (1U << 1)
 #endif
+#ifndef IORING_SETUP_DEFER_TASKRUN
+#define IORING_SETUP_DEFER_TASKRUN (1U << 13)
+#endif
 
 #ifndef IORING_SQ_NEED_WAKEUP
 #define IORING_SQ_NEED_WAKEUP (1U << 0)
@@ -443,44 +446,8 @@ static int32_t flush_sq_ring(wing_uring_mmap_ctx *ctx) {
         }
         return wing_uring_enter_ext(ctx->ring_fd, to_submit, 0, IORING_ENTER_SQ_WAKEUP, NULL, (size_t)(_NSIG / 8));
     }
-    return wing_uring_enter_ext(ctx->ring_fd, to_submit, 0, 0, NULL, (size_t)(_NSIG / 8));
-}
-
-int32_t wing_uring_submit_sqe(int64_t ring_fd, uint8_t opcode, uint8_t flags, uint16_t ioprio, int32_t fd, uint64_t off,
-                              uint64_t addr, uint32_t len, uint32_t op_flags, uint64_t user_data, uint16_t buf_index) {
-    wing_uring_mmap_ctx *ctx = find_uring_ctx(ring_fd);
-    if (!ctx) {
-        return -EBADF;
-    }
-    uint32_t tail = *ctx->sq_tail;
-    uint32_t head = load_sq_head(ctx);
-    uint32_t ring_entries = *ctx->sq_ring_entries;
-    if ((tail - head) >= ring_entries) {
-        int32_t frc = flush_sq_ring(ctx);
-        if (frc < 0) {
-            return frc;
-        }
-        head = load_sq_head(ctx);
-        if ((tail - head) >= ring_entries) {
-            return -EBUSY;
-        }
-    }
-    uint32_t idx = tail & (*ctx->sq_ring_mask);
-    struct io_uring_sqe *sqe = &ctx->sqes_ptr[idx];
-    __builtin_memset(sqe, 0, sizeof(*sqe));
-    sqe->opcode = opcode;
-    sqe->flags = flags;
-    sqe->ioprio = ioprio;
-    sqe->fd = fd;
-    sqe->off = off;
-    sqe->addr = addr;
-    sqe->len = len;
-    sqe->rw_flags = op_flags;
-    sqe->user_data = user_data;
-    sqe->buf_index = buf_index;
-    ctx->sq_array[idx] = idx;
-    __atomic_store_n(ctx->sq_tail, tail + 1, __ATOMIC_RELEASE);
-    return 0;
+    uint32_t enter_flags = (ctx->setup_flags & IORING_SETUP_DEFER_TASKRUN) ? IORING_ENTER_GETEVENTS : 0;
+    return wing_uring_enter_ext(ctx->ring_fd, to_submit, 0, enter_flags, NULL, (size_t)(_NSIG / 8));
 }
 
 int32_t wing_uring_stage_sqes(int64_t ring_fd, wing_sqes_ro sqes) {
@@ -534,60 +501,22 @@ int32_t wing_uring_stage_sqes(int64_t ring_fd, wing_sqes_ro sqes) {
 }
 
 int32_t wing_uring_submit_sqes(int64_t ring_fd, wing_sqes_ro sqes) {
+    int32_t staged = wing_uring_stage_sqes(ring_fd, sqes);
+    if (staged <= 0) {
+        return staged;
+    }
     wing_uring_mmap_ctx *ctx = find_uring_ctx(ring_fd);
     if (!ctx) {
         return -EBADF;
     }
-    if (sqes.data == NULL || sqes.len <= 0) {
-        return 0;
-    }
-
-    uint32_t tail = *ctx->sq_tail;
-    uint32_t head = load_sq_head(ctx);
-    uint32_t mask = *ctx->sq_ring_mask;
-    uint32_t ring_entries = *ctx->sq_ring_entries;
-    int32_t total_submitted = 0;
-
-    for (int64_t i = 0; i < sqes.len; i++) {
-        if ((tail - head) >= ring_entries) {
-            __atomic_store_n(ctx->sq_tail, tail, __ATOMIC_RELEASE);
-            int32_t frc = flush_sq_ring(ctx);
-            if (frc < 0) {
-                return total_submitted > 0 ? total_submitted : frc;
-            }
-            head = load_sq_head(ctx);
-            if ((tail - head) >= ring_entries) {
-                break;
-            }
-        }
-        uint32_t idx = tail & mask;
-        struct io_uring_sqe *sqe = &ctx->sqes_ptr[idx];
-        const WING_URING_SQE *src = &sqes.data[i];
-        __builtin_memset(sqe, 0, sizeof(*sqe));
-        sqe->opcode = src->opcode;
-        sqe->flags = src->flags;
-        sqe->ioprio = src->ioprio;
-        sqe->fd = src->fd;
-        sqe->off = src->off;
-        sqe->addr = src->addr;
-        sqe->len = src->len;
-        sqe->rw_flags = src->op_flags;
-        sqe->user_data = src->user_data;
-        sqe->buf_index = src->buf_index;
-        ctx->sq_array[idx] = idx;
-        tail++;
-        total_submitted++;
-    }
-
-    __atomic_store_n(ctx->sq_tail, tail, __ATOMIC_RELEASE);
     int32_t rc = flush_sq_ring(ctx);
     if (rc < 0) {
-        if (total_submitted > 0 && (rc == -EAGAIN || rc == -EBUSY)) {
-            return total_submitted;
+        if (rc == -EAGAIN || rc == -EBUSY) {
+            return staged;
         }
         return rc;
     }
-    return total_submitted;
+    return staged;
 }
 
 static inline int cq_ring_needs_flush(const wing_uring_mmap_ctx *ctx) {
@@ -699,34 +628,6 @@ int32_t wing_uring_wait_cqes(int64_t ring_fd, wing_cqes_rw cqes, uint32_t min_co
 
     got += drain_cqes_nonblocking(ctx, cqes.data + got, cqes.len - got);
     return got;
-}
-
-int32_t wing_uring_peek_cqe(int64_t ring_fd, uint64_t *user_data_out, int32_t *res_out, uint32_t *flags_out) {
-    wing_uring_mmap_ctx *ctx = find_uring_ctx(ring_fd);
-    if (!ctx || !user_data_out || !res_out || !flags_out) {
-        return 0;
-    }
-    uint32_t head = *ctx->cq_head;
-    uint32_t tail = __atomic_load_n(ctx->cq_tail, __ATOMIC_ACQUIRE);
-    if (head == tail && cq_ring_needs_flush(ctx)) {
-        (void)wing_uring_enter_ext(ctx->ring_fd, 0, 0, IORING_ENTER_GETEVENTS, NULL, (size_t)(_NSIG / 8));
-        tail = __atomic_load_n(ctx->cq_tail, __ATOMIC_ACQUIRE);
-    }
-    while (head != tail) {
-        uint32_t idx = head & (*ctx->cq_ring_mask);
-        struct io_uring_cqe *cqe = &ctx->cqes[idx];
-        head++;
-        if (cqe->user_data == WING_URING_INTERNAL_SENTINEL) {
-            __atomic_store_n(ctx->cq_head, head, __ATOMIC_RELEASE);
-            continue;
-        }
-        *user_data_out = cqe->user_data;
-        *res_out = cqe->res;
-        *flags_out = cqe->flags;
-        __atomic_store_n(ctx->cq_head, head, __ATOMIC_RELEASE);
-        return 1;
-    }
-    return 0;
 }
 
 static int32_t wing_uring_register(int64_t ring_fd, uint32_t opcode, const void *arg, uint32_t nr_args) {
@@ -1008,21 +909,6 @@ int64_t wing_uring_create(uint32_t entries, uint32_t flags) {
     (void)flags;
     return -ENOSYS;
 }
-int32_t wing_uring_submit_sqe(int64_t ring_fd, uint8_t opcode, uint8_t flags, uint16_t ioprio, int32_t fd, uint64_t off,
-                              uint64_t addr, uint32_t len, uint32_t op_flags, uint64_t user_data, uint16_t buf_index) {
-    (void)ring_fd;
-    (void)opcode;
-    (void)flags;
-    (void)ioprio;
-    (void)fd;
-    (void)off;
-    (void)addr;
-    (void)len;
-    (void)op_flags;
-    (void)user_data;
-    (void)buf_index;
-    return -ENOSYS;
-}
 int32_t wing_uring_stage_sqes(int64_t ring_fd, wing_sqes_ro sqes) {
     (void)ring_fd;
     (void)sqes;
@@ -1039,13 +925,6 @@ int32_t wing_uring_wait_cqes(int64_t ring_fd, wing_cqes_rw cqes, uint32_t min_co
     (void)min_complete;
     (void)timeout_ns;
     return -ENOSYS;
-}
-int32_t wing_uring_peek_cqe(int64_t ring_fd, uint64_t *user_data_out, int32_t *res_out, uint32_t *flags_out) {
-    (void)ring_fd;
-    (void)user_data_out;
-    (void)res_out;
-    (void)flags_out;
-    return 0;
 }
 int32_t wing_uring_enter(int64_t ring_fd, uint32_t to_submit, uint32_t min_complete, uint32_t flags) {
     (void)ring_fd;

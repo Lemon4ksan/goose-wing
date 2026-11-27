@@ -8,6 +8,7 @@ namespace net;
 import std;
 import core;
 import .internal;
+import .driver.types;
 
 // Maximum IPv4/IPv6 UDP payload size for QUIC Ethernet frames without IP fragmentation (RFC 9000 Section 14).
 const UDP_MAX_PAYLOAD_LEN: i64 = 1472;
@@ -57,6 +58,44 @@ struct UdpBatchQueue {
     total_recvd:     u64               = 0,
 }
 
+inline fn udp_fallback_send_batch(queue: const UdpBatchQueue&, fd: i32) -> i32 {
+    guard fd != 0 else { return queue.msgs.len as i32; }
+    var sent: i32 = 0;
+    for i in queue.msgs.len {
+        let r = net_internal::native_udp_sendto_ip4(
+            fd, queue.msgs[i].payload[..], queue.msgs[i].peer_ip4, queue.msgs[i].peer_port,
+        );
+        if r < 0 {
+            return if sent == 0 { -1 } else { sent };
+        }
+        sent += 1;
+    }
+    return sent;
+}
+
+inline fn udp_fallback_recv_batch(queue: UdpBatchQueue&, fd: i32) -> i32, bool {
+    guard fd != 0 else { return 0, true; }
+    var recvd:   i32      = 0;
+    var scratch: u8[1472] = [0; 1472];
+    for i in UDP_BATCH_CAPACITY {
+        let tmo: u32 = if i == 0 { 10 } else { 1 };
+        var ip4:  u32 = 0;
+        var port: u16 = 0;
+        let r = net_internal::native_udp_recvfrom(fd, scratch[..], tmo, ip4, port);
+        if r == -2 { break; }
+        if r < 0 {
+            return if recvd == 0 { -1 } else { recvd }, recvd > 0;
+        }
+        let dgram, ok_d = build_udp_datagram(scratch[..r], ip4, port);
+        guard ok_d && queue.msgs.try_push(dgram) else {
+            queue.msgs.clear();
+            return 0, false;
+        }
+        recvd += 1;
+    }
+    return recvd, true;
+}
+
 // Flushes all queued datagrams in `queue` via a single batched sendmmsg syscall transition.
 // Resets queue count to 0 on successful flush.
 fn batch_send_messages(queue: UdpBatchQueue&, fd: i32) -> i32, bool {
@@ -78,7 +117,7 @@ fn batch_send_messages(queue: UdpBatchQueue&, fd: i32) -> i32, bool {
         net_internal::copy_datagram_to_arena(queue.msgs[i], i, arena, lengths, ips, ports);
     }
 
-    let sent = net_internal::native_udp_sendmmsg(
+    var sent = net_internal::native_udp_sendmmsg(
         fd,
         arena[..],
         lengths[..],
@@ -86,6 +125,9 @@ fn batch_send_messages(queue: UdpBatchQueue&, fd: i32) -> i32, bool {
         ports[..],
         actual_count,
     );
+    if sent == net_internal::ERR_ENOSYS {
+        sent = udp_fallback_send_batch(queue, fd);
+    }
     guard sent >= 0 else {
         return 0, false;
     }
@@ -115,6 +157,12 @@ fn batch_recv_messages(queue: UdpBatchQueue&, fd: i32) -> i32, bool {
         UDP_BATCH_CAPACITY,
         10,
     );
+    if recvd == net_internal::ERR_ENOSYS {
+        let fb_recvd, fb_ok = udp_fallback_recv_batch(queue, fd);
+        guard fb_ok else { return 0, false; }
+        net_internal::record_batch_recv_stats(queue, fb_recvd);
+        return fb_recvd, true;
+    }
     guard recvd >= 0 && recvd <= UDP_BATCH_CAPACITY else {
         return 0, false;
     }

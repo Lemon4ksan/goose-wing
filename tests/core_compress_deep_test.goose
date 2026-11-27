@@ -219,15 +219,14 @@ fn test_gzip_zlib_deflate_and_zstream(t: lit::T&) {
 
         // ZStreamCompressor + ZStreamDecompressor (Zlib dict, Gzip multi-member & big chunk, Auto Zstd)
         var comp = core::new_zstream_compressor(core::ContainerFormat.Zlib, 6);
-        comp.set_dictionary(dict);
+        comp.dict = dict;
         var wire: u8[>..] = [];
         sub.assert_true(comp.write(z_src[..20], wire, core::FlushMode.NoFlush));
-        sub.assert_true(comp.sync_flush(wire));
+        sub.assert_true(comp.write("", wire, core::FlushMode.SyncFlush));
         sub.assert_true(comp.write(z_src[20..], wire, core::FlushMode.Finish));
         sub.assert_false(comp.write("after_finish", wire));
 
         var decomp = core::new_zstream_decompressor(core::ContainerFormat.Auto, dict);
-        decomp.set_dictionary(dict);
         var res: u8[>..] = [];
         for b in wire {
             let b_slice: u8[1] = [b];

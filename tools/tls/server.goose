@@ -74,7 +74,7 @@ fn parse_client_hello_sni_alpn(
     guard ch_payload.len >= ext_end else { return TLS_ALERT_DECODE_ERROR; }
 
     let exts_slice = ch_payload[ext_start..ext_end];
-    var entries: tls::ExtensionEntry[..32] = [];
+    var entries: tls::ExtensionEntry[..64] = [];
     guard tls::parse_extensions_block(exts_slice, entries) else {
         return TLS_ALERT_ILLEGAL_PARAMETER;
     }
@@ -196,6 +196,7 @@ fn serve_live_tls13_session(
 
     var pipe = core::new_pipe_buffer();
     var cork = core::new_cork_buffer();
+    let is_h2_alpn = tls::session_alpn(slot_idx) == "h2";
     let h2_idx = server::alloc_temp_h2_session(server.pipeline, server.server_name[..], 0);
     guard h2_idx >= 0 && h2_idx < server::REACTOR_MAX_H2_SESSIONS else {
         tls::free_cipher_slot(slot_idx);
@@ -205,6 +206,15 @@ fn serve_live_tls13_session(
     loop {
         let recvd = server::tls_recv_pipe(conn, slot_idx, pipe, 4096, 2000);
         if recvd <= 0 { break; }
+
+        if is_h2_alpn && !server::g_default_reactor.h2_sessions[h2_idx].preface_handled {
+            let unread = pipe.readable_slice();
+            if unread.len > 0
+                && !server::is_partial_h2_client_preface(unread)
+                && !server::is_h2_client_preface(unread) {
+                break;
+            }
+        }
 
         let now_ns = core::as_nanos(core::monotonic_now());
         let _, ok = server::handle_connection_pipe(

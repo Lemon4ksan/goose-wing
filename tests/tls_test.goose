@@ -2825,7 +2825,7 @@ fn test_handshake_and_ech_security(t: lit::T&) {
 
         core::finish_u16_prefix(b_valid);
 
-        var entries: tls::ExtensionEntry[..32] = [];
+        var entries: tls::ExtensionEntry[..64] = [];
         let ok_val = tls::parse_extensions_block(b_valid.buf[..], entries);
         sub.assert_true(ok_val, "distinct extensions parsed successfully");
         sub.assert_eq(entries.len, 2, "2 extensions parsed");
@@ -2846,7 +2846,7 @@ fn test_handshake_and_ech_security(t: lit::T&) {
 
         core::finish_u16_prefix(b_dup);
 
-        var entries_dup: tls::ExtensionEntry[..32] = [];
+        var entries_dup: tls::ExtensionEntry[..64] = [];
         let ok_dup = tls::parse_extensions_block(b_dup.buf[..], entries_dup);
         sub.assert_false(ok_dup, "duplicate extension MUST be strictly rejected per RFC 8446 Section 4.2");
 
@@ -2854,7 +2854,7 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         var b_trail = core::builder_init();
         core::put_bytes(b_trail, b_valid.buf[..]);
         core::put_u8(b_trail, 0xFF); // trailing unparsed byte
-        var entries_trail: tls::ExtensionEntry[..32] = [];
+        var entries_trail: tls::ExtensionEntry[..64] = [];
         let ok_trail = tls::parse_extensions_block(b_trail.buf[..], entries_trail);
         sub.assert_false(ok_trail, "trailing garbage after extensions block rejected");
     };

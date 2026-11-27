@@ -371,9 +371,7 @@ fn reactor_handle_ingress<Stage>(
 fn reactor_append_chunk_bytes(chunk: ReactorIngressBuf&, src: const u8[:]) -> bool {
     let end_len = core::add_sat_i64(chunk.len, src.len);
     guard end_len <= REACTOR_INGRESS_CAP && end_len <= chunk.bytes.len else { return false; }
-    for i in src.len {
-        chunk.bytes[core::add_sat_i64(chunk.len, i)] = src[i];
-    }
+    core::copy_bytes_fast(chunk.bytes[..], chunk.len, src);
     chunk.len = end_len;
     return true;
 }
@@ -547,12 +545,6 @@ fn reactor_dispatch_events<Stage>(
             stage,
         );
     }
-}
-
-// Computes dynamic wait timeout depending on worker ring state.
-inline fn reactor_epoll_timeout(ring: const core::SpscRing&) -> i32 {
-    guard ring.is_open else { return 200; }
-    return if ring.spsc_count() > 0 { 0 } else { 10 };
 }
 
 fn reactor_accept_single_tls_fd(

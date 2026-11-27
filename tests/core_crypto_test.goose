@@ -206,9 +206,7 @@ fn test_csprng_and_ct(t: lit::T&) {
         core::sim_rng_disable();
     };
 
-    t.run("CT equality, selection, zeroization, KeySlot, and Dudect") { sub =>
-        sub.assert_eq(core::ct_eq_u8(0x42, 0x42), 1, "ct_eq_u8 equal");
-        sub.assert_eq(core::ct_eq_u8(0x42, 0x43), 0, "ct_eq_u8 unequal");
+    t.run("CT equality, selection, and zeroization") { sub =>
         sub.assert_eq(core::ct_select_u8(1, 0xAA, 0x55), 0xAA, "ct_select_u8 true");
         sub.assert_eq(core::ct_select_u8(0, 0xAA, 0x55), 0x55, "ct_select_u8 false");
 
@@ -260,35 +258,6 @@ fn test_csprng_and_ct(t: lit::T&) {
         sub.assert_eq(zu32[3], 0, "u32 slice zeroized");
         sub.assert_eq(zu64[3], 0, "u64 slice zeroized");
         sub.assert_eq(zi32[3], 0, "i32 slice zeroized");
-
-        let zero_key:  u8[32] = [0; 32];
-        let short_key: u8[16] = [1; 16];
-        let good_key:  u8[32] = [0x5A; 32];
-        sub.assert_true(core::new_key_slot(1, short_key[..]).revoked, "short KeySlot revoked");
-        sub.assert_true(core::new_key_slot(2, zero_key[..]).revoked, "all-zero KeySlot revoked");
-        var slot = core::new_key_slot(3, good_key[..], 100, 200);
-        sub.assert_false(slot.revoked, "valid KeySlot active");
-        var log_buf: u8[..128] = [];
-        core::display_redacted(slot, log_buf);
-        sub.assert_true(core::contains(log_buf[..], "[REDACTED]"), "KeySlot redacted format");
-        core::zeroize_key_slot(slot);
-        sub.assert_true(slot.revoked && slot.master_key[0] == 0, "zeroize_key_slot wipes and revokes");
-
-        var dctx = core::new_dudect_context(500.0);
-        sub.assert_false(core::dudect_is_constant_time(dctx), "insufficient samples rejected");
-        sub.assert_eq(core::dudect_abs_t(dctx), 0.0, "abs_t with <2 samples is 0");
-        sub.assert_false(core::dudect_push_sample(dctx, 2, 10.0), "invalid class rejected");
-        sub.assert_false(core::dudect_push_sample(dctx, 0, -1.0), "negative sample cropped");
-        sub.assert_false(core::dudect_push_sample(dctx, 0, 600.0), "outlier sample cropped");
-        sub.assert_true(core::dudect_push_sample(dctx, 0, 10.0));
-        sub.assert_true(core::dudect_push_sample(dctx, 0, 12.0));
-        sub.assert_true(core::dudect_push_sample(dctx, 1, 100.0));
-        sub.assert_true(core::dudect_push_sample(dctx, 1, 102.0));
-        sub.assert_true(core::dudect_abs_t(dctx) > 10.0, "distinguishable classes high |t|");
-        sub.assert_eq(core::approx_sqrt(0.0), 0.0, "approx_sqrt(0) == 0");
-
-        var dctx_no_crop = core::new_dudect_context(0.0);
-        sub.assert_true(core::dudect_push_sample(dctx_no_crop, 0, 10000.0));
     };
 }
 
@@ -607,16 +576,6 @@ fn test_aes_and_chacha_extended(t: lit::T&) {
         let blk16: u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
         let dec_blk = core::aes256_decrypt_block(ks256, blk16);
         sub.assert_eq(dec_blk[..].len, 16, "aes256_decrypt_block");
-
-        var fused_ct: u8[32] = [0; 32];
-        var fused_pt: u8[32] = [0; 32];
-        let ftag, flen, fok = core::fused_aes_gcm_encrypt(k16, iv, pt32, "aad", fused_ct[..]);
-        sub.assert_true(fok && flen == 32);
-        let fdlen, fdok = core::fused_aes_gcm_decrypt(k16, iv, fused_ct[..], "aad", ftag, fused_pt[..]);
-        sub.assert_true(fdok && fdlen == 32 && fused_pt[..] == pt32);
-        let _, _, fok_s = core::fused_aes_gcm_encrypt(k16, iv, pt32, "aad", small_dst[..]);
-        let _, fdok_s = core::fused_aes_gcm_decrypt(k16, iv, fused_ct[..], "aad", ftag, small_dst[..]);
-        sub.assert_false(fok_s || fdok_s, "fused short dst rejected");
     };
 
     t.run("RFC 8439 ChaCha20 / Poly1305 & draft HChaCha20 / XChaCha20-Poly1305") { sub =>

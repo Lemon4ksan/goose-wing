@@ -415,7 +415,7 @@ fn parse_key_share_client_extension(
 }
 
 fn apply_hrr_server_hello_exts(
-    entries: const tls::ExtensionEntry[..32]&,
+    entries: const tls::ExtensionEntry[..64]&,
     out:     tls::ParsedServerHello&,
 ) -> bool {
     let ks_data, has_ks = tls::find_extension(entries, rfc::TLS_EXT_KEY_SHARE);
@@ -438,7 +438,7 @@ fn apply_hrr_server_hello_exts(
 }
 
 fn apply_regular_server_hello_exts(
-    entries:  const tls::ExtensionEntry[..32]&,
+    entries:  const tls::ExtensionEntry[..64]&,
     rand_arr: const u8[32]&,
     out:      tls::ParsedServerHello&,
 ) -> bool {

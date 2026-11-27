@@ -165,12 +165,7 @@ fn cipher_slot_unseal_records<B>(
     let slot .= g_tls_cipher_slots[idx];
     if slot.peer_closed { return 0, SliceUnsealStatus.Closed; }
 
-    if cipher_in.len <= 2048 {
-        var small_scratch: u8[2048] = [0; 2048];
-        return tls_internal::tls_unseal_records_with_scratch(slot, cipher_in, small_scratch[..], out_plain);
-    }
-    var scratch: u8[16640] = [0; 16640];
-    return tls_internal::tls_unseal_records_with_scratch(slot, cipher_in, scratch[..], out_plain);
+    return tls_internal::tls_unseal_records_direct(slot, cipher_in, out_plain);
 }
 
 fn cipher_slot_seal_app_data<B>(
@@ -184,12 +179,7 @@ fn cipher_slot_seal_app_data<B>(
     guard slot.in_use && !slot.peer_closed else { return false; }
     if plain_in.len == 0 { return true; }
 
-    if plain_in.len <= 2000 {
-        var small_rec: u8[2048] = [0; 2048];
-        return tls_internal::tls_seal_app_data_with_buf(slot, plain_in, small_rec[..], out_cipher);
-    }
-    var rec_buf: u8[16645] = [0; 16645];
-    return tls_internal::tls_seal_app_data_with_buf(slot, plain_in, rec_buf[..], out_cipher);
+    return tls_internal::tls_seal_app_data_direct(slot, plain_in, out_cipher);
 }
 
 // Seals an RFC 8446 Section 6.1 encrypted CloseNotify alert record into `out_cipher`.

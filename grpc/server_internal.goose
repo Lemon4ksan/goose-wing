@@ -350,6 +350,12 @@ inline fn is_supported_encoding(enc: const u8[:]) -> bool {
     return trimmed.eq_ascii_fold("gzip") || trimmed.eq_ascii_fold("identity");
 }
 
+inline fn calc_grpc_gzip_limit(comp_len: i64, max_msg: u32) -> i64 {
+    let ratio_limit = max(65536, core::mul_sat_i64(comp_len, 100));
+    let msg_cap = max_msg as i64;
+    return if msg_cap > 0 { min(msg_cap, ratio_limit) } else { ratio_limit };
+}
+
 // Validates single-message LPM request body for Unary and ServerStreaming RPCs.
 //
 // Example:
@@ -403,7 +409,8 @@ fn decode_and_validate_single_lpm(
     let max_msg = if d.max_message_size > 0 { d.max_message_size } else { rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE };
     if is_compressed {
         var decomp_buf: u8[>..] = [];
-        let ok_gz, gz_err = core::gzip_decompress_with_limit(tmp_payload[..], decomp_buf, max_msg);
+        let eff_limit = calc_grpc_gzip_limit(tmp_payload.len, max_msg);
+        let ok_gz, gz_err = core::gzip_decompress_with_limit(tmp_payload[..], decomp_buf, eff_limit);
         guard ok_gz else {
             let is_overflow = gz_err == core::CompressError.OutputBufferOverflow;
             let code = if is_overflow {

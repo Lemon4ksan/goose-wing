@@ -1055,7 +1055,7 @@ fn test_iovec_lifecycle(t: lit::T&) {
         var arr = core::new_iovec_array();
         sub.assert_true(core::iovec_is_empty(arr), "Initially empty");
         sub.assert_eq(core::iovec_count(arr), 0, "Initial count 0");
-        sub.assert_eq(core::iovec_total_bytes(arr), 0, "Initial total bytes 0");
+        sub.assert_eq(arr.total_bytes, 0, "Initial total bytes 0");
 
         // Push empty slice is no-op
         sub.assert_true(core::iovec_push(arr, ""), "Push empty slice succeeded");
@@ -1069,7 +1069,7 @@ fn test_iovec_lifecycle(t: lit::T&) {
         sub.assert_false(core::iovec_is_empty(arr), "Not empty after pushes");
         sub.assert_eq(core::iovec_count(arr), 3, "Count is 3");
         let expected_bytes = ("GET / HTTP/1.1\r\n").len + ("Host: example.com\r\n\r\n").len + ("payload-body").len;
-        sub.assert_eq(core::iovec_total_bytes(arr), expected_bytes, "Total bytes calculated correctly");
+        sub.assert_eq(arr.total_bytes, expected_bytes, "Total bytes calculated correctly");
 
         // Inspect slices
         sub.assert_eq(core::iovec_get(arr, 0), "GET / HTTP/1.1\r\n", "Chunk 0 matches");
@@ -1078,39 +1078,10 @@ fn test_iovec_lifecycle(t: lit::T&) {
         sub.assert_eq(core::iovec_get(arr, 3), "", "Out of range returns empty slice");
 
         // Clear
-        core::iovec_clear(arr);
+        arr = core::new_iovec_array();
         sub.assert_true(core::iovec_is_empty(arr), "Empty after clear");
         sub.assert_eq(core::iovec_count(arr), 0, "Count 0 after clear");
-        sub.assert_eq(core::iovec_total_bytes(arr), 0, "Total bytes 0 after clear");
-    };
-}
-
-// ----------------------------------------------------------------------------
-// 27. IoVec Flatten & Copy
-// ----------------------------------------------------------------------------
-fn test_iovec_flatten_and_copy(t: lit::T&) {
-    t.run("IoVecArray Flatten & Copy") { sub =>
-        var arr = core::new_iovec_array();
-        core::iovec_push(arr, "AAAA");
-        core::iovec_push(arr, "BBBB");
-        core::iovec_push(arr, "CCCC");
-
-        // 1. Flatten into appendable buffer
-        var flat: u8[>..] = [];
-        core::iovec_flatten(arr, flat);
-        sub.assert_eq(flat[..], "AAAABBBBCCCC", "Flatten output matches");
-
-        // 2. Exact copy to fixed slice
-        var dst: u8[12] = [0; 12];
-        let copied = core::iovec_copy_to(arr, dst[..]);
-        sub.assert_eq(copied, 12, "Copied 12 bytes");
-        sub.assert_eq(dst[..], "AAAABBBBCCCC", "Fixed buffer destination matches");
-
-        // 3. Truncated copy to smaller slice
-        var small_dst: u8[6] = [0; 6];
-        let trunc_copied = core::iovec_copy_to(arr, small_dst[..]);
-        sub.assert_eq(trunc_copied, 6, "Copied only 6 bytes");
-        sub.assert_eq(small_dst[..], "AAAABB", "Small buffer truncated correctly");
+        sub.assert_eq(arr.total_bytes, 0, "Total bytes 0 after clear");
     };
 }
 
@@ -1123,32 +1094,32 @@ fn test_iovec_consumption_and_compact(t: lit::T&) {
         core::iovec_push(arr, "0123456789"); // 10 bytes
         core::iovec_push(arr, "ABCDEFGHIJ"); // 10 bytes
         core::iovec_push(arr, "KLMNOPQRST"); // 10 bytes
-        sub.assert_eq(core::iovec_total_bytes(arr), 30, "Total 30 bytes");
+        sub.assert_eq(arr.total_bytes, 30, "Total 30 bytes");
 
         // Consume 4 bytes (partial chunk 0)
         let c1 = core::iovec_consume(arr, 4);
         sub.assert_eq(c1, 4, "Consumed 4 bytes");
-        sub.assert_eq(core::iovec_total_bytes(arr), 26, "Remaining 26 bytes");
+        sub.assert_eq(arr.total_bytes, 26, "Remaining 26 bytes");
         sub.assert_eq(core::iovec_get(arr, 0), "456789", "Head chunk adjusted by offset");
         sub.assert_eq(core::iovec_count(arr), 3, "Count is still 3");
 
         // Consume 10 bytes (remaining 6 of chunk 0 + 4 of chunk 1)
         let c2 = core::iovec_consume(arr, 10);
         sub.assert_eq(c2, 10, "Consumed 10 bytes");
-        sub.assert_eq(core::iovec_total_bytes(arr), 16, "Remaining 16 bytes");
+        sub.assert_eq(arr.total_bytes, 16, "Remaining 16 bytes");
         sub.assert_eq(core::iovec_count(arr), 2, "Count reduced to 2 (chunk 0 retired)");
         sub.assert_eq(core::iovec_get(arr, 0), "EFGHIJ", "Chunk 1 is new head at offset 4");
 
         // Push new chunk while head > 0 to verify compaction
         sub.assert_true(core::iovec_push(arr, "UVW"), "Pushed after retirement");
         sub.assert_eq(core::iovec_count(arr), 3, "Count is 3");
-        sub.assert_eq(core::iovec_total_bytes(arr), 19, "Remaining 16 + 3 = 19 bytes");
+        sub.assert_eq(arr.total_bytes, 19, "Remaining 16 + 3 = 19 bytes");
 
         // Consume remaining all bytes
         let c3 = core::iovec_consume(arr, 19);
         sub.assert_eq(c3, 19, "Consumed all remaining 19 bytes");
         sub.assert_true(core::iovec_is_empty(arr), "Array is empty");
-        sub.assert_eq(core::iovec_total_bytes(arr), 0, "Total bytes 0");
+        sub.assert_eq(arr.total_bytes, 0, "Total bytes 0");
     };
 }
 
@@ -1176,7 +1147,7 @@ fn test_tcp_sendv_socket(t: lit::T&) {
         core::iovec_push(arr, "HE");
         core::iovec_push(arr, "LLO");
 
-        let total_to_send = core::iovec_total_bytes(arr) as i32;
+        let total_to_send = arr.total_bytes as i32;
         let sent = net::tcp_sendv(client, arr);
         sub.assert_eq(sent, total_to_send, "All vectorized bytes sent");
         sub.assert_true(core::iovec_is_empty(arr), "IoVecArray fully consumed by sendv");
@@ -1267,7 +1238,6 @@ fn main() {
     lit::run_case(runner, "24. Socket Invariant Validation", test_socket_invariant_validation);
     lit::run_case(runner, "25. Live OS Socket Tuning & Telemetry", test_live_socket_options);
     lit::run_case(runner, "26. IoVec Lifecycle & Capacity", test_iovec_lifecycle);
-    lit::run_case(runner, "27. IoVec Flatten & Copy", test_iovec_flatten_and_copy);
     lit::run_case(runner, "28. IoVec Consumption & Compact", test_iovec_consumption_and_compact);
     lit::run_case(runner, "29. Kernel TCP tcp_sendv", test_tcp_sendv_socket);
     lit::run_case(runner, "30. TCP Fast Open (RFC 7413) & ECN Options (RFC 3168)", test_tcp_fastopen_and_ecn);

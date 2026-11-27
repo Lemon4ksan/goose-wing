@@ -53,7 +53,6 @@ struct HttpServer {
     ws_route_count:               i32                              = 0,
     shared_compressor:            realtime::SharedWsCompressor     = realtime::SharedWsCompressor { .. },
     sni_registry:                 SniRegistry                      = SniRegistry { .. },
-    worker_ring:                  core::SpscRing                   = core::SpscRing { .. },
     cached_date:                  CachedHttpDate                   = CachedHttpDate { .. },
     fast_l0_last_headers:         u8[..256]                        = [],
     fast_l0_last_host:            u8[..128]                        = [],
@@ -630,6 +629,10 @@ fn handle_connection_pipe<Stage, B>(
         return server_internal::handle_h2_pipe_ingress(
             server, client_ip, pipe, h2_sess, now_ns, unread_len, wire_out, stage,
         );
+    }
+
+    if pipe.consumed == 0 && server_internal::is_invalid_connection_preface(pipe.readable_slice()) {
+        return 0, false;
     }
 
     var req = http::new_request("GET", "");

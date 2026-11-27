@@ -186,361 +186,141 @@ static inline ULONG wing_clamp_win_ulong(int64_t len) {
 }
 #endif
 
+static void wing_strip_brackets(char *s) {
+    size_t len = strlen(s);
+    if (len >= 2 && s[0] == '[' && s[len - 1] == ']') {
+        memmove(s, s + 1, len - 2);
+        s[len - 2] = '\0';
+    }
+}
+
 #if defined(__wasm__)
 
-// WebAssembly L4 Transport Implementation
-// Zero-allocation virtual loopback & WASI host socket subsystem
-
-#define WASM_MAX_SOCKETS 32
-#define WASM_SOCK_BUF_SIZE 65536
-
-typedef struct {
-    int active;
-    int is_listener;
-    int backlog;
-    uint16_t port;
-    char host[64];
-    uint8_t rx_buf[WASM_SOCK_BUF_SIZE];
-    int64_t rx_head;
-    int64_t rx_tail;
-    int peer_slot;
-    int write_shut;
-    int pending_conns[WASM_MAX_SOCKETS];
-    int pending_head;
-    int pending_tail;
-} wasm_virtual_socket_t;
-
-static wasm_virtual_socket_t g_wasm_sockets[WASM_MAX_SOCKETS];
-static int g_wasm_sock_initialized = 0;
-
-int32_t wing_tcp_init(void) {
-    if (!g_wasm_sock_initialized) {
-        memset(g_wasm_sockets, 0, sizeof(g_wasm_sockets));
-        g_wasm_sock_initialized = 1;
-    }
-    return 0;
-}
-
-void wing_tcp_cleanup(void) {
-    memset(g_wasm_sockets, 0, sizeof(g_wasm_sockets));
-    g_wasm_sock_initialized = 0;
-}
-
-uint16_t wing_get_env_port(uint16_t default_port) {
-    const char *p = getenv("WING_PORT");
-    if (!p || !*p) p = getenv("GW_PORT");
-    if (p && *p) {
-        int val = atoi(p);
-        if (val > 0 && val < 65536) return (uint16_t)val;
-    }
-    return default_port;
-}
-
-int64_t wing_get_env_workers(int64_t default_workers) {
-    (void)default_workers;
-    return 1;
-}
-
+// Minimal WebAssembly linker stubs: virtual socket loopback and epoll live in
+// pure Goose (`net/wasm_loopback_internal.goose` dispatched by `net/tcp.goose`).
+int32_t wing_tcp_init(void) { return 0; }
+void wing_tcp_cleanup(void) {}
 int64_t wing_tcp_listen(wing_bytes_ro host, uint16_t port, int32_t backlog) {
-    wing_tcp_init();
-    for (int i = 1; i < WASM_MAX_SOCKETS; i++) {
-        if (!g_wasm_sockets[i].active) {
-            if (slice_to_cstr(host, g_wasm_sockets[i].host, sizeof(g_wasm_sockets[i].host)) != 0) {
-                return -1;
-            }
-            g_wasm_sockets[i].active = 1;
-            g_wasm_sockets[i].is_listener = 1;
-            g_wasm_sockets[i].port = (port == 0) ? (uint16_t)(10000 + i) : port;
-            g_wasm_sockets[i].backlog = (backlog > 0 && backlog < WASM_MAX_SOCKETS) ? backlog : (WASM_MAX_SOCKETS - 1);
-            g_wasm_sockets[i].peer_slot = -1;
-            g_wasm_sockets[i].pending_head = 0;
-            g_wasm_sockets[i].pending_tail = 0;
-            return (int64_t)i;
-        }
-    }
-    return -1;
+    (void)host;
+    (void)port;
+    (void)backlog;
+    return -38;
 }
-
-int64_t wing_tcp_listen_unix(wing_bytes_ro path, int32_t backlog) { return wing_tcp_listen(path, 0, backlog); }
-
-int64_t wing_tcp_connect_unix(wing_bytes_ro path) { return wing_tcp_connect(path, 0, 500); }
-
+int64_t wing_tcp_listen_unix(wing_bytes_ro path, int32_t backlog) {
+    (void)path;
+    (void)backlog;
+    return -38;
+}
+int64_t wing_tcp_connect_unix(wing_bytes_ro path) {
+    (void)path;
+    return -38;
+}
 int64_t wing_tcp_connect_begin(wing_bytes_ro host, uint16_t port, int32_t *out_state) {
-    int64_t fd = wing_tcp_connect(host, port, 0);
-    if (out_state) *out_state = (fd > 0) ? 0 : -1;
-    return fd;
+    (void)host;
+    (void)port;
+    if (out_state) *out_state = -1;
+    return -38;
 }
-
 int64_t wing_tcp_connect_unix_begin(wing_bytes_ro path, int32_t *out_state) {
-    int64_t fd = wing_tcp_connect_unix(path);
-    if (out_state) *out_state = (fd > 0) ? 0 : -1;
-    return fd;
+    (void)path;
+    if (out_state) *out_state = -1;
+    return -38;
 }
-
 int32_t wing_tcp_connect_finish(int64_t sock_fd) {
-    return (sock_fd > 0 && sock_fd < WASM_MAX_SOCKETS && g_wasm_sockets[sock_fd].active) ? 0 : -1;
+    (void)sock_fd;
+    return -38;
 }
-
-int32_t wing_tcp_connect_poll(int64_t sock_fd) { return wing_tcp_connect_finish(sock_fd); }
-
+int32_t wing_tcp_connect_poll(int64_t sock_fd) {
+    (void)sock_fd;
+    return -38;
+}
 int64_t wing_adopt_socket(int64_t raw_fd) { return raw_fd > 0 ? raw_fd : -1; }
-
 uint16_t wing_tcp_getsockname_port(int64_t sock_fd) {
-    if (sock_fd > 0 && sock_fd < WASM_MAX_SOCKETS && g_wasm_sockets[sock_fd].active) {
-        return g_wasm_sockets[sock_fd].port;
-    }
+    (void)sock_fd;
     return 0;
 }
-
 int32_t wing_tcp_get_peer_ip(int64_t sock_fd, wing_bytes_rw out_ip) {
-    if (out_ip.data == NULL || out_ip.len <= 0) return -1;
-    const char *src = "127.0.0.1";
-    if (sock_fd > 0 && sock_fd < WASM_MAX_SOCKETS && g_wasm_sockets[sock_fd].active &&
-        g_wasm_sockets[sock_fd].host[0] != '\0') {
-        src = g_wasm_sockets[sock_fd].host;
-    }
-    int64_t len = (int64_t)strlen(src);
-    if (len > out_ip.len) len = out_ip.len;
-    memcpy(out_ip.data, src, (size_t)len);
-    return (int32_t)len;
+    (void)sock_fd;
+    (void)out_ip;
+    return -38;
 }
-
 int64_t wing_tcp_accept(int64_t listener_fd, uint32_t timeout_ms) {
+    (void)listener_fd;
     (void)timeout_ms;
-    if (listener_fd <= 0 || listener_fd >= WASM_MAX_SOCKETS || !g_wasm_sockets[listener_fd].active ||
-        !g_wasm_sockets[listener_fd].is_listener) {
-        return -1;
-    }
-    wasm_virtual_socket_t *lis = &g_wasm_sockets[listener_fd];
-    if (lis->pending_head < lis->pending_tail) {
-        int server_slot = lis->pending_conns[lis->pending_head % WASM_MAX_SOCKETS];
-        lis->pending_head++;
-        return (int64_t)server_slot;
-    }
-    return 0;
+    return -38;
 }
-
-int64_t wing_tcp_accept_nonblocking(int64_t listener_fd) { return wing_tcp_accept(listener_fd, 0); }
-
-int64_t wing_tcp_connect(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms) {
-    (void)timeout_ms;
-    wing_tcp_init();
-
-    int listener_idx = -1;
-    for (int i = 1; i < WASM_MAX_SOCKETS; i++) {
-        if (g_wasm_sockets[i].active && g_wasm_sockets[i].is_listener && g_wasm_sockets[i].port == port) {
-            listener_idx = i;
-            break;
-        }
-    }
-    if (listener_idx < 0) return -1; // Connection refused
-
-    wasm_virtual_socket_t *lis = &g_wasm_sockets[listener_idx];
-    int pending_count = (int)(lis->pending_tail - lis->pending_head);
-    int max_backlog = lis->backlog > 0 && lis->backlog < WASM_MAX_SOCKETS ? lis->backlog : (WASM_MAX_SOCKETS - 1);
-    if (pending_count >= max_backlog || pending_count >= WASM_MAX_SOCKETS) {
-        return -1; // Connection refused: listener backlog saturated
-    }
-
-    int client_slot = -1;
-    int server_slot = -1;
-    for (int i = 1; i < WASM_MAX_SOCKETS; i++) {
-        if (!g_wasm_sockets[i].active) {
-            if (client_slot < 0)
-                client_slot = i;
-            else if (server_slot < 0) {
-                server_slot = i;
-                break;
-            }
-        }
-    }
-    if (client_slot < 0 || server_slot < 0) return -1; // Out of virtual sockets
-
-    if (slice_to_cstr(host, g_wasm_sockets[client_slot].host, sizeof(g_wasm_sockets[client_slot].host)) != 0 ||
-        slice_to_cstr(host, g_wasm_sockets[server_slot].host, sizeof(g_wasm_sockets[server_slot].host)) != 0) {
-        return -1;
-    }
-
-    // Set up client socket
-    g_wasm_sockets[client_slot].active = 1;
-    g_wasm_sockets[client_slot].is_listener = 0;
-    g_wasm_sockets[client_slot].port = (uint16_t)(20000 + client_slot);
-    g_wasm_sockets[client_slot].peer_slot = server_slot;
-    g_wasm_sockets[client_slot].rx_head = 0;
-    g_wasm_sockets[client_slot].rx_tail = 0;
-
-    // Set up server accepted socket
-    g_wasm_sockets[server_slot].active = 1;
-    g_wasm_sockets[server_slot].is_listener = 0;
-    g_wasm_sockets[server_slot].port = port;
-    g_wasm_sockets[server_slot].peer_slot = client_slot;
-    g_wasm_sockets[server_slot].rx_head = 0;
-    g_wasm_sockets[server_slot].rx_tail = 0;
-
-    // Enqueue server_slot onto listener FIFO
-    lis->pending_conns[lis->pending_tail % WASM_MAX_SOCKETS] = server_slot;
-    lis->pending_tail++;
-
-    return (int64_t)client_slot;
+int64_t wing_tcp_accept_nonblocking(int64_t listener_fd) {
+    (void)listener_fd;
+    return -38;
 }
-
 int64_t wing_tcp_connect_ex(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms, int32_t ip_family,
                             wing_bytes_ro local_bind_addr) {
+    (void)host;
+    (void)port;
+    (void)timeout_ms;
+    (void)ip_family;
     (void)local_bind_addr;
-    if (ip_family < 0 || ip_family > 2) return -1;
-    if (host.data != NULL && host.len > 0) {
-        int has_colon = memchr(host.data, ':', (size_t)host.len) != NULL;
-        if (ip_family == 1 && has_colon) return -1;
-        if (ip_family == 2 && !has_colon && !(host.len == 9 && memcmp(host.data, "localhost", 9) == 0)) return -1;
-    }
-    return wing_tcp_connect(host, port, timeout_ms);
+    return -38;
 }
-
-static int wing_wasm_is_ip_literal(const char *s, int *out_is_v6) {
-    if (s == NULL || s[0] == '\0') return 0;
-    int has_colon = (strchr(s, ':') != NULL);
-    int has_dot = (strchr(s, '.') != NULL);
-    if (!has_colon && !has_dot) return 0;
-    for (const char *p = s; *p != '\0'; p++) {
-        char c = *p;
-        int ok = (c >= '0' && c <= '9') || c == '.';
-        if (has_colon) {
-            ok = ok || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == ':';
-        }
-        if (!ok) return 0;
-    }
-    if (out_is_v6) *out_is_v6 = has_colon;
-    return 1;
-}
-
 int32_t wing_net_resolve_host(wing_bytes_ro host, int32_t ip_family, wing_bytes_rw out_buf) {
-    if (host.data == NULL || host.len <= 0 || host.len >= 256) return -1;
-    if (ip_family < 0 || ip_family > 2 || out_buf.data == NULL || out_buf.len <= 0) return -1;
-    char h[256];
-    if (slice_to_cstr(host, h, sizeof(h)) != 0) return -1;
-    size_t hlen = strlen(h);
-    if (hlen >= 2 && h[0] == '[' && h[hlen - 1] == ']') {
-        memmove(h, h + 1, hlen - 2);
-        h[hlen - 2] = '\0';
-        hlen -= 2;
-    }
-    if (strcmp(h, "localhost") == 0) {
-        const char *res = (ip_family == 1) ? "127.0.0.1\n" : ((ip_family == 2) ? "::1\n" : "127.0.0.1\n::1\n");
-        int64_t n = (int64_t)strlen(res);
-        if (n > out_buf.len) return -1;
-        memcpy(out_buf.data, res, (size_t)n);
-        return (int32_t)n;
-    }
-    int is_v6 = 0;
-    if (!wing_wasm_is_ip_literal(h, &is_v6)) return -1;
-    if ((ip_family == 1 && is_v6) || (ip_family == 2 && !is_v6)) return -1;
-    if ((int64_t)hlen + 1 > out_buf.len) return -1;
-    memcpy(out_buf.data, h, hlen);
-    out_buf.data[hlen] = '\n';
-    return (int32_t)(hlen + 1);
+    (void)host;
+    (void)ip_family;
+    (void)out_buf;
+    return -38;
 }
-
 int64_t wing_tcp_connect_ip(wing_bytes_ro ip, uint16_t port, uint32_t timeout_ms, int32_t ip_family,
                             wing_bytes_ro local_bind_addr) {
-    if (ip.data == NULL || ip.len <= 0 || ip.len >= 128 || port == 0 || ip_family < 0 || ip_family > 2) return -1;
-    char s[128];
-    if (slice_to_cstr(ip, s, sizeof(s)) != 0) return -1;
-    size_t slen = strlen(s);
-    if (slen >= 2 && s[0] == '[' && s[slen - 1] == ']') {
-        memmove(s, s + 1, slen - 2);
-        s[slen - 2] = '\0';
-    }
-    int is_v6 = 0;
-    if (!wing_wasm_is_ip_literal(s, &is_v6)) return -1;
-    if ((ip_family == 1 && is_v6) || (ip_family == 2 && !is_v6)) return -1;
-    return wing_tcp_connect_ex(ip, port, timeout_ms, ip_family, local_bind_addr);
-}
-
-int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data) {
-    if (sock_fd <= 0 || sock_fd >= WASM_MAX_SOCKETS || !g_wasm_sockets[sock_fd].active || data.data == NULL ||
-        data.len <= 0) {
-        return 0;
-    }
-    int peer = g_wasm_sockets[sock_fd].peer_slot;
-    if (peer <= 0 || peer >= WASM_MAX_SOCKETS || !g_wasm_sockets[peer].active) {
-        return -1; // Connection broken/closed
-    }
-    wasm_virtual_socket_t *p = &g_wasm_sockets[peer];
-    int64_t avail = WASM_SOCK_BUF_SIZE - (p->rx_tail - p->rx_head);
-    if (avail <= 0 && data.len > 0) {
-        return -2; // WouldBlock (peer rx buffer full)
-    }
-    int64_t to_write = data.len < avail ? data.len : avail;
-    for (int64_t i = 0; i < to_write; i++) {
-        p->rx_buf[(p->rx_tail + i) % WASM_SOCK_BUF_SIZE] = data.data[i];
-    }
-    p->rx_tail += to_write;
-    return (int32_t)to_write;
-}
-
-int32_t wing_tcp_send2(int64_t sock_fd, wing_bytes_ro hdr, wing_bytes_ro payload) {
-    int32_t sent1 = wing_tcp_send(sock_fd, hdr);
-    int32_t sent2 = wing_tcp_send(sock_fd, payload);
-    return (sent1 >= 0 && sent2 >= 0) ? (sent1 + sent2) : -1;
-}
-
-int32_t wing_tcp_recv(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms) {
+    (void)ip;
+    (void)port;
     (void)timeout_ms;
-    if (sock_fd <= 0 || sock_fd >= WASM_MAX_SOCKETS || !g_wasm_sockets[sock_fd].active || buf.data == NULL ||
-        buf.len <= 0) {
-        return -1;
-    }
-    wasm_virtual_socket_t *s = &g_wasm_sockets[sock_fd];
-    int64_t readable = s->rx_tail - s->rx_head;
-    if (readable <= 0) {
-        if (s->peer_slot < 0 ||
-            (s->peer_slot > 0 && s->peer_slot < WASM_MAX_SOCKETS && g_wasm_sockets[s->peer_slot].write_shut))
-            return 0; // Peer closed connection or shut down write side (EOF)
-        return -2;    // WouldBlock / Timeout (peer connected, no data ready)
-    }
-    int64_t to_read = buf.len < readable ? buf.len : readable;
-    for (int64_t i = 0; i < to_read; i++) {
-        buf.data[i] = s->rx_buf[(s->rx_head + i) % WASM_SOCK_BUF_SIZE];
-    }
-    s->rx_head += to_read;
-    if (s->rx_head == s->rx_tail) {
-        s->rx_head = 0;
-        s->rx_tail = 0;
-    } else if (s->rx_head >= WASM_SOCK_BUF_SIZE) {
-        s->rx_head %= WASM_SOCK_BUF_SIZE;
-        s->rx_tail %= WASM_SOCK_BUF_SIZE;
-        if (s->rx_tail < s->rx_head) s->rx_tail += WASM_SOCK_BUF_SIZE;
-    }
-    return (int32_t)to_read;
+    (void)ip_family;
+    (void)local_bind_addr;
+    return -38;
 }
-
-int32_t wing_tcp_recv_nonblocking(int64_t sock_fd, wing_bytes_rw buf) { return wing_tcp_recv(sock_fd, buf, 0); }
-
-void wing_tcp_close(int64_t sock_fd) {
-    if (sock_fd > 0 && sock_fd < WASM_MAX_SOCKETS && g_wasm_sockets[sock_fd].active) {
-        if (g_wasm_sockets[sock_fd].is_listener) {
-            // Drain and close any unaccepted server sockets queued in pending_conns
-            wasm_virtual_socket_t *lis = &g_wasm_sockets[sock_fd];
-            while (lis->pending_head < lis->pending_tail) {
-                int server_slot = lis->pending_conns[lis->pending_head % WASM_MAX_SOCKETS];
-                lis->pending_head++;
-                if (server_slot > 0 && server_slot < WASM_MAX_SOCKETS && g_wasm_sockets[server_slot].active) {
-                    int peer = g_wasm_sockets[server_slot].peer_slot;
-                    if (peer > 0 && peer < WASM_MAX_SOCKETS) {
-                        g_wasm_sockets[peer].peer_slot = -1;
-                    }
-                    memset(&g_wasm_sockets[server_slot], 0, sizeof(wasm_virtual_socket_t));
-                }
-            }
-        }
-        int peer = g_wasm_sockets[sock_fd].peer_slot;
-        if (peer > 0 && peer < WASM_MAX_SOCKETS) {
-            g_wasm_sockets[peer].peer_slot = -1;
-        }
-        memset(&g_wasm_sockets[sock_fd], 0, sizeof(wasm_virtual_socket_t));
-    }
+int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data) {
+    (void)sock_fd;
+    (void)data;
+    return -38;
 }
-
+int32_t wing_tcp_send2(int64_t sock_fd, wing_bytes_ro hdr, wing_bytes_ro payload) {
+    (void)sock_fd;
+    (void)hdr;
+    (void)payload;
+    return -38;
+}
+int32_t wing_tcp_recv(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms) {
+    (void)sock_fd;
+    (void)buf;
+    (void)timeout_ms;
+    return -38;
+}
+void wing_tcp_close(int64_t sock_fd) { (void)sock_fd; }
+int32_t wing_tcp_shutdown(int64_t sock_fd, int32_t how) {
+    (void)sock_fd;
+    (void)how;
+    return 0;
+}
+int32_t wing_tcp_set_linger(int64_t sock_fd, int32_t onoff, int32_t linger_sec) {
+    (void)sock_fd;
+    (void)onoff;
+    (void)linger_sec;
+    return 0;
+}
+int32_t wing_tcp_set_nodelay(int64_t sock_fd, int32_t enable) {
+    (void)sock_fd;
+    (void)enable;
+    return 0;
+}
+int32_t wing_tcp_set_reuseaddr(int64_t sock_fd, int32_t enable) {
+    (void)sock_fd;
+    (void)enable;
+    return 0;
+}
+int32_t wing_tcp_set_reuseport(int64_t sock_fd, int32_t enable) {
+    (void)sock_fd;
+    (void)enable;
+    return 0;
+}
 int32_t wing_tcp_set_defer_accept(int64_t sock_fd, int32_t timeout_sec) {
     (void)sock_fd;
     (void)timeout_sec;
@@ -568,7 +348,11 @@ int32_t wing_tcp_set_fastopen(int64_t sock_fd, int32_t qlen) {
     (void)qlen;
     return 0;
 }
-int32_t wing_tcp_send_fastopen(int64_t sock_fd, wing_bytes_ro data) { return wing_tcp_send(sock_fd, data); }
+int32_t wing_tcp_send_fastopen(int64_t sock_fd, wing_bytes_ro data) {
+    (void)sock_fd;
+    (void)data;
+    return -38;
+}
 int32_t wing_tcp_set_tos(int64_t sock_fd, int32_t tos) {
     (void)sock_fd;
     (void)tos;
@@ -584,9 +368,7 @@ int64_t wing_tcp_get_notsent_bytes(int64_t sock_fd) {
     return 0;
 }
 int64_t wing_tcp_get_readable_bytes(int64_t sock_fd) {
-    if (sock_fd > 0 && sock_fd < WASM_MAX_SOCKETS && g_wasm_sockets[sock_fd].active) {
-        return g_wasm_sockets[sock_fd].rx_tail - g_wasm_sockets[sock_fd].rx_head;
-    }
+    (void)sock_fd;
     return 0;
 }
 int32_t wing_tcp_set_nonblocking(int64_t sock_fd, int32_t nonblocking) {
@@ -604,7 +386,7 @@ int32_t wing_tcp_set_cork(int64_t sock_fd, int32_t enable) {
     (void)enable;
     return 0;
 }
-
+int64_t wing_online_cpu_count(void) { return 1; }
 int32_t wing_set_cpu_affinity(int64_t cpu_id) {
     (void)cpu_id;
     return 0;
@@ -614,26 +396,25 @@ int32_t wing_tcp_set_incoming_cpu(int64_t sock_fd, int64_t cpu_id) {
     (void)cpu_id;
     return 0;
 }
-
-int64_t wing_epoll_create(void) { return 1; }
+int64_t wing_epoll_create(void) { return -38; }
 int32_t wing_epoll_add(int64_t epfd, int64_t sock_fd, uint32_t events, uint64_t udata) {
     (void)epfd;
     (void)sock_fd;
     (void)events;
     (void)udata;
-    return 0;
+    return -38;
 }
 int32_t wing_epoll_mod(int64_t epfd, int64_t sock_fd, uint32_t events, uint64_t udata) {
     (void)epfd;
     (void)sock_fd;
     (void)events;
     (void)udata;
-    return 0;
+    return -38;
 }
 int32_t wing_epoll_del(int64_t epfd, int64_t sock_fd) {
     (void)epfd;
     (void)sock_fd;
-    return 0;
+    return -38;
 }
 int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata, int32_t timeout_ms) {
     (void)epfd;
@@ -652,97 +433,82 @@ int32_t wing_epoll_wait_events(int64_t epfd, wing_slice_i64 out_fds, wing_slice_
     return 0;
 }
 void wing_epoll_close(int64_t epfd) { (void)epfd; }
-
-int64_t wing_udp_bind(wing_bytes_ro host, uint16_t port) { return wing_tcp_listen(host, port, 16); }
-int32_t wing_udp_sendto(int64_t sock_fd, wing_bytes_ro data, wing_bytes_ro host, uint16_t port) {
+int64_t wing_udp_bind(wing_bytes_ro host, uint16_t port) {
     (void)host;
     (void)port;
-    return wing_tcp_send(sock_fd, data);
+    return -38;
+}
+int32_t wing_udp_sendto(int64_t sock_fd, wing_bytes_ro data, wing_bytes_ro host, uint16_t port) {
+    (void)sock_fd;
+    (void)data;
+    (void)host;
+    (void)port;
+    return -38;
 }
 int32_t wing_udp_recvfrom(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms, uint32_t *peer_ip4,
                           uint16_t *peer_port) {
-    if (peer_ip4) *peer_ip4 = 0x0100007F;
-    if (peer_port) {
-        if (sock_fd > 0 && sock_fd < WASM_MAX_SOCKETS && g_wasm_sockets[sock_fd].peer_slot > 0) {
-            *peer_port = g_wasm_sockets[g_wasm_sockets[sock_fd].peer_slot].port;
-        } else {
-            *peer_port = 8080;
-        }
-    }
-    return wing_tcp_recv(sock_fd, buf, timeout_ms);
-}
-int32_t wing_udp_sendto_ip4(int64_t sock_fd, wing_bytes_ro data, uint32_t peer_ip4, uint16_t peer_port) {
+    (void)sock_fd;
+    (void)buf;
+    (void)timeout_ms;
     (void)peer_ip4;
     (void)peer_port;
-    return wing_tcp_send(sock_fd, data);
+    return -38;
 }
-
+int32_t wing_udp_sendto_ip4(int64_t sock_fd, wing_bytes_ro data, uint32_t peer_ip4, uint16_t peer_port) {
+    (void)sock_fd;
+    (void)data;
+    (void)peer_ip4;
+    (void)peer_port;
+    return -38;
+}
 int32_t wing_udp_sendmmsg(int64_t sock_fd, wing_bytes_ro payloads, wing_slice_i32_ro lengths, wing_slice_u32_ro ips,
                           wing_slice_u16_ro ports, int32_t count) {
-    if (sock_fd < 0 || count <= 0 || payloads.data == NULL || lengths.data == NULL || ips.data == NULL ||
-        ports.data == NULL)
-        return -1;
-    if (lengths.len < count || ips.len < count || ports.len < count) return -1;
-    if (sock_fd == 0) return count;
-    int32_t sent = 0;
-    int64_t offset = 0;
-    for (int32_t i = 0; i < count; i++) {
-        int32_t pkt_len = lengths.data[i];
-        if (pkt_len < 0 || offset + pkt_len > payloads.len) break;
-        wing_bytes_ro slice = {payloads.data + offset, pkt_len};
-        int32_t r = wing_udp_sendto_ip4(sock_fd, slice, ips.data[i], ports.data[i]);
-        if (r < 0) return sent > 0 ? sent : -1;
-        offset += 1472;
-        sent++;
-    }
-    return sent;
+    (void)sock_fd;
+    (void)payloads;
+    (void)lengths;
+    (void)ips;
+    (void)ports;
+    (void)count;
+    return -38;
 }
-
 int32_t wing_udp_recvmmsg(int64_t sock_fd, wing_bytes_rw payloads, wing_slice_i32 lengths, wing_slice_u32 ips,
                           wing_slice_u16 ports, int32_t max_count, uint32_t timeout_ms) {
-    if (sock_fd < 0 || max_count <= 0 || payloads.data == NULL || lengths.data == NULL || ips.data == NULL ||
-        ports.data == NULL)
-        return -1;
-    if (lengths.len < max_count || ips.len < max_count || ports.len < max_count) return -1;
-    if (sock_fd == 0) return 0;
-    int32_t recvd = 0;
-    for (int32_t i = 0; i < max_count; i++) {
-        int64_t offset = (int64_t)i * 1472;
-        if (offset + 1472 > payloads.len) break;
-        wing_bytes_rw slice = {payloads.data + offset, 1472};
-        int32_t r = wing_udp_recvfrom(sock_fd, slice, i == 0 ? timeout_ms : 0, &ips.data[i], &ports.data[i]);
-        if (r < 0) break;
-        lengths.data[i] = r;
-        recvd++;
-    }
-    return recvd;
+    (void)sock_fd;
+    (void)payloads;
+    (void)lengths;
+    (void)ips;
+    (void)ports;
+    (void)max_count;
+    (void)timeout_ms;
+    return -38;
 }
-
 int64_t wing_tcp_listen_dual(wing_bytes_ro host, uint16_t port, int32_t backlog, int32_t flags) {
+    (void)host;
+    (void)port;
+    (void)backlog;
     (void)flags;
-    return wing_tcp_listen(host, port, backlog);
+    return -38;
 }
 int64_t wing_tcp_accept_info(int64_t listener_fd, int32_t mode_flags, wing_bytes_rw out_peer_ip,
                              int32_t *out_peer_ip_len, uint16_t *out_peer_port, wing_bytes_rw out_dst_ip,
                              int32_t *out_dst_ip_len, uint16_t *out_dst_port) {
+    (void)listener_fd;
     (void)mode_flags;
-    int64_t c = wing_tcp_accept_nonblocking(listener_fd);
-    if (c <= 0) return c;
-    int32_t plen = wing_tcp_get_peer_ip(c, out_peer_ip);
-    if (out_peer_ip_len) *out_peer_ip_len = plen;
-    if (out_peer_port) *out_peer_port = 0;
-    if (out_dst_ip.data && out_dst_ip.len >= 9) {
-        memcpy(out_dst_ip.data, "127.0.0.1", 9);
-        if (out_dst_ip_len) *out_dst_ip_len = 9;
-    }
-    if (out_dst_port) *out_dst_port = wing_tcp_getsockname_port(c);
-    return c;
+    (void)out_peer_ip;
+    (void)out_peer_ip_len;
+    (void)out_peer_port;
+    (void)out_dst_ip;
+    (void)out_dst_ip_len;
+    (void)out_dst_port;
+    return -38;
 }
 int64_t wing_tcp_connect_opts_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip, uint16_t dst_port, uint32_t so_mark,
                                     int32_t ttl, int32_t mss, int32_t rcvbuf, int32_t tcp_nodelay, int32_t ka_idle,
                                     int32_t ka_intvl, int32_t ka_cnt, uint32_t user_timeout_ms, int32_t *out_state,
                                     int32_t *out_err) {
     (void)src_ip;
+    (void)dst_ip;
+    (void)dst_port;
     (void)so_mark;
     (void)ttl;
     (void)mss;
@@ -752,19 +518,18 @@ int64_t wing_tcp_connect_opts_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip, 
     (void)ka_intvl;
     (void)ka_cnt;
     (void)user_timeout_ms;
-    if (out_err) *out_err = 0;
-    return wing_tcp_connect_begin(dst_ip, dst_port, out_state);
+    if (out_state) *out_state = -1;
+    if (out_err) *out_err = -1;
+    return -38;
 }
-int64_t wing_tcp_connect_bound_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip, uint16_t dst_port, uint32_t so_mark,
-                                     int32_t *out_state, int32_t *out_err) {
-    return wing_tcp_connect_opts_begin(src_ip, dst_ip, dst_port, so_mark, 0, 0, 0, 1, 30, 5, 3, 15000, out_state,
-                                       out_err);
+int32_t wing_tcp_connect_status(int64_t sock_fd) {
+    (void)sock_fd;
+    return -38;
 }
-int32_t wing_tcp_connect_status(int64_t sock_fd) { return wing_tcp_connect_finish(sock_fd); }
 int32_t wing_tcp_recv_peek(int64_t sock_fd, wing_bytes_rw dst) {
     (void)sock_fd;
     (void)dst;
-    return -2;
+    return -38;
 }
 int32_t wing_tcp_set_ttl(int64_t sock_fd, int32_t ttl, int32_t is_ipv6) {
     (void)sock_fd;
@@ -803,36 +568,32 @@ int64_t wing_tcp_splice_chunk(int64_t src_fd, int64_t dst_fd, int64_t pipe_r, in
 }
 int32_t wing_net_get_local_ips(wing_bytes_rw out_buf) {
     const char *ips = "127.0.0.1\n::1\n";
-    int64_t n = (int64_t)strlen(ips);
-    if (out_buf.data == NULL || out_buf.len < n) return -1;
+    int64_t n = 14;
+    if (!out_buf.data || out_buf.len < n) return -1;
     memcpy(out_buf.data, ips, (size_t)n);
     return (int32_t)n;
 }
 int64_t wing_udp_open_dual(wing_bytes_ro bind_ip, uint16_t bind_port, int32_t flags) {
+    (void)bind_ip;
+    (void)bind_port;
     (void)flags;
-    return wing_udp_bind(bind_ip, bind_port);
+    return -38;
 }
 int32_t wing_udp_sendto_dual(int64_t sock_fd, wing_bytes_ro data, wing_bytes_ro dst_ip, uint16_t dst_port) {
-    return wing_udp_sendto(sock_fd, data, dst_ip, dst_port);
+    (void)sock_fd;
+    (void)data;
+    (void)dst_ip;
+    (void)dst_port;
+    return -38;
 }
 int32_t wing_udp_recvfrom_dual(int64_t sock_fd, wing_bytes_rw out_buf, wing_bytes_rw out_peer_ip,
                                int32_t *out_peer_ip_len, uint16_t *out_peer_port) {
-    uint32_t ip4 = 0;
-    int32_t r = wing_udp_recvfrom(sock_fd, out_buf, 0, &ip4, out_peer_port);
-    if (r >= 0 && out_peer_ip.data && out_peer_ip.len >= 9) {
-        memcpy(out_peer_ip.data, "127.0.0.1", 9);
-        if (out_peer_ip_len) *out_peer_ip_len = 9;
-    }
-    return r;
-}
-int32_t wing_udp_exchange_dual(wing_bytes_ro server_ip, uint16_t server_port, wing_bytes_ro query,
-                               wing_bytes_rw out_resp, uint32_t timeout_ms) {
-    (void)server_ip;
-    (void)server_port;
-    (void)query;
-    (void)out_resp;
-    (void)timeout_ms;
-    return -1;
+    (void)sock_fd;
+    (void)out_buf;
+    (void)out_peer_ip;
+    (void)out_peer_ip_len;
+    (void)out_peer_port;
+    return -38;
 }
 int32_t wing_fs_disk_usage_percent(wing_bytes_ro path) {
     (void)path;
@@ -902,259 +663,173 @@ void wing_tcp_cleanup(void) {
 #endif
 }
 
-// Reads port from WING_PORT environment variable, or returns default_port
-uint16_t wing_get_env_port(uint16_t default_port) {
-    const char *p = getenv("WING_PORT");
-    if (!p || !*p) p = getenv("GW_PORT");
-    if (p && *p) {
-        int val = atoi(p);
-        if (val > 0 && val < 65536) return (uint16_t)val;
-    }
-    return default_port;
+static int wing_setsockopt_int(SOCKET s, int level, int optname, int val) {
+    return setsockopt(s, level, optname, (const char *)&val, sizeof(val));
 }
+
+int32_t wing_tcp_set_nonblocking(int64_t sock_fd, int32_t nonblocking);
+static void wing_prepare_nonblocking_cloexec(SOCKET s);
+
+// Forward declarations for helpers defined later in file.
+static int wing_parse_ip_sockaddr(const char *ip_str, uint16_t port, int force_family, struct sockaddr_storage *out_ss,
+                                  int *out_family, int *out_len);
+static int32_t wing_format_sockaddr_ip_port(const struct sockaddr_storage *ss, wing_bytes_rw out_ip,
+                                            uint16_t *out_port);
+static void wing_append_ip_line(wing_bytes_rw out_buf, int64_t *pos, const char *ip_str);
 
 // Creates, binds, and listens on host:port.
 int64_t wing_tcp_listen(wing_bytes_ro host, uint16_t port, int32_t backlog) {
     wing_tcp_init();
 
     char host_str[128];
-    if (slice_to_cstr(host, host_str, sizeof(host_str)) != 0) {
-        return -1;
-    }
+    if (slice_to_cstr(host, host_str, sizeof(host_str)) != 0) return -1;
+    wing_strip_brackets(host_str);
 
     int is_v6 = (strchr(host_str, ':') != NULL);
-    SOCKET s = socket(is_v6 ? AF_INET6 : AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s == INVALID_SOCKET) {
+    const char *norm_ip = host_str;
+    if (strcmp(host_str, "0.0.0.0") == 0)
+        norm_ip = "";
+    else if (strcmp(host_str, "localhost") == 0)
+        norm_ip = "127.0.0.1";
+
+    struct sockaddr_storage ss;
+    int family = AF_INET;
+    int addr_len = 0;
+    if (wing_parse_ip_sockaddr(norm_ip, port, is_v6 ? AF_INET6 : AF_INET, &ss, &family, &addr_len) != 0) {
         return -1;
     }
-#ifdef _WIN32
-    // uSockets #263: Do not inherit socket handles into child processes (prevents keep-alive hangs)
-    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
 
-    // uSockets #101 / #167: On Windows, use SO_EXCLUSIVEADDRUSE to prevent port hijacking attacks (CWE-200).
-    // SO_REUSEADDR on Windows permits rogue processes to forcibly bind to the same port and steal connections.
-    int opt = 1;
-    setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&opt, sizeof(opt));
+    SOCKET s = socket(family, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) return -1;
+#ifdef _WIN32
+    // uSockets #263 / #101: Non-inheritable + SO_EXCLUSIVEADDRUSE on Windows prevents port hijacking (CWE-200).
+    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
+    wing_setsockopt_int(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, 1);
 #else
-    int opt = 1;
-    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
+    wing_setsockopt_int(s, SOL_SOCKET, SO_REUSEADDR, 1);
 #if defined(SO_REUSEPORT)
-    setsockopt(s, SOL_SOCKET, SO_REUSEPORT, (const char *)&opt, sizeof(opt));
+    wing_setsockopt_int(s, SOL_SOCKET, SO_REUSEPORT, 1);
 #endif
 #if defined(TCP_DEFER_ACCEPT)
     const char *def_env = getenv("WING_DEFER_ACCEPT");
     if (def_env && atoi(def_env) > 0) {
-        int defer = atoi(def_env);
-        setsockopt(s, IPPROTO_TCP, TCP_DEFER_ACCEPT, &defer, sizeof(defer));
+        wing_setsockopt_int(s, IPPROTO_TCP, TCP_DEFER_ACCEPT, atoi(def_env));
     }
 #endif
 #endif
 
     if (is_v6) {
         int v6only = (strcmp(host_str, "::") == 0) ? 0 : 1;
-        if (setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&v6only, sizeof(v6only)) == SOCKET_ERROR) {
-            closesocket(s);
-            return -1;
-        }
-        struct sockaddr_in6 addr6;
-        memset(&addr6, 0, sizeof(addr6));
-        addr6.sin6_family = AF_INET6;
-        addr6.sin6_port = htons(port);
-        if (inet_pton(AF_INET6, host_str, &addr6.sin6_addr) != 1) {
-            closesocket(s);
-            return -1;
-        }
-        if (bind(s, (struct sockaddr *)&addr6, sizeof(addr6)) == SOCKET_ERROR) {
-            closesocket(s);
-            return -1;
-        }
-    } else {
-        struct sockaddr_in addr;
-        memset(&addr, 0, sizeof(addr));
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(port);
-
-        if (host_str[0] == '\0' || strcmp(host_str, "0.0.0.0") == 0) {
-            addr.sin_addr.s_addr = htonl(INADDR_ANY);
-        } else if (strcmp(host_str, "localhost") == 0) {
-            if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
-                closesocket(s);
-                return -1;
-            }
-        } else {
-            if (inet_pton(AF_INET, host_str, &addr.sin_addr) != 1) {
-                closesocket(s);
-                return -1;
-            }
-        }
-
-        if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        if (wing_setsockopt_int(s, IPPROTO_IPV6, IPV6_V6ONLY, v6only) == SOCKET_ERROR) {
             closesocket(s);
             return -1;
         }
     }
-
-    if (listen(s, backlog > 0 ? backlog : 128) == SOCKET_ERROR) {
+#ifdef _WIN32
+    if (bind(s, (struct sockaddr *)&ss, addr_len) == SOCKET_ERROR ||
+#else
+    if (bind(s, (struct sockaddr *)&ss, (socklen_t)addr_len) == SOCKET_ERROR ||
+#endif
+        listen(s, backlog > 0 ? backlog : 128) == SOCKET_ERROR) {
         closesocket(s);
         return -1;
     }
+    return (int64_t)s;
+}
 
+static int64_t wing_unix_connect_impl(wing_bytes_ro path, int nonblocking, int32_t *out_state) {
+    if (out_state) *out_state = -1;
+    wing_tcp_init();
+    struct sockaddr_un addr;
+    char path_str[108];
+    if (path.data == NULL || path.len <= 0 || (size_t)path.len >= sizeof(addr.sun_path) ||
+        slice_to_cstr(path, path_str, sizeof(path_str)) != 0 || path_str[0] == '\0') {
+        return -1;
+    }
+    SOCKET s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s == INVALID_SOCKET) return -1;
+#ifdef _WIN32
+    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
+    if (nonblocking) {
+        u_long nb = 1;
+        ioctlsocket(s, FIONBIO, &nb);
+    }
+#else
+    if (nonblocking) {
+        int flags = fcntl(s, F_GETFL, 0);
+        if (flags >= 0) fcntl(s, F_SETFL, flags | O_NONBLOCK);
+    }
+#endif
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    memcpy(addr.sun_path, path_str, strlen(path_str));
+
+    if (connect(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        if (nonblocking) {
+#ifdef _WIN32
+            int err = WSAGetLastError();
+            if (err == WSAEWOULDBLOCK || err == WSAEINPROGRESS) {
+                if (out_state) *out_state = 1;
+                return (int64_t)s;
+            }
+#else
+            if (errno == EINPROGRESS || errno == EAGAIN || errno == EWOULDBLOCK) {
+                if (out_state) *out_state = 1;
+                return (int64_t)s;
+            }
+#endif
+        }
+        closesocket(s);
+        return -1;
+    }
+    if (out_state) *out_state = 0;
     return (int64_t)s;
 }
 
 // Unix Domain Sockets (AF_UNIX) Listener (uWebSockets us_socket_context_listen_unix pattern).
 int64_t wing_tcp_listen_unix(wing_bytes_ro path, int32_t backlog) {
     wing_tcp_init();
-
     char path_str[108];
-    if (slice_to_cstr(path, path_str, sizeof(path_str)) != 0 || path_str[0] == '\0') {
-        return -1;
-    }
-
+    if (slice_to_cstr(path, path_str, sizeof(path_str)) != 0 || path_str[0] == '\0') return -1;
 #ifdef _WIN32
     DeleteFileA(path_str);
-    SOCKET s = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (s == INVALID_SOCKET) {
-        return -1;
-    }
-    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
 #else
     unlink(path_str);
-    SOCKET s = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (s == INVALID_SOCKET) {
-        return -1;
-    }
 #endif
-
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, path_str, sizeof(addr.sun_path) - 1);
-
-    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
-        closesocket(s);
-        return -1;
-    }
-
-    if (listen(s, backlog > 0 ? backlog : 128) == SOCKET_ERROR) {
-        closesocket(s);
-        return -1;
-    }
-
-    return (int64_t)s;
-}
-
-// Unix Domain Sockets (AF_UNIX) Client Connector (uWebSockets us_socket_context_connect_unix pattern).
-int64_t wing_tcp_connect_unix(wing_bytes_ro path) {
-    wing_tcp_init();
-
-    char path_str[108];
-    if (slice_to_cstr(path, path_str, sizeof(path_str)) != 0 || path_str[0] == '\0') {
-        return -1;
-    }
-
     SOCKET s = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (s == INVALID_SOCKET) {
-        return -1;
-    }
+    if (s == INVALID_SOCKET) return -1;
 #ifdef _WIN32
     SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
 #endif
-
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, path_str, sizeof(addr.sun_path) - 1);
-
-    if (connect(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
+    memcpy(addr.sun_path, path_str, strlen(path_str));
+    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR ||
+        listen(s, backlog > 0 ? backlog : 128) == SOCKET_ERROR) {
         closesocket(s);
         return -1;
     }
-
     return (int64_t)s;
 }
 
-// Begins a non-blocking AF_UNIX client connection.
-// Sets *out_state to: 0 = connected immediately, 1 = in progress (wait POLL_WRITE), -1 = failed.
+int64_t wing_tcp_connect_unix(wing_bytes_ro path) { return wing_unix_connect_impl(path, 0, NULL); }
+
 int64_t wing_tcp_connect_unix_begin(wing_bytes_ro path, int32_t *out_state) {
-    if (out_state) *out_state = -1;
-    wing_tcp_init();
-
-    struct sockaddr_un addr;
-    if (path.data == NULL || path.len <= 0 || (size_t)path.len >= sizeof(addr.sun_path)) {
-        return -1;
-    }
-    char path_str[108];
-    if (slice_to_cstr(path, path_str, sizeof(path_str)) != 0 || path_str[0] == '\0') {
-        return -1;
-    }
-
-    SOCKET s = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (s == INVALID_SOCKET) {
-        return -1;
-    }
-#ifdef _WIN32
-    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
-    u_long nonblocking = 1;
-    ioctlsocket(s, FIONBIO, &nonblocking);
-#else
-    int flags = fcntl(s, F_GETFL, 0);
-    if (flags >= 0) {
-        fcntl(s, F_SETFL, flags | O_NONBLOCK);
-    }
-#endif
-
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, path_str, sizeof(addr.sun_path) - 1);
-
-    if (connect(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
-#ifdef _WIN32
-        int err = WSAGetLastError();
-        if (err == WSAEWOULDBLOCK || err == WSAEINPROGRESS) {
-            if (out_state) *out_state = 1;
-            return (int64_t)s;
-        }
-#else
-        if (errno == EINPROGRESS || errno == EAGAIN || errno == EWOULDBLOCK) {
-            if (out_state) *out_state = 1;
-            return (int64_t)s;
-        }
-#endif
-        closesocket(s);
-        return -1;
-    }
-
-    if (out_state) *out_state = 0;
-    return (int64_t)s;
+    return wing_unix_connect_impl(path, 1, out_state);
 }
 
 // Adopts an externally accepted or inherited socket descriptor (uWebSockets us_adopt_accepted_socket pattern).
-// Sanitizes the handle, sets non-blocking mode, disables inheritance, and configures TCP_NODELAY & SO_KEEPALIVE.
 int64_t wing_adopt_socket(int64_t raw_fd) {
     if (raw_fd <= 0) return -1;
     wing_tcp_init();
-
     SOCKET s = (SOCKET)raw_fd;
-
+    wing_tcp_set_nonblocking(raw_fd, 1);
 #ifdef _WIN32
-    // uSockets #263: Do not inherit socket handles into child processes
     SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
-    u_long mode = 1;
-    ioctlsocket(s, FIONBIO, &mode);
-#else
-    int flags = fcntl(s, F_GETFL, 0);
-    if (flags != -1) {
-        fcntl(s, F_SETFL, flags | O_NONBLOCK);
-    }
 #endif
-
-    int nodelay = 1;
-    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
-
-    int keepalive = 1;
-    setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, (const char *)&keepalive, sizeof(keepalive));
-
+    wing_setsockopt_int(s, IPPROTO_TCP, TCP_NODELAY, 1);
+    wing_setsockopt_int(s, SOL_SOCKET, SO_KEEPALIVE, 1);
     return (int64_t)s;
 }
 
@@ -1168,18 +843,13 @@ uint16_t wing_tcp_getsockname_port(int64_t sock_fd) {
     socklen_t len = (socklen_t)sizeof(ss);
 #endif
     memset(&ss, 0, sizeof(ss));
-    if (getsockname((SOCKET)sock_fd, (struct sockaddr *)&ss, &len) == SOCKET_ERROR) {
-        return 0;
-    }
-    if (ss.ss_family == AF_INET6) {
-        return ntohs(((const struct sockaddr_in6 *)&ss)->sin6_port);
-    }
-    return ntohs(((const struct sockaddr_in *)&ss)->sin_port);
+    if (getsockname((SOCKET)sock_fd, (struct sockaddr *)&ss, &len) == SOCKET_ERROR) return 0;
+    return (ss.ss_family == AF_INET6) ? ntohs(((const struct sockaddr_in6 *)&ss)->sin6_port)
+                                      : ntohs(((const struct sockaddr_in *)&ss)->sin_port);
 }
 
 int32_t wing_tcp_get_peer_ip(int64_t sock_fd, wing_bytes_rw out_ip) {
     if (out_ip.data == NULL || out_ip.len <= 0) return -1;
-    const char *fallback = "127.0.0.1";
     if (sock_fd > 0) {
         struct sockaddr_storage ss;
 #ifdef _WIN32
@@ -1189,32 +859,12 @@ int32_t wing_tcp_get_peer_ip(int64_t sock_fd, wing_bytes_rw out_ip) {
 #endif
         memset(&ss, 0, sizeof(ss));
         if (getpeername((SOCKET)sock_fd, (struct sockaddr *)&ss, &len) == 0) {
-            char ip_buf[INET6_ADDRSTRLEN];
-            ip_buf[0] = '\0';
-            const char *res = NULL;
-            if (ss.ss_family == AF_INET) {
-                const struct sockaddr_in *sin = (const struct sockaddr_in *)&ss;
-                res = inet_ntop(AF_INET, &sin->sin_addr, ip_buf, sizeof(ip_buf));
-            } else if (ss.ss_family == AF_INET6) {
-                const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)&ss;
-                if (IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr)) {
-                    struct in_addr mapped;
-                    memcpy(&mapped, &sin6->sin6_addr.s6_addr[12], sizeof(mapped));
-                    res = inet_ntop(AF_INET, &mapped, ip_buf, sizeof(ip_buf));
-                } else {
-                    res = inet_ntop(AF_INET6, &sin6->sin6_addr, ip_buf, sizeof(ip_buf));
-                }
-            }
-            if (res != NULL && ip_buf[0] != '\0') {
-                int64_t ip_len = (int64_t)strlen(ip_buf);
-                if (ip_len > out_ip.len) ip_len = out_ip.len;
-                memcpy(out_ip.data, ip_buf, (size_t)ip_len);
-                return (int32_t)ip_len;
-            }
+            int32_t n = wing_format_sockaddr_ip_port(&ss, out_ip, NULL);
+            if (n > 0) return n;
         }
     }
-    int64_t fb_len = (int64_t)strlen(fallback);
-    if (fb_len > out_ip.len) fb_len = out_ip.len;
+    const char *fallback = "127.0.0.1";
+    int64_t fb_len = 9 < out_ip.len ? 9 : out_ip.len;
     memcpy(out_ip.data, fallback, (size_t)fb_len);
     return (int32_t)fb_len;
 }
@@ -1252,9 +902,6 @@ int64_t wing_tcp_accept(int64_t listener_fd, uint32_t timeout_ms) {
     return (int64_t)client_sock;
 }
 
-static int wing_parse_ip_sockaddr(const char *ip_str, uint16_t port, int force_family, struct sockaddr_storage *out_ss,
-                                  int *out_family, int *out_len);
-
 // Resolves host (IPv4, IPv6, bracketed IPv6, "localhost", or DNS via getaddrinfo) into `ss`.
 // `ip_family`: 0 = AF_UNSPEC, 1 = AF_INET, 2 = AF_INET6. Returns 0 on success, -1 on failure.
 static int wing_resolve_tcp_host_family(wing_bytes_ro host, uint16_t port, int allow_empty_loopback, int32_t ip_family,
@@ -1273,66 +920,26 @@ static int wing_resolve_tcp_host_family(wing_bytes_ro host, uint16_t port, int a
     if (host.data == NULL || host.len <= 0) {
         if (!allow_empty_loopback) return -1;
         host_str[0] = '\0';
-    } else {
-        if (slice_to_cstr(host, host_str, sizeof(host_str)) != 0) return -1;
+    } else if (slice_to_cstr(host, host_str, sizeof(host_str)) != 0) {
+        return -1;
     }
+    wing_strip_brackets(host_str);
 
-    // Strip optional RFC 3986 brackets around IPv6 literals ("[::1]" -> "::1").
-    size_t hlen = strlen(host_str);
-    if (hlen >= 2 && host_str[0] == '[' && host_str[hlen - 1] == ']') {
-        memmove(host_str, host_str + 1, hlen - 2);
-        host_str[hlen - 2] = '\0';
-    }
-
-    struct in_addr addr4;
-    struct in6_addr addr6;
-    if (host_str[0] == '\0' || strcmp(host_str, "localhost") == 0) {
-        if (req_family == AF_INET6) {
-            struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)ss;
-            s6->sin6_family = AF_INET6;
-            s6->sin6_port = htons(port);
-            s6->sin6_addr = in6addr_loopback;
-            *out_family = AF_INET6;
-            *out_len = (int)sizeof(struct sockaddr_in6);
-            return 0;
-        }
-        struct sockaddr_in *s4 = (struct sockaddr_in *)ss;
-        s4->sin_family = AF_INET;
-        s4->sin_port = htons(port);
-        s4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        *out_family = AF_INET;
-        *out_len = (int)sizeof(struct sockaddr_in);
+    int plen = 0;
+    const char *lit = (host_str[0] == '\0' || strcmp(host_str, "localhost") == 0)
+                          ? ((req_family == AF_INET6) ? "::1" : "127.0.0.1")
+                          : host_str;
+    if (wing_parse_ip_sockaddr(lit, port, req_family, ss, out_family, &plen) == 0) {
+        *out_len = plen;
         return 0;
     }
-    if (inet_pton(AF_INET, host_str, &addr4) == 1) {
-        if (req_family == AF_INET6) return -1;
-        struct sockaddr_in *s4 = (struct sockaddr_in *)ss;
-        s4->sin_family = AF_INET;
-        s4->sin_port = htons(port);
-        s4->sin_addr = addr4;
-        *out_family = AF_INET;
-        *out_len = (int)sizeof(struct sockaddr_in);
-        return 0;
-    }
-    if (inet_pton(AF_INET6, host_str, &addr6) == 1) {
-        if (req_family == AF_INET) return -1;
-        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)ss;
-        s6->sin6_family = AF_INET6;
-        s6->sin6_port = htons(port);
-        s6->sin6_addr = addr6;
-        *out_family = AF_INET6;
-        *out_len = (int)sizeof(struct sockaddr_in6);
-        return 0;
-    }
-#if !defined(__wasm__)
     struct addrinfo hints;
     struct addrinfo *res_info = NULL;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = req_family;
     hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host_str, NULL, &hints, &res_info) != 0 || res_info == NULL) {
-        return -1;
-    }
+    if (getaddrinfo(host_str, NULL, &hints, &res_info) != 0 || res_info == NULL) return -1;
+
     int ok = -1;
     for (struct addrinfo *ai = res_info; ai != NULL; ai = ai->ai_next) {
         if (ai->ai_family == AF_INET && req_family != AF_INET6 && ai->ai_addrlen <= sizeof(*ss)) {
@@ -1354,20 +961,6 @@ static int wing_resolve_tcp_host_family(wing_bytes_ro host, uint16_t port, int a
     }
     freeaddrinfo(res_info);
     return ok;
-#else
-    return -1;
-#endif
-}
-
-static int wing_resolve_tcp_host(wing_bytes_ro host, uint16_t port, int allow_empty_loopback,
-                                 struct sockaddr_storage *ss, int *out_family,
-#ifdef _WIN32
-                                 int *out_len
-#else
-                                 socklen_t *out_len
-#endif
-) {
-    return wing_resolve_tcp_host_family(host, port, allow_empty_loopback, 0, ss, out_family, out_len);
 }
 
 static int wing_append_unique_ip_line(wing_bytes_rw out_buf, int64_t *pos, char seen[16][INET6_ADDRSTRLEN],
@@ -1376,15 +969,11 @@ static int wing_append_unique_ip_line(wing_bytes_rw out_buf, int64_t *pos, char 
     for (int i = 0; i < *seen_count; i++) {
         if (strcmp(seen[i], ip_str) == 0) return 0;
     }
-    if (*seen_count >= 16) return 0;
     size_t slen = strlen(ip_str);
-    if (slen >= INET6_ADDRSTRLEN || *pos + (int64_t)slen + 1 > out_buf.len) return 0;
+    if (*seen_count >= 16 || slen >= INET6_ADDRSTRLEN || *pos + (int64_t)slen + 1 > out_buf.len) return 0;
     memcpy(seen[*seen_count], ip_str, slen + 1);
     (*seen_count)++;
-    memcpy(out_buf.data + *pos, ip_str, slen);
-    *pos += (int64_t)slen;
-    out_buf.data[*pos] = '\n';
-    *pos += 1;
+    wing_append_ip_line(out_buf, pos, ip_str);
     return 1;
 }
 
@@ -1397,11 +986,7 @@ int32_t wing_net_resolve_host(wing_bytes_ro host, int32_t ip_family, wing_bytes_
 
     char host_str[256];
     if (slice_to_cstr(host, host_str, sizeof(host_str)) != 0) return -1;
-    size_t hlen = strlen(host_str);
-    if (hlen >= 2 && host_str[0] == '[' && host_str[hlen - 1] == ']') {
-        memmove(host_str, host_str + 1, hlen - 2);
-        host_str[hlen - 2] = '\0';
-    }
+    wing_strip_brackets(host_str);
     if (host_str[0] == '\0') return -1;
 
     int64_t pos = 0;
@@ -1414,31 +999,25 @@ int32_t wing_net_resolve_host(wing_bytes_ro host, int32_t ip_family, wing_bytes_
         return pos > 0 ? (int32_t)pos : -1;
     }
 
-    struct in_addr addr4;
-    struct in6_addr addr6;
+    struct sockaddr_storage ss;
+    int fam = 0;
+    int slen = 0;
+    int req_family = (ip_family == 1) ? AF_INET : ((ip_family == 2) ? AF_INET6 : AF_UNSPEC);
     char ipbuf[INET6_ADDRSTRLEN];
-    if (inet_pton(AF_INET, host_str, &addr4) == 1) {
-        if (ip_family == 2) return -1;
-        if (inet_ntop(AF_INET, &addr4, ipbuf, sizeof(ipbuf)) == NULL) return -1;
-        wing_append_unique_ip_line(out_buf, &pos, seen, &seen_count, ipbuf);
-        return pos > 0 ? (int32_t)pos : -1;
-    }
-    if (inet_pton(AF_INET6, host_str, &addr6) == 1) {
-        if (ip_family == 1) return -1;
-        if (inet_ntop(AF_INET6, &addr6, ipbuf, sizeof(ipbuf)) == NULL) return -1;
-        wing_append_unique_ip_line(out_buf, &pos, seen, &seen_count, ipbuf);
-        return pos > 0 ? (int32_t)pos : -1;
+    if (wing_parse_ip_sockaddr(host_str, 0, req_family, &ss, &fam, &slen) == 0) {
+        int32_t n = wing_format_sockaddr_ip_port(&ss, out_buf, NULL);
+        if (n <= 0 || n >= out_buf.len) return -1;
+        out_buf.data[n] = '\n';
+        return n + 1;
     }
 
-    int req_family = (ip_family == 1) ? AF_INET : ((ip_family == 2) ? AF_INET6 : AF_UNSPEC);
     struct addrinfo hints;
     struct addrinfo *res_info = NULL;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = req_family;
     hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host_str, NULL, &hints, &res_info) != 0 || res_info == NULL) {
-        return -1;
-    }
+    if (getaddrinfo(host_str, NULL, &hints, &res_info) != 0 || res_info == NULL) return -1;
+
     for (struct addrinfo *ai = res_info; ai != NULL; ai = ai->ai_next) {
         ipbuf[0] = '\0';
         if (ai->ai_family == AF_INET && req_family != AF_INET6) {
@@ -1483,10 +1062,8 @@ static int64_t wing_tcp_connect_sockaddr(const struct sockaddr_storage *ss, int 
             return -1;
         }
         size_t blen = strlen(bind_str);
-        if (blen >= 2 && bind_str[0] == '[' && bind_str[blen - 1] == ']') {
-            memmove(bind_str, bind_str + 1, blen - 2);
-            bind_str[blen - 2] = '\0';
-        }
+        wing_strip_brackets(bind_str);
+        (void)blen;
         struct sockaddr_storage bind_ss;
         int bind_family = 0;
         int bind_len = 0;
@@ -1573,43 +1150,21 @@ int64_t wing_tcp_connect_ip(wing_bytes_ro ip, uint16_t port, uint32_t timeout_ms
 
     char ip_str[128];
     if (slice_to_cstr(ip, ip_str, sizeof(ip_str)) != 0) return -1;
-    size_t slen = strlen(ip_str);
-    if (slen >= 2 && ip_str[0] == '[' && ip_str[slen - 1] == ']') {
-        memmove(ip_str, ip_str + 1, slen - 2);
-        ip_str[slen - 2] = '\0';
-    }
+    wing_strip_brackets(ip_str);
     if (ip_str[0] == '\0') return -1;
 
     struct sockaddr_storage ss;
-    memset(&ss, 0, sizeof(ss));
     int family = 0;
-#ifdef _WIN32
     int addr_len = 0;
+    int force_family = (ip_family == 1) ? AF_INET : ((ip_family == 2) ? AF_INET6 : AF_UNSPEC);
+    if (wing_parse_ip_sockaddr(ip_str, port, force_family, &ss, &family, &addr_len) != 0) return -1;
+    return wing_tcp_connect_sockaddr(&ss, family,
+#ifdef _WIN32
+                                     addr_len,
 #else
-    socklen_t addr_len = 0;
+                                     (socklen_t)addr_len,
 #endif
-    struct in_addr addr4;
-    struct in6_addr addr6;
-    if (inet_pton(AF_INET, ip_str, &addr4) == 1) {
-        if (ip_family == 2) return -1;
-        struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
-        s4->sin_family = AF_INET;
-        s4->sin_port = htons(port);
-        s4->sin_addr = addr4;
-        family = AF_INET;
-        addr_len = (int)sizeof(struct sockaddr_in);
-    } else if (inet_pton(AF_INET6, ip_str, &addr6) == 1) {
-        if (ip_family == 1) return -1;
-        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
-        s6->sin6_family = AF_INET6;
-        s6->sin6_port = htons(port);
-        s6->sin6_addr = addr6;
-        family = AF_INET6;
-        addr_len = (int)sizeof(struct sockaddr_in6);
-    } else {
-        return -1;
-    }
-    return wing_tcp_connect_sockaddr(&ss, family, addr_len, timeout_ms, local_bind_addr);
+                                     timeout_ms, local_bind_addr);
 }
 
 // Connects to remote host:port with timeout, address family constraint
@@ -1626,25 +1181,15 @@ int64_t wing_tcp_connect_ex(wing_bytes_ro host, uint16_t port, uint32_t timeout_
 #else
     socklen_t addr_len = 0;
 #endif
-    if (wing_resolve_tcp_host_family(host, port, 1, ip_family, &ss, &family, &addr_len) != 0) {
-        return -1;
-    }
+    if (wing_resolve_tcp_host_family(host, port, 1, ip_family, &ss, &family, &addr_len) != 0) return -1;
     return wing_tcp_connect_sockaddr(&ss, family, addr_len, timeout_ms, local_bind_addr);
-}
-
-// Connects to remote host:port (IPv4, IPv6, or DNS via getaddrinfo) with timeout in milliseconds.
-int64_t wing_tcp_connect(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms) {
-    wing_bytes_ro empty_bind = {NULL, 0};
-    return wing_tcp_connect_ex(host, port, timeout_ms, 0, empty_bind);
 }
 
 // Begins a non-blocking TCP client connection (IPv4, IPv6, or hostname).
 // Sets *out_state to: 0 = connected immediately, 1 = in progress (wait POLL_WRITE), -1 = failed.
 int64_t wing_tcp_connect_begin(wing_bytes_ro host, uint16_t port, int32_t *out_state) {
     if (out_state) *out_state = -1;
-    if (host.data == NULL || host.len <= 0 || host.len >= 256 || port == 0) {
-        return -1;
-    }
+    if (host.data == NULL || host.len <= 0 || host.len >= 256 || port == 0) return -1;
     wing_tcp_init();
 
     struct sockaddr_storage ss;
@@ -1654,44 +1199,26 @@ int64_t wing_tcp_connect_begin(wing_bytes_ro host, uint16_t port, int32_t *out_s
 #else
     socklen_t addr_len = 0;
 #endif
-    if (wing_resolve_tcp_host(host, port, 0, &ss, &family, &addr_len) != 0) {
-        return -1;
-    }
+    if (wing_resolve_tcp_host_family(host, port, 0, 0, &ss, &family, &addr_len) != 0) return -1;
 
     SOCKET s = socket(family, SOCK_STREAM, IPPROTO_TCP);
-    if (s == INVALID_SOCKET) {
-        return -1;
-    }
-#ifdef _WIN32
-    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
-    u_long nonblocking = 1;
-    ioctlsocket(s, FIONBIO, &nonblocking);
-#else
-    int flags = fcntl(s, F_GETFL, 0);
-    if (flags >= 0) {
-        fcntl(s, F_SETFL, flags | O_NONBLOCK);
-    }
-#endif
-    int nodelay = 1;
-    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
+    if (s == INVALID_SOCKET) return -1;
+    wing_prepare_nonblocking_cloexec(s);
+    wing_setsockopt_int(s, IPPROTO_TCP, TCP_NODELAY, 1);
 
     if (connect(s, (struct sockaddr *)&ss, addr_len) == SOCKET_ERROR) {
 #ifdef _WIN32
         int err = WSAGetLastError();
         if (err == WSAEWOULDBLOCK || err == WSAEINPROGRESS) {
-            if (out_state) *out_state = 1;
-            return (int64_t)s;
-        }
 #else
         if (errno == EINPROGRESS || errno == EAGAIN || errno == EWOULDBLOCK) {
+#endif
             if (out_state) *out_state = 1;
             return (int64_t)s;
         }
-#endif
         closesocket(s);
         return -1;
     }
-
     if (out_state) *out_state = 0;
     return (int64_t)s;
 }
@@ -1722,18 +1249,9 @@ int32_t wing_tcp_connect_poll(int64_t sock_fd) {
     return wing_tcp_connect_finish(sock_fd);
 }
 
-#ifdef _WIN32
-extern int32_t wing_rio_hs_recv(int64_t sock_fd, uint8_t *dst, int64_t len, uint32_t timeout_ms);
-extern int32_t wing_rio_hs_send(int64_t sock_fd, const uint8_t *data, int64_t len);
-#endif
-
 // Sends bytes to socket, ensuring complete write across non-blocking transient buffers.
 int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data) {
     if (sock_fd <= 0 || data.data == NULL || data.len <= 0) return 0;
-#ifdef _WIN32
-    int32_t rio_sent = wing_rio_hs_send(sock_fd, data.data, data.len);
-    if (rio_sent != -99) return rio_sent;
-#endif
     SOCKET s = (SOCKET)sock_fd;
     const char *ptr = (const char *)data.data;
     size_t remaining = (size_t)data.len;
@@ -1774,10 +1292,6 @@ int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data) {
 // Receives bytes from socket into slice buffer.
 int32_t wing_tcp_recv(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms) {
     if (sock_fd <= 0 || buf.data == NULL || buf.len <= 0) return -1;
-#ifdef _WIN32
-    int32_t rio_got = wing_rio_hs_recv(sock_fd, buf.data, buf.len, timeout_ms);
-    if (rio_got != -99) return rio_got;
-#endif
     SOCKET s = (SOCKET)sock_fd;
 
     if (timeout_ms > 0) {
@@ -1894,127 +1408,6 @@ int32_t wing_tcp_set_reuseport(int64_t sock_fd, int32_t enable) {
 #else
     (void)enable;
     return 0;
-#endif
-}
-
-// Cryptographically secure pseudorandom byte generator (BCryptGenRandom / RtlGenRandom on Windows, getrandom on Linux).
-int32_t wing_crypto_random_bytes(wing_bytes_rw out) {
-    if (out.data == NULL || out.len <= 0) return -1;
-#ifdef _WIN32
-#ifndef LOAD_LIBRARY_SEARCH_SYSTEM32
-#define LOAD_LIBRARY_SEARCH_SYSTEM32 0x00000800u
-#endif
-    typedef LONG(WINAPI * BCryptGenRandomFn)(PVOID, PUCHAR, ULONG, ULONG);
-    typedef BOOLEAN(NTAPI * RtlGenRandomFn)(PVOID, ULONG);
-    static volatile PVOID g_pfnBCryptGenRandom = NULL;
-    static volatile PVOID g_pfnRtlGenRandom = NULL;
-
-    BCryptGenRandomFn pfnBCrypt =
-        (BCryptGenRandomFn)InterlockedCompareExchangePointer(&g_pfnBCryptGenRandom, NULL, NULL);
-    if (pfnBCrypt == NULL) {
-        HMODULE hBCrypt = LoadLibraryExA("bcrypt.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
-        if (hBCrypt != NULL) {
-            void *sym = (void *)GetProcAddress(hBCrypt, "BCryptGenRandom");
-            if (sym != NULL) {
-                PVOID prev = InterlockedCompareExchangePointer(&g_pfnBCryptGenRandom, sym, NULL);
-                if (prev != NULL) {
-                    FreeLibrary(hBCrypt);
-                    pfnBCrypt = (BCryptGenRandomFn)prev;
-                } else {
-                    pfnBCrypt = (BCryptGenRandomFn)sym;
-                }
-            } else {
-                FreeLibrary(hBCrypt);
-            }
-        }
-    }
-    if (pfnBCrypt != NULL) {
-        size_t offset = 0;
-        size_t total = (size_t)out.len;
-        while (offset < total) {
-            ULONG chunk = (total - offset) > 0x7FFFFFFFu ? 0x7FFFFFFFu : (ULONG)(total - offset);
-            // BCRYPT_USE_SYSTEM_PREFERRED_RNG = 0x00000002
-            if (pfnBCrypt(NULL, (PUCHAR)(out.data + offset), chunk, 0x00000002u) < 0) {
-                return -1;
-            }
-            offset += (size_t)chunk;
-        }
-        return 0;
-    }
-
-    RtlGenRandomFn pfnRtl = (RtlGenRandomFn)InterlockedCompareExchangePointer(&g_pfnRtlGenRandom, NULL, NULL);
-    if (pfnRtl == NULL) {
-        HMODULE hAdvApi = LoadLibraryExA("advapi32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
-        if (hAdvApi != NULL) {
-            void *sym = (void *)GetProcAddress(hAdvApi, "SystemFunction036");
-            if (sym != NULL) {
-                PVOID prev = InterlockedCompareExchangePointer(&g_pfnRtlGenRandom, sym, NULL);
-                if (prev != NULL) {
-                    FreeLibrary(hAdvApi);
-                    pfnRtl = (RtlGenRandomFn)prev;
-                } else {
-                    pfnRtl = (RtlGenRandomFn)sym;
-                }
-            } else {
-                FreeLibrary(hAdvApi);
-            }
-        }
-    }
-    if (pfnRtl != NULL) {
-        size_t offset = 0;
-        size_t total = (size_t)out.len;
-        while (offset < total) {
-            ULONG chunk = (total - offset) > 0x7FFFFFFFu ? 0x7FFFFFFFu : (ULONG)(total - offset);
-            if (!pfnRtl(out.data + offset, chunk)) {
-                return -1;
-            }
-            offset += (size_t)chunk;
-        }
-        return 0;
-    }
-    return -1;
-#elif defined(__linux__) && defined(SYS_getrandom)
-    size_t offset = 0;
-    size_t total = (size_t)out.len;
-    while (offset < total) {
-        long res = syscall(SYS_getrandom, out.data + offset, total - offset, 0);
-        if (res < 0) {
-            if (errno == EINTR) continue;
-            return -1;
-        }
-        if (res == 0) return -1;
-        offset += (size_t)res;
-    }
-    return 0;
-#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
-    arc4random_buf(out.data, (size_t)out.len);
-    return 0;
-#else
-    int flags = O_RDONLY;
-#ifdef O_CLOEXEC
-    flags |= O_CLOEXEC;
-#endif
-    int fd = open("/dev/urandom", flags);
-    if (fd >= 0) {
-        size_t offset = 0;
-        size_t total = (size_t)out.len;
-        while (offset < total) {
-            ssize_t res = read(fd, out.data + offset, total - offset);
-            if (res < 0) {
-                if (errno == EINTR) continue;
-                close(fd);
-                return -1;
-            }
-            if (res == 0) {
-                close(fd);
-                return -1;
-            }
-            offset += (size_t)res;
-        }
-        close(fd);
-        return 0;
-    }
-    return -1;
 #endif
 }
 
@@ -2237,9 +1630,7 @@ int32_t wing_tcp_send2(int64_t sock_fd, wing_bytes_ro hdr, wing_bytes_ro payload
 
 #if defined(__linux__)
 #include <sys/epoll.h>
-#endif
-
-#ifdef _WIN32
+#else
 #define WING_MAX_POLL_FDS 4096
 typedef struct {
     SOCKET fds[WING_MAX_POLL_FDS];
@@ -2248,16 +1639,6 @@ typedef struct {
     int count;
 } wing_poll_ctx_t;
 #endif
-
-// Reads worker count from WING_WORKERS environment variable, or returns default_workers
-int64_t wing_get_env_workers(int64_t default_workers) {
-    const char *w = getenv("WING_WORKERS");
-    if (w && *w) {
-        int val = atoi(w);
-        if (val > 0 && val <= 128) return (int64_t)val;
-    }
-    return default_workers > 0 ? default_workers : 1;
-}
 
 // Configures socket non-blocking mode (O_NONBLOCK on POSIX, FIONBIO on Windows).
 int32_t wing_tcp_set_nonblocking(int64_t sock_fd, int32_t nonblocking) {
@@ -2324,39 +1705,15 @@ int32_t wing_tcp_set_quickack(int64_t sock_fd, int32_t enable) {
 #endif
 }
 
-// Sets TCP_CORK (Linux) to coalesce partial frames at kernel network stack level.
+// Configures TCP_CORK (Linux) to coalesce partial frames at kernel network stack level.
 int32_t wing_tcp_set_cork(int64_t sock_fd, int32_t enable) {
     if (sock_fd <= 0) return -1;
 #if defined(__linux__) && defined(TCP_CORK)
-    int opt = enable ? 1 : 0;
-    return setsockopt((int)sock_fd, IPPROTO_TCP, TCP_CORK, &opt, sizeof(opt));
+    return wing_setsockopt_int((SOCKET)sock_fd, IPPROTO_TCP, TCP_CORK, enable ? 1 : 0);
 #else
     (void)enable;
     return 0; // No-op on Windows/macOS
 #endif
-}
-
-// Receives bytes from non-blocking socket immediately without blocking.
-// Returns:
-//   > 0 : bytes received
-//     0 : peer closed connection cleanly (EOF / FIN)
-//    -2 : WouldBlock / EAGAIN (no data ready right now)
-//    -1 : socket error / connection reset
-int32_t wing_tcp_recv_nonblocking(int64_t sock_fd, wing_bytes_rw buf) {
-    if (sock_fd <= 0 || buf.data == NULL || buf.len <= 0) return -1;
-    SOCKET s = (SOCKET)sock_fd;
-
-    int recvd = recv(s, (char *)buf.data, wing_clamp_win_len(buf.len), 0);
-    if (recvd > 0) return (int32_t)recvd;
-    if (recvd == 0) return 0; // EOF / clean disconnect
-
-#ifdef _WIN32
-    int err = WSAGetLastError();
-    if (err == WSAEWOULDBLOCK) return -2;
-#else
-    if (errno == EAGAIN || errno == EWOULDBLOCK) return -2;
-#endif
-    return -1;
 }
 
 // ---- Share-Nothing Epoll / Reactor Multiplexer C Engine ---------------------
@@ -2389,32 +1746,15 @@ int32_t wing_epoll_del(int64_t epfd, int64_t sock_fd) {
     return epoll_ctl((int)epfd, EPOLL_CTL_DEL, (int)sock_fd, NULL) == 0 ? 0 : -1;
 }
 
-int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata, int32_t timeout_ms) {
+static int32_t wing_epoll_wait_impl(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata,
+                                    wing_slice_u32 out_events, int has_events, int32_t timeout_ms) {
     if (epfd < 0 || out_udata.data == NULL || out_udata.len <= 0) return 0;
-    int max_ev = (int)(out_udata.len < 1024 ? out_udata.len : 1024);
-    struct epoll_event evs[1024];
-    int n = epoll_wait((int)epfd, evs, max_ev, timeout_ms);
-    if (n <= 0) return 0;
-    if (out_fds.data != NULL && out_fds.len >= n) {
-        for (int i = 0; i < n; i++) {
-            out_fds.data[i] = (int64_t)(evs[i].data.u64 == 0xFFFFFFFFFFFFFFFFULL ? -1 : (int64_t)evs[i].data.u64);
-            out_udata.data[i] = evs[i].data.u64;
-        }
-    } else {
-        for (int i = 0; i < n; i++) {
-            out_udata.data[i] = evs[i].data.u64;
-        }
+    int64_t lim = out_udata.len;
+    if (has_events) {
+        if (out_events.data == NULL || out_events.len <= 0) return 0;
+        if (out_events.len < lim) lim = out_events.len;
     }
-    return n;
-}
-
-int32_t wing_epoll_wait_events(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata,
-                               wing_slice_u32 out_events, int32_t timeout_ms) {
-    if (epfd < 0 || out_udata.data == NULL || out_udata.len <= 0 || out_events.data == NULL || out_events.len <= 0) {
-        return 0;
-    }
-    int max_ev = (int)(out_udata.len < out_events.len ? out_udata.len : out_events.len);
-    if (max_ev > 1024) max_ev = 1024;
+    int max_ev = (int)(lim < 1024 ? lim : 1024);
     struct epoll_event evs[1024];
     int n = epoll_wait((int)epfd, evs, max_ev, timeout_ms);
     if (n <= 0) return 0;
@@ -2423,20 +1763,32 @@ int32_t wing_epoll_wait_events(int64_t epfd, wing_slice_i64 out_fds, wing_slice_
             out_fds.data[i] = (int64_t)(evs[i].data.u64 == 0xFFFFFFFFFFFFFFFFULL ? -1 : (int64_t)evs[i].data.u64);
         }
         out_udata.data[i] = evs[i].data.u64;
-        uint32_t mask = 0;
-        if (evs[i].events & EPOLLIN) mask |= 1U;
-        if (evs[i].events & EPOLLOUT) mask |= 2U;
-        if (evs[i].events & EPOLLERR) mask |= 4U;
-        if (evs[i].events & (EPOLLHUP
+        if (has_events) {
+            uint32_t mask = 0;
+            if (evs[i].events & EPOLLIN) mask |= 1U;
+            if (evs[i].events & EPOLLOUT) mask |= 2U;
+            if (evs[i].events & EPOLLERR) mask |= 4U;
+            if (evs[i].events & (EPOLLHUP
 #ifdef EPOLLRDHUP
-                             | EPOLLRDHUP
+                                 | EPOLLRDHUP
 #endif
-                             )) {
-            mask |= 8U;
+                                 )) {
+                mask |= 8U;
+            }
+            out_events.data[i] = mask;
         }
-        out_events.data[i] = mask;
     }
     return n;
+}
+
+int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata, int32_t timeout_ms) {
+    wing_slice_u32 empty_ev = {NULL, 0};
+    return wing_epoll_wait_impl(epfd, out_fds, out_udata, empty_ev, 0, timeout_ms);
+}
+
+int32_t wing_epoll_wait_events(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata,
+                               wing_slice_u32 out_events, int32_t timeout_ms) {
+    return wing_epoll_wait_impl(epfd, out_fds, out_udata, out_events, 1, timeout_ms);
 }
 
 void wing_epoll_close(int64_t epfd) {
@@ -2448,14 +1800,13 @@ void wing_epoll_close(int64_t epfd) {
 // Windows & Darwin Cross-Platform WSAPoll fallback implementation
 int64_t wing_epoll_create(void) {
     wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)calloc(1, sizeof(wing_poll_ctx_t));
-    if (!ctx) return -1;
-    return (int64_t)(uintptr_t)ctx;
+    return ctx ? (int64_t)(uintptr_t)ctx : -1;
 }
 
 int32_t wing_epoll_add(int64_t epfd, int64_t sock_fd, uint32_t events, uint64_t udata) {
     if (epfd <= 0) return -1;
     wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
-    if (!ctx || sock_fd <= 0 || ctx->count >= WING_MAX_POLL_FDS) return -1;
+    if (!ctx || sock_fd <= 0) return -1;
     for (int i = 0; i < ctx->count; i++) {
         if (ctx->fds[i] == (SOCKET)sock_fd) {
             ctx->events[i] = events;
@@ -2463,6 +1814,7 @@ int32_t wing_epoll_add(int64_t epfd, int64_t sock_fd, uint32_t events, uint64_t 
             return 0;
         }
     }
+    if (ctx->count >= WING_MAX_POLL_FDS) return -1;
     ctx->fds[ctx->count] = (SOCKET)sock_fd;
     ctx->events[ctx->count] = events;
     ctx->udata[ctx->count] = udata;
@@ -2471,9 +1823,9 @@ int32_t wing_epoll_add(int64_t epfd, int64_t sock_fd, uint32_t events, uint64_t 
 }
 
 int32_t wing_epoll_mod(int64_t epfd, int64_t sock_fd, uint32_t events, uint64_t udata) {
-    if (epfd <= 0) return -1;
+    if (epfd <= 0 || sock_fd <= 0) return -1;
     wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
-    if (!ctx || sock_fd <= 0) return -1;
+    if (!ctx) return -1;
     for (int i = 0; i < ctx->count; i++) {
         if (ctx->fds[i] == (SOCKET)sock_fd) {
             ctx->events[i] = events;
@@ -2485,58 +1837,47 @@ int32_t wing_epoll_mod(int64_t epfd, int64_t sock_fd, uint32_t events, uint64_t 
 }
 
 int32_t wing_epoll_del(int64_t epfd, int64_t sock_fd) {
-    if (epfd <= 0) return -1;
+    if (epfd <= 0 || sock_fd <= 0) return -1;
     wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
-    if (!ctx || sock_fd <= 0) return -1;
+    if (!ctx) return -1;
     for (int i = 0; i < ctx->count; i++) {
         if (ctx->fds[i] == (SOCKET)sock_fd) {
-            ctx->fds[i] = ctx->fds[ctx->count - 1];
-            ctx->events[i] = ctx->events[ctx->count - 1];
-            ctx->udata[i] = ctx->udata[ctx->count - 1];
             ctx->count--;
+            ctx->fds[i] = ctx->fds[ctx->count];
+            ctx->events[i] = ctx->events[ctx->count];
+            ctx->udata[i] = ctx->udata[ctx->count];
             return 0;
         }
     }
     return -1;
 }
 
-int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata, int32_t timeout_ms) {
+static int32_t wing_epoll_wait_impl(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata,
+                                    wing_slice_u32 out_events, int has_events, int32_t timeout_ms) {
     if (epfd <= 0) return 0;
     wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
     if (!ctx || ctx->count <= 0) return 0;
     int limit = (out_udata.data != NULL && out_udata.len > 0) ? (int)out_udata.len : 0;
+    if (has_events) {
+        if (out_events.data == NULL || out_events.len <= 0) return 0;
+        if (limit == 0 || (int)out_events.len < limit) limit = (int)out_events.len;
+    }
     if (out_fds.data != NULL && out_fds.len > 0 && (limit == 0 || (int)out_fds.len < limit)) {
         limit = (int)out_fds.len;
     }
     if (limit <= 0) return 0;
 
+    int count = ctx->count;
 #ifdef _WIN32
     WSAPOLLFD pfd[WING_MAX_POLL_FDS];
-    int count = ctx->count;
     for (int i = 0; i < count; i++) {
         pfd[i].fd = ctx->fds[i];
         pfd[i].events = (SHORT)((ctx->events[i] & 1 ? POLLRDNORM : 0) | (ctx->events[i] & 4 ? POLLWRNORM : 0));
         pfd[i].revents = 0;
     }
     int res = WSAPoll(pfd, (ULONG)count, timeout_ms);
-    if (res <= 0) return 0;
-
-    int ready = 0;
-    for (int i = 0; i < count && ready < limit; i++) {
-        if (pfd[i].revents != 0) {
-            if (out_fds.data != NULL && ready < (int)out_fds.len) {
-                out_fds.data[ready] = (int64_t)pfd[i].fd;
-            }
-            if (out_udata.data != NULL && ready < (int)out_udata.len) {
-                out_udata.data[ready] = ctx->udata[i];
-            }
-            ready++;
-        }
-    }
-    return ready;
 #else
     struct pollfd pfd[WING_MAX_POLL_FDS];
-    int count = ctx->count;
     for (int i = 0; i < count; i++) {
         pfd[i].fd = (int)ctx->fds[i];
         pfd[i].events = (short)((ctx->events[i] & 1 ? POLLIN : 0) | (ctx->events[i] & 4 ? POLLOUT : 0));
@@ -2546,126 +1887,69 @@ int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out
     do {
         res = poll(pfd, (nfds_t)count, timeout_ms);
     } while (res < 0 && errno == EINTR);
+#endif
     if (res <= 0) return 0;
 
     int ready = 0;
     for (int i = 0; i < count && ready < limit; i++) {
-        if (pfd[i].revents != 0) {
-            if (out_fds.data != NULL && ready < (int)out_fds.len) {
-                out_fds.data[ready] = (int64_t)pfd[i].fd;
-            }
-            if (out_udata.data != NULL && ready < (int)out_udata.len) {
-                out_udata.data[ready] = ctx->udata[i];
-            }
-            ready++;
+        if (pfd[i].revents == 0) continue;
+        if (out_fds.data != NULL && ready < (int)out_fds.len) out_fds.data[ready] = (int64_t)pfd[i].fd;
+        if (out_udata.data != NULL && ready < (int)out_udata.len) out_udata.data[ready] = ctx->udata[i];
+        if (has_events) {
+            uint32_t mask = 0;
+#ifdef _WIN32
+            if (pfd[i].revents & (POLLRDNORM | POLLRDBAND)) mask |= 1U;
+            if (pfd[i].revents & POLLWRNORM) mask |= 2U;
+#else
+            if (pfd[i].revents & (POLLIN | POLLPRI)) mask |= 1U;
+            if (pfd[i].revents & POLLOUT) mask |= 2U;
+#endif
+            if (pfd[i].revents & (POLLERR | POLLNVAL)) mask |= 4U;
+            if (pfd[i].revents & POLLHUP) mask |= 8U;
+            out_events.data[ready] = mask;
         }
+        ready++;
     }
     return ready;
-#endif
+}
+
+int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata, int32_t timeout_ms) {
+    wing_slice_u32 empty_ev = {NULL, 0};
+    return wing_epoll_wait_impl(epfd, out_fds, out_udata, empty_ev, 0, timeout_ms);
 }
 
 int32_t wing_epoll_wait_events(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata,
                                wing_slice_u32 out_events, int32_t timeout_ms) {
-    if (epfd <= 0) return 0;
-    wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
-    if (!ctx || ctx->count <= 0 || out_udata.data == NULL || out_udata.len <= 0 || out_events.data == NULL ||
-        out_events.len <= 0) {
-        return 0;
-    }
-    int limit = (int)(out_udata.len < out_events.len ? out_udata.len : out_events.len);
-    if (out_fds.data != NULL && out_fds.len > 0 && (int)out_fds.len < limit) {
-        limit = (int)out_fds.len;
-    }
-    if (limit <= 0) return 0;
-
-#ifdef _WIN32
-    WSAPOLLFD pfd[WING_MAX_POLL_FDS];
-    int count = ctx->count;
-    for (int i = 0; i < count; i++) {
-        pfd[i].fd = ctx->fds[i];
-        pfd[i].events = (SHORT)((ctx->events[i] & 1 ? POLLRDNORM : 0) | (ctx->events[i] & 4 ? POLLWRNORM : 0));
-        pfd[i].revents = 0;
-    }
-    int res = WSAPoll(pfd, (ULONG)count, timeout_ms);
-    if (res <= 0) return 0;
-
-    int ready = 0;
-    for (int i = 0; i < count && ready < limit; i++) {
-        if (pfd[i].revents != 0) {
-            if (out_fds.data != NULL && ready < (int)out_fds.len) {
-                out_fds.data[ready] = (int64_t)pfd[i].fd;
-            }
-            out_udata.data[ready] = ctx->udata[i];
-            uint32_t mask = 0;
-            if (pfd[i].revents & (POLLRDNORM | POLLRDBAND)) mask |= 1U;
-            if (pfd[i].revents & POLLWRNORM) mask |= 2U;
-            if (pfd[i].revents & (POLLERR | POLLNVAL)) mask |= 4U;
-            if (pfd[i].revents & POLLHUP) mask |= 8U;
-            out_events.data[ready] = mask;
-            ready++;
-        }
-    }
-    return ready;
-#else
-    struct pollfd pfd[WING_MAX_POLL_FDS];
-    int count = ctx->count;
-    for (int i = 0; i < count; i++) {
-        pfd[i].fd = (int)ctx->fds[i];
-        pfd[i].events = (short)((ctx->events[i] & 1 ? POLLIN : 0) | (ctx->events[i] & 4 ? POLLOUT : 0));
-        pfd[i].revents = 0;
-    }
-    int res;
-    do {
-        res = poll(pfd, (nfds_t)count, timeout_ms);
-    } while (res < 0 && errno == EINTR);
-    if (res <= 0) return 0;
-
-    int ready = 0;
-    for (int i = 0; i < count && ready < limit; i++) {
-        if (pfd[i].revents != 0) {
-            if (out_fds.data != NULL && ready < (int)out_fds.len) {
-                out_fds.data[ready] = (int64_t)pfd[i].fd;
-            }
-            out_udata.data[ready] = ctx->udata[i];
-            uint32_t mask = 0;
-            if (pfd[i].revents & (POLLIN | POLLPRI)) mask |= 1U;
-            if (pfd[i].revents & POLLOUT) mask |= 2U;
-            if (pfd[i].revents & (POLLERR | POLLNVAL)) mask |= 4U;
-            if (pfd[i].revents & POLLHUP) mask |= 8U;
-            out_events.data[ready] = mask;
-            ready++;
-        }
-    }
-    return ready;
-#endif
+    return wing_epoll_wait_impl(epfd, out_fds, out_udata, out_events, 1, timeout_ms);
 }
 
 void wing_epoll_close(int64_t epfd) {
-    if (epfd <= 0) return;
-    wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
-    if (ctx) free(ctx);
+    if (epfd > 0) free((void *)(uintptr_t)epfd);
 }
 
 #endif
 
-// Pins current calling thread to specific CPU core ID.
-// Uses physical-first core stride (0, 2, 4, 6, 8, 10) on SMT architectures to eliminate core sharing.
+int64_t wing_online_cpu_count(void) {
+#if defined(__linux__)
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? (int64_t)n : 0;
+#elif defined(_WIN32)
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return si.dwNumberOfProcessors > 0 ? (int64_t)si.dwNumberOfProcessors : 0;
+#else
+    return 0;
+#endif
+}
+
+// Pins current calling thread to pre-computed CPU core ID (stride computed in Goose net::set_cpu_affinity).
 int32_t wing_set_cpu_affinity(int64_t cpu_id) {
     if (cpu_id < 0) return -1;
 #if defined(__linux__)
-    long total_cpus = sysconf(_SC_NPROCESSORS_ONLN);
-    if (total_cpus <= 0) return -1;
-    int logical = (int)(cpu_id % (int64_t)total_cpus);
-    int target_cpu = logical;
-    if (total_cpus > 1) {
-        int phys = (int)(total_cpus / 2);
-        target_cpu = (logical < phys) ? (logical * 2) : ((logical - phys) * 2 + 1);
-    }
-    int cpu = target_cpu % (int)total_cpus;
-    if (cpu < 0 || cpu >= CPU_SETSIZE) return -1;
+    if (cpu_id >= CPU_SETSIZE) return -1;
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
-    CPU_SET(cpu, &cpuset);
+    CPU_SET((int)cpu_id, &cpuset);
     return pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
 #elif defined(_WIN32)
     if (cpu_id >= 64) return -1;
@@ -2677,24 +1961,14 @@ int32_t wing_set_cpu_affinity(int64_t cpu_id) {
 #endif
 }
 
-// Binds listener socket's incoming connection queue directly to specific CPU core (SO_INCOMING_CPU on Linux).
-// Ensures zero cross-core cache invalidation & zero IPI interrupts on multi-worker reactors.
+// Binds listener socket incoming queue to pre-computed CPU core ID (SO_INCOMING_CPU on Linux).
 int32_t wing_tcp_set_incoming_cpu(int64_t sock_fd, int64_t cpu_id) {
     if (sock_fd <= 0 || cpu_id < 0) return -1;
 #if defined(__linux__)
 #ifndef SO_INCOMING_CPU
 #define SO_INCOMING_CPU 49
 #endif
-    if (!getenv("WING_INCOMING_CPU")) return 0;
-    long total_cpus = sysconf(_SC_NPROCESSORS_ONLN);
-    if (total_cpus <= 0) return -1;
-    int logical = (int)(cpu_id % (int64_t)total_cpus);
-    int target_cpu = logical;
-    if (total_cpus > 1) {
-        int phys = (int)(total_cpus / 2);
-        target_cpu = (logical < phys) ? (logical * 2) : ((logical - phys) * 2 + 1);
-    }
-    int cpu = target_cpu % (int)total_cpus;
+    int cpu = (int)cpu_id;
     return setsockopt((int)sock_fd, SOL_SOCKET, SO_INCOMING_CPU, &cpu, sizeof(cpu));
 #else
     (void)sock_fd;
@@ -2884,21 +2158,17 @@ int32_t wing_udp_sendmmsg(int64_t sock_fd, wing_bytes_ro payloads, wing_slice_i3
     int res = sendmmsg((int)sock_fd, msgs, (unsigned int)count, MSG_NOSIGNAL);
     return res >= 0 ? (int32_t)res : -1;
 #else
-    int32_t sent = 0;
-    for (int32_t i = 0; i < count; i++) {
-        int64_t offset = (int64_t)i * 1472;
-        int32_t pkt_len = lengths.data[i];
-        if (pkt_len < 0 || pkt_len > 1472 || offset + pkt_len > payloads.len) return sent > 0 ? sent : -1;
-        wing_bytes_ro slice = {payloads.data + offset, pkt_len};
-        int32_t r = wing_udp_sendto_ip4(sock_fd, slice, ips.data[i], ports.data[i]);
-        if (r < 0) return sent > 0 ? sent : -1;
-        sent++;
-    }
-    return sent;
+    (void)sock_fd;
+    (void)payloads;
+    (void)lengths;
+    (void)ips;
+    (void)ports;
+    (void)count;
+    return -38;
 #endif
 }
 
-// Batched UDP datagram reception (recvmmsg on Linux, recvfrom loop fallback on Windows/POSIX).
+// Batched UDP datagram reception (recvmmsg on Linux; net/udp.goose handles non-Linux fallback).
 int32_t wing_udp_recvmmsg(int64_t sock_fd, wing_bytes_rw payloads, wing_slice_i32 lengths, wing_slice_u32 ips,
                           wing_slice_u16 ports, int32_t max_count, uint32_t timeout_ms) {
     if (sock_fd < 0 || max_count <= 0 || max_count > 32) return -1;
@@ -2943,20 +2213,8 @@ int32_t wing_udp_recvmmsg(int64_t sock_fd, wing_bytes_rw payloads, wing_slice_i3
     }
     return (int32_t)res;
 #else
-    int32_t recvd = 0;
-    for (int32_t i = 0; i < max_count; i++) {
-        int64_t offset = (int64_t)i * 1472;
-        if (offset + 1472 > payloads.len) break;
-        wing_bytes_rw slice = {payloads.data + offset, 1472};
-        int32_t r = wing_udp_recvfrom(sock_fd, slice, i == 0 ? timeout_ms : 1, &ips.data[i], &ports.data[i]);
-        if (r < 0) {
-            if (r == -2) break;
-            return recvd > 0 ? recvd : -1;
-        }
-        lengths.data[i] = r;
-        recvd++;
-    }
-    return recvd;
+    (void)timeout_ms;
+    return -38;
 #endif
 }
 
@@ -3372,12 +2630,6 @@ int64_t wing_tcp_connect_opts_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip, 
     return -1;
 }
 
-int64_t wing_tcp_connect_bound_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip, uint16_t dst_port, uint32_t so_mark,
-                                     int32_t *out_state, int32_t *out_err) {
-    return wing_tcp_connect_opts_begin(src_ip, dst_ip, dst_port, so_mark, 0, 0, 0, 1, 30, 5, 3, 15000, out_state,
-                                       out_err);
-}
-
 int32_t wing_tcp_connect_status(int64_t sock_fd) {
     if (sock_fd <= 0) return -1;
     int sock_err = 0;
@@ -3714,111 +2966,6 @@ int32_t wing_udp_recvfrom_dual(int64_t sock_fd, wing_bytes_rw out_buf, wing_byte
     return (int32_t)got;
 }
 
-static uint64_t wing_udp_mono_ms(void) {
-#ifdef _WIN32
-    return (uint64_t)GetTickCount64();
-#else
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
-        return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec / 1000000L);
-    }
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (uint64_t)tv.tv_sec * 1000ULL + (uint64_t)(tv.tv_usec / 1000L);
-#endif
-}
-
-static int wing_udp_sockaddr_matches(const struct sockaddr_storage *expected, const struct sockaddr_storage *peer) {
-    if (expected->ss_family == AF_INET && peer->ss_family == AF_INET) {
-        const struct sockaddr_in *a = (const struct sockaddr_in *)expected;
-        const struct sockaddr_in *b = (const struct sockaddr_in *)peer;
-        return a->sin_port == b->sin_port && a->sin_addr.s_addr == b->sin_addr.s_addr;
-    }
-    if (expected->ss_family == AF_INET6 && peer->ss_family == AF_INET6) {
-        const struct sockaddr_in6 *a = (const struct sockaddr_in6 *)expected;
-        const struct sockaddr_in6 *b = (const struct sockaddr_in6 *)peer;
-        return a->sin6_port == b->sin6_port && memcmp(&a->sin6_addr, &b->sin6_addr, sizeof(a->sin6_addr)) == 0 &&
-               (a->sin6_scope_id == 0 || a->sin6_scope_id == b->sin6_scope_id);
-    }
-    return 0;
-}
-
-int32_t wing_udp_exchange_dual(wing_bytes_ro server_ip, uint16_t server_port, wing_bytes_ro query,
-                               wing_bytes_rw out_resp, uint32_t timeout_ms) {
-    if (server_ip.data == NULL || server_ip.len <= 0 || server_ip.len >= 128) return -1;
-    if (query.data == NULL || query.len <= 0 || out_resp.data == NULL || out_resp.len <= 0) return -1;
-    if (wing_tcp_init() != 0) return -1;
-
-    char srv_str[128];
-    if (slice_to_cstr(server_ip, srv_str, sizeof(srv_str)) != 0) return -1;
-
-    struct sockaddr_storage ss;
-    int family = AF_INET;
-    int ss_len = 0;
-    if (wing_parse_ip_sockaddr(srv_str, server_port, 0, &ss, &family, &ss_len) != 0) return -1;
-
-    SOCKET s = socket(family, SOCK_DGRAM, IPPROTO_UDP);
-    if (s == INVALID_SOCKET) return -1;
-
-    wing_prepare_nonblocking_cloexec(s);
-#ifdef _WIN32
-    if (query.len > (int64_t)INT_MAX) {
-        closesocket(s);
-        return -1;
-    }
-    int sent = sendto(s, (const char *)query.data, wing_clamp_win_len(query.len), 0, (struct sockaddr *)&ss, ss_len);
-#else
-    int sent = (int)sendto(s, query.data, (size_t)query.len, 0, (struct sockaddr *)&ss, (socklen_t)ss_len);
-#endif
-    if (sent != (int)query.len) {
-        closesocket(s);
-        return -1;
-    }
-
-    uint64_t deadline = wing_udp_mono_ms() + (uint64_t)timeout_ms;
-    for (int attempt = 0; attempt < 128; attempt++) {
-        uint64_t now = wing_udp_mono_ms();
-        if (attempt > 0 && now >= deadline) {
-            closesocket(s);
-            return -2;
-        }
-        uint32_t rem_ms = (now < deadline) ? (uint32_t)(deadline - now) : 0U;
-        int sel = wing_wait_fd(s, 0, rem_ms);
-        if (sel <= 0) {
-            closesocket(s);
-            return sel == 0 ? -2 : -1;
-        }
-
-        struct sockaddr_storage peer_ss;
-        memset(&peer_ss, 0, sizeof(peer_ss));
-#ifdef _WIN32
-        int peer_len = (int)sizeof(peer_ss);
-#else
-        socklen_t peer_len = (socklen_t)sizeof(peer_ss);
-#endif
-        int got = recvfrom(s, (char *)out_resp.data, wing_clamp_win_len(out_resp.len), 0, (struct sockaddr *)&peer_ss,
-                           &peer_len);
-        if (got < 0) {
-            int err = wing_last_sock_err();
-#ifdef _WIN32
-            if (err == WSAEWOULDBLOCK) continue;
-#else
-            if (err == EAGAIN || err == EWOULDBLOCK) continue;
-#endif
-            closesocket(s);
-            return -1;
-        }
-        if (got == 0 || !wing_udp_sockaddr_matches(&ss, &peer_ss)) {
-            continue;
-        }
-        closesocket(s);
-        return (int32_t)got;
-    }
-
-    closesocket(s);
-    return -2;
-}
-
 int32_t wing_fs_disk_usage_percent(wing_bytes_ro path) {
     if (path.data == NULL || path.len <= 0 || path.len >= 1024) return -1;
     char pstr[1024];
@@ -3999,10 +3146,3 @@ void wing_tls_state_lock(int32_t lock_id) { (void)lock_id; }
 
 void wing_tls_state_unlock(int32_t lock_id) { (void)lock_id; }
 #endif
-
-void wing_write_stderr(wing_bytes_ro msg) {
-    if (msg.data != NULL && msg.len > 0) {
-        (void)fwrite(msg.data, 1, (size_t)msg.len, stderr);
-        fflush(stderr);
-    }
-}

@@ -28,12 +28,12 @@ root struct WsPmdSessionState {
 }
 
 inline fn pmd_window_bits_to_bytes(bits: u8) -> i64 {
-    let clamped = max(9, min(bits as i64, 15)) as u32;
+    let clamped = max(8, min(bits as i64, 15)) as u32;
     return core::shl_sat_u64(1, clamped) as i64;
 }
 
 fn update_pmd_window_history(hist: u8[..32768]&, raw: const u8[:], win_bytes: i64) {
-    let cap_win = max(512, min(win_bytes, 32768));
+    let cap_win = max(256, min(win_bytes, 32768));
     guard raw.len > 0 else { return; }
     if raw.len >= cap_win {
         let _ = hist.try_set(raw[core::sub_sat_i64(raw.len, cap_win)..]);
@@ -134,11 +134,13 @@ fn dispatch_ws_data_turn<Stage, OutBuf, ReplyBuf>(
         flush_ws_wire(conn_fd, out_wire[..]);
         return;
     }
-    let max_pay = if ws.max_payload_length > 0 {
+    let raw_max = if ws.max_payload_length > 0 {
         min(ws.max_payload_length, 0x7FFFFFFFFFFFFFFF) as i64
     } else {
         16777216
     };
+    let ratio_cap = max(1048576, core::mul_sat_i64(view.payload.len, 200));
+    let max_pay = min(raw_max, ratio_cap);
     let inf_err = inflate_ws_pmd_frame(ws, view.payload, pmd, max_pay);
     if inf_err == core::CompressError.OutputBufferOverflow {
         ws.close(rfc::WS_STATUS_MESSAGE_TOO_BIG, "compressed message exceeds max payload", reply);
@@ -277,8 +279,7 @@ fn unescape_pmd_quoted_val(quoted: const u8[:], out: u8[..8]&) -> bool {
     return true;
 }
 
-// Parses a strict RFC 7692 §7.1 window_bits value (base-10 integer in 8..15, no leading '0' or '+').
-// Clamps window_bits == 8 to 9 for raw deflate compatibility (uWebSockets / libwebsockets pattern).
+// Parses a strict RFC 7692 Section 7.1 window_bits value (base-10 integer in 8..15, no leading '0' or '+').
 //
 // Example:
 //   raw = "\"12\""
@@ -294,8 +295,9 @@ fn parse_pmd_window_bits(raw: const u8[:]) -> u8, bool {
     }
     if unescaped.len == 1 {
         let b0 = unescaped[0];
-        guard b0 == '8' || b0 == '9' else { return 0, false; }
-        return 9, true;
+        if b0 == '8' { return 8, true; }
+        if b0 == '9' { return 9, true; }
+        return 0, false;
     }
     guard unescaped.len == 2 else { return 0, false; }
     let b0 = unescaped[0];
@@ -330,7 +332,7 @@ inline fn apply_pmd_window_param(
         } else {
             seen_mask |= PMD_SEEN_CLIENT_MAX_WIN;
             let capped = min(server_cfg.client_max_window_bits, rfc::WS_PMD_MAX_WINDOW_BITS);
-            out_cfg.client_max_window_bits = max(9, capped);
+            out_cfg.client_max_window_bits = max(8, capped);
         }
         return true;
     }
@@ -377,7 +379,7 @@ inline fn parse_single_pmd_offer(
     }
 
     var cfg = realtime::PerMessageDeflateConfig {
-        server_max_window_bits:     max(9, min(server_cfg.server_max_window_bits, rfc::WS_PMD_MAX_WINDOW_BITS)),
+        server_max_window_bits:     max(8, min(server_cfg.server_max_window_bits, rfc::WS_PMD_MAX_WINDOW_BITS)),
         client_max_window_bits:     rfc::WS_PMD_MAX_WINDOW_BITS,
         server_no_context_takeover: server_cfg.server_no_context_takeover,
         client_no_context_takeover: server_cfg.client_no_context_takeover,

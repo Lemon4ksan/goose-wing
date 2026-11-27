@@ -222,8 +222,8 @@ checkfree inline fn decode_tp_exact_varint(val: const u8[:]) -> u64, bool {
 
 // Marks `bit` in `seen_mask`, returning `false` on duplicate transport parameter ID.
 inline fn mark_tp_seen(seen_mask: u64&, bit: u64) -> bool {
-    guard !seen_mask.has_flag(bit) else { return false; }
-    seen_mask.set_flag(bit);
+    guard (seen_mask & bit) == 0 else { return false; }
+    seen_mask |= bit;
     return true;
 }
 
@@ -410,11 +410,11 @@ fn decode_tp_ext_param(id: u64, val: const u8[:], tp: quic::QuicTransportParams&
         return decode_tp_ack_and_mig(id, val, tp);
     }
     if id == rfc::QUIC_TP_VERSION_INFORMATION {
-        guard !tp.seen_mask.has_flag(QUIC_TP_BIT_VERSION_INFO)
+        guard (tp.seen_mask & QUIC_TP_BIT_VERSION_INFO) == 0
             && decode_tp_version_info(val, tp) else {
             return false;
         }
-        tp.seen_mask.set_flag(QUIC_TP_BIT_VERSION_INFO);
+        tp.seen_mask |= QUIC_TP_BIT_VERSION_INFO;
         return true;
     }
     if id == rfc::QUIC_TP_MAX_DATAGRAM_FRAME_SIZE {

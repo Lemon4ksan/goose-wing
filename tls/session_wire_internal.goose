@@ -39,7 +39,7 @@ import .session;
 //   ext_bytes = [0x00, 0x05, 0x00, 0x06, 0x01, 0x00, 0x00, 0x02, 0x30, 0x00]
 //   returns: [0x30, 0x00], ok = true
 fn extract_leaf_ocsp_extension(ext_bytes: const u8[:]) -> const u8[:], bool {
-    var entries: tls::ExtensionEntry[..32] = [];
+    var entries: tls::ExtensionEntry[..64] = [];
     var cursor = core::cursor_from(ext_bytes);
     while cursor.cursor_len() > 0 {
         let ext_type, ok_t = cursor.read_u16();
@@ -307,7 +307,7 @@ fn parse_encrypted_extensions_alpn<B>(
 ) -> bool {
     var committed = false;
     defer if !committed { out_alpn.clear(); };
-    var entries: tls::ExtensionEntry[..32] = [];
+    var entries: tls::ExtensionEntry[..64] = [];
     guard tls::parse_extensions_block(ee_body, entries) else { return false; }
     guard validate_ee_solicited_extensions(entries, offered_alpn_csv, sni_state, allow_ech_retry) else {
         return false;
@@ -598,7 +598,7 @@ fn select_server_cert_comp_algo(ch_msg: const u8[:], server_algo: u16) -> u16 {
     let _, ok_cm = bc.read_u8_prefixed();
     guard ok_v && ok_r && ok_sid && ok_cs && ok_cm else { return 0; }
 
-    var entries: tls::ExtensionEntry[..32] = [];
+    var entries: tls::ExtensionEntry[..64] = [];
     guard tls::parse_extensions_block(bc.buf, entries) else { return 0; }
     return select_server_cert_comp_algo_from_entries(entries, server_algo);
 }

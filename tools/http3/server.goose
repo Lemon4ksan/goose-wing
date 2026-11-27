@@ -347,6 +347,7 @@ fn main() {
         enable_connect_protocol:  1,
     };
     var ep = server::new_h3_server_endpoint(settings);
+    ep.allow_plaintext_h3 = enable_test_hooks;
 
     print("READY_PORT:", port, "\n");
 

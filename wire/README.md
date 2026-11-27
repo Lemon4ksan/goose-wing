@@ -72,12 +72,10 @@ struct LayeredService<Outer, Inner> { outer: Outer, inner: Inner }
 struct RetryService<Inner> { ... }
 struct RateLimitService<Inner, Limiter> { ... }
 struct CircuitBreakerService<Inner> { ... }
-struct SingleflightService<Inner> { ... }
 fn stack_service<Outer, Inner>(outer: Outer, inner: Inner) -> LayeredService<Outer, Inner>
 fn new_retry_service<Inner>(inner: Inner, max_attempts: i32 = 3) -> RetryService<Inner>
 fn new_rate_limit_service<Inner, Limiter>(inner: Inner, limiter: Limiter, now_ns: u64 = 0) -> RateLimitService<Inner, Limiter>
 fn new_circuit_breaker_service<Inner>(inner: Inner, failure_threshold: u32 = 5, cooldown_ms: u64 = 5000) -> CircuitBreakerService<Inner>
-fn new_singleflight_service<Inner>(inner: Inner) -> SingleflightService<Inner>
 ```
 
 ### 4. Sans-IO codecs (`wire/h1.goose`, `wire/h1_exchange.goose`, `wire/hpack.goose`, `wire/h2.goose`, `wire/h3.goose`)

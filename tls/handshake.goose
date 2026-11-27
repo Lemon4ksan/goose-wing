@@ -184,7 +184,7 @@ fn negotiate_alpn(alpn_ext_bytes: const u8[:], is_quic: bool) -> NegotiatedAlpn 
 //   returns: ok = true, entries populated
 fn parse_extensions_block(
     ext_block_bytes: const u8[:],
-    entries:         ExtensionEntry[..32]&,
+    entries:         ExtensionEntry[..64]&,
 ) -> bool {
     entries.clear();
     var cursor = core::cursor_from(ext_block_bytes);
@@ -203,7 +203,7 @@ fn parse_extensions_block(
 }
 
 // Finds an extension by type in the parsed entries array.
-fn find_extension(entries: const ExtensionEntry[..32]&, ext_type: u16) -> const u8[:], bool {
+fn find_extension(entries: const ExtensionEntry[..64]&, ext_type: u16) -> const u8[:], bool {
     for i in entries.len {
         if entries[i].ext_type == ext_type {
             return entries[i].data, true;
@@ -226,7 +226,7 @@ fn parse_live_server_hello(payload: const u8[:], out: ParsedServerHello&) -> boo
     let ext_bytes, ok_pre = tls_internal::read_server_hello_preamble(payload, rand_arr, tmp);
     guard ok_pre else { return false; }
 
-    var entries: ExtensionEntry[..32] = [];
+    var entries: ExtensionEntry[..64] = [];
     guard parse_extensions_block(ext_bytes, entries) else { return false; }
     guard tls_internal::validate_sh_or_hrr_extensions(entries, tmp.is_hrr) else { return false; }
 

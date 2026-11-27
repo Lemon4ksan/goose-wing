@@ -332,7 +332,7 @@ fn pure_client_step_ee(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
         return pure_fail_with_alert(slot, alert, tls::TlsBackendStatus.HandshakeError);
     }
     if slot.ech_state.active {
-        var entries: tls::ExtensionEntry[..32] = [];
+        var entries: tls::ExtensionEntry[..64] = [];
         guard tls::parse_extensions_block(slot.hs_msg_body[..], entries) else {
             return pure_fail_with_alert(slot, tls::Alert.DecodeError, tls::TlsBackendStatus.HandshakeError);
         }
@@ -1072,14 +1072,19 @@ fn open_endpoint_with_role(
         return tls::TlsEndpoint { .. }, tls::TlsBackendStatus.Unavailable;
     }
 
+    let clean_sni, is_ip_sni, ok_sni = normalize_native_server_name(cfg.server_name[..]);
+    guard ok_sni else {
+        return tls::TlsEndpoint { .. }, tls::TlsBackendStatus.VerifyError;
+    }
+
     var st_i32:     i32 = 0;
     var active_i32: i32 = 0;
     let nid = native_tls_backend_open(
         kind_to_native_i32(cfg.kind),
         if is_server { 1 } else { 0 },
-        pack_native_verify_flags(cfg),
+        pack_native_verify_flags(cfg, is_ip_sni),
         min_version_to_native_i32(cfg.min_version),
-        cfg.server_name[..],
+        clean_sni,
         cfg.alpn_wire[..],
         cfg.ca_file[..],
         cfg.cert_pem_file[..],

@@ -939,7 +939,7 @@ fn test_adversarial_grpc_web(t: lit::T&) {
         body_a.append("grpc-message: oops\r\n");
         var frame_a: u8[>..] = [];
         frame_a.push(rfc::GRPC_WEB_FLAG_TRAILERS);
-        core::write_be_u32(frame_a, body_a.len as u32);
+        core::append_u32_be(frame_a, body_a.len as u32);
         frame_a.append(body_a[..]);
 
         var payload_a: u8[>..] = [];
@@ -1176,21 +1176,6 @@ fn test_http2_initial_window_flood_cve_2026_78669(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 32. CVE-2026-39825 URL Query Parameter Flooding Limit
-// ----------------------------------------------------------------------------
-fn test_query_param_limit_cve_2026_39825(t: lit::T&) {
-    // CVE-2026-39825: Query parameter count limiter
-    let normal_query: const u8[:] = "user=alice&action=login&lang=en";
-    t.assert_true(core::validate_query_param_count(normal_query, 5), "Normal query <= 5 passes");
-
-    var flood_query: u8[..128] = [];
-    for i in 10 {
-        flood_query.append("p=1&");
-    }
-    t.assert_false(core::validate_query_param_count(flood_query[..], 5), "Flooded query > 5 must fail");
-}
-
-// ----------------------------------------------------------------------------
 // 33. CVE-2026-39821 & CVE-2026-97044 Punycode & IDNA Bounds
 // ----------------------------------------------------------------------------
 fn test_punycode_validation_cve_2026_39821_and_97044(t: lit::T&) {
@@ -1263,7 +1248,6 @@ fn main() {
     lit::run_case(runner, "29. CVE-2024-24790 IPv4-Mapped IPv6 SSRF Filter Defense", test_ipv6_mapped_ipv4_ssrf_cve_2024_24790);
     lit::run_case(runner, "30. CVE-2026-56866 Client CONNECT Tunnel Rejection Poisoning", test_connect_tunnel_rejection_cve_2026_56866);
     lit::run_case(runner, "31. CVE-2026-78669 HTTP/2 Initial Window Size Flood Defense", test_http2_initial_window_flood_cve_2026_78669);
-    lit::run_case(runner, "32. CVE-2026-39825 URL Query Parameter Flooding Limit", test_query_param_limit_cve_2026_39825);
     lit::run_case(runner, "33. CVE-2026-39821 & CVE-2026-97044 Punycode & IDNA Bounds", test_punycode_validation_cve_2026_39821_and_97044);
     lit::run_case(runner, "34. CVE-2024-45341 X.509 URI SAN Zone ID Rejection", test_x509_uri_zone_id_cve_2024_45341);
     lit::run_case(runner, "35. CVE-2026-42507 Error Message Untrusted Input Sanitization", test_error_sanitization_cve_2026_42507);

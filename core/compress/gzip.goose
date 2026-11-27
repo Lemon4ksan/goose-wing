@@ -13,7 +13,6 @@ const GZIP_ID1:        u8 = 0x1F;
 const GZIP_ID2:        u8 = 0x8B;
 const GZIP_CM_DEFLATE: u8 = 8;
 
-const GZIP_FLG_FTEXT:    u8 = 0x01;
 const GZIP_FLG_FHCRC:    u8 = 0x02;
 const GZIP_FLG_FEXTRA:   u8 = 0x04;
 const GZIP_FLG_FNAME:    u8 = 0x08;

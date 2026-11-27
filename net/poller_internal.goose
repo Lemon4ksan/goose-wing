@@ -40,9 +40,12 @@ inline fn reactor_cancel_uring_slot(accel: net::ReactorAccelRuntime&, slot: i64)
 }
 
 fn reactor_try_open_uring(accel: net::ReactorAccelRuntime&, listener_fd: i64) -> bool {
-    let rfd = native_uring_create(1024, 0);
+    var rfd = native_uring_create(1024, 0x3000);
+    if rfd < 0 {
+        rfd = native_uring_create(1024, 0);
+    }
     guard rfd >= 0 else { return false; }
-    let pbuf, ok_pb = uring_alloc_pbuf_ring(rfd, net::REACTOR_URING_PBUF_BGID, 1024, 8192);
+    let pbuf, ok_pb = uring_alloc_pbuf_ring(rfd, net::REACTOR_URING_PBUF_BGID, 1024, 4096);
     if !ok_pb || pbuf == 0 {
         native_uring_close(rfd);
         return false;
@@ -52,6 +55,7 @@ fn reactor_try_open_uring(accel: net::ReactorAccelRuntime&, listener_fd: i64) ->
     accel.uring_pbuf = pbuf;
     if listener_fd > 0 {
         net::tcp_set_nonblocking(listener_fd, true);
+        let _ = net::tcp_set_nodelay(listener_fd, true);
         net::reactor_arm_uring_accept(accel, listener_fd);
     }
     return true;
@@ -115,12 +119,12 @@ const NS_TO_MS_MULHI_RECIP:      u64 = 0x10C6F7A0B5EE;
 const MAX_POLL_TIMEOUT_NS:       u64 = 2147483647000000;
 
 inline fn apply_trigger_clear_mask(t: core::PollTrigger.Edge, sim: net::SimulatedReadyState&, triggered: u32) {
-    sim.ready.clear_flag(triggered);
+    sim.ready &= ~triggered;
     sim.bytes = 0;
 }
 
 inline fn apply_trigger_clear_mask(t: core::PollTrigger.Level, sim: net::SimulatedReadyState&, triggered: u32) {
-    sim.ready.clear_flag(core::POLL_WRITE);
+    sim.ready &= ~core::POLL_WRITE;
 }
 
 fn poll_flags_to_interest(events: u32) -> core::PollInterest {

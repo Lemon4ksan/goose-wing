@@ -13,7 +13,8 @@ shims and internal wire/loop mechanics live in `namespace net_internal;` across
 `net/internal.goose`, `net/tunnel_internal.goose`, `net/pool_internal.goose`,
 `net/poller_internal.goose`, `net/io_host_internal.goose`,
 `net/io_host_loop_internal.goose`, `net/proxy_protocol_internal.goose`,
-`net/dst_internal.goose`, and `net/driver/`.
+`net/wasm_loopback_internal.goose`, `net/dst_internal.goose`, and `net/driver/`.
+WASM loopback rings and non-Linux UDP batch fallbacks execute in pure Goose.
 
 ## Quick start
 

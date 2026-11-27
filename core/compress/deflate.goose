@@ -130,12 +130,7 @@ inline fn comp_try_write_be_u32<B>(out: B&, val: u32) -> bool {
 
 // ---- rfc 1951 constants & lookup tables -----------------------------------
 
-const MAX_BITS:   i32 = 15;
-const MAX_LCODES: i32 = 286;
-const MAX_DCODES: i32 = 30;
-const MAX_CODES:  i32 = 316;
-const FIX_LCODES: i32 = 288;
-
+const MAX_BITS:        i32 = 15;
 const FAST_OP_EOB:     u32 = 64;
 const FAST_OP_INVALID: u32 = 96;
 const FAST_ENTRY_SLOW: u32 = 0x80000000;
@@ -2066,7 +2061,8 @@ fn deflate_fast_l1_simd<B>(src: const u8[:], out: B&, w: BitWriter&) -> bool {
 }
 
 fn deflate_fast_level1<B>(src: const u8[:], out: B&, w: BitWriter&, is_final: bool) -> bool {
-    if w.bit_count == 0 && is_final && deflate_fast_l1_simd(src, out, w) {
+    guard !w.overflow else { return false; }
+    if is_final && (w.bit_count == 0) && deflate_fast_l1_simd(src, out, w) {
         return true;
     }
     guard !w.overflow else { return false; }

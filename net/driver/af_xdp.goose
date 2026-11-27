@@ -21,7 +21,6 @@ extern fn native_af_xdp_register_umem(
 ) -> i32 = "wing_af_xdp_register_umem";
 extern fn native_af_xdp_set_ring_size(xsk_fd: i64, ring_opt: i32, entries: u32) -> i32 = "wing_af_xdp_set_ring_size";
 extern fn native_af_xdp_bind(xsk_fd: i64, ifindex: u32, queue_id: u32, flags: u32) -> i32 = "wing_af_xdp_bind";
-extern fn native_af_xdp_ring_need_wakeup(xsk_fd: i64, is_tx: i32) -> i32 = "wing_af_xdp_ring_need_wakeup";
 extern fn native_af_xdp_mmap_rings(xsk_fd: i64, entries: u32) -> i32 = "wing_af_xdp_mmap_rings";
 extern fn native_af_xdp_fill_push(xsk_fd: i64, umem_offset: u64) -> i32 = "wing_af_xdp_fill_push";
 extern fn native_af_xdp_tx_submit(xsk_fd: i64, addr: u64, len: u32, options: u32) -> i32 = "wing_af_xdp_tx_submit";
@@ -32,17 +31,6 @@ extern fn native_af_xdp_rx_poll(
     options_out: u32&,
 ) -> i32 = "wing_af_xdp_rx_poll";
 extern fn native_af_xdp_complete_pop(xsk_fd: i64, addr_out: u64&) -> i32 = "wing_af_xdp_complete_pop";
-extern fn native_af_xdp_open_loopback(
-    num_frames:    u32,
-    frame_size:    u32,
-    umem_addr_out: u64&,
-    umem_len_out:  u64&,
-) -> i64 = "wing_af_xdp_open_loopback";
-extern fn native_af_xdp_inject_loopback_rx(
-    xsk_fd:    i64,
-    addr:      u64,
-    frame_len: u32,
-) -> i32 = "wing_af_xdp_inject_loopback_rx";
 extern fn native_af_xdp_umem_write(xsk_fd: i64, addr: u64, src: const u8[:]) -> i32 = "wing_af_xdp_umem_write";
 extern fn native_af_xdp_umem_read(
     xsk_fd:    i64,
@@ -51,6 +39,70 @@ extern fn native_af_xdp_umem_read(
     dst:       u8[:],
 ) -> i32 = "wing_af_xdp_umem_read";
 extern fn native_af_xdp_close(xsk_fd: i64) = "wing_af_xdp_close";
+
+const XSK_LOOPBACK_MAX_SOCKETS: i64 = 16;
+const XSK_LOOPBACK_RING_CAP:    u64 = 64;
+const XSK_LOOPBACK_FD_BASE:     i64 = 0x40000000;
+
+struct XskLoopbackSlot {
+    active:     bool        = false,
+    umem_off:   u64         = 0,
+    umem_len:   u64         = 0,
+    chunk_size: u32         = 0,
+    fill_ring:  u64[64]     = [0; 64],
+    fill_head:  u64         = 0,
+    fill_tail:  u64         = 0,
+    comp_ring:  u64[64]     = [0; 64],
+    comp_head:  u64         = 0,
+    comp_tail:  u64         = 0,
+    rx_ring:    XdpDesc[64] = [XdpDesc { .. }; 64],
+    rx_head:    u64         = 0,
+    rx_tail:    u64         = 0,
+    tx_ring:    XdpDesc[64] = [XdpDesc { .. }; 64],
+    tx_head:    u64         = 0,
+    tx_tail:    u64         = 0,
+}
+
+root struct XskLoopbackTable {
+    slots: XskLoopbackSlot[16] = [XskLoopbackSlot { .. }; 16],
+    umem:  u8[>..]             = [],
+}
+
+var g_xsk_lb: XskLoopbackTable = XskLoopbackTable { .. };
+
+fn xsk_lb_find_idx(xsk_fd: i64) -> i64 {
+    guard xsk_fd >= XSK_LOOPBACK_FD_BASE else { return -1; }
+    let idx = xsk_fd - XSK_LOOPBACK_FD_BASE;
+    guard idx >= 0 && idx < XSK_LOOPBACK_MAX_SOCKETS && g_xsk_lb.slots[idx].active else {
+        return -1;
+    }
+    return idx;
+}
+
+fn xsk_validate_umem_span(umem_len: u64, chunk_size: u32, addr: u64, span_len: u64) -> bool {
+    guard umem_len > 0 else { return false; }
+    let csz = chunk_size as u64;
+    let max_frame = if csz > 0 && csz < 2048 { csz } else { 2048 };
+    guard span_len <= max_frame && addr <= umem_len && span_len <= (umem_len - addr) else {
+        return false;
+    }
+    if csz > 0 {
+        let off_in_chunk = addr % csz;
+        guard span_len <= (csz - off_in_chunk) else { return false; }
+    }
+    return true;
+}
+
+fn xsk_validate_fill_offset(umem_len: u64, chunk_size: u32, offset: u64) -> bool {
+    guard xsk_validate_umem_span(umem_len, chunk_size, offset, 0) else { return false; }
+    let csz = chunk_size as u64;
+    if csz > 0 {
+        guard (offset % csz) == 0 && csz <= umem_len && offset <= (umem_len - csz) else {
+            return false;
+        }
+    }
+    return true;
+}
 
 // AF_XDP packet descriptor (matches Linux struct xdp_desc)
 struct XdpDesc {
@@ -168,12 +220,39 @@ fn af_xdp_open_socket(
 // Publishes a UMEM frame offset into the AF_XDP Fill Ring for kernel RX reception.
 fn af_xdp_fill_push(sock: const AfXdpSocket&, umem_offset: u64) -> bool {
     guard sock.fd >= 0 && sock.is_bound && sock.rings_mapped else { return false; }
+    let lb_idx = xsk_lb_find_idx(sock.fd);
+    if lb_idx >= 0 {
+        let s .= g_xsk_lb.slots[lb_idx];
+        guard xsk_validate_fill_offset(s.umem_len, s.chunk_size, umem_offset) else { return false; }
+        guard (s.fill_tail - s.fill_head) < XSK_LOOPBACK_RING_CAP else { return false; }
+        s.fill_ring[(s.fill_tail % XSK_LOOPBACK_RING_CAP) as i64] = umem_offset;
+        s.fill_tail += 1;
+        return true;
+    }
     return native_af_xdp_fill_push(sock.fd, umem_offset) == 0;
 }
 
 // Submits a packet descriptor to the AF_XDP TX Ring and kicks the kernel.
 fn af_xdp_tx_submit(sock: const AfXdpSocket&, desc: const XdpDesc&) -> bool {
     guard sock.fd >= 0 && sock.is_bound && sock.rings_mapped && desc.len > 0 else { return false; }
+    let lb_idx = xsk_lb_find_idx(sock.fd);
+    if lb_idx >= 0 {
+        let s .= g_xsk_lb.slots[lb_idx];
+        guard xsk_validate_umem_span(s.umem_len, s.chunk_size, desc.addr, desc.len) else {
+            return false;
+        }
+        guard (s.tx_tail - s.tx_head) < XSK_LOOPBACK_RING_CAP &&
+              (s.comp_tail - s.comp_head) < XSK_LOOPBACK_RING_CAP else {
+            return false;
+        }
+        let idx = (s.tx_tail % XSK_LOOPBACK_RING_CAP) as i64;
+        s.tx_ring[idx] = desc;
+        s.tx_tail += 1;
+        s.tx_head += 1;
+        s.comp_ring[(s.comp_tail % XSK_LOOPBACK_RING_CAP) as i64] = desc.addr;
+        s.comp_tail += 1;
+        return true;
+    }
     return native_af_xdp_tx_submit(sock.fd, desc.addr, desc.len, desc.options) == 0;
 }
 
@@ -181,6 +260,15 @@ fn af_xdp_tx_submit(sock: const AfXdpSocket&, desc: const XdpDesc&) -> bool {
 fn af_xdp_rx_poll(sock: const AfXdpSocket&) -> XdpDesc, bool {
     guard sock.fd >= 0 && sock.is_bound && sock.rings_mapped else {
         return XdpDesc { .. }, false;
+    }
+    let lb_idx = xsk_lb_find_idx(sock.fd);
+    if lb_idx >= 0 {
+        let s .= g_xsk_lb.slots[lb_idx];
+        guard s.rx_head != s.rx_tail else { return XdpDesc { .. }, false; }
+        let idx = (s.rx_head % XSK_LOOPBACK_RING_CAP) as i64;
+        let d = s.rx_ring[idx];
+        s.rx_head += 1;
+        return d, true;
     }
     var addr: u64 = 0;
     var len:  u32 = 0;
@@ -195,6 +283,14 @@ fn af_xdp_rx_poll(sock: const AfXdpSocket&) -> XdpDesc, bool {
 // Pops a completed TX frame offset from the AF_XDP Completion Ring.
 fn af_xdp_complete_pop(sock: const AfXdpSocket&) -> u64, bool {
     guard sock.fd >= 0 && sock.is_bound && sock.rings_mapped else { return 0, false; }
+    let lb_idx = xsk_lb_find_idx(sock.fd);
+    if lb_idx >= 0 {
+        let s .= g_xsk_lb.slots[lb_idx];
+        guard s.comp_head != s.comp_tail else { return 0, false; }
+        let addr = s.comp_ring[(s.comp_head % XSK_LOOPBACK_RING_CAP) as i64];
+        s.comp_head += 1;
+        return addr, true;
+    }
     var addr: u64 = 0;
     let got = native_af_xdp_complete_pop(sock.fd, addr);
     return addr, got != 0;
@@ -202,33 +298,59 @@ fn af_xdp_complete_pop(sock: const AfXdpSocket&) -> u64, bool {
 
 // Closes AF_XDP socket, unmaps rings, and unbinds from NIC queue.
 fn af_xdp_close(sock: AfXdpSocket&) {
-    if sock.fd >= 0 {
+    guard sock.fd >= 0 else { return; }
+    let lb_idx = xsk_lb_find_idx(sock.fd);
+    if lb_idx >= 0 {
+        g_xsk_lb.slots[lb_idx] = XskLoopbackSlot { .. };
+        var any_active = false;
+        for i in XSK_LOOPBACK_MAX_SOCKETS {
+            if g_xsk_lb.slots[i].active {
+                any_active = true;
+                break;
+            }
+        }
+        if !any_active {
+            g_xsk_lb.umem.clear();
+        }
+    } else {
         native_af_xdp_close(sock.fd);
-        sock.fd = -1;
-        sock.is_bound = false;
-        sock.rings_mapped = false;
-        sock.umem.is_registered = false;
     }
+    sock.fd = -1;
+    sock.is_bound = false;
+    sock.rings_mapped = false;
+    sock.umem.is_registered = false;
 }
 
 // Opens an in-memory UMEM loopback AF_XDP socket usable without CAP_NET_RAW on all platforms.
 fn af_xdp_open_loopback(num_frames: u32 = 64, frame_size: u32 = 2048) -> AfXdpSocket, bool {
-    guard num_frames > 0 && frame_size > 0 && frame_size <= 4096 else {
+    guard num_frames > 0 && num_frames <= 4096 && frame_size > 0 && frame_size <= 4096 else {
         return new_af_xdp_socket(), false;
     }
-    var u_addr: u64 = 0;
-    var u_len:  u64 = 0;
-    let fd = native_af_xdp_open_loopback(num_frames, frame_size, u_addr, u_len);
-    guard fd >= 0 else {
-        return new_af_xdp_socket(), false;
+    var slot_idx: i64 = -1;
+    for i in XSK_LOOPBACK_MAX_SOCKETS {
+        if !g_xsk_lb.slots[i].active {
+            slot_idx = i;
+            break;
+        }
     }
+    guard slot_idx >= 0 else { return new_af_xdp_socket(), false; }
+    let total_bytes = (num_frames as i64) * frame_size;
+    let base_off = g_xsk_lb.umem.len;
+    g_xsk_lb.umem.resize(core::add_sat_i64(base_off, total_bytes), 0);
+    g_xsk_lb.slots[slot_idx] = XskLoopbackSlot {
+        active:     true,
+        umem_off:   base_off as u64,
+        umem_len:   total_bytes as u64,
+        chunk_size: frame_size,
+        ..
+    };
     return AfXdpSocket {
-        fd:       fd,
+        fd:       XSK_LOOPBACK_FD_BASE + slot_idx,
         ifindex:  0,
         queue_id: 0,
         umem: AfXdpUmem {
-            addr:          u_addr,
-            len:           u_len,
+            addr:          0,
+            len:           total_bytes as u64,
             chunk_size:    frame_size,
             headroom:      0,
             is_registered: true,
@@ -244,6 +366,18 @@ fn af_xdp_umem_write(sock: const AfXdpSocket&, addr: u64, data: const u8[:]) -> 
     guard sock.fd >= 0 && sock.umem.is_registered && data.len <= 2048 else {
         return false;
     }
+    let lb_idx = xsk_lb_find_idx(sock.fd);
+    if lb_idx >= 0 {
+        let s .= g_xsk_lb.slots[lb_idx];
+        guard xsk_validate_umem_span(s.umem_len, s.chunk_size, addr, data.len as u64) else {
+            return false;
+        }
+        let start = core::add_sat_u64(s.umem_off, addr) as i64;
+        for i in data.len {
+            g_xsk_lb.umem[start + i] = data[i];
+        }
+        return true;
+    }
     return native_af_xdp_umem_write(sock.fd, addr, data) == 0;
 }
 
@@ -257,6 +391,16 @@ fn af_xdp_umem_read(
     out_frame.clear();
     guard sock.fd >= 0 && sock.umem.is_registered && frame_len <= 2048 else {
         return false;
+    }
+    let lb_idx = xsk_lb_find_idx(sock.fd);
+    if lb_idx >= 0 {
+        let s .= g_xsk_lb.slots[lb_idx];
+        guard xsk_validate_umem_span(s.umem_len, s.chunk_size, addr, frame_len) else {
+            return false;
+        }
+        let start = core::add_sat_u64(s.umem_off, addr) as i64;
+        let end = core::add_sat_i64(start, frame_len);
+        return out_frame.try_append(g_xsk_lb.umem[start..end]);
     }
     out_frame.resize(frame_len as i64, 0);
     let n = native_af_xdp_umem_read(sock.fd, addr, frame_len, out_frame[..]);
@@ -272,7 +416,17 @@ fn af_xdp_inject_loopback_rx(sock: AfXdpSocket&, addr: u64, frame_len: u32) -> b
     guard sock.fd >= 0 && sock.is_bound && sock.rings_mapped && frame_len > 0 && frame_len <= 2048 else {
         return false;
     }
-    return native_af_xdp_inject_loopback_rx(sock.fd, addr, frame_len) == 0;
+    let lb_idx = xsk_lb_find_idx(sock.fd);
+    guard lb_idx >= 0 else { return false; }
+    let s .= g_xsk_lb.slots[lb_idx];
+    guard xsk_validate_umem_span(s.umem_len, s.chunk_size, addr, frame_len) else {
+        return false;
+    }
+    guard (s.rx_tail - s.rx_head) < XSK_LOOPBACK_RING_CAP else { return false; }
+    let idx = (s.rx_tail % XSK_LOOPBACK_RING_CAP) as i64;
+    s.rx_ring[idx] = XdpDesc { addr: addr, len: frame_len, options: 0 };
+    s.rx_tail += 1;
+    return true;
 }
 
 // AF_XDP Fill/Completion ring state with wrap-split burst enqueueing (`rte_ring_elem_pvt.h` pattern).

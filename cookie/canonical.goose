@@ -11,8 +11,6 @@ import .constants;
 import .policy;
 import http.headers;
 
-// ---- canonical cookie model ------------------------------------------------
-
 // Options for cookie request matching and same-site sendability.
 struct AccessOptions {
     is_same_site:            bool = true,

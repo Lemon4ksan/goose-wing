@@ -6,7 +6,6 @@
 namespace core;
 
 import std;
-import core.crypto.fusion;
 
 // ---- Field Element (10 limbs, alternating 26 and 25 bits) ----------------
 

@@ -5,10 +5,9 @@ Compile-time modular HTTP/1.1 package entrypoint (`namespace h1`) that excludes
 `security`, `core.compress`, and asymmetric crypto when wiring only
 `Tcp -> Http1 -> Router`.
 
-`wing_h1.build` compiles three C shims (`shim/simd.c`, `shim/tcp.c`, and
-`shim/rio.c`) and exports `core::csprng_fill` and `core::csprng_u64` alongside
-zero-copy HTTP/1.1 framing, routing, middleware chaining, and a minimal client
-exchange path.
+`wing_h1.build` compiles two C shims (`shim/simd.c` and `shim/tcp.c`) and
+exports `core::csprng_fill` and `core::csprng_u64` alongside zero-copy HTTP/1.1
+framing, routing, middleware chaining, and a minimal client exchange path.
 
 ## Quick start
 

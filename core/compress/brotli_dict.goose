@@ -24,29 +24,11 @@ const BROTLI_DICT_DOFFSET: u32[25] = [
 
 // ---- 121 RFC 7932 Word Transformations (Appendix B) ---------------------
 
-const TRANSFORM_IDENTITY:        u8 = 0;
-const TRANSFORM_OMIT_LAST_1:     u8 = 1;
-const TRANSFORM_OMIT_LAST_2:     u8 = 2;
-const TRANSFORM_OMIT_LAST_3:     u8 = 3;
-const TRANSFORM_OMIT_LAST_4:     u8 = 4;
-const TRANSFORM_OMIT_LAST_5:     u8 = 5;
-const TRANSFORM_OMIT_LAST_6:     u8 = 6;
-const TRANSFORM_OMIT_LAST_7:     u8 = 7;
-const TRANSFORM_OMIT_LAST_8:     u8 = 8;
 const TRANSFORM_OMIT_LAST_9:     u8 = 9;
 const TRANSFORM_UPPERCASE_FIRST: u8 = 10;
 const TRANSFORM_UPPERCASE_ALL:   u8 = 11;
 const TRANSFORM_OMIT_FIRST_1:    u8 = 12;
-const TRANSFORM_OMIT_FIRST_2:    u8 = 13;
-const TRANSFORM_OMIT_FIRST_3:    u8 = 14;
-const TRANSFORM_OMIT_FIRST_4:    u8 = 15;
-const TRANSFORM_OMIT_FIRST_5:    u8 = 16;
-const TRANSFORM_OMIT_FIRST_6:    u8 = 17;
-const TRANSFORM_OMIT_FIRST_7:    u8 = 18;
-const TRANSFORM_OMIT_FIRST_8:    u8 = 19;
 const TRANSFORM_OMIT_FIRST_9:    u8 = 20;
-const TRANSFORM_SHIFT_FIRST:     u8 = 21;
-const TRANSFORM_SHIFT_ALL:       u8 = 22;
 
 struct BrotliTransform {
     prefix:         const u8[:],

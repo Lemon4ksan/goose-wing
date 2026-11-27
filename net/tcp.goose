@@ -7,14 +7,44 @@
 namespace net;
 
 import std;
+import os;
 import core;
 import .internal;
+import .driver.rio_hs_internal;
+import .driver.types;
+import .wasm_loopback_internal;
 
-// Public environment & signal C shims (shim/tcp.c)
-extern fn get_env_port(default_port: u16) -> u16 = "wing_get_env_port";
-extern fn get_env_workers(default_workers: i64) -> i64 = "wing_get_env_workers";
+// Public signal C shims (shim/tcp.c)
 extern fn request_shutdown() = "wing_request_shutdown";
 extern fn reset_shutdown_signals() = "wing_reset_shutdown_signals";
+
+// Parses an unsigned port in `1..65535` from `WING_PORT` (falling back to `GW_PORT`), or returns `default_port`.
+fn get_env_port(default_port: u16) -> u16 {
+    var val_buf: u8[>..] = [];
+    if !env("WING_PORT", val_buf) || val_buf.len == 0 {
+        val_buf.clear();
+        if !env("GW_PORT", val_buf) || val_buf.len == 0 {
+            return default_port;
+        }
+    }
+    let parsed, ok = val_buf[..].parse_u32_dec();
+    if ok && parsed > 0 && parsed < 65536 {
+        return parsed as u16;
+    }
+    return default_port;
+}
+
+// Reads worker count in `1..128` from `WING_WORKERS`, or returns `max(default_workers, 1)`.
+fn get_env_workers(default_workers: i64) -> i64 {
+    var val_buf: u8[>..] = [];
+    if env("WING_WORKERS", val_buf) && val_buf.len > 0 {
+        let parsed, ok = val_buf[..].parse_i64_dec();
+        if ok && parsed > 0 && parsed <= 128 {
+            return parsed;
+        }
+    }
+    return if default_workers > 0 { default_workers } else { 1 };
+}
 
 // Event flags for epoll multiplexer
 const EPOLL_READ:         u32 = 1;
@@ -24,9 +54,10 @@ const EPOLL_HUP:          u32 = 16;
 const EPOLL_ET:           u32 = 0x80000000;
 const EPOLL_LISTENER_TAG: u64 = 0xFFFFFFFFFFFFFFFF;
 
-// Initializes socket subsystem (WSAStartup on Windows).
+// Initializes socket subsystem (WSAStartup on Windows, virtual loopback on WASM).
 fn tcp_init() -> bool {
     if !net_internal::g_tcp_initialized {
+        net_internal::g_is_wasm_target = (net_internal::native_host_platform() == 3);
         let res = net_internal::native_tcp_init();
         if res == 0 {
             net_internal::g_tcp_initialized = true;
@@ -64,6 +95,9 @@ fn consume_reload_signal() -> bool {
 // Returns listening socket handle, or -1 on error.
 fn tcp_listen(host: const u8[:], port: u16 = 0, backlog: i32 = 128) -> i64 {
     tcp_init();
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_tcp_listen(host, port, backlog);
+    }
     return net_internal::native_tcp_listen(host, port, backlog);
 }
 
@@ -71,6 +105,9 @@ fn tcp_listen(host: const u8[:], port: u16 = 0, backlog: i32 = 128) -> i64 {
 // Returns listening socket handle, or -1 on error.
 fn tcp_listen_unix(path: const u8[:], backlog: i32 = 128) -> i64 {
     tcp_init();
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_tcp_listen(path, 0, backlog);
+    }
     return net_internal::native_tcp_listen_unix(path, backlog);
 }
 
@@ -78,6 +115,9 @@ fn tcp_listen_unix(path: const u8[:], backlog: i32 = 128) -> i64 {
 // Returns connected socket handle (> 0), or -1 on error.
 fn tcp_connect_unix(path: const u8[:]) -> i64 {
     tcp_init();
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_tcp_connect(path, 0);
+    }
     return net_internal::native_tcp_connect_unix(path);
 }
 
@@ -86,17 +126,27 @@ fn tcp_connect_unix(path: const u8[:]) -> i64 {
 // Returns sanitized socket handle, or -1 on error.
 fn adopt_socket(raw_fd: i64) -> i64 {
     tcp_init();
+    if net_internal::g_is_wasm_target {
+        return if raw_fd > 0 { raw_fd } else { -1 };
+    }
     return net_internal::native_adopt_socket(raw_fd);
 }
 
 // Retrieves the locally bound port for a socket.
 fn tcp_getsockname_port(fd: i64) -> u16 {
     guard fd > 0 else { return 0; }
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_tcp_getsockname_port(fd);
+    }
     return net_internal::native_tcp_getsockname_port(fd);
 }
 
 // Retrieves the connected peer IPv4 address string for a socket (or "127.0.0.1" fallback).
 fn tcp_get_peer_ip(fd: i64, out_ip: u8[..64]&) {
+    if net_internal::g_is_wasm_target {
+        let _ = out_ip.try_set("127.0.0.1");
+        return;
+    }
     var raw: u8[64] = [0; 64];
     let n = net_internal::native_tcp_get_peer_ip(fd, raw[..]);
     if n > 0 && n <= 64 {
@@ -110,6 +160,9 @@ fn tcp_get_peer_ip(fd: i64, out_ip: u8[..64]&) {
 // Returns accepted socket handle (> 0), 0 on timeout, or -1 on error.
 fn tcp_accept(listener_fd: i64, timeout_ms: u32 = 0) -> i64 {
     guard listener_fd > 0 else { return -1; }
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_tcp_accept(listener_fd);
+    }
     return net_internal::native_tcp_accept(listener_fd, timeout_ms);
 }
 
@@ -124,7 +177,11 @@ enum IpFamily {
 // Returns connected socket handle (> 0), or -1 on error/timeout.
 fn tcp_connect(host: const u8[:], port: u16, timeout_ms: u32 = 5000) -> i64 {
     tcp_init();
-    return net_internal::native_tcp_connect(host, port, timeout_ms);
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_tcp_connect(host, port);
+    }
+    guard port != 0 else { return -1; }
+    return net_internal::native_tcp_connect_ex(host, port, timeout_ms, 0, "");
 }
 
 // Connects to a remote TCP endpoint with timeout, IP family filter, and optional local source bind IP.
@@ -138,6 +195,9 @@ fn tcp_connect_ex(
 ) -> i64 {
     guard port != 0 else { return -1; }
     tcp_init();
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_tcp_connect(host, port);
+    }
     let fam_i32 = net_internal::ip_family_to_native_i32(ip_family);
     return net_internal::native_tcp_connect_ex(host, port, timeout_ms, fam_i32, local_bind_addr);
 }
@@ -185,6 +245,9 @@ fn tcp_connect_ip(
 ) -> i64 {
     guard ip.len > 0 && port != 0 else { return -1; }
     tcp_init();
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_tcp_connect(ip, port);
+    }
     let fam_i32 = net_internal::ip_family_to_native_i32(ip_family);
     return net_internal::native_tcp_connect_ip(ip, port, timeout_ms, fam_i32, local_bind_addr);
 }
@@ -230,6 +293,11 @@ fn tcp_connect_begin(host: const u8[:], port: u16, out_state: i32&) -> i64 {
         return -1;
     }
     tcp_init();
+    if net_internal::g_is_wasm_target {
+        let fd = net_internal::wasm_tcp_connect(host, port);
+        out_state = if fd > 0 { 0 } else { -1 };
+        return fd;
+    }
     return net_internal::native_tcp_connect_begin(host, port, out_state);
 }
 
@@ -237,6 +305,9 @@ fn tcp_connect_begin(host: const u8[:], port: u16, out_state: i32&) -> i64 {
 // Returns 0 when connected, 1 while still in progress, or -1 on error/refusal.
 fn tcp_connect_poll(fd: i64) -> i32 {
     guard fd > 0 else { return -1; }
+    if net_internal::g_is_wasm_target {
+        return if net_internal::wasm_slot_valid(fd) { 0 } else { -1 };
+    }
     return net_internal::native_tcp_connect_poll(fd);
 }
 
@@ -244,6 +315,12 @@ fn tcp_connect_poll(fd: i64) -> i32 {
 // Returns bytes sent (> 0), or -1 on error.
 fn tcp_send(fd: i64, data: const u8[:]) -> i32 {
     guard fd > 0 && data.len > 0 else { return 0; }
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_tcp_send(fd, data);
+    }
+    if net_internal::rio_hs_is_active(fd) {
+        return net_internal::rio_hs_send(fd, data);
+    }
     return net_internal::native_tcp_send(fd, data);
 }
 
@@ -257,6 +334,24 @@ fn tcp_send2(fd: i64, hdr: const u8[:], payload: const u8[:]) -> i32 {
     }
     if hdr.len == 0 {
         return tcp_send(fd, payload);
+    }
+    if net_internal::g_is_wasm_target {
+        let s1 = net_internal::wasm_tcp_send(fd, hdr);
+        guard s1 == (hdr.len as i32) else { return s1; }
+        let s2 = net_internal::wasm_tcp_send(fd, payload);
+        guard s2 >= 0 else { return s2; }
+        return s1 + s2;
+    }
+    if net_internal::rio_hs_is_active(fd) {
+        let s1 = net_internal::rio_hs_send(fd, hdr);
+        if s1 != (hdr.len as i32) {
+            return s1;
+        }
+        let s2 = net_internal::rio_hs_send(fd, payload);
+        if s2 < 0 {
+            return s2;
+        }
+        return s1 + s2;
     }
     return net_internal::native_tcp_send2(fd, hdr, payload);
 }
@@ -281,6 +376,12 @@ const RECV_BUFFER_CAP: i64 = 65536;
 // Returns bytes received (> 0), 0 on clean EOF, -2 on timeout, or -1 on error.
 fn tcp_recv_slice(fd: i64, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
     guard fd > 0 && dst.len > 0 else { return -1; }
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_tcp_recv(fd, dst, false);
+    }
+    if net_internal::rio_hs_is_active(fd) {
+        return net_internal::rio_hs_recv(fd, dst, timeout_ms);
+    }
     return net_internal::native_tcp_recv(fd, dst, timeout_ms);
 }
 
@@ -290,7 +391,7 @@ fn tcp_recv_shared(fd: i64, buf: u8[..65536]&, max_len: i32 = 65536, timeout_ms:
     guard fd > 0 else { return -1, ""; }
     let eff_max = min(RECV_BUFFER_CAP as i32, max(1, max_len));
     net_internal::ensure_shared_buf_len(buf, eff_max);
-    let recvd = net_internal::native_tcp_recv(fd, buf[..eff_max], timeout_ms);
+    let recvd = tcp_recv_slice(fd, buf[..eff_max], timeout_ms);
     if recvd > 0 {
         return recvd, buf[..recvd];
     }
@@ -307,7 +408,7 @@ fn tcp_recv<B>(fd: i64, out: B&, max_len: i32 = 4096, timeout_ms: u32 = 5000) ->
     guard fd > 0 else { return -1; }
     var buf: u8[16384] = [0; 16384];
     let eff_max = min(16384, max(1, max_len));
-    let recvd = net_internal::native_tcp_recv(fd, buf[..eff_max], timeout_ms);
+    let recvd = tcp_recv_slice(fd, buf[..eff_max], timeout_ms);
     if recvd > 0 {
         let copy_len = min(recvd as i64, max(0, core::sub_sat_i64(out.cap, out.len)));
         out.append(buf[..copy_len]);
@@ -317,9 +418,12 @@ fn tcp_recv<B>(fd: i64, out: B&, max_len: i32 = 4096, timeout_ms: u32 = 5000) ->
 
 // Closes socket handle.
 fn tcp_close(fd: i64) {
-    if fd > 0 {
-        net_internal::native_tcp_close(fd);
+    guard fd > 0 else { return; }
+    if net_internal::g_is_wasm_target {
+        net_internal::wasm_tcp_close(fd);
+        return;
     }
+    net_internal::native_tcp_close(fd);
 }
 
 // Abruptly terminates the TCP connection with an immediate TCP RST segment (RFC 1122 Section 4.2.2.13).
@@ -339,6 +443,9 @@ const SHUT_RDWR: i32 = 2;
 // Shuts down socket send/receive channels.
 fn tcp_shutdown(fd: i64, how: i32 = SHUT_WR) -> bool {
     guard fd > 0 else { return false; }
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_tcp_shutdown(fd, how);
+    }
     return net_internal::native_tcp_shutdown(fd, how) == 0;
 }
 
@@ -454,6 +561,9 @@ fn tcp_get_notsent_bytes(fd: i64) -> i64 {
 // Retrieves number of immediately readable bytes in socket receive queue.
 fn tcp_get_readable_bytes(fd: i64) -> i64 {
     guard fd > 0 else { return 0; }
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_tcp_get_readable_bytes(fd);
+    }
     return net_internal::native_tcp_get_readable_bytes(fd);
 }
 
@@ -704,6 +814,9 @@ fn tcp_recv_pipe(fd: i64, pipe: core::PipeBuffer&, min_span: i64 = 4096, timeout
 // Configures socket non-blocking mode.
 fn tcp_set_nonblocking(fd: i64, nonblocking: bool = true) -> bool {
     guard fd > 0 else { return false; }
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_tcp_set_nonblocking(fd, nonblocking);
+    }
     return net_internal::native_tcp_set_nonblocking(fd, if nonblocking { 1 } else { 0 }) == 0;
 }
 
@@ -723,6 +836,9 @@ fn tcp_set_cork(fd: i64, enable: bool = true) -> bool {
 // Returns socket handle (> 0), 0 if no connection pending (EAGAIN), or -1 on error.
 fn tcp_accept_nonblocking(listener_fd: i64) -> i64 {
     guard listener_fd > 0 else { return -1; }
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_tcp_accept(listener_fd);
+    }
     return net_internal::native_tcp_accept_nonblocking(listener_fd);
 }
 
@@ -735,7 +851,7 @@ fn tcp_accept_nonblocking(listener_fd: i64) -> i64 {
 fn tcp_recv_nonblocking<B>(fd: i64, out: B&) -> i32 {
     guard fd > 0 else { return -1; }
     var buf: u8[16384] = [0; 16384];
-    let recvd = net_internal::native_tcp_recv_nonblocking(fd, buf[..16384]);
+    let recvd = tcp_recv_slice(fd, buf[..16384], 0);
     if recvd > 0 {
         let copy_len = min(recvd as i64, max(0, core::sub_sat_i64(out.cap, out.len)));
         out.append(buf[..copy_len]);
@@ -745,31 +861,42 @@ fn tcp_recv_nonblocking<B>(fd: i64, out: B&) -> i32 {
 
 // Receives bytes from non-blocking socket directly into destination slice.
 fn tcp_recv_nonblocking_slice(fd: i64, dst: u8[:]) -> i32 {
-    guard fd > 0 && dst.len > 0 else { return -1; }
-    return net_internal::native_tcp_recv_nonblocking(fd, dst);
+    return tcp_recv_slice(fd, dst, 0);
 }
 
 // Creates an epoll/reactor handle (native epoll_create1 on Linux, WSAPoll on Windows).
 fn epoll_create() -> i64 {
     tcp_init();
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_epoll_create();
+    }
     return net_internal::native_epoll_create();
 }
 
 // Registers a socket descriptor in the epoll multiplexer.
 fn epoll_add(epfd: i64, sock_fd: i64, events: u32 = EPOLL_READ, udata: u64 = 0) -> bool {
     guard epfd >= 0 && sock_fd > 0 else { return false; }
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_epoll_add(epfd, sock_fd, events, udata);
+    }
     return net_internal::native_epoll_add(epfd, sock_fd, events, udata) == 0;
 }
 
 // Modifies interest flags for a registered socket descriptor.
 fn epoll_mod(epfd: i64, sock_fd: i64, events: u32, udata: u64) -> bool {
     guard epfd >= 0 && sock_fd > 0 else { return false; }
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_epoll_mod(epfd, sock_fd, events, udata);
+    }
     return net_internal::native_epoll_mod(epfd, sock_fd, events, udata) == 0;
 }
 
 // Removes a socket descriptor from the epoll multiplexer.
 fn epoll_del(epfd: i64, sock_fd: i64) -> bool {
     guard epfd >= 0 && sock_fd > 0 else { return false; }
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_epoll_del(epfd, sock_fd);
+    }
     return net_internal::native_epoll_del(epfd, sock_fd) == 0;
 }
 
@@ -781,7 +908,7 @@ fn epoll_wait<F, U>(epfd: i64, out_fds: F&, out_udata: U&, timeout_ms: i32 = -1)
     out_udata.clear();
     var raw_fds:   i64[256] = [0; 256];
     var raw_udata: u64[256] = [0; 256];
-    let n = net_internal::native_epoll_wait(epfd, raw_fds[..], raw_udata[..], timeout_ms);
+    let n = net_internal::epoll_wait_direct(epfd, raw_fds[..], raw_udata[..], timeout_ms);
     guard n > 0 else { return 0; }
     let limit = min(min(n as i64, 256), min(out_fds.cap, out_udata.cap));
     out_fds.append(raw_fds[..limit]);
@@ -791,21 +918,48 @@ fn epoll_wait<F, U>(epfd: i64, out_fds: F&, out_udata: U&, timeout_ms: i32 = -1)
 
 // Closes epoll/reactor handle.
 fn epoll_close(epfd: i64) {
-    if epfd >= 0 {
-        net_internal::native_epoll_close(epfd);
+    guard epfd >= 0 else { return; }
+    if net_internal::g_is_wasm_target {
+        net_internal::wasm_epoll_close(epfd);
+        return;
     }
+    net_internal::native_epoll_close(epfd);
+}
+
+// Computes physical-first CPU core index (`0, 2, 4, ...` then odd SMT threads) to avoid sibling sharing.
+fn calc_smt_physical_cpu(cpu_id: i64, total_cpus: i64) -> i64 {
+    guard cpu_id >= 0 && total_cpus > 0 else { return 0; }
+    let logical = cpu_id % total_cpus;
+    guard total_cpus > 1 else { return logical; }
+    let phys = total_cpus / 2;
+    let target = if logical < phys { logical * 2 } else { (logical - phys) * 2 + 1 };
+    return target % total_cpus;
 }
 
 // Pins calling thread to specific CPU core ID.
 fn set_cpu_affinity(cpu_id: i64) -> bool {
     guard cpu_id >= 0 else { return false; }
-    return net_internal::native_set_cpu_affinity(cpu_id) == 0;
+    var target_cpu = cpu_id;
+    if net_internal::detect_target_platform() == net_internal::TargetPlatform.Linux {
+        let total = net_internal::native_online_cpu_count();
+        guard total > 0 else { return false; }
+        target_cpu = calc_smt_physical_cpu(cpu_id, total);
+    }
+    return net_internal::native_set_cpu_affinity(target_cpu) == 0;
 }
 
 // Binds listener incoming socket queue to specific CPU core (SO_INCOMING_CPU).
 fn tcp_set_incoming_cpu(sock_fd: i64, cpu_id: i64) -> bool {
     guard sock_fd > 0 && cpu_id >= 0 else { return false; }
-    return net_internal::native_tcp_set_incoming_cpu(sock_fd, cpu_id) == 0;
+    guard net_internal::detect_target_platform() == net_internal::TargetPlatform.Linux else {
+        return true;
+    }
+    var env_val: u8[>..] = [];
+    guard env("WING_INCOMING_CPU", env_val) else { return true; }
+    let total = net_internal::native_online_cpu_count();
+    guard total > 0 else { return false; }
+    let target_cpu = calc_smt_physical_cpu(cpu_id, total);
+    return net_internal::native_tcp_set_incoming_cpu(sock_fd, target_cpu) == 0;
 }
 
 // Deterministic O(1) connection slot index allocator for reactor loops.
@@ -903,6 +1057,9 @@ fn tcp_listen_dual(
     flags:   i32 = 0,
 ) -> i64 {
     let _ = tcp_init();
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_tcp_listen(host, port, backlog);
+    }
     return net_internal::native_tcp_listen_dual(host, port, backlog, flags);
 }
 
@@ -1006,18 +1163,26 @@ fn tcp_connect_bound_begin(
         return -1;
     }
     let _ = tcp_init();
-    return net_internal::native_tcp_connect_bound_begin(src_ip, dst_ip, dst_port, so_mark, out_state, out_err);
+    return net_internal::native_tcp_connect_opts_begin(
+        src_ip, dst_ip, dst_port, so_mark, 0, 0, 0, 1, 30, 5, 3, 15000, out_state, out_err,
+    );
 }
 
 // Reads async connect completion status via SO_ERROR (0 = ok, 1 = refused, 2 = unreach, 3 = timeout).
 fn tcp_connect_status(sock_fd: i64) -> i32 {
     guard sock_fd > 0 else { return -1; }
+    if net_internal::g_is_wasm_target {
+        return if net_internal::wasm_slot_valid(sock_fd) { 0 } else { -1 };
+    }
     return net_internal::native_tcp_connect_status(sock_fd);
 }
 
 // Non-destructively peeks bytes from a socket using MSG_PEEK (-2 on WouldBlock).
 fn tcp_recv_peek(sock_fd: i64, dst: u8[:]) -> i32 {
     guard sock_fd > 0 && dst.len > 0 else { return -1; }
+    if net_internal::g_is_wasm_target {
+        return net_internal::wasm_tcp_recv(sock_fd, dst, true);
+    }
     return net_internal::native_tcp_recv_peek(sock_fd, dst);
 }
 
@@ -1100,6 +1265,12 @@ fn udp_recvfrom_dual(
     return net_internal::native_udp_recvfrom_dual(sock_fd, out_buf, out_peer_ip, out_peer_ip_len, out_peer_port);
 }
 
+// Normalizes an IPv4 or IPv4-mapped IPv6 literal for peer comparison.
+inline fn normalize_udp_peer_ip(ip: const u8[:]) -> const u8[:] {
+    let rest, is_mapped = ip.strip_prefix_fold("::ffff:");
+    return if is_mapped { rest } else { ip };
+}
+
 // Executes a bounded-timeout synchronous UDP request/response to an IPv4 or IPv6 server.
 fn udp_exchange_dual(
     server_ip:   const u8[:],
@@ -1108,11 +1279,55 @@ fn udp_exchange_dual(
     out_resp:    u8[:],
     timeout_ms:  u32 = 1500,
 ) -> i32 {
-    guard server_ip.len > 0 && server_port != 0 && query.len > 0 && out_resp.len > 0 else {
+    guard server_ip.len > 0 && server_ip.len < 128 && server_port != 0 && query.len > 0 && out_resp.len > 0 else {
         return -1;
     }
-    let _ = tcp_init();
-    return net_internal::native_udp_exchange_dual(server_ip, server_port, query, out_resp, timeout_ms);
+    guard tcp_init() else { return -1; }
+    let flags: i32 = if core::contains_byte(server_ip, ':') { 2 } else { 0 };
+    let sock_fd = udp_open_dual("", 0, flags);
+    guard sock_fd > 0 else { return -1; }
+    defer tcp_close(sock_fd);
+
+    let sent = udp_sendto_dual(sock_fd, query, server_ip, server_port);
+    guard sent == query.len else { return -1; }
+
+    let ep = epoll_create();
+    guard ep >= 0 else { return -1; }
+    defer epoll_close(ep);
+    guard epoll_add(ep, sock_fd, EPOLL_READ, 1) else { return -1; }
+
+    let expected_ip = normalize_udp_peer_ip(server_ip);
+    let deadline_ns = core::add_sat_i64(clock_ns(), (timeout_ms as i64) * 1000000);
+    var efds:      i64[4]  = [0; 4];
+    var eud:       u64[4]  = [0; 4];
+    var eev:       u32[4]  = [0; 4];
+    var peer_ip:   u8[128] = [0; 128];
+    var peer_len:  i32     = 0;
+    var peer_port: u16     = 0;
+
+    for attempt in 128 {
+        let now_ns = clock_ns();
+        if attempt > 0 && now_ns >= deadline_ns {
+            return -2;
+        }
+        let rem_ns = max(0, deadline_ns - now_ns);
+        let rem_ms = min(rem_ns / 1000000, 0x7FFFFFFF) as i32;
+        let ready = net_internal::epoll_wait_events_direct(ep, efds[..], eud[..], eev[..], rem_ms);
+        if ready < 0 { return -1; }
+        if ready == 0 { return -2; }
+
+        let got = udp_recvfrom_dual(sock_fd, out_resp, peer_ip[..], peer_len, peer_port);
+        if got == -2 { continue; }
+        if got < 0 { return -1; }
+        if got == 0 || peer_port != server_port || peer_len <= 0 || peer_len > 128 {
+            continue;
+        }
+        let actual_ip = normalize_udp_peer_ip(peer_ip[..peer_len]);
+        if actual_ip == expected_ip {
+            return got;
+        }
+    }
+    return -2;
 }
 
 // Returns filesystem disk usage percentage (0..100) for `path`, or -1 on error.

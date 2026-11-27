@@ -214,41 +214,6 @@ int32_t wing_dpdk_rx_burst_read_one(uint16_t port_id, uint16_t queue_id, wing_dp
 
 #else
 
-#define WING_DPDK_MAX_PORTS 16
-#define WING_DPDK_RING_CAP 256
-#define WING_DPDK_PKT_RING_CAP 64
-#define WING_DPDK_MAX_FRAME_LEN 2048
-
-typedef struct {
-    uint16_t rx_queues;
-    uint16_t tx_queues;
-    uint16_t rx_ring_size;
-    uint16_t tx_ring_size;
-    int32_t promiscuous;
-    int32_t configured;
-    int32_t started;
-    uint64_t loopback_ring[WING_DPDK_RING_CAP];
-    uint32_t head;
-    uint32_t tail;
-    uint32_t count;
-    uint8_t pkt_data[WING_DPDK_PKT_RING_CAP][WING_DPDK_MAX_FRAME_LEN];
-    uint16_t pkt_len[WING_DPDK_PKT_RING_CAP];
-    uint32_t pkt_head;
-    uint32_t pkt_tail;
-    uint32_t pkt_count;
-} wing_dpdk_port_state;
-
-static wing_dpdk_port_state *g_dpdk_ports = NULL;
-static int g_dpdk_eal_initialized = 0;
-static uint64_t g_dpdk_next_pool_handle = 0xD0001000ULL;
-
-static wing_dpdk_port_state *ensure_dpdk_ports(void) {
-    if (!g_dpdk_ports) {
-        g_dpdk_ports = (wing_dpdk_port_state *)calloc(WING_DPDK_MAX_PORTS, sizeof(wing_dpdk_port_state));
-    }
-    return g_dpdk_ports;
-}
-
 int32_t wing_dpdk_probe(void) {
 #if defined(__linux__)
     return 0;
@@ -257,144 +222,63 @@ int32_t wing_dpdk_probe(void) {
 #endif
 }
 
-int32_t wing_dpdk_eal_init(void) {
-    g_dpdk_eal_initialized = 1;
-    return 0;
-}
+int32_t wing_dpdk_eal_init(void) { return -38; }
 
 uint64_t wing_dpdk_pktmbuf_pool_create(uint32_t n_elements, uint32_t element_size, int32_t socket_id) {
+    (void)n_elements;
+    (void)element_size;
     (void)socket_id;
-    if (n_elements == 0 || element_size == 0 || element_size > 65535U) {
-        return 0;
-    }
-    if (!g_dpdk_eal_initialized) {
-        wing_dpdk_eal_init();
-    }
-    uint64_t h = g_dpdk_next_pool_handle;
-    g_dpdk_next_pool_handle += 0x1000ULL;
-    return h;
+    return 0;
 }
 
 void wing_dpdk_pktmbuf_free(uint64_t mbuf_ptr) { (void)mbuf_ptr; }
 
 int32_t wing_dpdk_eth_dev_configure(uint16_t port_id, uint16_t rx_queues, uint16_t tx_queues, uint16_t rx_ring_size,
                                     uint16_t tx_ring_size, int32_t promiscuous) {
-    if (port_id >= WING_DPDK_MAX_PORTS || rx_queues == 0 || tx_queues == 0) {
-        return -1;
-    }
-    if (!g_dpdk_eal_initialized) {
-        wing_dpdk_eal_init();
-    }
-    wing_dpdk_port_state *ports = ensure_dpdk_ports();
-    if (!ports) {
-        return -1;
-    }
-    wing_dpdk_port_state *st = &ports[port_id];
-    memset(st, 0, sizeof(*st));
-    st->rx_queues = rx_queues;
-    st->tx_queues = tx_queues;
-    st->rx_ring_size = rx_ring_size;
-    st->tx_ring_size = tx_ring_size;
-    st->promiscuous = promiscuous;
-    st->configured = 1;
-    return 0;
+    (void)port_id;
+    (void)rx_queues;
+    (void)tx_queues;
+    (void)rx_ring_size;
+    (void)tx_ring_size;
+    (void)promiscuous;
+    return -38;
 }
 
 int32_t wing_dpdk_eth_dev_start(uint16_t port_id) {
-    if (port_id >= WING_DPDK_MAX_PORTS || !g_dpdk_ports || !g_dpdk_ports[port_id].configured) {
-        return -1;
-    }
-    g_dpdk_ports[port_id].started = 1;
+    (void)port_id;
+    return -38;
+}
+
+void wing_dpdk_eth_dev_stop(uint16_t port_id) { (void)port_id; }
+
+uint16_t wing_dpdk_tx_burst(uint16_t port_id, uint16_t queue_id, const uint64_t *pkts_in, uint16_t nb_pkts) {
+    (void)port_id;
+    (void)queue_id;
+    (void)pkts_in;
+    (void)nb_pkts;
     return 0;
 }
 
-void wing_dpdk_eth_dev_stop(uint16_t port_id) {
-    if (port_id < WING_DPDK_MAX_PORTS && g_dpdk_ports) {
-        g_dpdk_ports[port_id].started = 0;
-        g_dpdk_ports[port_id].configured = 0;
-        g_dpdk_ports[port_id].head = 0;
-        g_dpdk_ports[port_id].tail = 0;
-        g_dpdk_ports[port_id].count = 0;
-        g_dpdk_ports[port_id].pkt_head = 0;
-        g_dpdk_ports[port_id].pkt_tail = 0;
-        g_dpdk_ports[port_id].pkt_count = 0;
-    }
-}
-
-uint16_t wing_dpdk_tx_burst(uint16_t port_id, uint16_t queue_id, const uint64_t *pkts_in, uint16_t nb_pkts) {
-    (void)queue_id;
-    if (port_id >= WING_DPDK_MAX_PORTS || !pkts_in || nb_pkts == 0 || !g_dpdk_ports) {
-        return 0;
-    }
-    wing_dpdk_port_state *st = &g_dpdk_ports[port_id];
-    if (!st->started) {
-        return 0;
-    }
-    uint16_t sent = 0;
-    while (sent < nb_pkts && st->count < WING_DPDK_RING_CAP) {
-        st->loopback_ring[st->tail] = pkts_in[sent];
-        st->tail = (st->tail + 1) % WING_DPDK_RING_CAP;
-        st->count++;
-        sent++;
-    }
-    return sent;
-}
-
 uint16_t wing_dpdk_rx_burst(uint16_t port_id, uint16_t queue_id, uint64_t *pkts_out, uint16_t nb_pkts) {
+    (void)port_id;
     (void)queue_id;
-    if (port_id >= WING_DPDK_MAX_PORTS || !pkts_out || nb_pkts == 0 || !g_dpdk_ports) {
-        return 0;
-    }
-    wing_dpdk_port_state *st = &g_dpdk_ports[port_id];
-    if (!st->started) {
-        return 0;
-    }
-    uint16_t recvd = 0;
-    while (recvd < nb_pkts && st->count > 0) {
-        pkts_out[recvd] = st->loopback_ring[st->head];
-        st->head = (st->head + 1) % WING_DPDK_RING_CAP;
-        st->count--;
-        recvd++;
-    }
-    return recvd;
+    (void)pkts_out;
+    (void)nb_pkts;
+    return 0;
 }
 
 int32_t wing_dpdk_tx_packet_push(uint16_t port_id, uint16_t queue_id, wing_dpdk_ro_slice frame) {
+    (void)port_id;
     (void)queue_id;
-    if (port_id >= WING_DPDK_MAX_PORTS || !frame.data || frame.len <= 0 || frame.len > WING_DPDK_MAX_FRAME_LEN ||
-        !g_dpdk_ports) {
-        return 0;
-    }
-    wing_dpdk_port_state *st = &g_dpdk_ports[port_id];
-    if (!st->started || st->pkt_count >= WING_DPDK_PKT_RING_CAP) {
-        return 0;
-    }
-    uint32_t idx = st->pkt_tail;
-    memcpy(st->pkt_data[idx], frame.data, (size_t)frame.len);
-    st->pkt_len[idx] = (uint16_t)frame.len;
-    st->pkt_tail = (idx + 1) % WING_DPDK_PKT_RING_CAP;
-    st->pkt_count++;
-    return 1;
+    (void)frame;
+    return -38;
 }
 
 int32_t wing_dpdk_rx_burst_read_one(uint16_t port_id, uint16_t queue_id, wing_dpdk_rw_slice dst) {
+    (void)port_id;
     (void)queue_id;
-    if (port_id >= WING_DPDK_MAX_PORTS || !dst.data || dst.len <= 0 || !g_dpdk_ports) {
-        return -1;
-    }
-    wing_dpdk_port_state *st = &g_dpdk_ports[port_id];
-    if (!st->started || st->pkt_count == 0) {
-        return 0;
-    }
-    uint32_t idx = st->pkt_head;
-    uint16_t plen = st->pkt_len[idx];
-    if ((int64_t)plen > dst.len) {
-        return -1;
-    }
-    memcpy(dst.data, st->pkt_data[idx], (size_t)plen);
-    st->pkt_head = (idx + 1) % WING_DPDK_PKT_RING_CAP;
-    st->pkt_count--;
-    return (int32_t)plen;
+    (void)dst;
+    return -38;
 }
 
 #endif

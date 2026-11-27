@@ -13,6 +13,7 @@ import std;
 
 import net.driver.types;
 import net.driver.rio;
+import net.driver.rio_hs_internal;
 import net.driver.uring;
 import net.driver.kqueue;
 import net.driver.l2_frame;

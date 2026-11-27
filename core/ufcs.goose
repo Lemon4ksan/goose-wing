@@ -3,7 +3,7 @@
 
 // Universal Function Call Syntax (UFCS) method bridges for built-in slice, buffer, and integer types.
 // Struct and enum types in `namespace core` (`Url`, `Time`, `Duration`, `RingBuffer`, `PipeBuffer`,
-// `CorkBuffer`, `ByteCursor`, `ByteBuilder`, `SingleflightGroup`, `WyRand`, `JacobsonRttEstimator`, etc.)
+// `CorkBuffer`, `ByteCursor`, `ByteBuilder`, `WyRand`, etc.)
 // resolve UFCS dot-calls directly in `namespace core` via Goose's receiver-namespace lookup (`2e2bedef`).
 namespace core;
 
@@ -11,7 +11,6 @@ import std;
 import core.math;
 import core.time;
 import core.url;
-import core.sync;
 import core.bytes;
 import core.crypto;
 
@@ -34,8 +33,6 @@ fn ::trim_lws(s: const u8[:]) -> const u8[:] { return core::trim_lws(s); }
 fn ::trim_lws_start(s: const u8[:]) -> const u8[:] { return core::trim_lws_start(s); }
 fn ::trim_lws_end(s: const u8[:]) -> const u8[:] { return core::trim_lws_end(s); }
 fn ::trim_ascii_space(s: const u8[:]) -> const u8[:] { return core::trim_ascii_space(s); }
-fn ::trim_ascii_space_start(s: const u8[:]) -> const u8[:] { return core::trim_ascii_space_start(s); }
-fn ::trim_ascii_space_end(s: const u8[:]) -> const u8[:] { return core::trim_ascii_space_end(s); }
 fn ::trim_byte(s: const u8[:], b: u8) -> const u8[:] { return core::trim_byte(s, b); }
 fn ::trim_start_byte(s: const u8[:], b: u8) -> const u8[:] { return core::trim_start_byte(s, b); }
 fn ::trim_end_byte(s: const u8[:], b: u8) -> const u8[:] { return core::trim_end_byte(s, b); }
@@ -57,9 +54,6 @@ fn ::split_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], boo
 fn ::rsplit_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool {
     return core::rsplit_once_byte(s, delim);
 }
-fn ::split_once_fold(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], bool {
-    return core::split_once_fold(s, delim);
-}
 fn ::find_unquoted_byte(s: const u8[:], delim: u8) -> i64 {
     return core::find_unquoted_byte(s, delim);
 }
@@ -78,9 +72,6 @@ fn ::strip_prefix_fold(s: const u8[:], prefix: const u8[:]) -> const u8[:], bool
 fn ::strip_suffix_fold(s: const u8[:], suffix: const u8[:]) -> const u8[:], bool {
     return core::strip_suffix_fold(s, suffix);
 }
-fn ::each_non_empty_token<F>(src: const u8[:], delim: u8) {
-    core::each_non_empty_token(src, delim) { part => F(part); };
-}
 
 fn ::parse_u64_dec(s: const u8[:]) -> u64, bool { return core::parse_u64_dec(s); }
 fn ::parse_i64_dec(s: const u8[:]) -> i64, bool { return core::parse_i64_dec(s); }
@@ -91,7 +82,6 @@ fn ::parse_u32_hex(s: const u8[:]) -> u32, bool { return core::parse_u32_hex(s);
 fn ::parse_u8_hex(s: const u8[:]) -> u8, bool { return core::parse_u8_hex(s); }
 
 fn ::to_lower_ascii<B>(src: const u8[:], out: B&) { core::to_lower_ascii(src, out); }
-fn ::to_upper_ascii<B>(src: const u8[:], out: B&) { core::to_upper_ascii(src, out); }
 fn ::format_u64_dec<B>(val: u64, out: B&) { core::format_u64_dec(val, out); }
 fn ::format_i64_dec<B>(val: i64, out: B&) { core::format_i64_dec(val, out); }
 fn ::format_u32_dec<B>(val: u32, out: B&) { core::format_u32_dec(val, out); }
@@ -175,65 +165,5 @@ fn compact_wire_buffer<B>(arr: B&, consumed: i64) {
 
 fn ::compact_wire_buffer<B>(arr: B&, consumed: i64) { core::compact_wire_buffer(arr, consumed); }
 
-// ---- scalar range & clamping ufcs bridges -----------------------------------
-
-fn ::in_range_i64(val: i64, lo: i64, hi: i64) -> bool {
-    return val >= lo && val <= hi;
-}
-
-fn ::in_range_u64(val: u64, lo: u64, hi: u64) -> bool {
-    return val >= lo && val <= hi;
-}
-
-fn ::clamp_i64(val: i64, lo: i64, hi: i64) -> i64 {
-    return min(max(val, lo), hi);
-}
-
-fn ::clamp_u64(val: u64, lo: u64, hi: u64) -> u64 {
-    return min(max(val, lo), hi);
-}
-
-// ---- lexical & base64 validation ufcs bridges (const u8[:]) -----------------
-
-fn ::has_len_between(s: const u8[:], min_len: i64, max_len: i64) -> bool {
-    return s.len >= min_len && s.len <= max_len;
-}
-
-fn ::is_valid_uuid(s: const u8[:]) -> bool { return core::is_valid_uuid(s); }
-fn ::is_valid_uuid_v4(s: const u8[:]) -> bool { return core::is_valid_uuid_v4(s); }
-fn ::is_valid_uuid_v7(s: const u8[:]) -> bool { return core::is_valid_uuid_v7(s); }
-fn ::is_valid_ulid(s: const u8[:]) -> bool { return core::is_valid_ulid(s); }
-fn ::is_valid_email_addr_spec(s: const u8[:]) -> bool { return core::is_valid_email_addr_spec(s); }
-fn ::is_valid_slug(s: const u8[:]) -> bool { return core::is_valid_slug(s); }
-fn ::is_valid_luhn(s: const u8[:]) -> bool { return core::is_valid_luhn(s); }
-fn ::is_all_digits(s: const u8[:]) -> bool { return core::is_all_digits(s); }
-fn ::is_all_hex(s: const u8[:]) -> bool { return core::is_all_hex(s); }
-fn ::is_all_alphanumeric(s: const u8[:]) -> bool { return core::is_all_alphanumeric(s); }
-fn ::is_all_printable_ascii(s: const u8[:]) -> bool { return core::is_all_printable_ascii(s); }
 fn ::is_valid_base64(s: const u8[:]) -> bool { return core::is_valid_base64(s); }
 fn ::is_valid_base64url(s: const u8[:]) -> bool { return core::is_valid_base64url(s); }
-
-// ---- bitmask & bitset ufcs bridges (u32, u64, u64[:]) ----------------------
-
-fn ::set_flag(mask: u32&, flag: u32) { core::set_flag_u32(mask, flag); }
-fn ::clear_flag(mask: u32&, flag: u32) { core::clear_flag_u32(mask, flag); }
-fn ::toggle_flag(mask: u32&, flag: u32) { core::toggle_flag_u32(mask, flag); }
-fn ::pop_lowest_bit(mask: u32&) -> u32, bool { return core::pop_lowest_bit_u32(mask); }
-
-fn ::has_flag(mask: u64, flag: u64) -> bool { return core::has_flag_u64(mask, flag); }
-fn ::has_all_flags(mask: u64, flags: u64) -> bool { return core::has_all_flags_u64(mask, flags); }
-fn ::set_flag(mask: u64&, flag: u64) { core::set_flag_u64(mask, flag); }
-fn ::clear_flag(mask: u64&, flag: u64) { core::clear_flag_u64(mask, flag); }
-fn ::toggle_flag(mask: u64&, flag: u64) { core::toggle_flag_u64(mask, flag); }
-fn ::test_bit(mask: u64, bit_idx: u32) -> bool { return core::test_bit_u64(mask, bit_idx); }
-fn ::set_bit(mask: u64&, bit_idx: u32) { core::set_bit_u64(mask, bit_idx); }
-fn ::clear_bit(mask: u64&, bit_idx: u32) { core::clear_bit_u64(mask, bit_idx); }
-fn ::pop_lowest_bit(mask: u64&) -> u32, bool { return core::pop_lowest_bit_u64(mask); }
-
-fn ::bitset_test(words: const u64[:], bit: u64) -> bool { return core::bitset_test(words, bit); }
-fn ::bitset_set(words: u64[:], bit: u64) -> bool { return core::bitset_set(words, bit); }
-fn ::bitset_clear(words: u64[:], bit: u64) -> bool { return core::bitset_clear(words, bit); }
-fn ::bitset_next_set(words: const u64[:], from_bit: u64) -> u64, bool { return core::bitset_next_set(words, from_bit); }
-fn ::bitset_any(words: const u64[:]) -> bool { return core::bitset_any(words); }
-fn ::bitset_clear_all(words: u64[:]) { core::bitset_clear_all(words); }
-fn ::bitset_popcount(words: const u64[:]) -> u64 { return core::bitset_popcount(words); }

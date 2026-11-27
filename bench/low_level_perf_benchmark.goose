@@ -57,21 +57,10 @@ fn baseline_sweep_aos(
 }
 
 fn test_spsc_vs_channel_benchmark(t: lit::T&) {
-    t.run("Queue Synchronization: Runtime Channel vs SPSC Lock-Free Ring") { sub =>
+    t.run("Queue Synchronization: SPSC Lock-Free Ring") { sub =>
         let iters: i64 = 50000;
 
-        // --- Baseline: Standard Runtime Channel ---
-        core::set_channel_limit<u64>(1024);
-        let watch_chan = core::stopwatch();
-        for k in iters {
-            let s_ok = core::send_msg(k as u64);
-            sub.assert_true(s_ok);
-            let val = core::recv_msg<u64>();
-            sub.assert_eq(val, k as u64);
-        }
-        let dt_chan = core::elapsed(watch_chan);
-
-        // --- Optimized: Cache-Line Aligned Lock-Free SPSC Ring ---
+        // Cache-Line Aligned Lock-Free SPSC Ring
         var ring, ok = core::spsc_init(1024);
         sub.assert_true(ok);
         defer core::spsc_close(ring);
@@ -87,13 +76,8 @@ fn test_spsc_vs_channel_benchmark(t: lit::T&) {
         }
         let dt_spsc = core::elapsed(watch_spsc);
 
-        print("\n  [A/B BENCHMARK 1] Queue Throughput (", iters, " push/pop cycles):");
-        print("  - Baseline Runtime Channel: ", dt_chan.as_micros(), " us (", dt_chan.as_millis(), " ms)");
-        print("  - Optimized Lock-Free SPSC: ", dt_spsc.as_micros(), " us (", dt_spsc.as_millis(), " ms)");
-        if dt_spsc.as_micros() > 0 {
-            let speedup_x10 = (dt_chan.as_micros() * 10) / dt_spsc.as_micros();
-            print("  - Speedup: ", speedup_x10 / 10, ".", speedup_x10 % 10, "x faster");
-        }
+        print("\n  [BENCHMARK 1] SPSC Queue Throughput (", iters, " push/pop cycles):");
+        print("  - Lock-Free SPSC: ", dt_spsc.as_micros(), " us (", dt_spsc.as_millis(), " ms)");
     };
 }
 
@@ -203,22 +187,12 @@ fn test_soa_vs_aos_sweeper_benchmark(t: lit::T&) {
     };
 }
 
-fn test_software_prefetch(t: lit::T&) {
-    t.run("Software Prefetch Execution") { sub =>
-        let test_buffer: const u8[:] = "PREFETCH_TEST_BUFFER_PAYLOAD_CACHE_LINE_VALIDATION_STRING_LONGER_THAN_64_BYTES_FOR_PREFETCH_TEST";
-        core::prefetch_t0(test_buffer);
-        core::prefetch_nta(test_buffer);
-        sub.assert_gt(test_buffer.len, 64);
-    };
-}
-
 fn main() {
     let runner = lit::new_runner("Head-to-Head Optimization Benchmark Suite");
 
     lit::run_case(runner, "1. Queue Throughput: Channel vs SPSC", test_spsc_vs_channel_benchmark);
     lit::run_case(runner, "2. Header Dispatch: Linear Scan vs MPH", test_perfect_hash_vs_linear_scan_benchmark);
     lit::run_case(runner, "3. Reactor Sweeper: AoS vs SoA", test_soa_vs_aos_sweeper_benchmark);
-    lit::run_case(runner, "4. Software Prefetch Primitives", test_software_prefetch);
 
     let ok = lit::finish(runner);
     assert(ok);

@@ -78,10 +78,6 @@ typedef PVOID(WINAPI *pfnMapViewOfFile3)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T,
 #include <fcntl.h>
 #endif
 
-// Forward declaration from shim/simd.c
-int64_t wing_fast_find_crlfcrlf(wing_bytes_ro slice);
-int64_t wing_simd_find_crlf(wing_bytes_ro slice);
-
 typedef struct {
     uint8_t *base;
     uint32_t capacity;
@@ -298,33 +294,7 @@ void wing_page_ring_destroy(uint64_t handle) {
     free(ring);
 }
 
-int64_t wing_page_ring_write(uint64_t handle, uint64_t tail_offset, wing_bytes_ro src) {
-    if (!handle || !src.data || src.len <= 0) return 0;
-    wing_page_ring_t *ring = (wing_page_ring_t *)(uintptr_t)handle;
-    if (!ring->base) return -1;
-
-    size_t to_write = (size_t)src.len;
-    if (to_write > ring->capacity) {
-        to_write = ring->capacity;
-    }
-
-    uint32_t off = (uint32_t)(tail_offset % ring->capacity);
-#if defined(__wasm__)
-    memcpy(ring->base + off, src.data, to_write);
-    if (off + to_write > ring->capacity) {
-        size_t wrapped = (off + to_write) - ring->capacity;
-        memcpy(ring->base, src.data + (to_write - wrapped), wrapped);
-    } else {
-        memcpy(ring->base + ring->capacity + off, src.data, to_write);
-    }
-#else
-    // Mirrored mapping guarantees [base + off ... base + off + to_write] is valid contiguous virtual memory!
-    memcpy(ring->base + off, src.data, to_write);
-#endif
-    return (int64_t)to_write;
-}
-
-int64_t wing_page_ring_read(uint64_t handle, uint64_t head_offset, wing_bytes_rw dst) {
+int64_t wing_page_ring_peek(uint64_t handle, uint64_t head_offset, wing_bytes_rw dst) {
     if (!handle || !dst.data || dst.len <= 0) return 0;
     wing_page_ring_t *ring = (wing_page_ring_t *)(uintptr_t)handle;
     if (!ring->base) return -1;
@@ -338,10 +308,6 @@ int64_t wing_page_ring_read(uint64_t handle, uint64_t head_offset, wing_bytes_rw
     // Mirrored mapping guarantees [base + off ... base + off + to_read] is valid contiguous virtual memory!
     memcpy(dst.data, ring->base + off, to_read);
     return (int64_t)to_read;
-}
-
-int64_t wing_page_ring_peek(uint64_t handle, uint64_t head_offset, wing_bytes_rw dst) {
-    return wing_page_ring_read(handle, head_offset, dst);
 }
 
 int32_t wing_page_ring_recv(uint64_t handle, uint64_t tail_offset, uint32_t max_len, int64_t sock_fd,
@@ -388,26 +354,4 @@ int32_t wing_page_ring_recv(uint64_t handle, uint64_t tail_offset, uint32_t max_
     ssize_t res = recv((int)sock_fd, dst, (size_t)to_recv, 0);
     return (int32_t)res;
 #endif
-}
-
-int64_t wing_page_ring_find_crlf(uint64_t handle, uint64_t head_offset, uint32_t len) {
-    if (!handle || len < 2) return -1;
-    wing_page_ring_t *ring = (wing_page_ring_t *)(uintptr_t)handle;
-    if (!ring->base) return -1;
-
-    uint32_t search_len = (len > ring->capacity) ? ring->capacity : len;
-    uint32_t off = (uint32_t)(head_offset % ring->capacity);
-    wing_bytes_ro slice = {ring->base + off, (int64_t)search_len};
-    return wing_simd_find_crlf(slice);
-}
-
-int64_t wing_page_ring_find_crlfcrlf(uint64_t handle, uint64_t head_offset, uint32_t len) {
-    if (!handle || len < 4) return -1;
-    wing_page_ring_t *ring = (wing_page_ring_t *)(uintptr_t)handle;
-    if (!ring->base) return -1;
-
-    uint32_t search_len = (len > ring->capacity) ? ring->capacity : len;
-    uint32_t off = (uint32_t)(head_offset % ring->capacity);
-    wing_bytes_ro slice = {ring->base + off, (int64_t)search_len};
-    return wing_fast_find_crlfcrlf(slice);
 }

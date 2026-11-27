@@ -234,33 +234,38 @@ fn test_go_66434_content_transfer_encoding_rejection(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_uwebsockets_1662_streaming_utf8_continuation(t: lit::T&) {
     t.run("uWS #1662 / Autobahn 6.x: Incomplete multi-byte codepoint split across frame chunks") { sub =>
-        // Euro sign в‚¬ is 3 bytes: 0xE2, 0x82, 0xAC
+        // Euro sign is 3 bytes: 0xE2, 0x82, 0xAC
         let chunk1: u8[2] = [0xE2, 0x82];
-        let off1_non_final, ok1_non_final = core::validate_utf8_streaming(chunk1[..], false);
+        var dfa: u8 = core::UTF8_DFA_ACCEPT;
+        let ok1_non_final = core::validate_utf8_dfa_chunk(chunk1[..], dfa, false);
         sub.assert_true(ok1_non_final, "Valid prefix of incomplete 3-byte codepoint accepted when non-final");
-        sub.assert_eq(off1_non_final, 0, "0 complete codepoints in chunk1");
+        sub.assert_true(dfa != core::UTF8_DFA_ACCEPT, "DFA state remains in multi-byte sequence after chunk1");
 
-        let off1_final, ok1_final = core::validate_utf8_streaming(chunk1[..], true);
+        var dfa_final: u8 = core::UTF8_DFA_ACCEPT;
+        let ok1_final = core::validate_utf8_dfa_chunk(chunk1[..], dfa_final, true);
         sub.assert_false(ok1_final, "Incomplete codepoint at final boundary MUST be rejected");
 
         // Complete sequence in assembled buffer
         let full: u8[3] = [0xE2, 0x82, 0xAC];
-        let off_full, ok_full = core::validate_utf8_streaming(full[..], true);
+        var dfa_full: u8 = core::UTF8_DFA_ACCEPT;
+        let ok_full = core::validate_utf8_dfa_chunk(full[..], dfa_full, true);
         sub.assert_true(ok_full, "Complete 3-byte codepoint accepted");
-        sub.assert_eq(off_full, 3, "All 3 bytes verified as complete codepoint");
+        sub.assert_eq(dfa_full, core::UTF8_DFA_ACCEPT, "DFA returns to accept state");
     };
 
     t.run("uWS #1662 / Autobahn 6.x: Overlong UTF-8 prefix rejected immediately") { sub =>
         // Overlong 2-byte: 0xC0 0x80 (ASCII NUL encoded as 2 bytes)
         let overlong: u8[2] = [0xC0, 0x80];
-        let _, ok_overlong = core::validate_utf8_streaming(overlong[..], false);
+        var dfa: u8 = core::UTF8_DFA_ACCEPT;
+        let ok_overlong = core::validate_utf8_dfa_chunk(overlong[..], dfa, false);
         sub.assert_false(ok_overlong, "Overlong prefix must be rejected immediately even on non-final chunk");
     };
 
     t.run("uWS #1662 / Autobahn 6.x: UTF-16 surrogate prefix rejected immediately") { sub =>
         // High surrogate U+D800: 0xED 0xA0 0x80
         let surrogate: u8[2] = [0xED, 0xA0];
-        let _, ok_surrogate = core::validate_utf8_streaming(surrogate[..], false);
+        var dfa: u8 = core::UTF8_DFA_ACCEPT;
+        let ok_surrogate = core::validate_utf8_dfa_chunk(surrogate[..], dfa, false);
         sub.assert_false(ok_surrogate, "Surrogate prefix must be rejected immediately");
     };
 }
@@ -589,13 +594,6 @@ fn test_core_codecs_boundary_and_overflow_defenses(t: lit::T&) {
         sub.assert_false(ok_overflow, "Hex with 17 significant digits MUST be rejected as overflow");
     };
 
-    t.run("Query parameter capacity overflow MUST be flagged") { sub =>
-        // Key exceeding 64 bytes capacity must set list.overflow = true
-        let long_key = "?0123456789012345678901234567890123456789012345678901234567890123456789=value";
-        let list = core::parse_query_params(long_key);
-        sub.assert_true(list.overflow, "Oversized query param key MUST mark list.overflow = true");
-    };
-
     t.run("Path percent decode capacity safety") { sub =>
         var out_small: u8[..4] = [];
         let ok_dec = core::percent_decode("hello_world_too_long", out_small);
@@ -733,49 +731,7 @@ fn test_url_relative_resolution_capacity_defense(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 20. RFC 3986 & WHATWG: URL Path Manipulation & File URL Capacity Defenses
-// ----------------------------------------------------------------------------
-fn test_url_path_and_file_capacity_defenses(t: lit::T&) {
-    t.run("Path manipulation and file URL exceeding 2048 bytes fail safely without abort") { sub =>
-        // 1. new_file_url with path expanding beyond 2048 bytes via percent-encoding
-        var long_path: u8[..2048] = [];
-        long_path.append("/path/with/spaces/");
-        for i in 800 {
-            long_path.push(' ');
-        }
-        let file_url = core::new_file_url(long_path[..]);
-        sub.assert_false(file_url.valid, "Oversized file URL must fail gracefully with valid=false");
-
-        // 2. appending_path_component exceeding 2048 bytes
-        let base_url = core::new_url("https://example.com/base/");
-        sub.assert_true(base_url.valid, "Base URL is valid");
-
-        var long_comp: u8[..2048] = [];
-        for i in 800 {
-            long_comp.push(' ');
-        }
-        let res_comp = core::appending_path_component(base_url, long_comp[..]);
-        sub.assert_false(res_comp.valid, "appending_path_component exceeding 2048 bytes must return invalid URL");
-
-        // 3. appending_path exceeding 2048 bytes
-        let res_path = core::appending_path(base_url, long_comp[..]);
-        sub.assert_false(res_path.valid, "appending_path exceeding 2048 bytes must return invalid URL");
-
-        // 4. appending_path_extension exceeding 2048 bytes
-        let res_ext = core::appending_path_extension(base_url, long_comp[..]);
-        sub.assert_false(res_ext.valid, "appending_path_extension exceeding 2048 bytes must return invalid URL");
-
-        // 5. file_path into undersized output buffer returns false without abort
-        let short_file_url = core::new_file_url("/usr/local/bin/my_app_executable_name");
-        sub.assert_true(short_file_url.valid, "Short file URL is valid");
-        var small_buf: u8[..8] = [];
-        let ok_fp = core::file_path(short_file_url, small_buf);
-        sub.assert_false(ok_fp, "file_path into undersized buffer must return false without abort");
-    };
-}
-
-// ----------------------------------------------------------------------------
-// 21. RFC 3986 В§3 & WHATWG: URL Query Delimiter & Parameter Isolation Defenses
+// 21. RFC 3986 & WHATWG: URL Query Delimiter & Parameter Isolation Defenses
 // ----------------------------------------------------------------------------
 fn test_url_query_delimiter_and_decoding_defenses(t: lit::T&) {
     t.run("Fragment delimiter terminates query parameters preventing injection") { sub =>
@@ -793,14 +749,11 @@ fn test_url_query_delimiter_and_decoding_defenses(t: lit::T&) {
         sub.assert_false(core::has_query_param_fast(poisoned_query, "admin"), "has_query_param_fast must return false for fragment params");
         sub.assert_false(core::has_query_param_fast(poisoned_query, "role"), "has_query_param_fast must return false for fragment params");
 
-        // 3. parse_query_params must terminate at '#' and preserve clean valid param
-        let list = core::parse_query_params(poisoned_query);
-        sub.assert_false(core::has_query_param(list, "admin"), "parse_query_params must not include fragment 'admin'");
-        sub.assert_false(core::has_query_param(list, "role"), "parse_query_params must not include fragment 'role'");
-        sub.assert_bytes_eq(core::get_query_param(list, "auth"), "token123", "Query param 'auth' before fragment must equal 'token123'");
-
-        // 4. validate_query_param_count must not count tokens in fragment
-        sub.assert_true(core::validate_query_param_count("?a=1#&b=2&c=3&d=4", 1), "validate_query_param_count must only count pre-fragment parameters");
+        // 3. get_query_param_fast must terminate at '#' and preserve clean valid param
+        var out_auth: u8[..64] = [];
+        let match_auth = core::get_query_param_fast(poisoned_query, "auth", out_auth);
+        sub.assert_true(match_auth == core::QueryParamMatch.Value, "Query param 'auth' before fragment must exist");
+        sub.assert_bytes_eq(out_auth[..], "token123", "Query param 'auth' before fragment must equal 'token123'");
     };
 
     t.run("URI query key lookup per RFC 3986 §3.4 ('+' preserved verbatim)") { sub =>
@@ -883,37 +836,6 @@ fn test_rfc8439_poly1305_block_boundary_padding_overflow(t: lit::T&) {
 // ----------------------------------------------------------------------------
 // 23. Network Backoff Jitter U64_MAX Overflow & Entropy Collapse Defenses
 // ----------------------------------------------------------------------------
-fn test_network_backoff_jitter_u64_max_overflow_and_entropy_collapse(t: lit::T&) {
-    t.run("Full Jitter backoff with U64_MAX cap must not collapse entropy to zero") { sub =>
-        var rng = core::new_wyrand(12345);
-        let base_ms: u64 = 100;
-        let cap_ms:  u64 = core::U64_MAX;
-
-        // When attempt >= 64, target = U64_MAX. In unpatched code, target + 1 wraps around to 0,
-        // fast_range_biased_u64 returns 0, collapsing backoff entropy to 0 and triggering retry storms.
-        var zero_count = 0;
-        for attempt in 20 {
-            let sleep = core::backoff_full_jitter_ms(rng, base_ms, cap_ms, (64 + attempt) as u32);
-            if sleep == 0 {
-                zero_count += 1;
-            }
-        }
-        sub.assert_lt(zero_count, 5, "Full jitter backoff with U64_MAX cap must not collapse to 0 on saturated attempts");
-    };
-
-    t.run("Decorrelated Jitter backoff with U64_MAX span must not collapse entropy to zero") { sub =>
-        var rng = core::new_wyrand(54321);
-        var zero_count = 0;
-        for i in 20 {
-            let sleep = core::backoff_decorrelated_jitter_ms(rng, 0, core::U64_MAX, core::U64_MAX);
-            if sleep == 0 {
-                zero_count += 1;
-            }
-        }
-        sub.assert_lt(zero_count, 5, "Decorrelated jitter backoff with U64_MAX cap and base 0 must not collapse to 0");
-    };
-}
-
 // ----------------------------------------------------------------------------
 // 24. RFC 7748: Curve25519 X25519 Montgomery Ladder Constant-Time Invariants
 // ----------------------------------------------------------------------------
@@ -989,38 +911,6 @@ fn test_rfc7748_x25519_constant_time_montgomery_ladder(t: lit::T&) {
         let valid_ss, valid_ok = core::x25519_shared_secret(scalar, valid_point);
         sub.assert_true(valid_ok, "valid point yields shared secret");
         sub.assert_false(core::x25519_is_all_zero(valid_ss), "valid shared secret is non-zero");
-    };
-
-    t.run("X25519 Montgomery Ladder Constant-Time Execution via Dudect") { sub =>
-        var ctx = core::new_dudect_context(5000000.0); // 5ms crop threshold
-        let u9: u8[32] = [9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-
-        // Class 0: all-zero scalar (no swaps in ladder)
-        let scalar_0: u8[32] = [0; 32];
-        // Class 1: alternating bit scalar (maximum swaps in ladder)
-        let scalar_1: u8[32] = [0x55; 32];
-
-        // Warmup
-        for w in 10 {
-            let _ = core::x25519_scalarmult(scalar_0, u9);
-            let _ = core::x25519_scalarmult(scalar_1, u9);
-        }
-
-        for iter in 50 {
-            let sw0 = core::stopwatch();
-            let _ = core::x25519_scalarmult(scalar_0, u9);
-            let d0 = core::elapsed(sw0);
-            core::dudect_push_sample(ctx, 0, d0.nanos as f64);
-
-            let sw1 = core::stopwatch();
-            let _ = core::x25519_scalarmult(scalar_1, u9);
-            let d1 = core::elapsed(sw1);
-            core::dudect_push_sample(ctx, 1, d1.nanos as f64);
-        }
-
-        // In unpatched code with branching `if do_swap == 1`, Class 1 does 254 conditional branches/copies
-        // while Class 0 does 0, resulting in statistically significant timing difference.
-        sub.assert_true(core::dudect_is_constant_time(ctx, 3.0), "Montgomery ladder must pass Welch t-test (|t| <= 3.0)");
     };
 }
 
@@ -2297,10 +2187,8 @@ fn main() {
     lit::run_case(runner, "17. Core Codec Overflow, Malleability & Truncation Defenses", test_core_codecs_boundary_and_overflow_defenses);
     lit::run_case(runner, "18. RFC 7541 & RFC 9113: HTTP/2 HPACK Inbound Capacity & Overflow Defenses", test_http2_hpack_boundary_and_capacity_defenses);
     lit::run_case(runner, "19. RFC 3986 & WHATWG: Relative URL Resolution Capacity Defense", test_url_relative_resolution_capacity_defense);
-    lit::run_case(runner, "20. RFC 3986 & WHATWG: URL Path Manipulation & File URL Capacity Defenses", test_url_path_and_file_capacity_defenses);
     lit::run_case(runner, "21. RFC 3986 & WHATWG: URL Query Delimiter & Parameter Isolation Defenses", test_url_query_delimiter_and_decoding_defenses);
     lit::run_case(runner, "22. RFC 8439: Poly1305 2^128 Block Boundary Padding & AEAD Integrity", test_rfc8439_poly1305_block_boundary_padding_overflow);
-    lit::run_case(runner, "23. Network Backoff Jitter U64_MAX Overflow & Entropy Collapse Defenses", test_network_backoff_jitter_u64_max_overflow_and_entropy_collapse);
     lit::run_case(runner, "24. RFC 7748: Curve25519 X25519 Montgomery Ladder Constant-Time Invariants", test_rfc7748_x25519_constant_time_montgomery_ladder);
     lit::run_case(runner, "25. RFC 1950 & RFC 1952 Compression Header Corruption, Flags & Stream Boundaries", test_compression_header_flags_window_and_stream_boundaries);
     lit::run_case(runner, "26. PipeBuffer Lifecycle, Slice I/O Boundary Idempotency & Streaming Finality", test_pipe_lifecycle_slice_io_and_streaming_finality);

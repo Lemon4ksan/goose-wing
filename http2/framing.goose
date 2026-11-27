@@ -180,10 +180,10 @@ checkfree fn validate_settings_parameter(param_id: u16, val: u32, receiver_is_cl
     if param_id == rfc::H2_SETTING_MAX_FRAME_SIZE && (val < 16384 || val > 16777215) {
         return rfc::H2_ERR_PROTOCOL_ERROR;
     }
+    // RFC 8441 Section 3: The SETTINGS_ENABLE_CONNECT_PROTOCOL SETTINGS Parameter -
+    // Value MUST be 0 or 1; receipt by a server has no impact and MUST NOT be rejected.
     if param_id == rfc::H2_SETTING_ENABLE_CONNECT_PROTO {
-        if !receiver_is_client {
-            return rfc::H2_ERR_PROTOCOL_ERROR;
-        }
+        let _ = receiver_is_client;
         if val != 0 && val != 1 {
             return rfc::H2_ERR_PROTOCOL_ERROR;
         }

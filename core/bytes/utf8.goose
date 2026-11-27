@@ -12,21 +12,59 @@ namespace core;
 
 import std;
 
-extern fn native_simd_is_pure_ascii(data: const u8[:]) -> i32 = "wing_simd_is_pure_ascii";
-extern fn native_simd_find_crlf(data: const u8[:]) -> i64 = "wing_simd_find_crlf";
-
 // Returns true if the slice contains only 7-bit ASCII characters (0x00..0x7F).
-// Uses 128-bit SSE2 vectorization (16 bytes per cycle) with 64-bit SWAR fallback.
+// Uses 16-byte / 8-byte SWAR high-bit checks in pure Goose.
 fn is_pure_ascii(data: const u8[:]) -> bool {
-    guard data.len > 0 else { return true; }
-    return native_simd_is_pure_ascii(data) != 0;
+    let n = data.len;
+    guard n > 0 else { return true; }
+    var i: i64 = 0;
+    while i + 16 <= n {
+        let w1 = core::read_le_u64(data, i);
+        let w2 = core::read_le_u64(data, i + 8);
+        if ((w1 | w2) & 0x8080808080808080) != 0 {
+            return false;
+        }
+        i += 16;
+    }
+    if i + 8 <= n {
+        if (core::read_le_u64(data, i) & 0x8080808080808080) != 0 {
+            return false;
+        }
+        i += 8;
+    }
+    while i < n {
+        if data[i] >= 0x80 {
+            return false;
+        }
+        i += 1;
+    }
+    return true;
 }
 
-// Scans for CRLF (\r\n) delimiter in wire byte streams using 128-bit SSE2 vector comparison.
+// Scans for CRLF (\r\n) delimiter in wire byte streams using 64-bit SWAR.
 // Returns offset of '\r' if found, or -1 if not found.
 fn find_crlf(data: const u8[:]) -> i64 {
-    guard data.len >= 2 else { return -1; }
-    return native_simd_find_crlf(data);
+    let n = data.len;
+    guard n >= 2 else { return -1; }
+    var i: i64 = 0;
+    while i + 8 <= n {
+        var hit = core::swar_eq_mask(core::read_le_u64(data, i), '\r');
+        while hit != 0 {
+            let pos = i + (ctz(hit) >> 3);
+            if pos + 1 < n && data[pos + 1] == '\n' {
+                return pos;
+            }
+            hit &= hit - 1;
+        }
+        i += 8;
+    }
+    while i + 1 < n {
+        if data[i] == '\r' && data[i + 1] == '\n' {
+            return i;
+        }
+        i += 1;
+    }
+    return -1;
 }
 
 // Returns true if the slice contains valid RFC 3629 UTF-8.
@@ -85,65 +123,6 @@ fn validate_utf8(data: const u8[:]) -> bool {
         }
     }
     return true;
-}
-
-fn step_utf8_multibyte(
-    data:     const u8[:],
-    n:        i64,
-    i:        i64,
-    b0:       u8,
-    is_final: bool,
-) -> i64, bool {
-    if (b0 & 0xE0) == 0xC0 {
-        guard b0 >= 0xC2 else { return 0, false; }
-        if i + 1 >= n {
-            if is_final { return 0, false; }
-            return i, true;
-        }
-        let b1 = data[i + 1];
-        guard (b1 & 0xC0) == 0x80 else { return 0, false; }
-        return i + 2, true;
-    } else if (b0 & 0xF0) == 0xE0 {
-        if i + 1 >= n {
-            if is_final { return 0, false; }
-            return i, true;
-        }
-        let b1 = data[i + 1];
-        guard (b1 & 0xC0) == 0x80 else { return 0, false; }
-        if b0 == 0xE0 && b1 < 0xA0 { return 0, false; }
-        if b0 == 0xED && b1 >= 0xA0 { return 0, false; }
-        if i + 2 >= n {
-            if is_final { return 0, false; }
-            return i, true;
-        }
-        let b2 = data[i + 2];
-        guard (b2 & 0xC0) == 0x80 else { return 0, false; }
-        return i + 3, true;
-    } else if (b0 & 0xF8) == 0xF0 {
-        guard b0 <= 0xF4 else { return 0, false; }
-        if i + 1 >= n {
-            if is_final { return 0, false; }
-            return i, true;
-        }
-        let b1 = data[i + 1];
-        guard (b1 & 0xC0) == 0x80 else { return 0, false; }
-        if b0 == 0xF0 && b1 < 0x90 { return 0, false; }
-        if b0 == 0xF4 && b1 > 0x8F { return 0, false; }
-        if i + 2 >= n {
-            if is_final { return 0, false; }
-            return i, true;
-        }
-        let b2 = data[i + 2];
-        guard (b2 & 0xC0) == 0x80 else { return 0, false; }
-        if i + 3 >= n {
-            if is_final { return 0, false; }
-            return i, true;
-        }
-        let b3 = data[i + 3];
-        guard (b3 & 0xC0) == 0x80 else { return 0, false; }
-        return i + 4, true;
-    }
-    return 0, false;
 }
 
 // Bjoern Hoehrmann's 364-byte UTF-8 DFA table (UTF8_ACCEPT = 0, UTF8_REJECT = 12).
@@ -230,48 +209,6 @@ fn validate_utf8_dfa_chunk(data: const u8[:], state: u8&, is_fin: bool) -> bool 
 
     state = s;
     return !is_fin || s == UTF8_DFA_ACCEPT;
-}
-
-// Validates a streaming UTF-8 buffer across fragment boundaries (RFC 3629 & RFC 6455 §8.1).
-// When `is_final` is false, allows a valid 1..3 byte prefix of an incomplete multi-byte codepoint
-// at the end of `data`, returning the byte offset up to which complete codepoints were verified.
-// Immediately rejects invalid lead bytes, overlong prefixes, surrogates, and out-of-range prefixes.
-//
-// Example:
-//   data = "hello world", is_final = true
-//   returns: 11, ok = true
-fn validate_utf8_streaming(data: const u8[:], is_final: bool) -> i64, bool {
-    let n = data.len;
-    guard n > 0 else { return 0, true; }
-
-    var i: i64 = 0;
-    while i < n {
-        if i + 16 <= n {
-            let w1 = core::read_be_u64(data, i);
-            let w2 = core::read_be_u64(data, i + 8);
-            if ((w1 & 0x8080808080808080) | (w2 & 0x8080808080808080)) == 0 {
-                i += 16;
-                continue;
-            }
-        } else if i + 8 <= n {
-            let w = core::read_be_u64(data, i);
-            if (w & 0x8080808080808080) == 0 {
-                i += 8;
-                continue;
-            }
-        }
-
-        let b0 = data[i];
-        if b0 <= 0x7F {
-            i++;
-            continue;
-        }
-        let next_i, ok = step_utf8_multibyte(data, n, i, b0, is_final);
-        guard ok else { return 0, false; }
-        if next_i == i { return i, true; }
-        i = next_i;
-    }
-    return i, true;
 }
 
 // Decode one Unicode scalar, returning (codepoint, consumed bytes, valid).

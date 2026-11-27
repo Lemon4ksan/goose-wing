@@ -281,4 +281,23 @@ export fn wing_dudect_xchacha20_poly1305(
     return tag[0];
 }
 
+export fn wing_dudect_aes128_gcm_seal_pure(
+    key: const u8[:],
+    iv:  const u8[:],
+    pt:  const u8[:],
+    aad: const u8[:],
+    out: u8[:],
+) -> u8 {
+    var k: u8[16] = [0; 16];
+    var n: u8[12] = [0; 12];
+    defer core::secure_zeroize_16(k);
+    let need = core::add_sat_i64(pt.len, 16);
+    guard copy_16(key, k) && copy_12(iv, n) && out.len >= need else { return 0; }
+    let tag, written, ok = core::aes_gcm_seal_pure(k[..], n, pt, aad, out[..pt.len]);
+    guard ok && written == pt.len else { return 0; }
+    let tag_dst = out[pt.len..need];
+    for i in 16 { tag_dst[i] = tag[i]; }
+    return tag[0];
+}
+
 fn main() {}

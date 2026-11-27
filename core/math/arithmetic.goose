@@ -7,11 +7,6 @@ namespace core;
 import std;
 import core.math.ct;
 
-struct CheckedU32 {
-    value:    u32  = 0,
-    overflow: bool = false,
-}
-
 struct CheckedU64 {
     value:    u64  = 0,
     overflow: bool = false,
@@ -119,15 +114,6 @@ inline fn sub_sat_i64(a: i64, b: i64) -> i64 {
     return ct_select_u64(ovf_mask, sat_val, udiff) as! i64;
 }
 
-// Checked unsigned 32-bit addition.
-inline fn add_checked_u32(a: u32, b: u32) -> CheckedU32 {
-    let sum = a + b;
-    return CheckedU32 {
-        value:    sum,
-        overflow: ct_lt_u32(sum, a) == 1,
-    };
-}
-
 // Checked unsigned 64-bit addition.
 inline fn add_checked_u64(a: u64, b: u64) -> CheckedU64 {
     let sum = a + b;
@@ -195,10 +181,4 @@ inline fn div_euclid_i64(lhs: i64, rhs: i64) -> i64 {
         return if rhs > 0 { sub_sat_i64(q, 1) } else { add_sat_i64(q, 1) };
     }
     return q;
-}
-
-// Fast modulo reduction for ring buffer indices.
-inline fn fast_mod_reduce_i32(x: i32, q: i32) -> i32 {
-    guard q > 0 else { return 0; }
-    return x % q;
 }

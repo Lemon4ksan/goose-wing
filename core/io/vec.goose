@@ -10,8 +10,6 @@ import std;
 import core.io.types;
 import core.math.arithmetic;
 
-const IOVEC_CAPACITY: i32 = 16;
-
 struct IoVec {
     base: const u8[:] = "",
 }
@@ -32,18 +30,6 @@ fn new_iovec_array() -> IoVecArray {
         head_offset: 0,
         total_bytes: 0,
     };
-}
-
-fn iovec_clear(arr: IoVecArray&) {
-    arr.entries.clear();
-    arr.head = 0;
-    arr.head_offset = 0;
-    arr.total_bytes = 0;
-}
-
-fn iovec_total_bytes(arr: const IoVecArray&) -> i64 {
-    guard arr.total_bytes >= 0 else { return 0; }
-    return arr.total_bytes;
 }
 
 fn iovec_is_empty(arr: const IoVecArray&) -> bool {
@@ -100,43 +86,6 @@ fn iovec_get(arr: const IoVecArray&, index: i32) -> const u8[:] {
         return raw[arr.head_offset..];
     }
     return raw;
-}
-
-fn iovec_flatten<B>(arr: const IoVecArray&, out: B&) {
-    var i: i32 = 0;
-    let n = iovec_count(arr);
-    while i < n {
-        let chunk = iovec_get(arr, i);
-        out.append(chunk);
-        i += 1;
-    }
-}
-
-fn iovec_copy_chunk(chunk: const u8[:], count: i64, dst: u8[:], dst_offset: i64) {
-    guard count > 0 && count <= chunk.len && dst_offset >= 0 && sub_sat_i64(dst.len, dst_offset) >= count else {
-        return;
-    }
-    var k: i64 = 0;
-    while k < count {
-        let dst_pos = dst_offset + k;
-        dst[dst_pos] = chunk[k];
-        k += 1;
-    }
-}
-
-fn iovec_copy_to(arr: const IoVecArray&, dst: u8[:]) -> i64 {
-    var dst_off: i64 = 0;
-    var i:       i32 = 0;
-    let n = iovec_count(arr);
-    while i < n && dst_off < dst.len {
-        let chunk = iovec_get(arr, i);
-        let rem_dst = dst.len - dst_off;
-        let to_copy = min(chunk.len, rem_dst);
-        iovec_copy_chunk(chunk, to_copy, dst, dst_off);
-        dst_off += to_copy;
-        i += 1;
-    }
-    return dst_off;
 }
 
 // ---- Partial Write Consumption -------------------------------------------

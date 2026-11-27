@@ -31,7 +31,7 @@ fn is_retryable_request(req: const BinaryRpcRequest&) -> bool {
     return req.idempotent;
 }
 
-// UFCS hook queried by `wire::RateLimitService` and `wire::SingleflightService` for routing/partition keys.
+// UFCS hook queried by `wire::RateLimitService` for routing/partition keys.
 fn service_key(req: const BinaryRpcRequest&) -> const u8[:] {
     return req.key[..];
 }
@@ -245,43 +245,15 @@ fn test_circuit_breaker_service() {
     print("CIRCUIT_BREAKER_FSM: OK");
 }
 
-fn test_singleflight_service() {
-    let backend = BinaryRpcBackend { .. };
-    var sf_svc = wire::new_singleflight_service(backend);
-    let req = make_rpc_request(40, "rpc:dedup:key1", "fetch_profile", true);
-    var res = BinaryRpcResponse { .. };
-
-    // 1st call executes as leader
-    let v1 = sf_svc.exchange(req, res);
-    assert(v1 == wire::StageVerdict.Continue);
-    assert(sf_svc.inner.call_count == 1);
-    assert(sf_svc.coalesced_hits == 0);
-
-    // 2nd and 3rd calls with identical service_key coalesce without invoking backend
-    let v2 = sf_svc.exchange(req, res);
-    let v3 = sf_svc.exchange(req, res);
-    assert(v2 == wire::StageVerdict.Continue && v3 == wire::StageVerdict.Continue);
-    assert(sf_svc.inner.call_count == 1);
-    assert(sf_svc.coalesced_hits == 2);
-
-    // Evicting the key allows a new leader call
-    assert(core::forget(sf_svc.group, req.service_key()));
-    let v4 = sf_svc.exchange(req, res);
-    assert(v4 == wire::StageVerdict.Continue);
-    assert(sf_svc.inner.call_count == 2);
-    print("SINGLEFLIGHT_COALESCING: OK");
-}
-
 fn test_composed_stack_zero_alloc() {
     // Compose: CircuitBreakerService<RetryService<RateLimitService<BinaryRpcBackend, TokenBucketLimiter>>>
-    // wrapped inside SingleflightService and LayeredService
+    // wrapped inside LayeredService
     let backend = BinaryRpcBackend { transient_failures_remaining: 1, .. };
     let limiter = TokenBucketLimiter { tokens: 5000, max_tokens: 5000, last_ns: 0 };
     let rl_layer = wire::new_rate_limit_service(backend, limiter, 100);
     let retry_layer = wire::new_retry_service(rl_layer, 3);
     let cb_layer = wire::new_circuit_breaker_service(retry_layer, 4, 3000);
-    let sf_layer = wire::new_singleflight_service(cb_layer);
-    var stacked = wire::stack_service(BinaryRpcOpCodeGuard { min_op_code: 1 }, sf_layer);
+    var stacked = wire::stack_service(BinaryRpcOpCodeGuard { min_op_code: 1 }, cb_layer);
 
     let bad_req = make_rpc_request(0, "rpc:composed:k1", "invalid", true);
     let good_req = make_rpc_request(7, "rpc:composed:k1", "payload_v1", true);
@@ -294,22 +266,18 @@ fn test_composed_stack_zero_alloc() {
     // First valid call: inner retry layer absorbs 1 transient failure and succeeds on 2nd attempt
     assert(stacked.exchange(good_req, res) == wire::StageVerdict.Continue);
     assert(res.status == 200 && res.result[..] == "OK:payload_v1");
-    assert(stacked.inner.inner.inner.retries_executed == 1);
-    assert(stacked.inner.inner.inner.inner.inner.call_count == 2);
+    assert(stacked.inner.inner.retries_executed == 1);
+    assert(stacked.inner.inner.inner.inner.call_count == 2);
 
-    // Execute 500 coalesced and uncoalesced exchanges and verify zero data-stack growth
+    // Execute 500 exchanges and verify zero data-stack growth
     var probe: u8[>..] = [];
     probe.push(1);
     let initial_len = probe.len;
     for i in 500 {
         let v = stacked.exchange(good_req, res);
         assert(v == wire::StageVerdict.Continue);
-        if i == 250 {
-            let _ = core::forget(stacked.inner.group, good_req.service_key());
-        }
     }
     assert(probe.len == initial_len);
-    assert(stacked.inner.coalesced_hits >= 498);
     print("COMPOSED_STACK_ZERO_ALLOC: OK");
 }
 
@@ -337,7 +305,6 @@ fn ::main() {
     wire::test_retry_service_and_budget();
     wire::test_rate_limit_service();
     wire::test_circuit_breaker_service();
-    wire::test_singleflight_service();
     wire::test_composed_stack_zero_alloc();
     wire::test_interceptor_multi_header_composition();
     print("ALL WIRE SERVICE LAYER CHECKS PASSED");
@@ -347,6 +314,5 @@ fn ::main() {
 // CHECK: RETRY_SERVICE_BUDGET: OK
 // CHECK: RATE_LIMIT_SERVICE_429: OK
 // CHECK: CIRCUIT_BREAKER_FSM: OK
-// CHECK: SINGLEFLIGHT_COALESCING: OK
 // CHECK: COMPOSED_STACK_ZERO_ALLOC: OK
 // CHECK: ALL WIRE SERVICE LAYER CHECKS PASSED

@@ -1049,17 +1049,6 @@ fn test_file_url_windows_drive_compliance(t: lit::T&) {
         sub.assert_true(u_pipe.valid, "file:///C|/... is valid file url");
         sub.assert_bytes_eq(core::pathname(u_pipe), "/C:/Users/admin/report.pdf", "pathname normalized pipe to colon /C:/");
         sub.assert_bytes_eq(core::href(u_pipe), "file:///C:/Users/admin/report.pdf", "href normalized pipe to colon");
-
-        // 2. Native file_path extraction succeeds on normalized drive letter
-        var os_path: u8[..256] = [];
-        let ok_path = core::file_path(u_pipe, os_path);
-        sub.assert_true(ok_path, "file_path succeeded on pipe-normalized drive URL");
-        sub.assert_bytes_eq(os_path[..], "C:\\Users\\admin\\report.pdf", "extracted native Windows backslash path");
-
-        // 3. new_file_url with pipe notation C|\... normalizes to file:///C:/...
-        let u_pipe_native = core::new_file_url("C|\\Projects\\app\\main.goose");
-        sub.assert_true(u_pipe_native.valid, "new_file_url accepts C|\\ path");
-        sub.assert_bytes_eq(core::pathname(u_pipe_native), "/C:/Projects/app/main.goose", "new_file_url normalized C| to /C:/");
     };
 
     t.run("WHATWG URL Section 4.4: Root-Relative Path Preserves Base Windows Drive Letter") { sub =>
@@ -1071,20 +1060,10 @@ fn test_file_url_windows_drive_compliance(t: lit::T&) {
         sub.assert_true(rel_slash.valid, "resolved root-relative URL is valid");
         sub.assert_bytes_eq(core::href(rel_slash), "file:///C:/assets/logo.png", "drive letter C: preserved on root-relative /assets/logo.png");
 
-        var path_slash: u8[..256] = [];
-        let ok_slash = core::file_path(rel_slash, path_slash);
-        sub.assert_true(ok_slash, "file_path succeeded on resolved root-relative URL");
-        sub.assert_bytes_eq(path_slash[..], "C:\\assets\\logo.png", "extracted Windows path retains drive letter");
-
         // 2. Root-relative backslash \styles\app.css resolves to file:///C:/styles/app.css
         let rel_bs = core::new_url("\\styles\\app.css", base_file);
         sub.assert_true(rel_bs.valid, "resolved root-relative backslash URL is valid");
         sub.assert_bytes_eq(core::href(rel_bs), "file:///C:/styles/app.css", "drive letter C: preserved on root-relative \\styles\\app.css");
-
-        var path_bs: u8[..256] = [];
-        let ok_bs = core::file_path(rel_bs, path_bs);
-        sub.assert_true(ok_bs, "file_path succeeded on backslash resolved URL");
-        sub.assert_bytes_eq(path_bs[..], "C:\\styles\\app.css", "extracted Windows path from backslash retains drive letter");
 
         // 3. Explicit alternative drive letter in reference overrides base drive letter
         let rel_other = core::new_url("/E:/data/store.db", base_file);

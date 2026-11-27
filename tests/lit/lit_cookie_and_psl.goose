@@ -50,7 +50,7 @@ fn test_f002_psl_dafsa_redirect_isolation() {
     let u_a = core::new_url("https://tenant-a.onrender.com/start");
     let u_b = core::new_url("https://tenant-b.onrender.com/finish");
     let orig_a = core::origin_from_url(u_a);
-    assert(!core::is_same_site_origin_url(orig_a, u_b));
+    assert(!core::is_same_origin(orig_a, core::origin_from_url(u_b)));
 
     var chain: core::Url[..4] = [];
     chain.push(u_a);

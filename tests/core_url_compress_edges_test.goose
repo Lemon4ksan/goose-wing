@@ -52,44 +52,13 @@ fn test_url_deep_edges(t: lit::T&) {
         sub.assert_true(o_file.kind == core::OriginKind.Opaque);
         sub.assert_true(o_data.kind == core::OriginKind.Opaque);
 
-        // Parse reference & relative resolution (empty rel, #hash, ?query, root /, file drive root)
+        // Relative endpoint resolution & UrlView
         let base_h = core::new_url("https://example.com/dir/sub/page.html?old=1#h");
-        let r_empty, _ = core::parse_reference(base_h, "");
-        let r_hash, _ = core::parse_reference(base_h, "#newh");
-        let r_root, _ = core::parse_reference(base_h, "/top/item");
-        let base_f = core::new_file_url("C:\\work\\sub\\a.txt");
-        let r_froot, _ = core::parse_reference(base_f, "/rel/b.txt");
-        let r_fdrv, _ = core::parse_reference(base_f, "/D:/other/c.txt");
-        sub.assert_bytes_eq(core::hash(r_empty), "");
-        sub.assert_bytes_eq(core::hash(r_hash), "#newh");
-        sub.assert_bytes_eq(core::pathname(r_root), "/top/item");
-        sub.assert_true(core::contains(r_froot.href[..], "file:///C:/rel/b.txt"));
-        sub.assert_true(core::contains(r_fdrv.href[..], "file:///D:/other/c.txt"));
         let r_view, ok_rv = core::parse_url_view("wss://user@h.test:9443/p?x=1#z");
         sub.assert_true(ok_rv == core::UrlParseError.None && r_view.scheme == "wss" && r_view.port == 9443);
 
-        // Path segment / subpath encoding & file:// forms
-        var pe: u8[..128] = [];
-        let seg_raw: u8[8] = [' ', '#', '?', '%', '/', '\\', 0x07, 0x7F];
-        sub.assert_true(core::percent_encode_path_segment(seg_raw[..], pe));
-        sub.assert_true(core::contains(pe[..], "%20%23%3F%25%2F%5C%07%7F"));
-        let f_rel = core::new_file_url("rel/sub path\\x.txt");
-        let f_posix = core::new_file_url("/var/log/test space#1?2%3.log");
-        var fp: u8[..256] = [];
-        sub.assert_true(core::file_path(f_rel, fp));
-        sub.assert_true(core::file_path(f_posix, fp) && core::contains(fp[..], "test space#1?2%3.log"));
-        let f_short_unc = core::new_file_url("//srv/share/f");
-        sub.assert_true(core::file_path(f_short_unc, fp));
-
-        // URL path mutators on empty/non-empty paths + parse_endpoint edges
-        sub.assert_false(core::deleting_path_extension(inv_u).valid);
-        sub.assert_false(core::deleting_last_path_component(inv_u).valid);
-        sub.assert_false(core::appending_path_component(inv_u, "a").valid);
-        sub.assert_false(core::appending_path(inv_u, "a").valid);
-        sub.assert_false(core::appending_path_extension(inv_u, "a").valid);
-        let root_only = core::new_url("https://example.com");
-        let root_del = core::deleting_last_path_component(root_only);
-        sub.assert_bytes_eq(core::pathname(root_del), "/");
+        var tiny_dec: u8[..4] = [];
+        sub.assert_true(core::percent_decode("", tiny_dec));
         let ep_abs, _ = core::parse_endpoint(base_h, "/v2/users");
         let ep_hash, _ = core::parse_endpoint(base_h, "#sec");
         sub.assert_bytes_eq(core::pathname(ep_abs), "/dir/sub/page.html/v2/users");
@@ -133,13 +102,6 @@ fn test_url_deep_edges(t: lit::T&) {
         sub.assert_true(okc6 && core::cidr_contains_ip(c6, ip6_in) && !core::cidr_contains_ip(c6, ip6_out));
         sub.assert_false(core::cidr_contains_ip(c6, ip4));
 
-        var psl: u8[..64] = [];
-        sub.assert_true(core::public_suffix_with_icann("city.yokohama.jp", psl));
-        sub.assert_true(core::public_suffix_with_icann("sub.city.kawasaki.jp", psl));
-        sub.assert_true(core::public_suffix_with_icann("a.b.ck", psl));
-        sub.assert_false(core::public_suffix_with_icann("my.github.io", psl));
-        sub.assert_false(core::public_suffix_with_icann("onlyhost", psl));
-
         // Query encoders/decoders
         var qe: u8[..128] = [];
         sub.assert_true(core::append_query_component("a&b=c +%", qe));
@@ -150,14 +112,12 @@ fn test_url_deep_edges(t: lit::T&) {
         sub.assert_true(core::append_form_urlencoded("hello world!", fq));
         sub.assert_bytes_eq(fq[..], "hello+world%21");
         var fq_val: u8[..64] = [];
-        let qt_dec = core::parse_query_params("k=hello%20world%21&flag&a%20b=ok");
-        sub.assert_true(core::get_query_param_decoded(qt_dec, "k", fq_val), "q_dec_k");
+        let qs_dec = "k=hello%20world%21&flag&a%20b=ok";
+        sub.assert_true(core::get_query_param_fast(qs_dec, "k", fq_val) == core::QueryParamMatch.Value, "q_dec_k");
         sub.assert_bytes_eq(fq_val[..], "hello world!");
-        sub.assert_true(core::get_query_param_decoded(qt_dec, "flag", fq_val) && fq_val.len == 0);
-        sub.assert_true(core::get_query_param_decoded(qt_dec, "a b", fq_val) && fq_val[..] == "ok");
-        let qt = core::parse_query_params("&&a=1&b&c=x%20y&&");
-        sub.assert_false(qt.overflow);
-        sub.assert_eq(qt.tokens.len, 3);
+        sub.assert_true(core::get_query_param_fast(qs_dec, "flag", fq_val) == core::QueryParamMatch.Valueless && fq_val.len == 0);
+        sub.assert_true(core::has_query_param_fast("&&a=1&b&c=x%20y&&", "b"));
+        sub.assert_true(core::get_query_param_fast("&&a=1&b&c=x%20y&&", "c", fq_val) == core::QueryParamMatch.Value && fq_val[..] == "x y");
     };
 }
 
@@ -166,11 +126,11 @@ fn test_compress_stream_and_error_edges(t: lit::T&) {
         // 1. ZStreamCompressor + ZStreamDecompressor for Zlib with dict + SyncFlush + FullFlush
         let dict = "shared_dictionary_prefix_alpha_beta_gamma_0123456789";
         var zsc = core::new_zstream_compressor(core::ContainerFormat.Zlib, 6);
-        core::zstream_set_dictionary(zsc, dict);
+        zsc.dict = dict;
         var z_wire: u8[>..] = [];
         sub.assert_true(core::zstream_write(zsc, "shared_dictionary_prefix_alpha ", z_wire, core::FlushMode.NoFlush));
-        sub.assert_true(core::zstream_sync_flush(zsc, z_wire));
-        sub.assert_true(core::zstream_full_flush(zsc, z_wire));
+        sub.assert_true(core::zstream_write(zsc, "", z_wire, core::FlushMode.SyncFlush));
+        sub.assert_true(core::zstream_write(zsc, "", z_wire, core::FlushMode.FullFlush));
         sub.assert_true(core::zstream_write(zsc, "beta_gamma_0123456789 end!", z_wire, core::FlushMode.NoFlush));
         sub.assert_true(core::zstream_finish(zsc, z_wire));
         sub.assert_false(core::zstream_finish(zsc, z_wire)); // already finished

@@ -33,35 +33,6 @@ fn test_bytes_utf8_and_json(t: lit::T&) {
         sub.assert_false(core::validate_utf8(bad_4_high[..]));
         sub.assert_false(core::validate_utf8(bad_lead[..]));
 
-        // Streaming validate_utf8_streaming (>=16B & >=8B ASCII runs + split multibyte + invalid states)
-        var long_ascii: u8[25] = ['a'; 25];
-        let s1, ok_s1 = core::validate_utf8_streaming(long_ascii[..], true);
-        sub.assert_true(ok_s1 && s1 == 25);
-        let s_e, ok_se = core::validate_utf8_streaming("", true);
-        sub.assert_true(ok_se && s_e == 0);
-
-        // Non-final vs final split across every lead length
-        let overlong_c0: u8[2] = [0xC0, 0xAF];
-        let lead_c2:     u8[1] = [0xC2];
-        let bad_c2:      u8[2] = [0xC2, 0x20];
-        let lead_e0:     u8[1] = [0xE0];
-        let bad_e0_low:  u8[2] = [0xE0, 0x80];
-        let bad_f0_cont: u8[2] = [0xF0, 0x20];
-        let lead_f0_2:   u8[2] = [0xF0, 0x9F];
-        let lead_f0_3:   u8[3] = [0xF0, 0x9F, 0x98];
-        let _, ok_st1 = core::validate_utf8_streaming(overlong_c0[..], true);
-        let _, ok_st2 = core::validate_utf8_streaming(lead_c2[..], false);
-        let _, ok_st3 = core::validate_utf8_streaming(lead_c2[..], true);
-        let _, ok_st4 = core::validate_utf8_streaming(bad_c2[..], true);
-        let _, ok_st5 = core::validate_utf8_streaming(lead_e0[..], false);
-        let _, ok_st6 = core::validate_utf8_streaming(lead_e0[..], true);
-        let _, ok_st7 = core::validate_utf8_streaming(bad_e0_low[..], true);
-        let _, ok_st8 = core::validate_utf8_streaming(bad_f0_cont[..], true);
-        let _, ok_st9 = core::validate_utf8_streaming(lead_f0_2[..], false);
-        let _, ok_st10 = core::validate_utf8_streaming(lead_f0_3[..], false);
-        sub.assert_false(ok_st1 || ok_st3 || ok_st4 || ok_st6 || ok_st7 || ok_st8);
-        sub.assert_true(ok_st2 && ok_st5 && ok_st9 && ok_st10);
-
         // validate_utf8_dfa_chunk sticky reject & skip_utf8_dfa_ascii_run
         var dfa_st: u8 = core::UTF8_DFA_REJECT;
         sub.assert_false(core::validate_utf8_dfa_chunk("abc", dfa_st, true));
@@ -152,10 +123,9 @@ fn test_bytes_utf8_and_json(t: lit::T&) {
         sub.assert_gt(core::rfind(hay[..], long_nonper), 15);
         sub.assert_eq(core::rfind("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", long_nonper), -1);
 
-        // split / collapse / parse / case / trim / lexical / format
+        // split / collapse / parse / case / trim / format
         let _, _, ok_se = core::split_once("abc", "");
-        let _, _, ok_sf = core::split_once_fold("abc", "");
-        sub.assert_false(ok_se || ok_sf);
+        sub.assert_false(ok_se);
         let p_l, p_r, p_ok = core::split_once("a::b", "::");
         sub.assert_true(p_ok && p_l == "a" && p_r == "b");
 
@@ -187,10 +157,6 @@ fn test_bytes_utf8_and_json(t: lit::T&) {
         core::make_ascii_uppercase(eb[..]);
         sub.assert_eq(core::index_of_fold("abc", ""), 0);
         sub.assert_bytes_eq(core::trim_end_bytes("///", "/"), "");
-        sub.assert_false(core::is_valid_email_addr_spec("ab"));
-        sub.assert_false(core::is_valid_slug("a--b"));
-        sub.assert_true(core::is_valid_slug("a_b"));
-        sub.assert_false(core::is_valid_slug("a!b"));
         var fx: u8[..16] = [];
         core::format_u64_hex_fixed(15 as u64, 0, fx, false);
         sub.assert_eq(fx.len, 0);
@@ -198,7 +164,7 @@ fn test_bytes_utf8_and_json(t: lit::T&) {
 }
 
 fn test_url_full_edges(t: lit::T&) {
-    t.run("URL path builders, parse_reference, file://, IDNA/Punycode, IP/CIDR, Query & Origin") { sub =>
+    t.run("URL path builders, endpoint, IDNA/Punycode, IP/CIDR, Query & Origin") { sub =>
         let base = core::new_url("https://user:pass@example.com:8080/a/b/file.txt?q=1#h");
         let inv_u = core::new_url("");
         sub.assert_false(inv_u.valid);
@@ -206,42 +172,15 @@ fn test_url_full_edges(t: lit::T&) {
         sub.assert_bytes_eq(core::href(v0), "http://x/");
         sub.assert_false(core::is_valid(v0));
 
-        // parse_reference + parse_endpoint + path manipulation preserving query/hash
-        let r_ref, err_ref = core::parse_reference(base, "../c/d?x=2#f");
-        sub.assert_true(err_ref == core::UrlParseError.None);
-        sub.assert_true(core::contains(r_ref.href[..], "/a/c/d?x=2#f"));
+        // parse_endpoint
         let _, err_ep_bad = core::parse_endpoint(inv_u, "/v1");
         sub.assert_true(err_ep_bad != core::UrlParseError.None);
         let ep_q, err_ep_q = core::parse_endpoint(base, "?only=query");
         sub.assert_true(err_ep_q == core::UrlParseError.None && core::contains(ep_q.href[..], "?only=query"));
 
-        let del_ext = core::deleting_path_extension(base);
-        sub.assert_true(core::contains(del_ext.href[..], "/a/b/file?q=1#h"));
-        let del_comp = core::deleting_last_path_component(base);
-        sub.assert_true(core::contains(del_comp.href[..], "/a/b/?q=1#h"));
-        let app_c = core::appending_path_component(del_comp, "/next.md");
-        let app_p = core::appending_path(del_comp, "sub/end");
-        let app_e = core::appending_path_extension(del_ext, ".pdf");
-        sub.assert_true(core::contains(app_c.href[..], "next.md?q=1#h"));
-        sub.assert_true(core::contains(app_p.href[..], "sub/end?q=1#h"));
-        sub.assert_true(core::contains(app_e.href[..], "file.pdf?q=1#h"));
-
-        // file URLs (Windows drive, UNC, empty, escaping)
-        let f_empty = core::new_file_url("");
-        let f_win = core::new_file_url("C:\\dir name\\f#1?2%.txt");
-        let f_unc = core::new_file_url("\\\\server\\share\\sub/file.txt");
-        var fp_out: u8[..256] = [];
-        sub.assert_true(f_empty.valid);
-        sub.assert_true(core::file_path(f_win, fp_out));
-        sub.assert_true(core::file_path(f_unc, fp_out));
-        sub.assert_bytes_eq(core::last_path_component(inv_u), "");
-        let u_noext = core::new_url("https://a.b/a");
-        sub.assert_bytes_eq(core::path_extension(u_noext), "");
-
-        // percent_encode_path_segment overflow + decode empty
+        // percent_decode empty
         var tiny4: u8[..4] = [];
         sub.assert_true(core::percent_decode("", tiny4));
-        sub.assert_false(core::percent_encode_path_segment("#?%/\\\x01~", tiny4));
 
         // IP / CIDR / zone-id & scoped IPv6 edges
         let _, ok_cidr_bad1 = core::parse_cidr("noslash");
@@ -270,25 +209,15 @@ fn test_url_full_edges(t: lit::T&) {
         sub.assert_false(core::validate_host_punycode_labels("xn--bad_non_ascii_$.com"));
         sub.assert_false(core::validate_host_punycode_labels("xn--9999999999z.com"));
 
-        // Origins, opaque origins, blob URLs, 3-level public suffixes, serialize_origin
+        // Origins, opaque origins, serialize_origin
         let o_bad = core::new_origin_tuple("", "example.com", 80);
         sub.assert_true(o_bad.kind == core::OriginKind.Opaque);
-        let u_blob = core::new_url("blob:https://app.s3.amazonaws.com:443/uuid-1");
-        let site_blob = core::registrable_site_from_url(u_blob);
-        sub.assert_true(site_blob.scheme[..] == "https");
         let o_v6 = core::new_origin_tuple("https", "2001:db8::1", 8443);
         var o_str: u8[..128] = [];
         core::serialize_origin(o_v6, o_str);
         sub.assert_bytes_eq(o_str[..], "https://[2001:db8::1]:8443");
         let u_ftp = core::new_url("ftp://ftp.example.com/a");
         sub.assert_eq(core::effective_port(u_ftp), 21);
-        var pfx_buf: u8[..64] = [];
-        sub.assert_false(core::public_suffix_with_icann("foo.s3.amazonaws.com", pfx_buf));
-        sub.assert_bytes_eq(pfx_buf[..], "s3.amazonaws.com");
-        sub.assert_true(core::public_suffix_with_icann("foo.co.uk", pfx_buf) && pfx_buf[..] == "co.uk");
-        sub.assert_false(core::public_suffix_with_icann("127.0.0.1", pfx_buf));
-        sub.assert_false(core::is_schemeful_same_site_urls(inv_u, base));
-        sub.assert_false(core::is_same_site_origin_url(o_bad, base));
 
         // normalize_http_target_uri & query helpers (RFC 9449 §4.2 strips query/fragment)
         var norm_u: u8[..512] = [];

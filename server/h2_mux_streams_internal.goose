@@ -619,7 +619,12 @@ fn handle_ingress_header_error<B>(
 ) -> bool {
     if hdr.frame_type == rfc::H2_FRAME_HEADERS && err == rfc::H2_ERR_STREAM_CLOSED {
         let c_idx, c_closed = http2::find_closed_stream_idx(sess.conn, hdr.stream_id);
-        if c_closed && !sess.conn.streams[c_idx].closed_by_rst {
+        if !c_closed {
+            // RFC 9113 Section 5.1.1: Stream Identifiers - New stream <= highest opened ID is PROTOCOL_ERROR.
+            emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
+            return false;
+        }
+        if !sess.conn.streams[c_idx].closed_by_rst {
             emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_STREAM_CLOSED, out_wire);
             return false;
         }

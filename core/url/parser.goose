@@ -864,11 +864,6 @@ fn parse_url_view(raw_input: const u8[:]) -> UrlView, UrlParseError {
     return view, UrlParseError.None;
 }
 
-fn new_url_view(raw_input: const u8[:]) -> UrlView {
-    let view, err = parse_url_view(raw_input);
-    return view;
-}
-
 fn resolve_bracketed_ipv6<B>(
     host_port: const u8[:],
     host_out:  B&,

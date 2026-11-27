@@ -64,16 +64,6 @@ fn month_short_name(month_val: Month) -> const u8[:] {
     return month_name(month_val)[..3];
 }
 
-fn weekday_number(weekday_val: Weekday) -> i64 {
-    var idx: i64 = 0;
-    const for <N, V> in variants<Weekday> {
-        let v: Weekday = default<V>();
-        if weekday_val == v { return idx; }
-        idx += 1;
-    }
-    return 0;
-}
-
 fn weekday_from_number(weekday_num: i64) -> Weekday {
     let norm = rem_euclid_i64(weekday_num, 7);
     var idx: i64 = 0;

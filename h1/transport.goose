@@ -15,7 +15,13 @@ extern fn native_h1_tcp_init() -> i32 = "wing_tcp_init";
 extern fn native_h1_tcp_listen(host: const u8[:], port: u16, backlog: i32) -> i64 = "wing_tcp_listen";
 extern fn native_h1_tcp_getsockname_port(sock_fd: i64) -> u16 = "wing_tcp_getsockname_port";
 extern fn native_h1_tcp_accept(listener_fd: i64, timeout_ms: u32) -> i64 = "wing_tcp_accept";
-extern fn native_h1_tcp_connect(host: const u8[:], port: u16, timeout_ms: u32) -> i64 = "wing_tcp_connect";
+extern fn native_h1_tcp_connect_ex(
+    host:            const u8[:],
+    port:            u16,
+    timeout_ms:      u32,
+    ip_family:       i32,
+    local_bind_addr: const u8[:],
+) -> i64 = "wing_tcp_connect_ex";
 extern fn native_h1_tcp_send(sock_fd: i64, data: const u8[:]) -> i32 = "wing_tcp_send";
 extern fn native_h1_tcp_send2(sock_fd: i64, hdr: const u8[:], body: const u8[:]) -> i32 = "wing_tcp_send2";
 extern fn native_h1_tcp_recv(sock_fd: i64, buf: u8[:], timeout_ms: u32) -> i32 = "wing_tcp_recv";
@@ -62,7 +68,7 @@ fn close(lis: TcpListener&) {
 fn tcp_connect(host: const u8[:], port: u16, timeout_ms: u32 = 5000) -> TcpStream, bool {
     guard host.len > 0 && port > 0 else { return TcpStream { .. }, false; }
     guard native_h1_tcp_init() == 0 else { return TcpStream { .. }, false; }
-    let fd = native_h1_tcp_connect(host, port, timeout_ms);
+    let fd = native_h1_tcp_connect_ex(host, port, timeout_ms, 0, "");
     guard fd > 0 else { return TcpStream { .. }, false; }
     let _ = native_h1_tcp_set_nodelay(fd, 1);
     return TcpStream { fd: fd }, true;

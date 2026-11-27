@@ -251,6 +251,24 @@ fn is_websocket_upgrade_request(req: const http::Request&) -> bool {
     return is_valid_websocket_key(key);
 }
 
+// Classifies malformed WebSocket upgrade attempts against RFC 6455 Sections 4.2.1 and 4.4.
+// Returns 0 if `req` does not appear to request a WebSocket upgrade, otherwise 426 or 400.
+fn classify_ws_upgrade_failure(req: const http::Request&) -> i32 {
+    let has_ws_upg = realtime_internal::req_has_header_token(req, "upgrade", "websocket");
+    let has_ws_ver = realtime_internal::req_count_header(req, "sec-websocket-version") > 0;
+    let has_ws_key = realtime_internal::req_count_header(req, "sec-websocket-key") > 0;
+    guard has_ws_upg || has_ws_ver || has_ws_key else { return 0; }
+    var dummy_resp = http::Response { .. };
+    let _, ok_hdrs = realtime_internal::validate_ws_upgrade_headers(req, dummy_resp);
+    if ok_hdrs && req.method[..] == "GET" && !req.is_http10 {
+        return 0;
+    }
+    if dummy_resp.status_code == rfc::STATUS_UPGRADE_REQUIRED {
+        return rfc::STATUS_UPGRADE_REQUIRED;
+    }
+    return rfc::STATUS_BAD_REQUEST;
+}
+
 // ---- Bootstrapping WebSockets with HTTP/2 (RFC 8441) ---------------------
 
 // Inspects an incoming HTTP Request to determine if it is an RFC 8441 WebSocket Extended CONNECT request.

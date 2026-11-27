@@ -3,10 +3,10 @@
 
 // Minimal HTTP/1.1 Vulkan pipeline build configuration sidecar.
 // Compiles only TCP socket, CSPRNG, and SIMD/SWAR byte primitives.
-c_sources_windows = ["shim/simd.c", "shim/tcp.c", "shim/rio.c"];
-c_sources_linux = ["shim/simd.c", "shim/tcp.c", "shim/rio.c"];
-c_sources_macos = ["shim/simd.c", "shim/tcp.c", "shim/rio.c"];
-c_libs_windows = ["ws2_32", "mswsock", "bcrypt"];
+c_sources_windows = ["shim/simd.c", "shim/tcp.c"];
+c_sources_linux = ["shim/simd.c", "shim/tcp.c"];
+c_sources_macos = ["shim/simd.c", "shim/tcp.c"];
+c_libs_windows = ["ws2_32", "mswsock"];
 c_flags_cc = ["-mstackrealign"];
 c_flags_cc_windows = ["-mstackrealign"];
 c_flags_msvc = ["/std:c11"];

@@ -88,10 +88,6 @@ fn new_zstream_compressor(format: ContainerFormat = ContainerFormat.Raw, level: 
     };
 }
 
-fn zstream_set_dictionary(s: ZStreamCompressor&, dict: const u8[:]) {
-    s.dict = dict;
-}
-
 fn write_container_header<B>(s: ZStreamCompressor&, out: B&) -> bool {
     if s.header_written { return true; }
     if s.format == ContainerFormat.Zlib {
@@ -212,16 +208,6 @@ fn zstream_write<B>(s: ZStreamCompressor&, chunk: const u8[:], out: B&, flush: F
     return true;
 }
 
-fn zstream_sync_flush<B>(s: ZStreamCompressor&, out: B&) -> bool {
-    let empty: u8[0] = [];
-    return zstream_write(s, empty[..], out, FlushMode.SyncFlush);
-}
-
-fn zstream_full_flush<B>(s: ZStreamCompressor&, out: B&) -> bool {
-    let empty: u8[0] = [];
-    return zstream_write(s, empty[..], out, FlushMode.FullFlush);
-}
-
 fn zstream_finish<B>(s: ZStreamCompressor&, out: B&) -> bool {
     let empty: u8[0] = [];
     return zstream_write(s, empty[..], out, FlushMode.Finish);
@@ -268,10 +254,6 @@ fn new_zstream_decompressor(
         is_finished:      false,
         in_buf:           [],
     };
-}
-
-fn zstream_decompress_set_dictionary(d: ZStreamDecompressor&, dict: const u8[:]) {
-    d.dict = dict;
 }
 
 // Discards consumed bytes from front of internal input buffer.
@@ -564,50 +546,16 @@ fn zstream_decompress_write<B>(d: ZStreamDecompressor&, chunk: const u8[:], out:
     return zstream_decompress_write_limit(d, chunk, out, 0);
 }
 
-// Auto-detects container format (Gzip, Zlib, or raw Deflate) and decompresses src into out.
-fn decompress_auto<B>(src: const u8[:], out: B&, dict: const u8[:] = "") -> bool, CompressError {
-    let fmt = detect_container_format(src);
-    if fmt == ContainerFormat.Zstd {
-        return zstd_decompress(src, out);
-    } else if fmt == ContainerFormat.Gzip {
-        return gzip_decompress(src, out);
-    } else if fmt == ContainerFormat.Zlib {
-        return zlib_decompress_with_dict(src, out, dict);
-    } else {
-        return inflate_with_dict(src, out, dict);
-    }
-}
-
 // ---- native methods & ufcs -------------------------------------------------
 
 fn write<B>(s: ZStreamCompressor&, chunk: const u8[:], out: B&, flush: FlushMode = FlushMode.NoFlush) -> bool {
     return zstream_write(s, chunk, out, flush);
 }
 
-fn sync_flush<B>(s: ZStreamCompressor&, out: B&) -> bool {
-    return zstream_sync_flush(s, out);
-}
-
-fn full_flush<B>(s: ZStreamCompressor&, out: B&) -> bool {
-    return zstream_full_flush(s, out);
-}
-
 fn finish<B>(s: ZStreamCompressor&, out: B&) -> bool {
     return zstream_finish(s, out);
 }
 
-fn set_dictionary(s: ZStreamCompressor&, dict: const u8[:]) {
-    zstream_set_dictionary(s, dict);
-}
-
 fn write<B>(d: ZStreamDecompressor&, chunk: const u8[:], out: B&) -> CompressError {
     return zstream_decompress_write(d, chunk, out);
-}
-
-fn write_with_limit<B>(d: ZStreamDecompressor&, chunk: const u8[:], out: B&, max_output_bytes: i64) -> CompressError {
-    return zstream_decompress_write_limit(d, chunk, out, max_output_bytes);
-}
-
-fn set_dictionary(d: ZStreamDecompressor&, dict: const u8[:]) {
-    zstream_decompress_set_dictionary(d, dict);
 }

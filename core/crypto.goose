@@ -3,7 +3,7 @@
 
 // Cryptographic subsystem for the Goose Core Systems Library.
 // Provides zero-allocation, branchless constant-time cryptographic primitives:
-// - ct: Constant-time byte comparisons, KeySlot secrecy pattern, Dudect Welch t-test verifier.
+// - ct: Constant-time byte comparisons and secret zeroization.
 // - csprng: OS-backed cryptographically secure random byte generation.
 // - sha: SHA-256, SHA-384, SHA-512 (FIPS 180-4), SHA-1 (RFC 3174), HMAC, HKDF extract/expand.
 // - md5: MD5 message-digest algorithm (RFC 1321).

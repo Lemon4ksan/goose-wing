@@ -346,35 +346,6 @@ fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
     }
 }
 
-fn public_suffix_with_icann<B>(domain: const u8[:], out_suffix: B&) -> bool {
-    out_suffix.clear();
-    let clean_domain = trim_byte(domain, '.');
-    guard clean_domain.len > 0 && !contains(clean_domain, "..") else { return false; }
-    if is_ip_address_literal(clean_domain) { return false; }
-
-    return compute_public_suffix(clean_domain, out_suffix);
-}
-
-fn registrable_site_from_url(url_val: const Url&) -> RegistrableSite {
-    var site = RegistrableSite { .. };
-    guard url_val.valid else { return site; }
-    let scheme_str = scheme(url_val);
-    if scheme_str == "blob" {
-        let inner_url, _ = parse_url(pathname(url_val));
-        guard inner_url.valid else { return site; }
-        let inner_scheme = scheme(inner_url);
-        guard is_tuple_origin_scheme(inner_scheme) else { return site; }
-        site.scheme.append(inner_scheme);
-        extract_etld_plus_one(hostname(inner_url), site.registrable_domain);
-        return site;
-    }
-    site.scheme.append(scheme_str);
-
-    let host_str = hostname(url_val);
-    extract_etld_plus_one(host_str, site.registrable_domain);
-    return site;
-}
-
 fn effective_origin_port(scheme_str: const u8[:], port: i32) -> i32 {
     if port >= 0 { return port; }
     return default_port_for_scheme(scheme_str);
@@ -424,28 +395,4 @@ fn serialize_origin<B>(origin_val: Origin, out: B&) {
         out.push(':');
         format_i64_dec(origin_val.port as i64, out);
     }
-}
-
-fn is_schemeful_same_site_urls(url_a: const Url&, url_b: const Url&) -> bool {
-    guard url_a.valid && url_b.valid else { return false; }
-    let site_a = registrable_site_from_url(url_a);
-    let site_b = registrable_site_from_url(url_b);
-    guard site_a.registrable_domain.len > 0 && site_b.registrable_domain.len > 0 else {
-        return false;
-    }
-    return eq_ascii_fold(site_a.scheme[..], site_b.scheme[..]) &&
-           eq_ascii_fold(site_a.registrable_domain[..], site_b.registrable_domain[..]);
-}
-
-fn is_same_site_origin_url(origin_val: const Origin&, url_val: const Url&) -> bool {
-    if origin_val.kind == OriginKind.Opaque || !url_val.valid { return false; }
-    var orig_etld: u8[..256] = [];
-    extract_etld_plus_one(origin_val.host[..], orig_etld);
-
-    let site_url = registrable_site_from_url(url_val);
-    guard orig_etld.len > 0 && site_url.registrable_domain.len > 0 else {
-        return false;
-    }
-    return eq_ascii_fold(origin_val.scheme[..], site_url.scheme[..]) &&
-           eq_ascii_fold(orig_etld[..], site_url.registrable_domain[..]);
 }

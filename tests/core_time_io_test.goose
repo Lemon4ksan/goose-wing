@@ -22,18 +22,14 @@ fn test_time_core_and_calendar(t: lit::T&) {
 
         for w in 0..7 {
             let wd = core::weekday_from_number(w);
-            sub.assert_eq(core::weekday_number(wd), w);
             sub.assert_gt(core::weekday_name(wd).len, 2);
             sub.assert_gt(core::weekday_short_name(wd).len, 2);
         }
-        sub.assert_eq(core::weekday_number(core::weekday_from_number(99)), 1);
 
         let leap_t = core::date(2024, core::Month.February, 15, 10, 20, 30, 500000000);
         let nonleap_t = core::date(2025, core::Month.February, 15, 10, 20, 30, 500000000);
         sub.assert_true(core::is_leap_year(leap_t));
         sub.assert_false(core::is_leap_year(nonleap_t));
-        sub.assert_eq(core::days_in_year(leap_t), 366);
-        sub.assert_eq(core::days_in_year(nonleap_t), 365);
         sub.assert_eq(core::days_in_month(leap_t), 29);
         sub.assert_eq(core::days_in_month(nonleap_t), 28);
         sub.assert_eq(leap_t.month(), core::Month.February);
@@ -42,7 +38,8 @@ fn test_time_core_and_calendar(t: lit::T&) {
 
         let zt = core::Time { .. };
         sub.assert_true(core::is_zero(zt));
-        sub.assert_eq(core::tz_offset(core::in_offset(leap_t, -18000)), -18000);
+        let t_off = core::date(2024, core::Month.February, 15, 10, 20, 30, 500000000, -18000);
+        sub.assert_eq(core::tz_offset(t_off), -18000);
         sub.assert_eq(core::unix(core::unix_milli(1234)), 1);
         sub.assert_eq(core::unix(core::unix_micro(2000000)), 2);
 
@@ -57,29 +54,19 @@ fn test_time_core_and_calendar(t: lit::T&) {
         sub.assert_eq(core::sub(huge_pos, huge_neg).nanos, core::DURATION_MAX_NANOS);
         sub.assert_eq(core::sub(huge_neg, huge_pos).nanos, core::DURATION_MIN_NANOS);
 
-        // truncate / round (subsecond divisors, negative times, general nanos, non-positive)
-        let neg_t = core::unix(-5, 600000000);
-        sub.assert_eq(core::truncate(leap_t, core::nanos(0)), leap_t);
-        sub.assert_eq(core::truncate(leap_t, core::millis(250)).nsec, 500000000);
-        sub.assert_eq(core::round(leap_t, core::nanos(0)), leap_t);
-        let _ = core::round(neg_t, core::millis(500));
-        let _ = core::round(leap_t, core::millis(700));
-        let _ = core::round(neg_t, core::millis(700));
-        let _ = core::round(leap_t, core::secs(3));
         let _ = core::since(zt);
-        let _ = core::until(zt);
     };
 }
 
 fn test_time_format_dur_sim_wheel(t: lit::T&) {
     t.run("RFC3339/HTTP date format & parse error paths + Duration helpers") { sub =>
-        let t_neg_tz = core::in_offset(core::unix(1700000000, 123000000), -18000);
-        let t_pos_tz = core::in_offset(core::unix(1700000000, 0), 19800);
+        let t_neg_tz = core::date(2023, 11, 14, 17, 13, 20, 123000000, -18000);
+        let t_pos_tz = core::date(2023, 11, 15, 3, 43, 20, 0, 19800);
         var buf: u8[..128] = [];
-        core::format_rfc3339_nano(buf, t_neg_tz);
+        core::format_rfc3339(buf, t_neg_tz);
         sub.assert_true(buf[..].contains_byte('-'));
         buf.clear();
-        core::format_rfc3339_nano(buf, t_pos_tz);
+        core::format_rfc3339(buf, t_pos_tz);
         sub.assert_true(buf[..].contains_byte('+'));
         buf.clear();
         core::format(buf, t_neg_tz);
@@ -130,36 +117,23 @@ fn test_time_format_dur_sim_wheel(t: lit::T&) {
             sub.assert_false(ok, bh);
         }
 
-        // Duration aliases, round up/exact, unicode us/μs, clamping min negative
-        let d_ns = core::nanoseconds(500);
-        let d_us = core::microseconds(2);
-        let d_ms = core::milliseconds(3);
-        let d_s = core::seconds(4);
-        let d_m = core::minutes(1);
-        sub.assert_eq(core::nanoseconds(d_ns), 500);
-        sub.assert_eq(core::microseconds(d_us), 2);
-        sub.assert_eq(core::milliseconds(d_ms), 3);
-        sub.assert_gt(core::seconds(d_s), 3.9);
-        sub.assert_gt(core::minutes(d_m), 0.9);
-        sub.assert_gt(core::hours(core::secs(3600)), 0.9);
-        sub.assert_eq(core::add(d_ms, d_ms), core::millis(6));
-        sub.assert_eq(core::sub(d_ms, core::millis(1)), core::millis(2));
+        // Duration helpers, round up/exact
+        let d_ns = core::nanos(500);
+        let d_us = core::micros(2);
+        let d_ms = core::millis(3);
+        let d_s = core::secs(4);
+        let d_m = core::mins(1);
+        sub.assert_eq(core::as_nanos(d_ns), 500);
+        sub.assert_eq(core::as_micros(d_us), 2);
+        sub.assert_eq(core::as_millis(d_ms), 3);
+        sub.assert_gt(core::as_secs_f64(d_s), 3.9);
+        sub.assert_eq(core::as_secs(d_m), 60);
+        sub.assert_eq(core::as_secs(core::hours(1)), 3600);
+        sub.assert_eq(d_ms + d_ms, core::millis(6));
+        sub.assert_eq(d_ms - core::millis(1), core::millis(2));
         sub.assert_eq(core::abs(core::nanos(-42)), core::nanos(42));
         sub.assert_eq(core::round(core::nanos(2), core::nanos(4)), core::nanos(4));
         sub.assert_eq(core::round(core::nanos(4), core::nanos(4)), core::nanos(4));
-
-        let du_mu, ok_mu = core::parse_duration("5us");
-        let du_gr, ok_gr = core::parse_duration("5μs");
-        let du_min, ok_min = core::parse_duration("-2562047h47m16s854ms775us808ns");
-        sub.assert_true(ok_mu && ok_gr && ok_min, "parse_duration min/us");
-        sub.assert_eq(du_mu.nanos, 5000);
-        sub.assert_eq(du_gr.nanos, 5000);
-        sub.assert_eq(du_min.nanos, core::DURATION_MIN_NANOS);
-        let _, ok_bd1 = core::parse_duration("1badunit");
-        let _, ok_bd2 = core::parse_duration("abc.5s");
-        let _, ok_bd3 = core::parse_duration("1.xxs");
-        let _, ok_bd4 = core::parse_duration("999999999999h");
-        sub.assert_false(ok_bd1 || ok_bd2 || ok_bd3 || ok_bd4);
     };
 
     t.run("Clock sleep<=0, SimClock/SimRng, TickTimer, TokenBucket") { sub =>
@@ -187,25 +161,8 @@ fn test_time_format_dur_sim_wheel(t: lit::T&) {
 }
 
 fn test_io_all_buffers_and_guards(t: lit::T&) {
-    t.run("GuardedArena, MmapFile, PinnedBuffer & PageRing error/edge paths") { sub =>
-        let _, ok_z = core::guarded_arena_init(0, 0);
-        sub.assert_false(ok_z);
-        var bad_a = core::GuardedArena {};
+    t.run("MmapFile & PageRing error/edge paths") { sub =>
         var b8: u8[8] = [0; 8];
-        let _, ok_gw = core::guarded_arena_write(bad_a, "hi");
-        let _, ok_gr = core::guarded_arena_read(bad_a, 0, b8[..]);
-        sub.assert_false(ok_gw || ok_gr || core::guarded_arena_reset(bad_a));
-        core::guarded_arena_close(bad_a);
-
-        var ok_ar, a_init = core::guarded_arena_init(4096, 0);
-        if a_init {
-            defer core::guarded_arena_close(ok_ar);
-            let _ = core::guarded_arena_write(ok_ar, "hello");
-            let _, _ = core::guarded_arena_read(ok_ar, 0, b8[..2]);
-            let _ = core::guarded_arena_available(ok_ar);
-            let _ = core::guarded_arena_reset(ok_ar);
-        }
-
         let _, ok_m1 = core::mmap_file_open("");
         let _, ok_m2 = core::mmap_file_open("missing_nonexistent_file_xyz_12345.bin");
         sub.assert_false(ok_m1 || ok_m2);
@@ -220,41 +177,17 @@ fn test_io_all_buffers_and_guards(t: lit::T&) {
             sub.assert_false(ok_big_s);
         }
 
-        let _, ok_pb0 = core::pinned_buffer_init(0);
-        sub.assert_false(ok_pb0);
-        var pb, ok_pb = core::pinned_buffer_init(4096);
-        if ok_pb {
-            defer core::pinned_buffer_close(pb);
-            let _, ok_pw = core::pinned_buffer_write(pb, 0, "abc");
-            let _, ok_pr = core::pinned_buffer_read(pb, 0, b8[..3]);
-            let _, ok_pw_oob = core::pinned_buffer_write(pb, 4096, "abc");
-            let _, ok_pr_oob = core::pinned_buffer_read(pb, 4096, b8[..3]);
-            sub.assert_true(ok_pw && ok_pr && !ok_pw_oob && !ok_pr_oob);
-        }
-
         var pr = core::PageRingBuffer {};
         sub.assert_false(core::page_ring_init(pr, 0));
         sub.assert_eq(core::page_ring_available(pr), 0);
-        let _, e_pw = core::page_ring_write(pr, "a");
-        let _, e_pr = core::page_ring_read(pr, b8[..]);
-        sub.assert_true(e_pw == core::IoError.Closed && e_pr == core::IoError.Closed);
         sub.assert_eq(core::page_ring_peek(pr, b8[..]), 0);
         sub.assert_eq(core::page_ring_discard(pr, 4), 0);
         sub.assert_eq(core::page_ring_recv(pr, -1), -1);
-        sub.assert_eq(core::page_ring_find_crlf(pr), -1);
-        sub.assert_eq(core::page_ring_find_crlfcrlf(pr), -1);
         if core::page_ring_init(pr, 4096) {
             defer core::page_ring_close(pr);
-            let _, e_empty_r = core::page_ring_read(pr, b8[..]);
-            let _, e_zero_w = core::page_ring_write(pr, "");
-            sub.assert_true(e_empty_r == core::IoError.Eof && e_zero_w == core::IoError.None);
-            let wn, e_w = core::page_ring_write(pr, "hello\r\n\r\n");
-            sub.assert_true(wn == 9 && e_w == core::IoError.None);
-            sub.assert_eq(core::page_ring_find_crlf(pr), 5);
-            sub.assert_eq(core::page_ring_find_crlfcrlf(pr), 5);
-            sub.assert_eq(core::page_ring_peek(pr, b8[..5]), 5);
-            sub.assert_eq(core::page_ring_discard(pr, 5), 5);
-            let _, _ = core::page_ring_read(pr, b8[..4]);
+            sub.assert_gt(core::page_ring_available(pr), 0);
+            sub.assert_eq(core::page_ring_peek(pr, b8[..5]), 0);
+            sub.assert_eq(core::page_ring_discard(pr, 5), 0);
         }
     };
 
@@ -283,16 +216,16 @@ fn test_io_all_buffers_and_guards(t: lit::T&) {
         sub.assert_false(core::start_u16_prefix(bld));
         sub.assert_false(core::start_u24_prefix(bld));
 
-        // IoVecArray compact, push overflow, consume, copy_chunk
+        // IoVecArray compact, push overflow, consume
         var vec = core::new_iovec_array();
-        sub.assert_eq(core::iovec_total_bytes(vec), 0);
+        sub.assert_eq(vec.total_bytes, 0);
         sub.assert_bytes_eq(core::iovec_get(vec, -1), "");
         sub.assert_eq(core::iovec_consume(vec, 0), 0);
         sub.assert_true(core::iovec_push(vec, "hello"));
         sub.assert_true(core::iovec_push(vec, "world"));
         sub.assert_eq(core::iovec_consume(vec, 2), 2);
         core::iovec_compact(vec);
-        sub.assert_eq(core::iovec_total_bytes(vec), 8);
+        sub.assert_eq(vec.total_bytes, 8);
         for _ in 16 { let _ = core::iovec_push(vec, "x"); }
         sub.assert_false(core::iovec_push(vec, "overflow"));
 

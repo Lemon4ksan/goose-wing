@@ -1388,15 +1388,10 @@ fn bytes_to_hex(bytes: const u8[:], out: u8[>..]&) {
 }
 
 // ----------------------------------------------------------------------------
-// 22. Constant-Time Primitives & KeySlot Redaction
+// 22. Constant-Time Primitives
 // ----------------------------------------------------------------------------
 fn test_constant_time_primitives(t: lit::T&) {
-    t.run("Branchless Equality and Select") { sub =>
-        sub.assert_eq(core::ct_eq_u8(0x42, 0x42), 1, "ct_eq_u8 match");
-        sub.assert_eq(core::ct_eq_u8(0x42, 0x43), 0, "ct_eq_u8 mismatch");
-        sub.assert_eq(core::ct_eq_u8(0x00, 0x00), 1, "ct_eq_u8 zero match");
-        sub.assert_eq(core::ct_eq_u8(0xFF, 0x00), 0, "ct_eq_u8 boundary");
-
+    t.run("Branchless Select") { sub =>
         sub.assert_eq(core::ct_select_u8(1, 0xAA, 0xBB), 0xAA, "ct_select_u8 true");
         sub.assert_eq(core::ct_select_u8(0, 0xAA, 0xBB), 0xBB, "ct_select_u8 false");
     };
@@ -1414,49 +1409,6 @@ fn test_constant_time_primitives(t: lit::T&) {
         var dst: u8[4] = [0, 0, 0, 0];
         core::ct_copy_bytes(dst[..], a[..]);
         sub.assert_true(core::ct_eq_bytes(dst[..], a[..]), "ct_copy_bytes copied identical bytes");
-    };
-
-    t.run("KeySlot Redaction and Zeroization") { sub =>
-        var raw_key: u8[32] = [0x5A; 32];
-        var slot = core::new_key_slot(1001, raw_key[..], 1700000000);
-        sub.assert_eq(slot.key_id, 1001, "key id matches");
-        sub.assert_false(slot.revoked, "slot starts non-revoked");
-
-        // Display redacted string must hide raw key
-        var red_buf: u8[..64] = [];
-        core::display_redacted(slot, red_buf);
-        sub.assert_contains(red_buf[..], "[REDACTED]", "secrecy redaction format");
-        sub.assert_contains(red_buf[..], "1001", "key id preserved");
-
-        // Revoke and zeroize
-        core::zeroize_key_slot(slot);
-        sub.assert_true(slot.revoked, "slot revoked after zeroize");
-        sub.assert_eq(slot.master_key[0], 0, "first key byte zeroized");
-        sub.assert_eq(slot.master_key[31], 0, "last key byte zeroized");
-    };
-}
-
-// ----------------------------------------------------------------------------
-// 23. Dudect Statistical Welch's t-test Simulation
-// ----------------------------------------------------------------------------
-fn test_dudect_context_and_filtering(t: lit::T&) {
-    t.run("Outlier Cropping & Statistical Lockstep") { sub =>
-        var ctx = core::new_dudect_context();
-
-        // Feed normal samples (around 100 ns)
-        for i in 100 {
-            sub.assert_true(core::dudect_push_sample(ctx, 0, 100.0 + (i as f64) * 0.1), "normal sample class 0 accepted");
-            sub.assert_true(core::dudect_push_sample(ctx, 1, 100.0 + (i as f64) * 0.1), "normal sample class 1 accepted");
-        }
-
-        // Outlier sample (> 2000 ns) must be discarded
-        sub.assert_false(core::dudect_push_sample(ctx, 0, 2500.0), "outlier > 2000 ns rejected");
-        sub.assert_false(core::dudect_push_sample(ctx, 1, 3000.0), "outlier > 2000 ns rejected");
-
-        // Verify t-statistic is near 0 for identical distributions
-        let t_stat = core::dudect_abs_t(ctx);
-        sub.assert_true(t_stat < 1.0, "Welch t-stat < 1.0 for symmetric distributions");
-        sub.assert_true(core::dudect_is_constant_time(ctx, 4.5), "Passes 99.999% confidence CT threshold");
     };
 }
 
@@ -1954,7 +1906,7 @@ fn test_rustls_vendor_conformance(t: lit::T&) {
             0x00, 0x2B, 0x00, 0x02, 0x03, 0x04,
             0x00, 0x2B, 0x00, 0x02, 0x03, 0x03,
         ];
-        var ext_entries: tls::ExtensionEntry[..32] = [];
+        var ext_entries: tls::ExtensionEntry[..64] = [];
         sub.assert_false(tls::parse_extensions_block(dup_ext_block[..], ext_entries), "duplicate extension 0x002B rejected");
 
         // Trailing byte after extension block length rejected
@@ -2342,8 +2294,7 @@ fn main() {
     lit::run_case(runner, "19. ASN.1 INTEGER Canonical Rules & Serial Invariants", test_asn1_der_integer_and_serial_invariants);
     lit::run_case(runner, "20. X.509 SAN dNSName Hostname Validation", test_x509_san_dns_name_validation);
     lit::run_case(runner, "21. ASN.1 Time (UTCTime & GeneralizedTime) Canonical DER Parsing", test_x509_asn1_time_parsing);
-    lit::run_case(runner, "22. Constant-Time Primitives & KeySlot Redaction", test_constant_time_primitives);
-    lit::run_case(runner, "23. Dudect Statistical Welch's t-test Simulation", test_dudect_context_and_filtering);
+    lit::run_case(runner, "22. Constant-Time Primitives", test_constant_time_primitives);
     lit::run_case(runner, "24. NIST / RFC Cryptographic Primitives", test_pure_goose_crypto_primitives);
     lit::run_case(runner, "25. AEAD Authenticated Encryption: XChaCha20 & AES-GCM", test_aead_ciphers);
     lit::run_case(runner, "26. CryptoJar Container: PrivateJar, SignedJar & Rotation", test_crypto_jar_container);

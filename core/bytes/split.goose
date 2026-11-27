@@ -66,24 +66,6 @@ fn split_once(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], b
     return s, "", false;
 }
 
-// Splits s around the first case-insensitive ASCII occurrence of delimiter subslice delim.
-// Returns (prefix_before_delim, suffix_after_delim, true) if delim is present;
-// otherwise returns (s, "", false). Delimiter is omitted from both returned slices.
-//
-// Example:
-//   s = "Content-Type: text/plain", delim = ": "
-//   returns: "Content-Type", "text/plain", ok = true
-fn split_once_fold(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], bool {
-    guard delim.len > 0 else { return s, "", false; }
-    each_window(s, delim.len) { win, idx =>
-        if eq_ascii_fold(win, delim) {
-            let after_idx = add_sat_i64(idx, delim.len);
-            return s[..idx], s[after_idx..], true;
-        }
-    };
-    return s, "", false;
-}
-
 // Invokes `F(xs[i], xs[i + 1])` for each adjacent pair in `xs` (zero-allocation `itertools.pairwise`).
 inline fn each_pair<T, F>(xs: const T[:]) {
     guard xs.len >= 2 else { return; }
@@ -251,20 +233,6 @@ fn token_next(tok: ByteTokenizer&) -> const u8[:], bool {
         tok.exhausted = true;
     }
     return part, true;
-}
-
-// Iterates over `delim`-separated tokens in `src`, invoking `F(part)` on each non-empty token.
-fn each_non_empty_token<F>(src: const u8[:], delim: u8) {
-    var tok = make_byte_tokenizer(src, delim);
-    while true {
-        let part, ok = token_next(tok);
-        if !ok {
-            break;
-        }
-        if part.len > 0 {
-            F(part);
-        }
-    }
 }
 
 // Finds the 0-based index of the first occurrence of `delim` outside double quotes ("..."),

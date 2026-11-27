@@ -23,25 +23,6 @@ extern fn native_uring_register_buffers(
 ) -> i32 = "wing_uring_register_buffers";
 extern fn native_uring_unregister_buffers(ring_fd: i64) -> i32 = "wing_uring_unregister_buffers";
 extern fn native_uring_has_fast_poll(ring_fd: i64) -> i32 = "wing_uring_has_fast_poll";
-extern fn native_uring_submit_sqe(
-    ring_fd:   i64,
-    opcode:    u8,
-    flags:     u8,
-    ioprio:    u16,
-    fd:        i32,
-    off:       u64,
-    addr:      u64,
-    len:       u32,
-    op_flags:  u32,
-    user_data: u64,
-    buf_index: u16,
-) -> i32 = "wing_uring_submit_sqe";
-extern fn native_uring_peek_cqe(
-    ring_fd:       i64,
-    user_data_out: u64&,
-    res_out:       i32&,
-    flags_out:     u32&,
-) -> i32 = "wing_uring_peek_cqe";
 extern fn native_uring_stage_sqes(ring_fd: i64, sqes: const UringSqe[:]) -> i32 = "wing_uring_stage_sqes";
 extern fn native_uring_submit_sqes(ring_fd: i64, sqes: const UringSqe[:]) -> i32 = "wing_uring_submit_sqes";
 extern fn native_uring_wait_cqes(
@@ -456,11 +437,9 @@ inline fn uring_enter_if_active(ring_fd: i64, submitted: i32) {
 
 inline fn uring_try_submit_mmap_sqe(state: RingQueueState&, sqe: const UringSqe&) -> bool {
     guard state.ring_fd >= 0 else { return false; }
-    let rc = native_uring_submit_sqe(
-        state.ring_fd, sqe.opcode, sqe.flags, sqe.ioprio,
-        sqe.fd, sqe.off, sqe.addr, sqe.len, sqe.op_flags, sqe.user_data, sqe.buf_index,
-    );
-    guard rc == 0 else { return false; }
+    var batch: UringSqe[1] = [sqe];
+    let rc = native_uring_stage_sqes(state.ring_fd, batch[..]);
+    guard rc == 1 else { return false; }
     state.submissions_total += 1;
     state.active_pending += 1;
     return true;
@@ -468,19 +447,14 @@ inline fn uring_try_submit_mmap_sqe(state: RingQueueState&, sqe: const UringSqe&
 
 inline fn uring_reap_kernel_cqes(state: RingQueueState&, cqes: UringCqe[..32]&, used_mmap: bool) {
     guard used_mmap && state.ring_fd >= 0 else { return; }
-    while cqes.len < cqes.cap {
-        var udata: u64 = 0;
-        var res_v: i32 = 0;
-        var flg_v: u32 = 0;
-        let got = native_uring_peek_cqe(state.ring_fd, udata, res_v, flg_v);
-        if got == 0 {
-            break;
-        }
-        cqes.push(UringCqe {
-            user_data: udata,
-            res:       res_v,
-            flags:     flg_v,
-        });
+    let avail = cqes.cap - cqes.len;
+    guard avail > 0 else { return; }
+    var tmp: UringCqe[32] = [UringCqe { .. }; 32];
+    let n = native_uring_wait_cqes(state.ring_fd, tmp[..avail], 0, 0);
+    guard n > 0 else { return; }
+    let count = min(n as i64, avail);
+    for i in count {
+        cqes.push(tmp[i]);
         state.completions_total += 1;
         if state.active_pending > 0 {
             state.active_pending -= 1;

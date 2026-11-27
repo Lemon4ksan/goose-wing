@@ -109,6 +109,8 @@ uint8_t wing_ctgrind_tls_key_schedule(sl_u8 ecdhe, sl_u8 hs_hash, sl_u8 out);
 uint8_t wing_ctgrind_hpke_seal_base(sl_u8 pk_r, sl_u8 eph_sk, sl_u8 pt,
                                     sl_u8 out_enc, sl_u8 out_ct);
 uint8_t wing_ctgrind_hpke_open_base(sl_u8 sk_r, sl_u8 enc, sl_u8 ct, sl_u8 out);
+uint8_t wing_ctgrind_aes128_gcm_seal_pure(sl_u8 key, sl_u8 iv, sl_u8 pt,
+                                          sl_u8 aad, sl_u8 out);
 #ifdef __cplusplus
 }
 #endif
@@ -130,21 +132,21 @@ static int test_aes_gcm_scalar(void) {
                      0xbe, 0xef, 0xab, 0xad, 0xda, 0xd2};
   uint8_t pt[16] = {0xd9, 0x31, 0x32, 0x25, 0xf8, 0x84, 0x06, 0xe5,
                     0xa5, 0x59, 0x09, 0xc5, 0xaf, 0xf5, 0x26, 0x9a};
-  uint8_t ct[16] = {0};
-  uint8_t tag[16] = {0};
+  uint8_t out_ct_tag[32] = {0};
   const uint8_t exp_ct[16] = {0x42, 0x83, 0x1e, 0xc2, 0x21, 0x77, 0x74, 0x24,
                               0x4b, 0x72, 0x21, 0xb7, 0x84, 0xd0, 0xd4, 0x9c};
 
   CT_POISON(key, sizeof(key));
   CT_POISON(iv, sizeof(iv));
   CT_POISON(pt, sizeof(pt));
-  int64_t n = wing_aes_gcm_seal_scalar(key, 16, iv, pt, 16, aad, 20, ct, tag);
-  CT_UNPOISON(ct, sizeof(ct));
-  CT_UNPOISON(tag, sizeof(tag));
+  uint8_t ok = wing_ctgrind_aes128_gcm_seal_pure(
+      make_slice(key, 16), make_slice(iv, 12), make_slice(pt, 16),
+      make_slice(aad, 20), make_slice(out_ct_tag, 32));
+  CT_UNPOISON(out_ct_tag, sizeof(out_ct_tag));
   CT_UNPOISON(key, sizeof(key));
   CT_UNPOISON(iv, sizeof(iv));
   CT_UNPOISON(pt, sizeof(pt));
-  return (n == 16 && memcmp(ct, exp_ct, 16) == 0);
+  return (ok == 1u && memcmp(out_ct_tag, exp_ct, 16) == 0);
 }
 
 static int test_ct_eq_bytes(void) {
@@ -606,11 +608,16 @@ static int test_aes128_gcm_open(void) {
   uint8_t ct[64] = {0};
   uint8_t out[64] = {0};
   uint8_t tag[16] = {0};
-  const uint8_t *pt = (const uint8_t *)
+  uint8_t out_ct_tag[80] = {0};
+  uint8_t pt[65] =
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-  if (wing_aes_gcm_seal_scalar(key, 16, iv, pt, 64, NULL, 0, ct, tag) != 64) {
+  if (wing_ctgrind_aes128_gcm_seal_pure(
+          make_slice(key, 16), make_slice(iv, 12), make_slice(pt, 64),
+          make_slice(NULL, 0), make_slice(out_ct_tag, 80)) != 1u) {
     return 0;
   }
+  memcpy(ct, out_ct_tag, 64);
+  memcpy(tag, out_ct_tag + 64, 16);
 
   CT_POISON(key, sizeof(key));
   CT_POISON(iv, sizeof(iv));
@@ -769,7 +776,7 @@ typedef struct {
 int main(int argc, char **argv) {
   goose_init(argc, argv);
   const CtCheck checks[] = {
-      {"wing_aes_gcm_seal_scalar", test_aes_gcm_scalar},
+      {"aes128_gcm_seal_pure", test_aes_gcm_scalar},
       {"aes128_gcm_open", test_aes128_gcm_open},
       {"ct_eq_bytes", test_ct_eq_bytes},
       {"aes128_and_aes256_encrypt_block", test_aes_blocks},

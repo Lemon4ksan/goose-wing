@@ -102,14 +102,6 @@ fn hash(view: const UrlView&) -> const u8[:] { return view.hash; }
 fn port(view: const UrlView&) -> i32 { return view.port; }
 fn is_valid(view: const UrlView&) -> bool { return view.valid; }
 
-fn format_url(out: u8[>..]&, url_val: const Url&) {
-    out.append(url_val.href[..]);
-}
-
-fn format_url_view(out: u8[>..]&, view: const UrlView&) {
-    out.append(view.raw);
-}
-
 // ---- origin and registrable site models ------------------------------------
 
 enum OriginKind {

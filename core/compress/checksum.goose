@@ -46,8 +46,6 @@ const CRC32_TABLE_0: u32[256] = [
     0xB3667A2E, 0xC4614AB8, 0x5D681B02, 0x2A6F2B94, 0xB40BBE37, 0xC30C8EA1, 0x5A05DF1B, 0x2D02EF8D,
 ];
 
-const CRC32_TABLE: u32[256] = CRC32_TABLE_0;
-
 // Computes running CRC-32 value across buf via VPCLMULQDQ/PCLMULQDQ SIMD for >= 16 bytes.
 fn crc32_update(initial: u32, buf: const u8[:]) -> u32 {
     if buf.len >= 16 {

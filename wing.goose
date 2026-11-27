@@ -159,6 +159,7 @@ import fingerprint.akamai;
 import fingerprint.profile;
 
 import net.internal;
+import net.wasm_loopback_internal;
 import net.tunnel_internal;
 import net.pool_internal;
 import net.poller_internal;

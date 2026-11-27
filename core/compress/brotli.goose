@@ -138,11 +138,6 @@ fn decode_cmd_code(code: u32) -> u32, u32, bool {
     return ins_code, copy_code, dist_zero;
 }
 
-// Variable-length code length symbol representation (RFC 7932 Section 3.5)
-const CL_CODE_SYMBOLS: u8[6] = [0, 4, 3, 2, 1, 5];
-const CL_CODE_LENS:    u8[6] = [2, 2, 2, 3, 4, 4];
-const CL_CODE_BITS:    u8[6] = [0, 1, 2, 3, 7, 15]; // LSB-first values
-
 const BROTLI_REV8: u8[256] = [
     0x00, 0x80, 0x40, 0xC0, 0x20, 0xA0, 0x60, 0xE0, 0x10, 0x90, 0x50, 0xD0, 0x30, 0xB0, 0x70, 0xF0,
     0x08, 0x88, 0x48, 0xC8, 0x28, 0xA8, 0x68, 0xE8, 0x18, 0x98, 0x58, 0xD8, 0x38, 0xB8, 0x78, 0xF8,
@@ -289,10 +284,9 @@ fn brotli_write_byte_align<B>(w: BrotliBitWriter&, out: B&) {
 
 // ---- Canonical Huffman Table with Fast 10-bit Lookahead ------------------
 
-const BROTLI_FLAT_NONE: u8 = 0;
-const BROTLI_FLAT_8:    u8 = 1; // 256 symbols, length 8
-const BROTLI_FLAT_6:    u8 = 2; // 64 symbols, length 6
-const BROTLI_FLAT_704:  u8 = 3; // 320 len-9 + 384 len-10
+const BROTLI_FLAT_8:   u8 = 1;  // 256 symbols, length 8
+const BROTLI_FLAT_6:   u8 = 2;  // 64 symbols, length 6
+const BROTLI_FLAT_704: u8 = 3;  // 320 len-9 + 384 len-10
 
 struct BrotliTreeDesc {
     single_symbol: i32 = -1,

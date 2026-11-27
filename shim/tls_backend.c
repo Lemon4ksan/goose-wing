@@ -4,23 +4,14 @@
 // Dynamically-loaded sans-IO TLS backend C shim for goose-wing.
 // Loads OpenSSL/BoringSSL (cross-platform) and Windows Schannel (secur32.dll)
 // at runtime with zero link-time OpenSSL or Secur32 library dependencies.
-// Optional overrides:
+// Optional override:
 //   - Runtime path: WING_OPENSSL_LIB / WING_CRYPTO_LIB environment variables.
-//   - Direct link:  compile with -DWING_TLS_LINK_OPENSSL and link -lssl -lcrypto.
 
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifdef WING_TLS_LINK_OPENSSL
-#include <openssl/ssl.h>
-#include <openssl/bio.h>
-#include <openssl/x509.h>
-#include <openssl/x509v3.h>
-#include <openssl/err.h>
-#endif
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -56,6 +47,7 @@
 #define WING_TLS_FLAG_NO_SESSION_TICKETS 4
 #define WING_TLS_FLAG_REQUIRE_ALPN_MATCH 8
 #define WING_TLS_FLAG_REQUIRE_CLIENT_CERT 16
+#define WING_TLS_FLAG_SERVER_IS_IP_LITERAL 32
 
 #define WING_TLS_ST_OK 0
 #define WING_TLS_ST_WANT_READ 1
@@ -291,156 +283,6 @@ static void *dyn_sym(void *lib, const char *name) {
 #endif
 }
 
-#ifdef WING_TLS_LINK_OPENSSL
-static const void *lk_TLS_client_method(void) { return (const void *)TLS_client_method(); }
-static const void *lk_TLS_server_method(void) { return (const void *)TLS_server_method(); }
-static void *lk_SSL_CTX_new(const void *m) { return (void *)SSL_CTX_new((const SSL_METHOD *)m); }
-static void lk_SSL_CTX_free(void *c) { SSL_CTX_free((SSL_CTX *)c); }
-static long lk_SSL_CTX_ctrl(void *c, int cmd, long larg, void *parg) {
-    return SSL_CTX_ctrl((SSL_CTX *)c, cmd, larg, parg);
-}
-static uint64_t lk_SSL_CTX_set_options(void *c, uint64_t op) { return (uint64_t)SSL_CTX_set_options((SSL_CTX *)c, op); }
-static int lk_SSL_CTX_set_num_tickets(void *c, size_t n) {
-#if defined(OPENSSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER >= 0x10101000L && !defined(OPENSSL_IS_BORINGSSL)
-    return SSL_CTX_set_num_tickets((SSL_CTX *)c, n);
-#else
-    (void)c;
-    (void)n;
-    return 1;
-#endif
-}
-static void ossl_keylog_cb(const void *ssl, const char *line);
-static void lk_keylog_cb_adapter(const SSL *s, const char *line) { ossl_keylog_cb((const void *)s, line); }
-static void lk_SSL_CTX_set_keylog_callback(void *c, ossl_keylog_cb_t cb) {
-    SSL_CTX_set_keylog_callback((SSL_CTX *)c, cb != NULL ? lk_keylog_cb_adapter : NULL);
-}
-static void *lk_SSL_CTX_get_cert_store(const void *c) { return (void *)SSL_CTX_get_cert_store((const SSL_CTX *)c); }
-static int lk_SSL_CTX_set_default_verify_paths(void *c) { return SSL_CTX_set_default_verify_paths((SSL_CTX *)c); }
-static int lk_SSL_CTX_load_verify_locations(void *c, const char *f, const char *p) {
-    return SSL_CTX_load_verify_locations((SSL_CTX *)c, f, p);
-}
-static void lk_SSL_CTX_set_verify(void *c, int mode, void *cb) {
-    (void)cb;
-    SSL_CTX_set_verify((SSL_CTX *)c, mode, NULL);
-}
-static int lk_SSL_CTX_use_cert_chain(void *c, const char *f) {
-    return SSL_CTX_use_certificate_chain_file((SSL_CTX *)c, f);
-}
-static int lk_SSL_CTX_use_privkey(void *c, const char *f, int t) {
-    return SSL_CTX_use_PrivateKey_file((SSL_CTX *)c, f, t);
-}
-static int lk_SSL_CTX_check_privkey(const void *c) { return SSL_CTX_check_private_key((const SSL_CTX *)c); }
-static int ossl_alpn_select_cb(void *ssl, const unsigned char **out, unsigned char *outlen, const unsigned char *in,
-                               unsigned int inlen, void *arg);
-
-static int lk_alpn_cb_adapter(SSL *s, const unsigned char **out, unsigned char *outlen, const unsigned char *in,
-                              unsigned int inlen, void *arg) {
-    return ossl_alpn_select_cb((void *)s, out, outlen, in, inlen, arg);
-}
-static void lk_SSL_CTX_set_alpn_select_cb(void *c, ossl_alpn_cb_t cb, void *arg) {
-    (void)cb;
-    SSL_CTX_set_alpn_select_cb((SSL_CTX *)c, lk_alpn_cb_adapter, arg);
-}
-static void *lk_SSL_new(void *c) { return (void *)SSL_new((SSL_CTX *)c); }
-static void lk_SSL_free(void *s) { SSL_free((SSL *)s); }
-static int lk_SSL_set_ex_data(void *s, int idx, void *arg) { return SSL_set_ex_data((SSL *)s, idx, arg); }
-static void *lk_SSL_get_ex_data(const void *s, int idx) { return SSL_get_ex_data((const SSL *)s, idx); }
-static void lk_SSL_set_connect_state(void *s) { SSL_set_connect_state((SSL *)s); }
-static void lk_SSL_set_accept_state(void *s) { SSL_set_accept_state((SSL *)s); }
-static void lk_SSL_set_bio(void *s, void *r, void *w) { SSL_set_bio((SSL *)s, (BIO *)r, (BIO *)w); }
-static int lk_SSL_do_handshake(void *s) { return SSL_do_handshake((SSL *)s); }
-static int lk_SSL_read(void *s, void *b, int n) { return SSL_read((SSL *)s, b, n); }
-static int lk_SSL_write(void *s, const void *b, int n) { return SSL_write((SSL *)s, b, n); }
-static int lk_SSL_shutdown(void *s) { return SSL_shutdown((SSL *)s); }
-static int lk_SSL_get_error(const void *s, int r) { return SSL_get_error((const SSL *)s, r); }
-static long lk_SSL_ctrl(void *s, int cmd, long larg, void *parg) { return SSL_ctrl((SSL *)s, cmd, larg, parg); }
-static int lk_SSL_set1_host(void *s, const char *h) { return SSL_set1_host((SSL *)s, h); }
-static void *lk_SSL_get0_param(void *s) { return (void *)SSL_get0_param((SSL *)s); }
-static int lk_X509_VERIFY_PARAM_set1_ip_asc(void *p, const char *ip) {
-    return X509_VERIFY_PARAM_set1_ip_asc((X509_VERIFY_PARAM *)p, ip);
-}
-static void *lk_d2i_X509(void **px, const unsigned char **in, long len) {
-    (void)px;
-    return (void *)d2i_X509(NULL, in, len);
-}
-static int lk_i2d_X509(void *x, unsigned char **out) { return i2d_X509((X509 *)x, out); }
-static void *lk_SSL_get1_peer_certificate(void *s) {
-#if defined(OPENSSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER >= 0x30000000L && !defined(OPENSSL_IS_BORINGSSL)
-    return (void *)SSL_get1_peer_certificate((const SSL *)s);
-#else
-    return (void *)SSL_get_peer_certificate((const SSL *)s);
-#endif
-}
-static int lk_X509_STORE_add_cert(void *s, void *x) { return X509_STORE_add_cert((X509_STORE *)s, (X509 *)x); }
-static void lk_X509_free(void *x) { X509_free((X509 *)x); }
-static void lk_ERR_clear_error(void) { ERR_clear_error(); }
-static int lk_SSL_set_alpn_protos(void *s, const unsigned char *p, unsigned int n) {
-    return SSL_set_alpn_protos((SSL *)s, p, n);
-}
-static void lk_SSL_get0_alpn_selected(const void *s, const unsigned char **p, unsigned int *n) {
-    SSL_get0_alpn_selected((const SSL *)s, p, n);
-}
-static long lk_SSL_get_verify_result(const void *s) { return SSL_get_verify_result((const SSL *)s); }
-static const void *lk_BIO_s_mem(void) { return (const void *)BIO_s_mem(); }
-static void *lk_BIO_new(const void *m) { return (void *)BIO_new((const BIO_METHOD *)m); }
-static int lk_BIO_free(void *b) { return BIO_free((BIO *)b); }
-static int lk_BIO_write(void *b, const void *d, int n) { return BIO_write((BIO *)b, d, n); }
-static int lk_BIO_read(void *b, void *d, int n) { return BIO_read((BIO *)b, d, n); }
-static long lk_BIO_ctrl(void *b, int cmd, long larg, void *parg) { return BIO_ctrl((BIO *)b, cmd, larg, parg); }
-
-static void ossl_probe_impl(void) {
-    g_ossl.probed = 1;
-    g_ossl.TLS_client_method = lk_TLS_client_method;
-    g_ossl.TLS_server_method = lk_TLS_server_method;
-    g_ossl.SSL_CTX_new = lk_SSL_CTX_new;
-    g_ossl.SSL_CTX_free = lk_SSL_CTX_free;
-    g_ossl.SSL_CTX_ctrl = lk_SSL_CTX_ctrl;
-    g_ossl.SSL_CTX_set_options = lk_SSL_CTX_set_options;
-    g_ossl.SSL_CTX_set_num_tickets = lk_SSL_CTX_set_num_tickets;
-    g_ossl.SSL_CTX_set_keylog_callback = lk_SSL_CTX_set_keylog_callback;
-    g_ossl.SSL_CTX_get_cert_store = lk_SSL_CTX_get_cert_store;
-    g_ossl.SSL_CTX_set_default_verify_paths = lk_SSL_CTX_set_default_verify_paths;
-    g_ossl.SSL_CTX_load_verify_locations = lk_SSL_CTX_load_verify_locations;
-    g_ossl.SSL_CTX_set_verify = lk_SSL_CTX_set_verify;
-    g_ossl.SSL_CTX_use_certificate_chain_file = lk_SSL_CTX_use_cert_chain;
-    g_ossl.SSL_CTX_use_PrivateKey_file = lk_SSL_CTX_use_privkey;
-    g_ossl.SSL_CTX_check_private_key = lk_SSL_CTX_check_privkey;
-    g_ossl.SSL_CTX_set_alpn_select_cb = lk_SSL_CTX_set_alpn_select_cb;
-    g_ossl.SSL_new = lk_SSL_new;
-    g_ossl.SSL_free = lk_SSL_free;
-    g_ossl.SSL_set_ex_data = lk_SSL_set_ex_data;
-    g_ossl.SSL_get_ex_data = lk_SSL_get_ex_data;
-    g_ossl.SSL_set_connect_state = lk_SSL_set_connect_state;
-    g_ossl.SSL_set_accept_state = lk_SSL_set_accept_state;
-    g_ossl.SSL_set_bio = lk_SSL_set_bio;
-    g_ossl.SSL_do_handshake = lk_SSL_do_handshake;
-    g_ossl.SSL_read = lk_SSL_read;
-    g_ossl.SSL_write = lk_SSL_write;
-    g_ossl.SSL_shutdown = lk_SSL_shutdown;
-    g_ossl.SSL_get_error = lk_SSL_get_error;
-    g_ossl.SSL_ctrl = lk_SSL_ctrl;
-    g_ossl.SSL_set1_host = lk_SSL_set1_host;
-    g_ossl.SSL_get0_param = lk_SSL_get0_param;
-    g_ossl.X509_VERIFY_PARAM_set1_ip_asc = lk_X509_VERIFY_PARAM_set1_ip_asc;
-    g_ossl.d2i_X509 = lk_d2i_X509;
-    g_ossl.i2d_X509 = lk_i2d_X509;
-    g_ossl.SSL_get1_peer_certificate = lk_SSL_get1_peer_certificate;
-    g_ossl.X509_STORE_add_cert = lk_X509_STORE_add_cert;
-    g_ossl.X509_free = lk_X509_free;
-    g_ossl.ERR_clear_error = lk_ERR_clear_error;
-    g_ossl.SSL_set_alpn_protos = lk_SSL_set_alpn_protos;
-    g_ossl.SSL_get0_alpn_selected = lk_SSL_get0_alpn_selected;
-    g_ossl.SSL_get_verify_result = lk_SSL_get_verify_result;
-    g_ossl.BIO_s_mem = lk_BIO_s_mem;
-    g_ossl.BIO_new = lk_BIO_new;
-    g_ossl.BIO_free = lk_BIO_free;
-    g_ossl.BIO_write = lk_BIO_write;
-    g_ossl.BIO_read = lk_BIO_read;
-    g_ossl.BIO_ctrl = lk_BIO_ctrl;
-    g_ossl.ssl_ex_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
-    g_ossl.available = 1;
-}
-#else
 static void ossl_probe_impl(void) {
     g_ossl.probed = 1;
     g_ossl.ssl_ex_idx = -1;
@@ -563,7 +405,6 @@ static void ossl_probe_impl(void) {
 
     g_ossl.available = ok;
 }
-#endif
 
 #ifdef _WIN32
 static INIT_ONCE g_ossl_once = INIT_ONCE_STATIC_INIT;
@@ -640,7 +481,6 @@ typedef struct {
     ACQUIRE_CREDENTIALS_HANDLE_FN_A AcquireCredentialsHandleA;
     FREE_CREDENTIALS_HANDLE_FN FreeCredentialsHandle;
     INITIALIZE_SECURITY_CONTEXT_FN_A InitializeSecurityContextA;
-    ACCEPT_SECURITY_CONTEXT_FN AcceptSecurityContext;
     DELETE_SECURITY_CONTEXT_FN DeleteSecurityContext;
     FREE_CONTEXT_BUFFER_FN FreeContextBuffer;
     QUERY_CONTEXT_ATTRIBUTES_FN_A QueryContextAttributesA;
@@ -663,7 +503,6 @@ static BOOL CALLBACK schannel_probe_once_cb(PINIT_ONCE once, PVOID param, PVOID 
     ok &= load_fn_sym(&g_sch.AcquireCredentialsHandleA, dyn_sym(lib, "AcquireCredentialsHandleA"));
     ok &= load_fn_sym(&g_sch.FreeCredentialsHandle, dyn_sym(lib, "FreeCredentialsHandle"));
     ok &= load_fn_sym(&g_sch.InitializeSecurityContextA, dyn_sym(lib, "InitializeSecurityContextA"));
-    ok &= load_fn_sym(&g_sch.AcceptSecurityContext, dyn_sym(lib, "AcceptSecurityContext"));
     ok &= load_fn_sym(&g_sch.DeleteSecurityContext, dyn_sym(lib, "DeleteSecurityContext"));
     ok &= load_fn_sym(&g_sch.FreeContextBuffer, dyn_sym(lib, "FreeContextBuffer"));
     ok &= load_fn_sym(&g_sch.QueryContextAttributesA, dyn_sym(lib, "QueryContextAttributesA"));
@@ -777,13 +616,11 @@ typedef struct {
     int no_session_tickets;
     int require_alpn_match;
     int require_client_cert;
+    int server_is_ip_literal;
     int min_version;
     int established;
     int closed;
     char sni[257];
-    char ca_file[4096];
-    char cert_pem_file[4096];
-    char key_pem_file[4096];
     char keylog_file[4096];
     uint8_t alpn_wire[64];
     size_t alpn_wire_len;
@@ -968,7 +805,8 @@ static void ossl_keylog_cb(const void *ssl, const char *line) {
             }
             if (off == n && line[n - 1] != '\n') {
                 const char nl = '\n';
-                (void)write(fd, &nl, 1);
+                ssize_t wn = write(fd, &nl, 1);
+                (void)wn;
             }
         }
         close(fd);
@@ -1016,74 +854,18 @@ static void ossl_cleanup_ep(wing_tls_ep_t *ep) {
     }
 }
 
-static int is_ipv4_literal_n(const char *s, size_t len) {
-    if (s == NULL || len == 0) return 0;
-    int parts = 0;
-    size_t i = 0;
-    while (i < len) {
-        if (parts >= 4 || s[i] < '0' || s[i] > '9') return 0;
-        int val = 0;
-        int digits = 0;
-        while (i < len && s[i] >= '0' && s[i] <= '9') {
-            val = val * 10 + (s[i] - '0');
-            if (val > 255) return 0;
-            digits++;
-            i++;
-        }
-        if (digits == 0) return 0;
-        parts++;
-        if (i < len) {
-            if (s[i] != '.') return 0;
-            i++;
-            if (i == len) return 0;
-        }
-    }
-    return parts == 4;
-}
-
-static int strip_ip_brackets(const char *host, char *out_ip, size_t out_cap) {
-    if (host == NULL || host[0] == '\0' || out_cap < 2) return 0;
-    size_t len = strlen(host);
-    const char *start = host;
-    if (len >= 2 && host[0] == '[' && host[len - 1] == ']') {
-        start = host + 1;
-        len -= 2;
-    }
-    if (len == 0 || len >= out_cap) return 0;
-    memcpy(out_ip, start, len);
-    out_ip[len] = '\0';
-    return 1;
-}
-
-static int is_ip_literal(const char *host) {
-    if (host == NULL || host[0] == '\0') return 0;
-    size_t len = strlen(host);
-    const char *start = host;
-    if (len >= 2 && host[0] == '[' && host[len - 1] == ']') {
-        start = host + 1;
-        len -= 2;
-    }
-    if (len == 0) return 0;
-    if (is_ipv4_literal_n(start, len)) return 1;
-    return memchr(start, ':', len) != NULL;
-}
-
 static int ossl_configure_client_host(wing_tls_ep_t *ep) {
     if (ep->sni[0] == '\0') {
         return ep->insecure_skip_verify ? WING_TLS_ST_OK : WING_TLS_ST_VERIFY_ERR;
     }
-    if (is_ip_literal(ep->sni)) {
+    if (ep->server_is_ip_literal) {
         /* RFC 6066 Section 3: literal IPv4 and IPv6 addresses are not permitted in TLS SNI. */
         if (ep->insecure_skip_verify) return WING_TLS_ST_OK;
         if (g_ossl.SSL_get0_param == NULL || g_ossl.X509_VERIFY_PARAM_set1_ip_asc == NULL) {
             return WING_TLS_ST_VERIFY_ERR;
         }
-        char clean_ip[sizeof(ep->sni)];
-        if (!strip_ip_brackets(ep->sni, clean_ip, sizeof(clean_ip))) {
-            return WING_TLS_ST_VERIFY_ERR;
-        }
         void *param = g_ossl.SSL_get0_param(ep->ossl_ssl);
-        if (param == NULL || g_ossl.X509_VERIFY_PARAM_set1_ip_asc(param, clean_ip) != 1) {
+        if (param == NULL || g_ossl.X509_VERIFY_PARAM_set1_ip_asc(param, ep->sni) != 1) {
             return WING_TLS_ST_VERIFY_ERR;
         }
         return WING_TLS_ST_OK;
@@ -1099,8 +881,15 @@ static int ossl_configure_client_host(wing_tls_ep_t *ep) {
 static int ossl_load_win_root_store(void *ssl_ctx);
 #endif
 
-static int ossl_open_ep(wing_tls_ep_t *ep) {
+static int ossl_open_ep(wing_tls_ep_t *ep, wing_tls_ro ca_file, wing_tls_ro cert_pem_file, wing_tls_ro key_pem_file) {
     if (!ossl_probe()) return WING_TLS_ST_UNAVAILABLE;
+    char ca_buf[4096];
+    char cert_buf[4096];
+    char key_buf[4096];
+    if (!copy_cstr_ro(ca_buf, sizeof(ca_buf), ca_file) || !copy_cstr_ro(cert_buf, sizeof(cert_buf), cert_pem_file) ||
+        !copy_cstr_ro(key_buf, sizeof(key_buf), key_pem_file)) {
+        return WING_TLS_ST_ERR;
+    }
     const void *meth = ep->is_server ? g_ossl.TLS_server_method() : g_ossl.TLS_client_method();
     if (meth == NULL) return WING_TLS_ST_ERR;
     ep->ossl_ctx = g_ossl.SSL_CTX_new(meth);
@@ -1124,15 +913,15 @@ static int ossl_open_ep(wing_tls_ep_t *ep) {
     }
 
     /* Load PEM certificate chain + private key for both server endpoints and mTLS clients. */
-    int has_cert = ep->cert_pem_file[0] != '\0';
-    int has_key = ep->key_pem_file[0] != '\0';
+    int has_cert = cert_buf[0] != '\0';
+    int has_key = key_buf[0] != '\0';
     if (has_cert != has_key) {
         ossl_cleanup_ep(ep);
         return WING_TLS_ST_HS_ERR;
     }
     if (has_cert && has_key) {
-        if (g_ossl.SSL_CTX_use_certificate_chain_file(ep->ossl_ctx, ep->cert_pem_file) != 1 ||
-            g_ossl.SSL_CTX_use_PrivateKey_file(ep->ossl_ctx, ep->key_pem_file, OSSL_FILETYPE_PEM) != 1 ||
+        if (g_ossl.SSL_CTX_use_certificate_chain_file(ep->ossl_ctx, cert_buf) != 1 ||
+            g_ossl.SSL_CTX_use_PrivateKey_file(ep->ossl_ctx, key_buf, OSSL_FILETYPE_PEM) != 1 ||
             g_ossl.SSL_CTX_check_private_key(ep->ossl_ctx) != 1) {
             ossl_cleanup_ep(ep);
             return WING_TLS_ST_HS_ERR;
@@ -1141,7 +930,7 @@ static int ossl_open_ep(wing_tls_ep_t *ep) {
 
     if (ep->is_server) {
         if (ep->require_client_cert) {
-            if (ep->ca_file[0] == '\0' || g_ossl.SSL_CTX_load_verify_locations(ep->ossl_ctx, ep->ca_file, NULL) != 1) {
+            if (ca_buf[0] == '\0' || g_ossl.SSL_CTX_load_verify_locations(ep->ossl_ctx, ca_buf, NULL) != 1) {
                 ossl_cleanup_ep(ep);
                 return WING_TLS_ST_VERIFY_ERR;
             }
@@ -1153,8 +942,8 @@ static int ossl_open_ep(wing_tls_ep_t *ep) {
     } else if (ep->insecure_skip_verify) {
         g_ossl.SSL_CTX_set_verify(ep->ossl_ctx, OSSL_SSL_VERIFY_NONE, NULL);
     } else {
-        if (ep->ca_file[0] != '\0') {
-            if (g_ossl.SSL_CTX_load_verify_locations(ep->ossl_ctx, ep->ca_file, NULL) != 1) {
+        if (ca_buf[0] != '\0') {
+            if (g_ossl.SSL_CTX_load_verify_locations(ep->ossl_ctx, ca_buf, NULL) != 1) {
                 ossl_cleanup_ep(ep);
                 return WING_TLS_ST_VERIFY_ERR;
             }
@@ -1205,9 +994,6 @@ static int ossl_open_ep(wing_tls_ep_t *ep) {
 static int schannel_open_ep(wing_tls_ep_t *ep) {
     if (!schannel_probe()) return WING_TLS_ST_UNAVAILABLE;
     if (ep->is_server) return WING_TLS_ST_UNAVAILABLE;
-    if (ep->ca_file[0] != '\0' || ep->cert_pem_file[0] != '\0' || ep->key_pem_file[0] != '\0') {
-        return WING_TLS_ST_UNAVAILABLE;
-    }
     if (!ep->insecure_skip_verify && !ep->use_system_roots) return WING_TLS_ST_VERIFY_ERR;
     if (!ep->insecure_skip_verify && ep->sni[0] == '\0') return WING_TLS_ST_VERIFY_ERR;
     DWORD flags = SCH_CRED_NO_DEFAULT_CREDS | SCH_USE_STRONG_CRYPTO;
@@ -1306,17 +1092,9 @@ static int32_t schannel_step_hs(wing_tls_ep_t *ep) {
     if (ep->insecure_skip_verify) flags |= ISC_REQ_MANUAL_CRED_VALIDATION;
     ULONG out_flags = 0;
     TimeStamp ts;
-    char clean_target[sizeof(ep->sni)];
     SEC_CHAR *target = NULL;
     if (ep->sni[0] != '\0') {
-        if (is_ip_literal(ep->sni)) {
-            if (!strip_ip_brackets(ep->sni, clean_target, sizeof(clean_target))) {
-                return WING_TLS_ST_VERIFY_ERR;
-            }
-            target = (SEC_CHAR *)clean_target;
-        } else {
-            target = (SEC_CHAR *)ep->sni;
-        }
+        target = (SEC_CHAR *)ep->sni;
     } else if (!ep->insecure_skip_verify) {
         return WING_TLS_ST_VERIFY_ERR;
     }
@@ -1537,9 +1315,6 @@ static int st_open_ep(wing_tls_ep_t *ep) {
     if (!secure_transport_probe()) return WING_TLS_ST_UNAVAILABLE;
     /* SecureTransport supports up to TLS 1.2 only: require explicit TlsMinVersion.Tls12 opt-in. */
     if (ep->is_server || ep->min_version != WING_TLS_MIN_TLS12) return WING_TLS_ST_UNAVAILABLE;
-    if (ep->ca_file[0] != '\0' || ep->cert_pem_file[0] != '\0' || ep->key_pem_file[0] != '\0') {
-        return WING_TLS_ST_UNAVAILABLE;
-    }
     if (!ep->insecure_skip_verify && !ep->use_system_roots) return WING_TLS_ST_VERIFY_ERR;
     if (!ep->insecure_skip_verify && ep->sni[0] == '\0') return WING_TLS_ST_VERIFY_ERR;
     ep->st_ctx = g_st.SSLCreateContext(NULL, ST_SSL_CLIENT_SIDE, ST_SSL_STREAM_TYPE);
@@ -1685,17 +1460,11 @@ int64_t wing_tls_backend_open(int32_t kind, int32_t is_server, int32_t insecure_
     ep->no_session_tickets = (insecure_skip_verify & WING_TLS_FLAG_NO_SESSION_TICKETS) != 0 ? 1 : 0;
     ep->require_alpn_match = (insecure_skip_verify & WING_TLS_FLAG_REQUIRE_ALPN_MATCH) != 0 ? 1 : 0;
     ep->require_client_cert = (insecure_skip_verify & WING_TLS_FLAG_REQUIRE_CLIENT_CERT) != 0 ? 1 : 0;
+    ep->server_is_ip_literal = (insecure_skip_verify & WING_TLS_FLAG_SERVER_IS_IP_LITERAL) != 0 ? 1 : 0;
     ep->min_version = (min_version == WING_TLS_MIN_TLS12) ? WING_TLS_MIN_TLS12 : WING_TLS_MIN_TLS13;
     if (!copy_cstr_ro(ep->sni, sizeof(ep->sni), server_name)) {
         wing_tls_ep_destroy(ep);
         *out_status = WING_TLS_ST_VERIFY_ERR;
-        return -1;
-    }
-    if (!copy_cstr_ro(ep->ca_file, sizeof(ep->ca_file), ca_file) ||
-        !copy_cstr_ro(ep->cert_pem_file, sizeof(ep->cert_pem_file), cert_pem_file) ||
-        !copy_cstr_ro(ep->key_pem_file, sizeof(ep->key_pem_file), key_pem_file)) {
-        wing_tls_ep_destroy(ep);
-        *out_status = WING_TLS_ST_ERR;
         return -1;
     }
     if (alpn_wire.len < 0 || alpn_wire.len > 64 || (alpn_wire.len > 0 && alpn_wire.data == NULL)) {
@@ -1710,14 +1479,14 @@ int64_t wing_tls_backend_open(int32_t kind, int32_t is_server, int32_t insecure_
     }
 
     int st = WING_TLS_ST_UNAVAILABLE;
-    if (resolved == WING_TLS_KIND_OPENSSL) st = ossl_open_ep(ep);
+    if (resolved == WING_TLS_KIND_OPENSSL) st = ossl_open_ep(ep, ca_file, cert_pem_file, key_pem_file);
 #ifdef _WIN32
     else if (resolved == WING_TLS_KIND_SCHANNEL)
-        st = schannel_open_ep(ep);
+        st = has_pem_files ? WING_TLS_ST_UNAVAILABLE : schannel_open_ep(ep);
 #endif
 #ifdef __APPLE__
     else if (resolved == WING_TLS_KIND_SECURE_TRANSPORT)
-        st = st_open_ep(ep);
+        st = has_pem_files ? WING_TLS_ST_UNAVAILABLE : st_open_ep(ep);
 #endif
     if (st != WING_TLS_ST_OK) {
         wing_tls_ep_destroy(ep);

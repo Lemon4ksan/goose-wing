@@ -99,32 +99,75 @@ fn to_lower_ascii_byte(b: u8) -> u8 {
     return if b >= 'A' && b <= 'Z' { b + 32 } else { b };
 }
 
-// Converts an ASCII byte to uppercase if it is lowercase; otherwise returns unchanged.
-fn to_upper_ascii_byte(b: u8) -> u8 {
-    return if b >= 'a' && b <= 'z' { b - 32 } else { b };
+// 64-bit SWAR parallel ASCII lowercase transform (sets bit 5 on 'A'..'Z' in 8 bytes).
+inline fn swar_to_lower_64(v: u64) -> u64 {
+    let ascii = v & 0x7F7F7F7F7F7F7F7F;
+    let not_high = (~v) & 0x8080808080808080;
+    let is_upper = (ascii + 0x3F3F3F3F3F3F3F3F) & (~(ascii + 0x2525252525252525)) & not_high;
+    return v | (is_upper >> 2);
 }
 
-extern fn native_swar_eq_ascii_fold(a: const u8[:], b: const u8[:]) -> i32 = "wing_swar_eq_ascii_fold";
-extern fn native_swar_to_lower(slice: u8[:]) = "wing_swar_to_lower";
-extern fn native_swar_to_upper(slice: u8[:]) = "wing_swar_to_upper";
+// 64-bit SWAR parallel ASCII uppercase transform (clears bit 5 on 'a'..'z' in 8 bytes).
+inline fn swar_to_upper_64(v: u64) -> u64 {
+    let ascii = v & 0x7F7F7F7F7F7F7F7F;
+    let not_high = (~v) & 0x8080808080808080;
+    let is_lower = (ascii + 0x1F1F1F1F1F1F1F1F) & (~(ascii + 0x0505050505050505)) & not_high;
+    return v ^ (is_lower >> 2);
+}
 
 // Transforms byte slice in-place to ASCII lowercase using 64-bit SWAR.
 fn make_ascii_lowercase(buf: u8[:]) {
     guard buf.len > 0 else { return; }
-    native_swar_to_lower(buf);
+    var i: i64 = 0;
+    while i + 8 <= buf.len {
+        write_le_u64_at(buf, i, swar_to_lower_64(read_le_u64(buf, i)));
+        i += 8;
+    }
+    while i < buf.len {
+        let b = buf[i];
+        if b >= 'A' && b <= 'Z' {
+            buf[i] = b | 32;
+        }
+        i += 1;
+    }
 }
 
 // Transforms byte slice in-place to ASCII uppercase using 64-bit SWAR.
 fn make_ascii_uppercase(buf: u8[:]) {
     guard buf.len > 0 else { return; }
-    native_swar_to_upper(buf);
+    var i: i64 = 0;
+    while i + 8 <= buf.len {
+        write_le_u64_at(buf, i, swar_to_upper_64(read_le_u64(buf, i)));
+        i += 8;
+    }
+    while i < buf.len {
+        let b = buf[i];
+        if b >= 'a' && b <= 'z' {
+            buf[i] = b - 32;
+        }
+        i += 1;
+    }
 }
 
 // RFC 9110 Section 5.6.3: Compares two byte slices for case-insensitive ASCII equality.
-// Fast path uses 64-bit SWAR evaluation (8 bytes per cycle) with vectorized memcmp identity check.
-fn eq_ascii_fold(str_a: const u8[:], str_b: const u8[:]) -> bool {
+// Uses identity fast-path and 64-bit SWAR comparison (8 bytes per cycle).
+inline fn eq_ascii_fold(str_a: const u8[:], str_b: const u8[:]) -> bool {
     guard str_a.len == str_b.len else { return false; }
-    return native_swar_eq_ascii_fold(str_a, str_b) != 0;
+    if str_a.len == 0 || str_a == str_b { return true; }
+    var i: i64 = 0;
+    while i + 8 <= str_a.len {
+        let wa = swar_to_lower_64(read_le_u64(str_a, i));
+        let wb = swar_to_lower_64(read_le_u64(str_b, i));
+        if wa != wb { return false; }
+        i += 8;
+    }
+    while i < str_a.len {
+        if to_lower_ascii_byte(str_a[i]) != to_lower_ascii_byte(str_b[i]) {
+            return false;
+        }
+        i += 1;
+    }
+    return true;
 }
 
 // Checks whether s begins with prefix using case-insensitive ASCII comparison.

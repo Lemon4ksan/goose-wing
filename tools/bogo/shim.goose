@@ -16,7 +16,9 @@ const BOGO_IO_TIMEOUT_MS:      u32 = 5000;
 const TLS_VERSION_1_2_WIRE:    u16 = 0x0303;
 const TLS_VERSION_1_3_WIRE:    u16 = 0x0304;
 
-extern fn bogo_err(msg: const u8[:]) = "wing_write_stderr";
+fn bogo_err(msg: const u8[:]) {
+    write_stderr(msg);
+}
 
 struct BogoConfig {
     port:           u16                 = 0,

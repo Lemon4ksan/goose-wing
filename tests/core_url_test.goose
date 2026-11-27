@@ -193,157 +193,10 @@ fn test_url_parser_and_origin(t: lit::T&) {
 }
 
 // ----------------------------------------------------------------------------
-// 2. File URL & Path Manipulation
-// ----------------------------------------------------------------------------
-fn test_swift_style_file_and_path_api(t: lit::T&) {
-    t.run("new_file_url Cross-Platform Normalization") { sub =>
-        // 1. Windows path with backslashes
-        let url_win = core::new_file_url("C:\\Users\\admin\\Documents\\report.pdf");
-        sub.assert_true(url_win.valid, "valid windows file url");
-        sub.assert_true(core::is_file_url(url_win), "is_file_url is true");
-        sub.assert_bytes_eq(core::scheme(url_win), "file", "scheme is file");
-        sub.assert_bytes_eq(core::pathname(url_win), "/C:/Users/admin/Documents/report.pdf", "normalized to file:///C:/...");
-
-        // 2. Windows path with spaces
-        let url_spaces = core::new_file_url("C:\\Program Files\\My App\\app.exe");
-        sub.assert_bytes_eq(core::pathname(url_spaces), "/C:/Program%20Files/My%20App/app.exe", "spaces percent-encoded to %20");
-
-        // 3. POSIX absolute path
-        let url_posix = core::new_file_url("/var/log/system.log");
-        sub.assert_bytes_eq(core::pathname(url_posix), "/var/log/system.log", "posix path preserved");
-
-        // 4. Windows UNC network path
-        let url_unc = core::new_file_url("\\\\nas\\share\\backup.zip");
-        sub.assert_bytes_eq(core::host(url_unc), "nas", "UNC host parsed");
-        sub.assert_bytes_eq(core::pathname(url_unc), "/share/backup.zip", "UNC pathname parsed");
-    };
-
-    t.run("file_path Native Operating System Path Extraction") { sub =>
-        // Windows path round-trip
-        let url_win = core::new_file_url("C:\\Program Files\\app\\data.json");
-        var os_path_win: u8[..256] = [];
-        let ok_win = core::file_path(url_win, os_path_win);
-        sub.assert_true(ok_win, "file_path succeeded on windows url");
-        sub.assert_bytes_eq(os_path_win[..], "C:\\Program Files\\app\\data.json", "round-trip windows path with native backslashes");
-
-        // POSIX path round-trip
-        let url_posix = core::new_file_url("/etc/nginx/nginx.conf");
-        var os_path_posix: u8[..256] = [];
-        let ok_posix = core::file_path(url_posix, os_path_posix);
-        sub.assert_true(ok_posix, "file_path succeeded on posix url");
-        sub.assert_bytes_eq(os_path_posix[..], "/etc/nginx/nginx.conf", "round-trip posix path");
-
-        // Non-file URL returns false
-        let url_web = core::new_url("https://example.com/file.txt");
-        var os_path_web: u8[..64] = [];
-        sub.assert_false(core::file_path(url_web, os_path_web), "file_path fails on non-file URL");
-    };
-
-    t.run("last_path_component & path_extension (Swift-style)") { sub =>
-        let url_file = core::new_file_url("C:\\Projects\\app\\report.final.pdf");
-        sub.assert_bytes_eq(url_file.last_path_component(), "report.final.pdf", "lastPathComponent with dots");
-        sub.assert_bytes_eq(url_file.path_extension(), "pdf", "pathExtension is pdf");
-
-        // Multi-extension archive
-        let url_tar = core::new_url("https://archive.org/data.tar.gz");
-        sub.assert_bytes_eq(url_tar.last_path_component(), "data.tar.gz", "last component is data.tar.gz");
-        sub.assert_bytes_eq(url_tar.path_extension(), "gz", "extension is gz");
-
-        // Hidden file without extension (.gitignore)
-        let url_hidden = core::new_file_url("C:\\Repo\\.gitignore");
-        sub.assert_bytes_eq(url_hidden.last_path_component(), ".gitignore", "last component is .gitignore");
-        sub.assert_bytes_eq(url_hidden.path_extension(), "", "hidden file leading dot has no extension");
-
-        // Folder with trailing slash
-        let url_dir = core::new_file_url("C:\\Projects\\src\\");
-        sub.assert_bytes_eq(url_dir.last_path_component(), "src", "trailing slash ignored for lastPathComponent");
-        sub.assert_bytes_eq(url_dir.path_extension(), "", "directory has no extension");
-
-        // Root path
-        let url_root = core::new_url("file:///");
-        sub.assert_bytes_eq(url_root.last_path_component(), "/", "root lastPathComponent is /");
-    };
-
-    t.run("deleting_path_extension & deleting_last_path_component") { sub =>
-        let url1 = core::new_file_url("C:\\Docs\\report.pdf");
-        let no_ext = url1.deleting_path_extension();
-        sub.assert_bytes_eq(no_ext.pathname(), "/C:/Docs/report", "deletingPathExtension removes .pdf");
-        sub.assert_bytes_eq(no_ext.path_extension(), "", "now has no extension");
-
-        // Deleting last component moves to parent folder
-        let parent = url1.deleting_last_path_component();
-        sub.assert_bytes_eq(parent.pathname(), "/C:/Docs/", "deletingLastPathComponent points to parent folder");
-
-        // Chained navigation up
-        let grandparent = parent.deleting_last_path_component();
-        sub.assert_bytes_eq(grandparent.pathname(), "/C:/", "grandparent points to drive root");
-    };
-
-    t.run("appending_path_component, appending_path, appending_path_extension") { sub =>
-        let base_url = core::new_file_url("C:\\Projects\\my_app");
-
-        // Append component
-        let assets_url = core::appending_path_component(base_url, "assets");
-        sub.assert_bytes_eq(core::pathname(assets_url), "/C:/Projects/my_app/assets", "appended component");
-
-        // Append component with spaces (must be encoded)
-        let img_url = core::appending_path_component(assets_url, "app logo.svg");
-        sub.assert_bytes_eq(core::pathname(img_url), "/C:/Projects/my_app/assets/app%20logo.svg", "spaces encoded in appended component");
-
-        // Append component with slashes (must be escaped as %2F to prevent path traversal)
-        let slash_comp_url = core::appending_path_component(assets_url, "sub/component");
-        sub.assert_bytes_eq(core::pathname(slash_comp_url), "/C:/Projects/my_app/assets/sub%2Fcomponent", "slashes escaped in single appended component");
-
-        // Append multi-segment subpath
-        let deep_url = core::appending_path(base_url, "src/components/button.goose");
-        sub.assert_bytes_eq(core::pathname(deep_url), "/C:/Projects/my_app/src/components/button.goose", "appended multi-segment subpath");
-
-        // Append extension
-        let file_no_ext = core::new_file_url("C:\\Data\\payload");
-        let with_ext = core::appending_path_extension(file_no_ext, "json");
-        sub.assert_bytes_eq(core::pathname(with_ext), "/C:/Data/payload.json", "appended .json extension");
-
-        // Append extension with leading dot (.xml)
-        let with_dot_ext = core::appending_path_extension(file_no_ext, ".xml");
-        sub.assert_bytes_eq(core::pathname(with_dot_ext), "/C:/Data/payload.xml", "leading dot stripped before appending extension");
-    };
-
-    t.run("Swift-Style UFCS Method Chaining") { sub =>
-        // url.appending(...).appending_path_extension(...)
-        let base = core::new_file_url("C:\\Workspace");
-        let final_url = base.appending_path_component("build")
-                            .appending_path_component("release")
-                            .appending_path_component("binary")
-                            .appending_path_extension("exe");
-
-        sub.assert_bytes_eq(core::pathname(final_url), "/C:/Workspace/build/release/binary.exe", "fluent chained path construction");
-        sub.assert_bytes_eq(final_url.last_path_component(), "binary.exe", "UFCS last_path_component");
-        sub.assert_bytes_eq(final_url.path_extension(), "exe", "UFCS path_extension");
-
-        var native_out: u8[..256] = [];
-        sub.assert_true(final_url.file_path(native_out), "UFCS file_path succeeded");
-        sub.assert_bytes_eq(native_out[..], "C:\\Workspace\\build\\release\\binary.exe", "native Windows path ready for OS calls");
-    };
-}
-
-// ----------------------------------------------------------------------------
 // 3. WHATWG URL Standard & Security Audit Verification
 // ----------------------------------------------------------------------------
 fn test_whatwg_audit_fixes(t: lit::T&) {
-    t.run("1.1 & 1.2: Same-Site Isolation for data:, about: & blob: Origin") { sub =>
-        // 1.1: data: and about: without registrable domain must NEVER match same-site
-        let data1 = core::new_url("data:text/html,1");
-        let data2 = core::new_url("data:text/html,2");
-        sub.assert_false(core::is_schemeful_same_site_urls(data1, data2), "data: URLs must never match same-site");
-
-        let about_blank = core::new_url("about:blank");
-        let about_srcdoc = core::new_url("about:srcdoc");
-        sub.assert_false(core::is_schemeful_same_site_urls(about_blank, about_srcdoc), "about: URLs must never match same-site");
-
-        let opaque_orig = core::new_opaque_origin();
-        let web_url = core::new_url("https://example.com/");
-        sub.assert_false(core::is_same_site_origin_url(opaque_orig, web_url), "opaque origin is never same-site");
-
+    t.run("1.2: Origin Inheritance for blob: URLs") { sub =>
         // 1.2: blob: URLs inherit tuple origin from embedded URL in pathname
         let blob_url = core::new_url("blob:https://example.com/550e8400-e29b-41d4-a716-446655440000");
         let blob_orig = core::origin_from_url(blob_url);
@@ -423,7 +276,7 @@ fn test_whatwg_audit_fixes(t: lit::T&) {
         // Deep path (> 16 segments)
         let url_deep = core::new_url("https://example.com/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20");
         sub.assert_true(url_deep.valid, "deep path > 16 segments valid");
-        sub.assert_bytes_eq(core::last_path_component(url_deep), "20", "20th segment preserved");
+        sub.assert_true(core::ends_with(core::pathname(url_deep), "/19/20"), "20th segment preserved");
     };
 
     t.run("3.1..3.4: Strict IPv6 Boundary Validation, Leading Zeros & Port 0") { sub =>
@@ -460,33 +313,13 @@ fn test_whatwg_audit_fixes(t: lit::T&) {
         sub.assert_true(err_eh == core::UrlParseError.MissingHost, "MissingHost on empty host");
     };
 
-    t.run("4.1..4.3: UNC Server Round-Trip, Drive Protection & Trailing Slash Extensions") { sub =>
-        // 4.1: UNC server name preserved in file_path()
-        let url_unc = core::new_file_url("\\\\nas\\share\\backup.zip");
-        var os_unc: u8[..256] = [];
-        let ok_unc = core::file_path(url_unc, os_unc);
-        sub.assert_true(ok_unc, "file_path succeeded on UNC URL");
-        sub.assert_bytes_eq(os_unc[..], "\\\\nas\\share\\backup.zip", "UNC server name preserved in file_path");
-
-        // 4.2: Windows drive letter C: protected on .. and deleting_last_path_component
+    t.run("4.2: Windows Drive Root Protection") { sub =>
+        // 4.2: Windows drive letter C: protected on ..
         let url_drive_up = core::new_url("file:///C:/Users/..");
         sub.assert_bytes_eq(core::pathname(url_drive_up), "/C:/", "popping above Users leaves drive root /C:/");
 
         let url_drive_root_up = core::new_url("file:///C:/..");
         sub.assert_bytes_eq(core::pathname(url_drive_root_up), "/C:/", "popping above drive root stays at /C:/");
-
-        let url_drive_root = core::new_file_url("C:\\");
-        let stay_root = core::deleting_last_path_component(url_drive_root);
-        sub.assert_bytes_eq(core::pathname(stay_root), "/C:/", "deletingLastPathComponent on drive root stays at /C:/");
-
-        // 4.3: deleting_path_extension and appending_path_extension with trailing slash
-        let url_folder_ext = core::new_url("file:///a/b/archive.tar/");
-        let url_no_ext = core::deleting_path_extension(url_folder_ext);
-        sub.assert_bytes_eq(core::pathname(url_no_ext), "/a/b/archive/", "deletingPathExtension with trailing slash leaves clean folder");
-
-        let url_folder = core::new_url("file:///a/b/dir/");
-        let url_added_ext = core::appending_path_extension(url_folder, "bundle");
-        sub.assert_bytes_eq(core::pathname(url_added_ext), "/a/b/dir.bundle/", "appendingPathExtension with trailing slash preserves folder structure");
     };
 
     t.run("5.1 & 5.3: Base URL Without Authority & InvalidScheme Rejection") { sub =>
@@ -751,7 +584,7 @@ fn test_canonical_wpt_and_edge_vectors(t: lit::T&) {
         }
         let url_p7 = core::new_url(deep_path[..]);
         sub.assert_true(url_p7.valid, "PATH-07: 25 segments valid");
-        sub.assert_bytes_eq(core::last_path_component(url_p7), "s25", "PATH-07: 25th segment preserved");
+        sub.assert_true(core::ends_with(core::pathname(url_p7), "/s24/s25"), "PATH-07: 25th segment preserved");
 
         // REL-01: Empty relative URL strips fragment from base
         let base_rel = core::new_url("https://example.com/a/b?q=1#old");
@@ -830,58 +663,18 @@ fn test_canonical_wpt_and_edge_vectors(t: lit::T&) {
         sub.assert_bytes_eq(core::href(url_ns07), "git://host/path", "NSPEC-07: resolved against non-special base");
     };
 
-    t.run("Category 7: File URLs & Swift Path Manipulation (FILE-01..09)") { sub =>
+    t.run("Category 7: File URLs (FILE-01, FILE-05)") { sub =>
         // FILE-01: localhost host on file: URL is normalized to empty host
         let url_f01 = core::new_url("file://localhost/etc/hosts");
         sub.assert_bytes_eq(core::href(url_f01), "file:///etc/hosts", "FILE-01: localhost normalized to empty host");
         sub.assert_bytes_eq(core::hostname(url_f01), "", "FILE-01: hostname is empty");
 
-        // FILE-02: Windows drive letter normalization and encoding
-        let url_f02 = core::new_file_url("C:\\Users\\Admin\\my doc#1.txt");
-        sub.assert_bytes_eq(core::href(url_f02), "file:///C:/Users/Admin/my%20doc%231.txt", "FILE-02: normalized drive letter and encoded #");
-
-        // FILE-03: file_path conversion from file: URL to Windows path
-        let url_f03 = core::new_url("file:///C:/Users/my%20doc.txt");
-        var win_path: u8[..256] = [];
-        let ok_f03 = core::file_path(url_f03, win_path);
-        sub.assert_true(ok_f03, "FILE-03: file_path succeeded");
-        sub.assert_bytes_eq(win_path[..], "C:\\Users\\my doc.txt", "FILE-03: decoded Windows path");
-
-        // FILE-04: UNC network share round-trip
-        let url_f04 = core::new_file_url("\\\\server\\share\\folder\\file.txt");
-        sub.assert_bytes_eq(core::href(url_f04), "file://server/share/folder/file.txt", "FILE-04: UNC host in href");
-        var unc_path: u8[..256] = [];
-        let ok_f04 = core::file_path(url_f04, unc_path);
-        sub.assert_true(ok_f04, "FILE-04: file_path succeeded for UNC");
-        sub.assert_bytes_eq(unc_path[..], "\\\\server\\share\\folder\\file.txt", "FILE-04: UNC path preserved");
-
         // FILE-05: Windows drive root cannot be popped by ..
         let url_f05 = core::new_url("file:///C:/Users/../..");
         sub.assert_bytes_eq(core::href(url_f05), "file:///C:/", "FILE-05: popping above drive root stays at file:///C:/");
-
-        // FILE-06: deleting_path_extension on directory with trailing slash
-        let url_f06_base = core::new_url("file:///a/b/archive.tar/");
-        let url_f06 = core::deleting_path_extension(url_f06_base);
-        sub.assert_bytes_eq(core::pathname(url_f06), "/a/b/archive/", "FILE-06: trailing slash preserved after extension deletion");
-
-        // FILE-07: appending_path_extension before trailing slash
-        let url_f07_base = core::new_url("file:///a/b/dir/");
-        let url_f07 = core::appending_path_extension(url_f07_base, "Bak");
-        sub.assert_bytes_eq(core::pathname(url_f07), "/a/b/dir.Bak/", "FILE-07: extension appended before trailing slash");
-
-        // FILE-08: Leading and trailing dots are not considered extensions
-        let url_f08_git = core::new_url("file:///a/.gitignore");
-        let url_f08_dot = core::new_url("file:///a/file.");
-        sub.assert_bytes_eq(core::path_extension(url_f08_git), "", "FILE-08: .gitignore has empty extension");
-        sub.assert_bytes_eq(core::path_extension(url_f08_dot), "", "FILE-08: trailing dot has empty extension");
-
-        // FILE-09: deleting_last_path_component on drive root stays at drive root
-        let url_f09_root = core::new_url("file:///C:/");
-        let url_f09 = core::deleting_last_path_component(url_f09_root);
-        sub.assert_bytes_eq(core::pathname(url_f09), "/C:/", "FILE-09: deletingLastPathComponent on C:/ stays at /C:/");
     };
 
-    t.run("Category 8: Origin, PSL & Schemeful Same-Site RFC 6265bis (SEC-01..10)") { sub =>
+    t.run("Category 8: Origin Isolation (SEC-01..04)") { sub =>
         // SEC-01: Tuple origin omits default port 443
         let url_sec01 = core::new_url("https://Example.COM:443/a");
         var orig_str01: u8[..64] = [];
@@ -914,47 +707,6 @@ fn test_canonical_wpt_and_edge_vectors(t: lit::T&) {
         sub.assert_bytes_eq(ser_file[..], "null", "SEC-04: file origin serialized to null");
         sub.assert_bytes_eq(ser_data[..], "null", "SEC-04: data origin serialized to null");
         sub.assert_false(core::is_same_origin(orig_file, orig_data), "SEC-04: distinct opaque origins are not same-origin");
-
-        // SEC-05: ICANN multi-part suffix (co.uk) eTLD+1 extraction
-        let url_sec05 = core::new_url("https://sub.books.amazon.co.uk/p");
-        let site_uk = core::registrable_site_from_url(url_sec05);
-        sub.assert_bytes_eq(site_uk.scheme[..], "https", "SEC-05: scheme is https");
-        sub.assert_bytes_eq(site_uk.registrable_domain[..], "amazon.co.uk", "SEC-05: eTLD+1 is amazon.co.uk");
-
-        // SEC-06: PSL private section tenant isolation (github.io)
-        let url_sec06_a = core::new_url("https://tenantA.github.io");
-        let url_sec06_b = core::new_url("https://tenantB.github.io");
-        let same_site_tenants = core::is_schemeful_same_site_urls(url_sec06_a, url_sec06_b);
-        sub.assert_false(same_site_tenants, "SEC-06: different tenants on private suffix are cross-site");
-
-        // SEC-07: Subdomains and ports on same eTLD+1 with same scheme are schemeful same-site
-        let url_sec07_a = core::new_url("https://a.example.com:8000");
-        let url_sec07_b = core::new_url("https://b.example.com:9000");
-        let same_site_sub = core::is_schemeful_same_site_urls(url_sec07_a, url_sec07_b);
-        sub.assert_true(same_site_sub, "SEC-07: subdomains and different ports are same-site");
-
-        // SEC-08: Scheme difference (https vs http) is cross-site
-        let url_sec08_a = core::new_url("https://example.com");
-        let url_sec08_b = core::new_url("http://example.com");
-        let same_site_diff_scheme = core::is_schemeful_same_site_urls(url_sec08_a, url_sec08_b);
-        sub.assert_false(same_site_diff_scheme, "SEC-08: scheme mismatch is cross-site");
-
-        // SEC-09: Empty registrable domain (data:, about:) is never same-site
-        let url_sec09_a = core::new_url("data:text/html,1");
-        let url_sec09_b = core::new_url("data:text/html,2");
-        let same_site_data = core::is_schemeful_same_site_urls(url_sec09_a, url_sec09_b);
-        sub.assert_false(same_site_data, "SEC-09: data: URLs are never same-site");
-
-        // SEC-10: IP literals compare entire host and scheme
-        let url_sec10_a1 = core::new_url("http://127.0.0.1:8080/");
-        let url_sec10_a2 = core::new_url("http://127.0.0.1:9090/");
-        let ip_same = core::is_schemeful_same_site_urls(url_sec10_a1, url_sec10_a2);
-        sub.assert_true(ip_same, "SEC-10: same IPv4 with different ports is same-site");
-
-        let url_sec10_b1 = core::new_url("http://127.0.0.1/");
-        let url_sec10_b2 = core::new_url("http://127.0.0.2/");
-        let ip_diff = core::is_schemeful_same_site_urls(url_sec10_b1, url_sec10_b2);
-        sub.assert_false(ip_diff, "SEC-10: different IPv4 addresses are cross-site");
     };
 
     t.run("Exhaustive Non-Happy Path Matrix: Errors, Bounds & Injection Rejection") { sub =>
@@ -1061,39 +813,6 @@ fn test_canonical_wpt_and_edge_vectors(t: lit::T&) {
 // 5. Dual-Mode URL Resolution: RFC 3986 Reference vs Backend Endpoint Joining
 // ----------------------------------------------------------------------------
 fn test_dual_mode_resolution_rfc_vs_endpoint(t: lit::T&) {
-    t.run("Mode 1: Browser / RFC 3986 Reference Resolution (resolve_reference)") { sub =>
-        // Base without trailing slash: "/api" is treated as a leaf file and replaced
-        let base_no_slash = core::new_url("http://example.com/api");
-
-        // Root-relative reference "/v1" replaces path
-        let ref_slash = core::resolve_reference(base_no_slash, "/v1");
-        sub.assert_bytes_eq(core::pathname(ref_slash), "/v1", "RFC: /v1 replaces /api");
-        sub.assert_bytes_eq(core::href(ref_slash), "http://example.com/v1", "RFC: href is http://example.com/v1");
-
-        // Relative reference "v1" replaces last component
-        let ref_noslash = core::resolve_reference(base_no_slash, "v1");
-        sub.assert_bytes_eq(core::pathname(ref_noslash), "/v1", "RFC: v1 replaces /api");
-        sub.assert_bytes_eq(core::href(ref_noslash), "http://example.com/v1", "RFC: href is http://example.com/v1");
-
-        // Query only and hash only preserve base path
-        let ref_q = core::resolve_reference(base_no_slash, "?filter=active");
-        sub.assert_bytes_eq(core::href(ref_q), "http://example.com/api?filter=active", "RFC: query preserves /api");
-
-        let ref_h = core::resolve_reference(base_no_slash, "#details");
-        sub.assert_bytes_eq(core::href(ref_h), "http://example.com/api#details", "RFC: hash preserves /api");
-
-        // Base with trailing slash: "http://example.com/api/"
-        let base_with_slash = core::new_url("http://example.com/api/");
-
-        // Root-relative "/v1" STILL replaces path to "/v1"
-        let ref_ws_root = core::resolve_reference(base_with_slash, "/v1");
-        sub.assert_bytes_eq(core::pathname(ref_ws_root), "/v1", "RFC: /v1 on base with slash replaces to /v1");
-
-        // Relative "v1" nests inside "api/"
-        let ref_ws_rel = core::resolve_reference(base_with_slash, "v1");
-        sub.assert_bytes_eq(core::pathname(ref_ws_rel), "/api/v1", "RFC: v1 on base with slash nests to /api/v1");
-    };
-
     t.run("Mode 2: Backend API / Service Endpoint Joining (resolve_endpoint)") { sub =>
         // Base without trailing slash: "/api" is preserved as a permanent prefix
         let base_no_slash = core::new_url("http://example.com/api");
@@ -1146,9 +865,6 @@ fn test_dual_mode_resolution_rfc_vs_endpoint(t: lit::T&) {
         sub.assert_bytes_eq(core::href(ep_proto), "http://cdn.other.com/assets/logo.png", "Backend: protocol-relative inherits scheme");
 
         // UFCS syntax verification
-        let ufcs_ref = base_no_slash.resolve_reference("/v1");
-        sub.assert_bytes_eq(core::href(ufcs_ref), "http://example.com/v1", "UFCS: base.resolve_reference");
-
         let ufcs_ep = base_no_slash.resolve_endpoint("/v1");
         sub.assert_bytes_eq(core::href(ufcs_ep), "http://example.com/api/v1", "UFCS: base.resolve_endpoint");
 
@@ -1183,11 +899,7 @@ fn test_dynamic_and_large_urls(t: lit::T&) {
         sub.assert_bytes_eq(core::pathname(parsed_url), "/oauth/callback", "Path matches");
         sub.assert_bytes_eq(core::hash(parsed_url), "#auth_success", "Hash matches");
         sub.assert_true(core::search(parsed_url).len > 1000, "Search query is over 1000 bytes");
-
-        // Dynamic builder into u8[>..]
-        var dynamic_out: u8[>..] = [];
-        core::format_url(dynamic_out, parsed_url);
-        sub.assert_bytes_eq(dynamic_out[..], large_input[..], "format_url reproduces full large URL");
+        sub.assert_bytes_eq(core::href(parsed_url), large_input[..], "href reproduces full large URL");
     };
 
     t.run("Case 6.2: UrlView Zero-Copy Arbitrary-Length Streaming Inspection") { sub =>
@@ -1199,19 +911,15 @@ fn test_dynamic_and_large_urls(t: lit::T&) {
         }
         huge_input.append("#playback_pos_42");
 
-        let view = core::new_url_view(huge_input[..]);
+        let view, view_err = core::parse_url_view(huge_input[..]);
         sub.assert_true(view.valid, "UrlView is valid for 5000-byte URL");
+        sub.assert_true(view_err == core::UrlParseError.None, "UrlView has no error");
         sub.assert_bytes_eq(core::scheme(view), "https", "UrlView scheme is https");
         sub.assert_bytes_eq(core::host(view), "streaming.cdn.org", "UrlView host matches");
         sub.assert_eq(core::port(view) as i64, 8443, "UrlView port is 8443");
         sub.assert_bytes_eq(core::pathname(view), "/blob/stream/data", "UrlView pathname matches");
         sub.assert_bytes_eq(core::hash(view), "#playback_pos_42", "UrlView hash matches");
         sub.assert_true(core::search(view).len > 4000, "UrlView search query is over 4000 bytes");
-
-        // Dynamic builder for UrlView
-        var view_out: u8[>..] = [];
-        core::format_url_view(view_out, view);
-        sub.assert_bytes_eq(view_out[..], huge_input[..], "format_url_view reproduces 5000-byte URL");
     };
 }
 
@@ -1258,12 +966,6 @@ fn test_rfc3986_whatwg_standards_edge_cases(t: lit::T&) {
         let u_deepdotdot = core::new_url("file:///C:/foo/../..");
         sub.assert_true(u_deepdotdot.valid, "file:///C:/foo/../.. is valid");
         sub.assert_bytes_eq(core::href(u_deepdotdot), "file:///C:/", "file:///C:/foo/../.. pops only to C:/");
-
-        // file_path extraction produces native Windows root drive
-        var fp_buf: u8[..256] = [];
-        let ok_fp = core::file_path(u_c, fp_buf);
-        sub.assert_true(ok_fp, "file_path succeeded");
-        sub.assert_bytes_eq(fp_buf[..], "C:\\", "file_path outputs C:\\");
 
         // Non-file special scheme does not force trailing slash on drive-like path
         let u_http = core::new_url("http://example.com/C:");
@@ -1332,12 +1034,12 @@ fn test_rfc3986_whatwg_standards_edge_cases(t: lit::T&) {
         sub.assert_false(u_2001.valid, "Global unicast MUST NOT allow Zone ID");
 
         // UrlView zero-copy verification
-        let v_good = core::new_url_view("http://[ff02::1%25eth0]:9000/metrics");
+        let v_good, _ = core::parse_url_view("http://[ff02::1%25eth0]:9000/metrics");
         sub.assert_true(v_good.valid, "UrlView parses scoped multicast with Zone ID");
         sub.assert_bytes_eq(core::host(v_good), "[ff02::1%25eth0]", "UrlView host matches");
         sub.assert_eq(core::port(v_good) as i64, 9000, "UrlView port is 9000");
 
-        let v_bad = core::new_url_view("http://[ff0e::1%25eth0]:9000/metrics");
+        let v_bad, _ = core::parse_url_view("http://[ff0e::1%25eth0]:9000/metrics");
         sub.assert_false(v_bad.valid, "UrlView rejects global multicast with Zone ID");
 
         // RFC 6874 §2: Zone ID grammar permits unreserved (including . and ~) and pct-encoded
@@ -1373,66 +1075,51 @@ fn test_rfc3986_whatwg_standards_edge_cases(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_semicolon_query_splitting_defense(t: lit::T&) {
     t.run("QUERY-01: Semicolon is treated as literal content, NOT parameter separator (CVE-2021-31525)") { sub =>
-        // In naive implementations, before 1.17, "a=1;b=2" was split into two parameters a=1 and b=2.
         // Under WHATWG URL, only '&' is a delimiter; ';' is literal data.
         let raw = "?a=1;b=2";
-        let q = core::parse_query_params(raw);
-        sub.assert_eq(q.tokens.len, 1, "Query string with semicolon must NOT be split into multiple parameters");
-        sub.assert_bytes_eq(core::get_query_param(q, "a"), "1;b=2", "Value of 'a' must be '1;b=2' verbatim");
-        sub.assert_false(core::has_query_param(q, "b"), "Parameter 'b' must NOT exist (no parameter splitting on semicolon)");
+        var out_a: u8[..64] = [];
+        sub.assert_true(core::get_query_param_fast(raw, "a", out_a) == core::QueryParamMatch.Value);
+        sub.assert_bytes_eq(out_a[..], "1;b=2", "Value of 'a' must be '1;b=2' verbatim");
+        sub.assert_false(core::has_query_param_fast(raw, "b"), "Parameter 'b' must NOT exist (no parameter splitting on semicolon)");
     };
 
     t.run("QUERY-02: Canonical ampersand '&' parameter splitting") { sub =>
         let raw = "?foo=bar&baz=qux&num=42";
-        let q = core::parse_query_params(raw);
-        sub.assert_eq(q.tokens.len, 3);
-        sub.assert_bytes_eq(core::get_query_param(q, "foo"), "bar");
-        sub.assert_bytes_eq(core::get_query_param(q, "baz"), "qux");
-        sub.assert_bytes_eq(core::get_query_param(q, "num"), "42");
+        var v1: u8[..64] = [];
+        var v2: u8[..64] = [];
+        var v3: u8[..64] = [];
+        sub.assert_true(core::get_query_param_fast(raw, "foo", v1) == core::QueryParamMatch.Value);
+        sub.assert_bytes_eq(v1[..], "bar");
+        sub.assert_true(core::get_query_param_fast(raw, "baz", v2) == core::QueryParamMatch.Value);
+        sub.assert_bytes_eq(v2[..], "qux");
+        sub.assert_true(core::get_query_param_fast(raw, "num", v3) == core::QueryParamMatch.Value);
+        sub.assert_bytes_eq(v3[..], "42");
     };
 
-    t.run("QUERY-03: Zero-copy wire slices and explicit percent-decoding (RFC 3986 §3.4)") { sub =>
-        let raw = "?search=hello+world%21&user%5Fid=alice%40example.com";
-        let q = core::parse_query_params(raw);
-        sub.assert_eq(q.tokens.len, 2);
-        // get_query_param returns exact zero-copy wire slices per Vulkan-like engine contract
-        sub.assert_bytes_eq(core::get_query_param(q, "search"), "hello+world%21", "+ preserved verbatim and raw slice returned");
-        sub.assert_bytes_eq(core::get_query_param(q, "user_id"), "alice%40example.com", "Key user%5Fid matches user_id and returns raw slice");
-
-        // Explicit percent-decoding via get_query_param_decoded
-        var dec_search: u8[..64] = [];
-        sub.assert_true(core::get_query_param_decoded(q, "search", dec_search));
-        sub.assert_bytes_eq(dec_search[..], "hello+world!");
+    t.run("QUERY-03: Verbatim query parameter extraction (RFC 3986 §3.4)") { sub =>
+        let raw = "?search=hello+world%21&user_id=alice%40example.com";
+        var out_search: u8[..64] = [];
+        sub.assert_true(core::get_query_param_fast(raw, "search", out_search) == core::QueryParamMatch.Value);
+        sub.assert_bytes_eq(out_search[..], "hello+world%21", "+ preserved verbatim");
 
         var dec_user: u8[..64] = [];
-        sub.assert_true(core::get_query_param_decoded(q, "user_id", dec_user));
-        sub.assert_bytes_eq(dec_user[..], "alice@example.com");
+        sub.assert_true(core::get_query_param_fast(raw, "user_id", dec_user) == core::QueryParamMatch.Value);
+        sub.assert_bytes_eq(dec_user[..], "alice%40example.com");
     };
 
     t.run("QUERY-04: Empty parameters and flag-only parameters") { sub =>
         let raw = "?active&filter=&category=tech";
-        let q = core::parse_query_params(raw);
-        sub.assert_eq(q.tokens.len, 3);
-        sub.assert_true(core::has_query_param(q, "active"));
-        sub.assert_bytes_eq(core::get_query_param(q, "active"), "", "Flag-only parameter has empty value");
-        sub.assert_true(core::has_query_param(q, "filter"));
-        sub.assert_bytes_eq(core::get_query_param(q, "filter"), "", "Empty value parameter has empty value");
-        sub.assert_bytes_eq(core::get_query_param(q, "category"), "tech");
-    };
-
-    t.run("QUERY-05: SWAR 64-bit word scanning across 8-byte boundaries") { sub =>
-        let raw = "?long_parameter_key_one=long_parameter_value_one&short=1&padding_word_stride=aligned8_value";
-        let q = core::parse_query_params(raw);
-        sub.assert_eq(q.tokens.len, 3);
-        sub.assert_bytes_eq(core::get_query_param(q, "long_parameter_key_one"), "long_parameter_value_one");
-        sub.assert_bytes_eq(core::get_query_param(q, "short"), "1");
-        sub.assert_bytes_eq(core::get_query_param(q, "padding_word_stride"), "aligned8_value");
-
-        // Verify descriptor unpacking on first token
-        let tok0 = q.tokens[0];
-        sub.assert_bytes_eq(core::query_token_key(tok0, q.wire), "long_parameter_key_one");
-        sub.assert_bytes_eq(core::query_token_val(tok0, q.wire), "long_parameter_value_one");
-        sub.assert_false(core::query_token_is_valueless(tok0));
+        var out_active: u8[..64] = [];
+        var out_filter: u8[..64] = [];
+        var out_cat:    u8[..64] = [];
+        sub.assert_true(core::has_query_param_fast(raw, "active"));
+        sub.assert_true(core::get_query_param_fast(raw, "active", out_active) == core::QueryParamMatch.Valueless);
+        sub.assert_bytes_eq(out_active[..], "", "Flag-only parameter has empty value");
+        sub.assert_true(core::has_query_param_fast(raw, "filter"));
+        sub.assert_true(core::get_query_param_fast(raw, "filter", out_filter) == core::QueryParamMatch.Value);
+        sub.assert_bytes_eq(out_filter[..], "", "Empty value parameter has empty value");
+        sub.assert_true(core::get_query_param_fast(raw, "category", out_cat) == core::QueryParamMatch.Value);
+        sub.assert_bytes_eq(out_cat[..], "tech");
     };
 }
 
@@ -1570,13 +1257,10 @@ fn test_query_param_truncation_smuggling(t: lit::T&) {
         }
         raw_query.append("admin=true&role=superuser&access=full");
 
-        let q = core::parse_query_params(raw_query[..]);
-
-        // A secure parser must either:
-        // (a) successfully parse parameters beyond 32, OR
-        // (b) report/fail on truncated queries so hidden parameters cannot be smuggled.
-        sub.assert_true(core::has_query_param(q, "admin"), "Critical parameter 'admin' after 32nd item must NOT be silently lost");
-        sub.assert_bytes_eq(core::get_query_param(q, "admin"), "true", "Parameter 'admin' must have value 'true'");
+        sub.assert_true(core::has_query_param_fast(raw_query[..], "admin"), "Critical parameter 'admin' after 32nd item must NOT be silently lost");
+        var out_admin: u8[..32] = [];
+        sub.assert_true(core::get_query_param_fast(raw_query[..], "admin", out_admin) == core::QueryParamMatch.Value);
+        sub.assert_bytes_eq(out_admin[..], "true", "Parameter 'admin' must have value 'true'");
     };
 }
 
@@ -1589,26 +1273,6 @@ fn test_pure_ascii_punycode_url_host_rejection(t: lit::T&) {
         // Per UTS 46 Revision 33 & Go #78760, accepting pure ASCII Punycode allows domain validation bypasses.
         let u = core::new_url("http://xn--test-.com/api");
         sub.assert_false(u.valid, "URL with pure ASCII Punycode host xn--test-.com MUST be marked invalid");
-    };
-}
-
-// ----------------------------------------------------------------------------
-// 14. Go #77108 / CVE-2025-61726: Query Parameter DoS Guard Against Oversized Tokens
-// ----------------------------------------------------------------------------
-fn test_query_param_oversized_token_dos_guard(t: lit::T&) {
-    t.run("validate_query_param_count must reject query strings with tokens > 256 bytes") { sub =>
-        // To prevent fixed-capacity array crashes in parse_query_params (u8[..256] cap),
-        // query validation before parsing MUST check individual parameter lengths (Go #77108).
-        // A single 300-byte token in query string without & passes validate_query_param_count(query, 1024),
-        // but crashes the server parser if length checks are missing!
-        var raw_query: u8[..600] = "?token=";
-        for i in 300 {
-            raw_query.push('A');
-        }
-
-        // The query validator should detect that an individual token exceeds the maximum safe parameter buffer (256 bytes)
-        let is_valid = core::validate_query_param_count(raw_query[..], 1024);
-        sub.assert_false(is_valid, "validate_query_param_count must reject oversized tokens > 256 bytes to prevent parser array abort");
     };
 }
 
@@ -1737,20 +1401,6 @@ fn test_parse_url_view_crlf_rejection(t: lit::T&) {
 // 21. CVE-2025-61726 & CVE-2026-39825: Query Parameter Key Overflow Defense
 // ----------------------------------------------------------------------------
 fn test_query_param_key_overflow_defense(t: lit::T&) {
-    t.run("parse_query_params with key > 64 bytes MUST safely truncate or handle without buffer overflow") { sub =>
-        // In legacy implementation, QueryParamItem.key capacity was 64 bytes.
-        // With zero-copy token slicing, wire slicing avoids fixed stack arrays, sets overflow flag,
-        // and accurately preserves key/value offsets without buffer overrun.
-        let query = "very_long_param_key_exceeding_sixty_four_bytes_boundary_1234567890_abcdef=val";
-        let list = core::parse_query_params(query);
-        sub.assert_true(list.tokens.len == 1, "Should parse 1 item");
-        sub.assert_true(list.overflow, "Oversized key must set overflow flag");
-        let k = core::query_token_key(list.tokens[0], list.wire);
-        let v = core::query_token_val(list.tokens[0], list.wire);
-        sub.assert_true(k.len > 64, "Zero-copy key slice preserves wire length");
-        sub.assert_bytes_eq(v, "val", "Value must be 'val'");
-    };
-
     t.run("percent_decode_query with 80-byte input into 64-byte buffer MUST NOT overflow") { sub =>
         var input: u8[..128] = [];
         for i in 80 { input.push('k' as u8); }
@@ -1930,25 +1580,6 @@ fn test_query_parameter_smuggling_and_truncation(t: lit::T&) {
         let m = core::get_query_param_fast(raw_query[..], search_key[..], out_val);
         sub.assert_true(m == core::QueryParamMatch.Missing, "Fast query param lookup MUST NOT falsely match truncated 64-byte key");
     };
-
-    t.run("Query param parser MUST NOT silently drop parameter 129 (smuggling)") { sub =>
-        // Construct query with 128 benign params followed by '&admin=true'
-        var raw_query: u8[>..] = [];
-        for i in 128 {
-            if i > 0 { raw_query.push('&'); }
-            raw_query.append("p");
-            core::format_u64_dec(i as u64, raw_query);
-            raw_query.append("=val");
-        }
-        raw_query.append("&admin=true");
-
-        // Fixed-capacity protocol decoders must treat buffer overflow as an explicit error
-        let count_valid = core::validate_query_param_count(raw_query[..]);
-        sub.assert_false(count_valid, "validate_query_param_count MUST reject query when parameters exceed capacity 128");
-
-        let list = core::parse_query_params(raw_query[..]);
-        sub.assert_true(list.overflow, "parse_query_params MUST flag overflow when parameters exceed capacity 128");
-    };
 }
 
 // ----------------------------------------------------------------------------
@@ -1976,16 +1607,12 @@ fn test_url_origin_punycode_and_view_validation(t: lit::T&) {
         sub.assert_false(view.valid, "Space in host MUST return valid == false");
     };
 
-    t.run("compute_public_suffix and extract_etld_plus_one with 180B domain must not abort") { sub =>
+    t.run("extract_etld_plus_one with 180B domain must not abort") { sub =>
         var long_domain: u8[..256] = [];
         for i in 10 {
             long_domain.append("subdomain.");
         }
         long_domain.append("example.co.uk");
-
-        var suffix: u8[..256] = [];
-        let is_icann = core::public_suffix_with_icann(long_domain[..], suffix);
-        sub.assert_eq(suffix[..], "co.uk", "Suffix correctly extracted for 180B host");
 
         var etld: u8[..256] = [];
         core::extract_etld_plus_one(long_domain[..], etld);
@@ -2013,7 +1640,6 @@ fn main() {
     var runner = lit::new_runner("Core URL Parser, Normalizer, and Security Verification Suite", lit::Verbosity.Verbose);
 
     lit::run_case(runner, "1. WHATWG URL Parser, IPv6 RFC 5952 Compression & Origin", test_url_parser_and_origin);
-    lit::run_case(runner, "2. File URL & Path Manipulation", test_swift_style_file_and_path_api);
     lit::run_case(runner, "3. WHATWG URL Standard & Security Audit Verification", test_whatwg_audit_fixes);
     lit::run_case(runner, "4. Canonical WPT & Edge Case Vectors (Categories 2..8)", test_canonical_wpt_and_edge_vectors);
     lit::run_case(runner, "5. Dual-Mode Resolution: RFC 3986 Reference vs Backend Endpoint", test_dual_mode_resolution_rfc_vs_endpoint);
@@ -2025,7 +1651,6 @@ fn main() {
     lit::run_case(runner, "11. Path Traversal & Userinfo Isolation", test_path_traversal_and_userinfo);
     lit::run_case(runner, "12. Go #78948 (CVE-2026-39825) Query Parameter Truncation & Smuggling", test_query_param_truncation_smuggling);
     lit::run_case(runner, "13. Go #78760 (CVE-2026-39821) Pure ASCII Punycode URL Host Rejection", test_pure_ascii_punycode_url_host_rejection);
-    lit::run_case(runner, "14. Go #77108 (CVE-2025-61726) Query Param Oversized Token DoS Guard", test_query_param_oversized_token_dos_guard);
     lit::run_case(runner, "15. Go #78172 & RFC 3986 §3.2.2 / RFC 9112 §3.2: Malformed Host", test_malformed_ip_literal_host_rejection);
     lit::run_case(runner, "16. Go #80282 & RFC 3986 §5.2.4: Deep Path Collapse Truncation", test_deep_path_dot_segment_collapse);
     lit::run_case(runner, "17. Go #62235 & RFC 6874 §2: Scoped IPv6 Link-Local URL Zone ID", test_scoped_ipv6_link_local_url_acceptance);

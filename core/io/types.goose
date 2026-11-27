@@ -20,9 +20,6 @@ enum IoError {
     InvalidArgument,  // Parameter out of range (e.g. negative length, null slice)
 }
 
-// Default capacity for fixed zero-heap circular buffers (4KB page-sized)
-const DEFAULT_RING_BUFFER_CAP: i64 = 4096;
-
 // Readiness bitmask flags shared across cross-framework async I/O reactors.
 const POLL_NONE:   u32 = 0;
 const POLL_READ:   u32 = 1 << 0;
@@ -66,7 +63,6 @@ struct DialTarget {
     unix_path:    const u8[:] = "",
 }
 
-const IO_OWNER_ANY:         u16 = 0;
 const IO_OWNER_HTTP_SERVER: u16 = 1;
 const IO_OWNER_USER_START:  u16 = 16;
 

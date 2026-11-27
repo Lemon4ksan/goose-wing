@@ -87,14 +87,17 @@ fn parse_callback_params<B1, B2>(
     out_state.clear();
     let q_pos = core::index_of_byte(target, '?');
     guard q_pos >= 0 else { return false; }
-    let params = core::parse_query_params(target[q_pos..]);
-    guard !params.overflow else { return false; }
-    let code = core::get_query_param(params, "code");
-    let state = core::get_query_param(params, "state");
-    guard code.len > 0 && code.len <= out_code.cap else { return false; }
-    guard state.len > 0 && state.len <= out_state.cap else { return false; }
-    out_code.append(code);
-    out_state.append(state);
+    let raw_query = target[q_pos..];
+    guard core::get_query_param_fast(raw_query, "code", out_code) == core::QueryParamMatch.Value && out_code.len > 0 else {
+        out_code.clear();
+        out_state.clear();
+        return false;
+    }
+    guard core::get_query_param_fast(raw_query, "state", out_state) == core::QueryParamMatch.Value && out_state.len > 0 else {
+        out_code.clear();
+        out_state.clear();
+        return false;
+    }
     return true;
 }
 

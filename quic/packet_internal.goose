@@ -269,14 +269,19 @@ checkfree fn parse_quic_long_header(
         hdr.header_type = ht1;
     }
 
-    // Reserved bits check (RFC 9000 §17.2, RFC 9001 §5.4.1): Only checked for unmasked headers.
-    // Masked headers check reserved bits strictly after AEAD decryption.
-    if !opts.is_masked && hdr.header_type != quic::QuicHeaderType.Retry {
+    // Reserved bits check (RFC 9000 §17.2, RFC 9001 §5.4.1): Only checked for known-version unmasked headers.
+    if ok_ht && !opts.is_masked && hdr.header_type != quic::QuicHeaderType.Retry {
         guard (first & 0x0C) == 0 else { return hdr, false; }
     }
 
     var idx: i64 = 5;
     guard parse_quic_long_cids(src, idx, hdr.dcid, hdr.scid) else { return hdr, false; }
+    if !ok_ht {
+        // RFC 9000 Section 17.2: Long Header Packets - Bytes past SCID are version-specific;
+        // stop after invariant CIDs so Version Negotiation works regardless of version/type bits.
+        hdr.header_len = idx as u32;
+        return hdr, true;
+    }
 
     if hdr.header_type == quic::QuicHeaderType.Initial {
         guard parse_quic_initial_token(src, idx, hdr.token) else { return hdr, false; }

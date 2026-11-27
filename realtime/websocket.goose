@@ -25,7 +25,21 @@ fn unmask_websocket_shifted(frame: u8[:], header_len: i64, payload_len: i64, mas
     guard payload_len > 0 && header_len > 0 && header_len <= frame.len && payload_len <= frame.len - header_len else {
         return frame[..0];
     }
-    realtime_internal::native_simd_unmask_shifted(frame, header_len, payload_len, mask_key);
+    let m32_be = ((mask_key[0] as u64) << 24) |
+                 ((mask_key[1] as u64) << 16) |
+                 ((mask_key[2] as u64) << 8) |
+                 mask_key[3];
+    let m64_be = (m32_be << 32) | m32_be;
+    var i: i64 = 0;
+    while i + 8 <= payload_len {
+        let w = core::read_be_u64(frame, header_len + i);
+        core::write_be_u64_at(frame, i, w ^ m64_be);
+        i += 8;
+    }
+    while i < payload_len {
+        frame[i] = frame[header_len + i] ^ mask_key[i & 3];
+        i += 1;
+    }
     return frame[..payload_len];
 }
 
@@ -44,52 +58,52 @@ struct WsFrameHeader {
 }
 
 // In-place SWAR 64-bit/32-bit XOR masking loop (RFC 6455 Section 5.3).
-// Vectorizes payload masking in pure Goose using 64-bit word iterations without heap allocations
+// Vectorizes payload masking in pure Goose using 4x-unrolled 64-bit word iterations without heap allocations
 // or out-of-bounds reads.
 fn apply_mask_in_place(data: u8[:], mask_key: const u8[4]&) {
     let n = data.len;
     guard n > 0 else { return; }
 
-    let m0 = mask_key[0] as u64;
-    let m1 = mask_key[1] as u64;
-    let m2 = mask_key[2] as u64;
-    let m3 = mask_key[3] as u64;
-
-    let m32_be = (m0 << 24) | (m1 << 16) | (m2 << 8) | m3;
+    let m32_be = ((mask_key[0] as u64) << 24) |
+                 ((mask_key[1] as u64) << 16) |
+                 ((mask_key[2] as u64) << 8) |
+                 mask_key[3];
     let m64_be = (m32_be << 32) | m32_be;
 
     var i: i64 = 0;
 
+    // 4x-unrolled 64-bit SWAR loop: process 32 bytes per iteration
+    while i + 32 <= n {
+        core::write_be_u64_at(data, i, core::read_be_u64(data, i) ^ m64_be);
+        core::write_be_u64_at(data, i + 8, core::read_be_u64(data, i + 8) ^ m64_be);
+        core::write_be_u64_at(data, i + 16, core::read_be_u64(data, i + 16) ^ m64_be);
+        core::write_be_u64_at(data, i + 24, core::read_be_u64(data, i + 24) ^ m64_be);
+        i += 32;
+    }
+
     // 64-bit SWAR loop: process 8 bytes per iteration
-    while core::add_sat_i64(i, 8) <= n {
-        let w = core::read_be_u64(data, i);
-        core::write_be_u64_at(data, i, w ^ m64_be);
-        i = core::add_sat_i64(i, 8);
+    while i + 8 <= n {
+        core::write_be_u64_at(data, i, core::read_be_u64(data, i) ^ m64_be);
+        i += 8;
     }
 
     // 32-bit SWAR tail: process remaining 4 bytes if present
-    if core::add_sat_i64(i, 4) <= n {
-        let w = core::read_be_u32(data, i);
-        core::write_be_u32_at(data, i, w ^ (m32_be as u32));
-        i = core::add_sat_i64(i, 4);
+    if i + 4 <= n {
+        core::write_be_u32_at(data, i, core::read_be_u32(data, i) ^ (m32_be as u32));
+        i += 4;
     }
 
     // Scalar byte-by-byte tail (0..3 bytes)
     while i < n {
         data[i] = data[i] ^ mask_key[i & 3];
-        i = core::add_sat_i64(i, 1);
+        i += 1;
     }
 }
 
-// In-place masking / unmasking using vectorized SIMD acceleration with 64-bit unrolled fallback (RFC 6455 Section 5.3).
+// In-place masking / unmasking using pure-Goose 4x-unrolled 64-bit SWAR (RFC 6455 Section 5.3).
 fn mask_websocket_payload(data: u8[:], mask_key: const u8[4]&) {
-    let n = data.len;
-    guard n > 0 else { return; }
-    if n >= 64 {
-        realtime_internal::native_simd_mask_websocket(data, mask_key);
-    } else {
-        apply_mask_in_place(data, mask_key);
-    }
+    guard data.len > 0 else { return; }
+    apply_mask_in_place(data, mask_key);
 }
 
 // Parses RFC 6455 Frame Header with strict protocol validation.

@@ -14,7 +14,7 @@ form the two-part rulebook for `goose-wing`. Both are loaded into
 
 - [`core.goose`](file:///core.goose) (`namespace core`): Zero-allocation
   primitives (`core/bytes`, `core/math`, `core/io`, `core/crypto`, `core/time`,
-  `core/url`, `core/sync`, `core/compress`, `core/ufcs`).
+  `core/url`, `core/compress`, `core/ufcs`).
 - [`wing.goose`](file:///wing.goose) (`namespace wing`): Networking,
   cryptographic transport, and protocol stack:
   - `rfc/*`: Shared RFC grammar helpers (`rfc9110`, `rfc8941` Structured Fields,
@@ -57,10 +57,8 @@ endian readers, saturating math, or UTF-8/JSON helpers. Import `core.bytes`,
   (RFC 3986), `core::is_ascii_vchar(b)`, `core::is_ascii_printable(b)`,
   `core::is_ascii_alpha(b)`, `core::is_ascii_alphanumeric(b)`,
   `core::is_ascii_digit(b)`, `core::is_ascii_hexdigit(b)`,
-  `core::is_ascii_ctl(b)`, `core::hex_digit_to_val(b) -> i32`.
-- **Case conversion**: `core::to_lower_ascii_byte(b)`,
-  `core::to_upper_ascii_byte(b)`, `s.to_lower_ascii(out)`,
-  `s.to_upper_ascii(out)`.
+  `core::hex_digit_to_val(b) -> i32`.
+- **Case conversion**: `core::to_lower_ascii_byte(b)`, `s.to_lower_ascii(out)`.
 - **Case-insensitive UFCS on `const u8[:]`**: `a.eq_ascii_fold(b)`,
   `s.starts_with_fold(prefix)`, `s.ends_with_fold(suffix)`,
   `s.contains_fold(needle)`, `s.index_of_fold(needle) -> i64`.
@@ -70,8 +68,7 @@ endian readers, saturating math, or UTF-8/JSON helpers. Import `core.bytes`,
 - **RFC 9110 OWS/LWS (`' '` or `'\t'`)**: `core::is_lws(b)`, `s.trim_lws()`,
   `s.trim_lws_start()`, `s.trim_lws_end()`.
 - **ASCII whitespace (`SP`, `TAB`, `LF`, `CR`, `VT`, `FF`)**:
-  `core::is_ascii_space(b)`, `s.trim_ascii_space()`,
-  `s.trim_ascii_space_start()`, `s.trim_ascii_space_end()`.
+  `core::is_ascii_space(b)`, `s.trim_ascii_space()`.
 - **Byte & cutset trimming**: `s.trim_byte(b)`, `s.trim_start_byte(b)`,
   `s.trim_end_byte(b)`, `s.trim_bytes(cutset)`, `s.trim_start_bytes(cutset)`,
   `s.trim_end_bytes(cutset)`.
@@ -88,8 +85,8 @@ endian readers, saturating math, or UTF-8/JSON helpers. Import `core.bytes`,
 - **Prefix/suffix stripping & splitting (UFCS on `const u8[:]`)**:
   `s.strip_prefix(p)`, `s.strip_suffix(sfx)`, `s.strip_prefix_fold(p)`,
   `s.strip_suffix_fold(sfx)` -> `(rest, bool)`; `s.split_once_byte('=')`,
-  `s.rsplit_once_byte('/')`, `s.split_once("::")`, `s.split_once_fold(": ")` ->
-  `(prefix, suffix, bool)`; `s.partition_byte('?') -> (head, sep, tail)`;
+  `s.rsplit_once_byte('/')`, `s.split_once("::")` -> `(prefix, suffix, bool)`;
+  `s.partition_byte('?') -> (head, sep, tail)`;
   `core::collapse_repeats_in_place(buf, '/') -> i64`; `core::each_pair<T, F>(xs)`,
   `core::each_window<T, F>(xs, k)`.
 - **Quote-aware RFC parameter splitting (honors `\"` and `\\` inside `"..."`)**:
@@ -98,8 +95,7 @@ endian readers, saturating math, or UTF-8/JSON helpers. Import `core.bytes`,
 - **Tokenizer**: `var tok = core::make_byte_tokenizer(s, ',');` with
   `core::token_next(tok) -> (const u8[:], bool)`,
   `core::token_peek(tok) -> (const u8[:], bool)`,
-  `core::token_rest(tok) -> const u8[:]`, and
-  `for t in s.each_non_empty_token('.') { ... }`.
+  `core::token_rest(tok) -> const u8[:]`.
 
 ### 4. Integer parsing, formatting, UTF-8, and JSON (`core/bytes/*`)
 
@@ -113,8 +109,7 @@ endian readers, saturating math, or UTF-8/JSON helpers. Import `core.bytes`,
   `val.format_u8_hex(out, upper)`, `core::format_u64_hex_fixed(val, w, out, u)`.
 - **UTF-8**: `s.validate_utf8()`, `core::is_pure_ascii(s)`,
   `core::validate_utf8_dfa_chunk(data, state, is_fin)`,
-  `core::validate_utf8_streaming(data, is_final)`, `core::decode_utf8(s)`,
-  `core::char_indices<F>(s)`.
+  `core::decode_utf8(s)`, `core::char_indices<F>(s)`.
 - **Bounded JSON (zero `u8[>..]` scratch allocation)**:
   `core::read_json_string_into(r, dst) -> bool`,
   `core::decode_json_string_into(text, start, end, dst) -> bool`,
@@ -131,7 +126,7 @@ endian readers, saturating math, or UTF-8/JSON helpers. Import `core.bytes`,
   `core::read_be_u16/u24/u32/u64(data, off)`,
   `core::read_le_u16/u24/u32/u64(data, off)`,
   `core::write_be_u16_at/u32_at/u64_at(dst, off, val)`,
-  `core::bswap16/32/64(x)`.
+  `core::write_le_u16/u32/u64(out, val)`.
 - **Saturating math (eliminates signed `ovf_ops` in G-CRAP)**:
   `core::add_sat_i64(a, b)`, `core::sub_sat_i64(a, b)`,
   `core::add_sat_u64(a, b)`, `core::sub_sat_u64(a, b)`,
@@ -140,7 +135,6 @@ endian readers, saturating math, or UTF-8/JSON helpers. Import `core.bytes`,
 - **Crypto & zeroization**: `core::ct_eq_bytes(a, b)`,
   `core::ct_eq_tag16(a, b)`, `core::ct_eq_tag32(a, b)`,
   `core::secure_zeroize_16/24/32/48/64(buf)`, `core::secure_zeroize_slice(s)`,
-  `core::KeySlot` (`core::zeroize_key_slot(slot)`),
   `core::base64_decode(src, dst)`, `core::base64url_decode(src, dst)`.
 - **Binary cursors, rings, & URLs**: `core::ByteCursor` (`read_u8/u16/u24/u32`,
   `read_bytes`, `read_u16_prefixed`, `read_u24_prefixed`, `read_sub_cursor`,
@@ -149,7 +143,7 @@ endian readers, saturating math, or UTF-8/JSON helpers. Import `core.bytes`,
   `start_u24_prefix`, `finish_u24_prefix`), `core::RingBuffer`
   (`rotate_left_in_place`, `realign_ring`, `contiguous_readable_slice`),
   `core::PipeBuffer`, `core::CorkBuffer`, `core::PageRingBuffer`,
-  `core::GuardedArena`, `core::parse_url(raw)`,
+  `core::SpscRing`, `core::parse_url(raw)`,
   `core::normalize_http_target_uri(raw, out)`,
   `raw_query.get_query_param_fast(key, out)`,
   `raw_query.has_query_param_fast(key)`.

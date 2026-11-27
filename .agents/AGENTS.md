@@ -138,8 +138,8 @@ and [`.githooks/pre-commit`](file:///.githooks/pre-commit):
 11. **Constant-time cryptographic comparisons and secret zeroization**:
     - Always compare MACs, digests, HMACs, and auth tags with
       `core::ct_eq_bytes` (`ct_eq_tag16`, `ct_eq_tag32`), never `==` or `!=`.
-    - Wipe stack keys, PRKs, nonces, and seeds via `core::secure_zeroize_16/32/64`
-      or `core::KeySlot` before function return (including early error paths).
+    - Wipe stack keys, PRKs, nonces, and seeds with
+      `core::secure_zeroize_16/32/64` before return (including early errors).
 12. **Zero dynamic vectors (`u8[>..]`) in wire frame structs**:
     - `*Frame`, `*Packet`, and `*WireHeader` structs must use `const u8[:]`
       slices or bounded `u8[..N]` arrays, never `u8[>..]`.
@@ -216,11 +216,9 @@ Enforced by `goose format --check .`, `scripts/lint_invariants.py`, and
 - **File naming**: `docs/*.md` files use `snake_case`; root meta-files and
   per-module `README.md` files use `UPPERCASE`.
 - **80-column Markdown and `goosemarklint`**:
-  - Prose paragraphs, blockquotes, and list items in `.md` files must hard-wrap
-    at **80 columns** (tables, code blocks, headings, and long links are
-    exempt).
-  - Run `just md-fmt` and `just md-lint` (or `goosemarklint fmt <files>` /
-    `goosemarklint check <files>`) after editing any `.md` file.
+  - Hard-wrap prose, blockquotes, and list items at **80 columns** (tables,
+    code blocks, headings, and long links exempt).
+  - Run `just md-fmt` and `just md-lint` after editing `.md` files.
 - **Communication & anti-AI tone**:
   - Start directly with the technical answer; never use sycophantic openers or
     closing platitudes.

@@ -59,25 +59,6 @@ const ML_EXTRA_BITS: u8[64] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
-// Predefined FSE normalized distributions (RFC 8878 section 3.1.1.3.2.2)
-const LL_DEFAULT_DIST: i16[36] = [
-    4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1,
-    2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 2, 1, 1, 1, 1, 1,
-    -1, -1, -1, -1,
-];
-
-const ML_DEFAULT_DIST: i16[53] = [
-    1, 4, 3, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1,
-    -1, -1, -1, -1, -1,
-];
-
-const OF_DEFAULT_DIST: i16[29] = [
-    1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1,
-];
-
 // ---- helper bit functions --------------------------------------------------
 
 checkfree fn zstd_high_bit(v: u32) -> i32 {
@@ -1517,12 +1498,6 @@ fn decode_literals(
 }
 
 // ---- sequences decoder & execution (rfc 8878 section 3.1.1.3.2) ------------
-
-struct SequenceCmd {
-    lit_len:   u32 = 0,
-    match_len: u32 = 0,
-    offset:    u32 = 0,
-}
 
 fn compute_repeat_offset(
     offset_val: u32,

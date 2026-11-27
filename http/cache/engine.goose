@@ -127,7 +127,6 @@ struct CacheWriterFlight {
 struct CacheWriters {
     flights: CacheWriterFlight[..16] = [],
     slots:   WriterSlot[..64]        = [],
-    group:   core::SingleflightGroup = core::SingleflightGroup { .. },
 }
 
 // Registers or joins an in-flight network transaction for key.

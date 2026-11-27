@@ -629,9 +629,9 @@ fn fuzz_target_tls13_deframer_and_handshake(data: const u8[:]) -> u64 {
     let ext_val = fdp_consume_bytes(fdp, 16);
     var synth_ee: u8[..32] = [];
     let ext_block_len = core::add_sat_i64(4, ext_val.len) as u16;
-    core::write_be_u16(synth_ee, ext_block_len);
-    core::write_be_u16(synth_ee, ext_type);
-    core::write_be_u16(synth_ee, ext_val.len as u16);
+    core::append_u16_be(synth_ee, ext_block_len);
+    core::append_u16_be(synth_ee, ext_type);
+    core::append_u16_be(synth_ee, ext_val.len as u16);
     synth_ee.append(ext_val);
     let ok_synth_ee = tls_internal::parse_encrypted_extensions_alpn(synth_ee[..], ee_alpn);
     if rfc::is_forbidden_ee_extension(ext_type) {
@@ -1175,13 +1175,9 @@ fn fuzz_target_idna_psl_url_ip(data: const u8[:]) -> u64 {
         sig = fuzz_mix_state(sig, 0x12002);
     }
 
-    var etld:   u8[..256] = [];
-    var suffix: u8[..256] = [];
+    var etld: u8[..256] = [];
     core::extract_etld_plus_one(data, etld);
     if etld.len > 0 { sig = fuzz_mix_state(sig, 0x12003 ^ (etld.len as u64)); }
-    if core::public_suffix_with_icann(data, suffix) {
-        sig = fuzz_mix_state(sig, 0x12004 ^ (suffix.len as u64));
-    }
 
     var ip6_comp:  u8[..64] = [];
     var ip6_comp2: u8[..64] = [];
@@ -1194,10 +1190,9 @@ fn fuzz_target_idna_psl_url_ip(data: const u8[:]) -> u64 {
         sig = fuzz_mix_state(sig, 0x12006);
     }
 
-    let parsed_u, err_u = core::parse_url(data);
+    let _, err_u = core::parse_url(data);
     if core::is_ok(err_u) {
-        let site = core::registrable_site_from_url(parsed_u);
-        sig = fuzz_mix_state(sig, 0x12007 ^ (site.registrable_domain.len as u64));
+        sig = fuzz_mix_state(sig, 0x12007);
     }
     return sig;
 }

@@ -6,9 +6,11 @@ namespace net_internal;
 
 import std;
 import core;
+import .driver.types;
 import .tcp;
 import .transport;
 import .udp;
+import .wasm_loopback_internal;
 
 // ---- Native TCP, Epoll, Signal, & UDP C Shims (shim/tcp.c) -----------------
 
@@ -22,7 +24,6 @@ extern fn native_adopt_socket(raw_fd: i64) -> i64 = "wing_adopt_socket";
 extern fn native_tcp_getsockname_port(sock_fd: i64) -> u16 = "wing_tcp_getsockname_port";
 extern fn native_tcp_get_peer_ip(sock_fd: i64, out_ip: u8[:]) -> i32 = "wing_tcp_get_peer_ip";
 extern fn native_tcp_accept(listener_fd: i64, timeout_ms: u32) -> i64 = "wing_tcp_accept";
-extern fn native_tcp_connect(host: const u8[:], port: u16, timeout_ms: u32) -> i64 = "wing_tcp_connect";
 extern fn native_tcp_connect_ex(
     host:            const u8[:],
     port:            u16,
@@ -65,7 +66,6 @@ extern fn native_tcp_set_nonblocking(sock_fd: i64, nonblocking: i32) -> i32 = "w
 extern fn native_tcp_set_quickack(sock_fd: i64, enable: i32) -> i32 = "wing_tcp_set_quickack";
 extern fn native_tcp_set_cork(sock_fd: i64, enable: i32) -> i32 = "wing_tcp_set_cork";
 extern fn native_tcp_accept_nonblocking(listener_fd: i64) -> i64 = "wing_tcp_accept_nonblocking";
-extern fn native_tcp_recv_nonblocking(sock_fd: i64, buf: u8[:]) -> i32 = "wing_tcp_recv_nonblocking";
 extern fn native_epoll_create() -> i64 = "wing_epoll_create";
 extern fn native_epoll_add(epfd: i64, sock_fd: i64, events: u32, udata: u64) -> i32 = "wing_epoll_add";
 extern fn native_epoll_mod(epfd: i64, sock_fd: i64, events: u32, udata: u64) -> i32 = "wing_epoll_mod";
@@ -79,6 +79,7 @@ extern fn native_epoll_wait_events(
     timeout_ms: i32,
 ) -> i32 = "wing_epoll_wait_events";
 extern fn native_epoll_close(epfd: i64) = "wing_epoll_close";
+extern fn native_online_cpu_count() -> i64 = "wing_online_cpu_count";
 extern fn native_set_cpu_affinity(cpu_id: i64) -> i32 = "wing_set_cpu_affinity";
 extern fn native_tcp_set_incoming_cpu(sock_fd: i64, cpu_id: i64) -> i32 = "wing_tcp_set_incoming_cpu";
 extern fn native_tcp_set_fastopen(sock_fd: i64, qlen: i32) -> i32 = "wing_tcp_set_fastopen";
@@ -104,14 +105,6 @@ extern fn native_tcp_accept_info(
     out_dst_ip_len:  i32&,
     out_dst_port:    u16&,
 ) -> i64 = "wing_tcp_accept_info";
-extern fn native_tcp_connect_bound_begin(
-    src_ip:    const u8[:],
-    dst_ip:    const u8[:],
-    dst_port:  u16,
-    so_mark:   u32,
-    out_state: i32&,
-    out_err:   i32&,
-) -> i64 = "wing_tcp_connect_bound_begin";
 extern fn native_tcp_connect_opts_begin(
     src_ip:          const u8[:],
     dst_ip:          const u8[:],
@@ -158,13 +151,6 @@ extern fn native_udp_recvfrom_dual(
     out_peer_ip_len: i32&,
     out_peer_port:   u16&,
 ) -> i32 = "wing_udp_recvfrom_dual";
-extern fn native_udp_exchange_dual(
-    server_ip:   const u8[:],
-    server_port: u16,
-    query:       const u8[:],
-    out_resp:    u8[:],
-    timeout_ms:  u32,
-) -> i32 = "wing_udp_exchange_dual";
 extern fn native_fs_disk_usage_percent(path: const u8[:]) -> i32 = "wing_fs_disk_usage_percent";
 extern fn native_fs_file_mtime(path: const u8[:]) -> i64 = "wing_fs_file_mtime";
 
@@ -420,6 +406,10 @@ fn check_execute_deferred_shutdown(fd: i64, bp: net::BackPressure&) {
 
 fn epoll_wait_direct(epfd: i64, raw_fds: i64[:], raw_udata: u64[:], timeout_ms: i32 = -1) -> i32 {
     guard epfd >= 0 && (raw_fds.len > 0 || raw_udata.len > 0) else { return 0; }
+    if g_is_wasm_target {
+        var empty_ev: u32[0] = [];
+        return wasm_epoll_wait(epfd, raw_fds, raw_udata, empty_ev[..]);
+    }
     return native_epoll_wait(epfd, raw_fds, raw_udata, timeout_ms);
 }
 
@@ -431,6 +421,9 @@ fn epoll_wait_events_direct(
     timeout_ms: i32 = -1,
 ) -> i32 {
     guard epfd >= 0 && raw_udata.len > 0 && raw_events.len > 0 else { return 0; }
+    if g_is_wasm_target {
+        return wasm_epoll_wait(epfd, raw_fds, raw_udata, raw_events);
+    }
     return native_epoll_wait_events(epfd, raw_fds, raw_udata, raw_events, timeout_ms);
 }
 

@@ -34,6 +34,8 @@ const NATIVE_FLAG_REQUIRE_ALPN_MATCH: i32 = 8;
 
 const NATIVE_FLAG_REQUIRE_CLIENT_CERT: i32 = 16;
 
+const NATIVE_FLAG_SERVER_IS_IP_LITERAL: i32 = 32;
+
 extern fn native_tls_backend_available(kind: i32) -> i32 = "wing_tls_backend_available";
 
 extern fn native_tls_backend_open(
@@ -167,28 +169,41 @@ fn should_route_to_pure_backend(cfg: const tls::TlsBackendConfig&, is_server: bo
     return cfg.ca_file.len > 0 && !tls::tls_backend_available(tls::TlsBackendKind.SystemOpenSsl);
 }
 
+// Normalizes `server_name` (stripping `[...]` around IPv6 literals) and returns `(clean_name, is_ip_literal, ok)`.
+inline fn normalize_native_server_name(raw_name: const u8[:]) -> const u8[:], bool, bool {
+    guard raw_name.len > 0 else { return raw_name, false, true; }
+    var name = raw_name;
+    if name.len >= 2 && name[0] == '[' && name[name.len - 1] == ']' {
+        name = name[1..^1];
+        guard name.len > 0 else { return raw_name, false, false; }
+    }
+    return name, core::is_ip_address_literal(name), true;
+}
+
 // Packs peer verification, OS root-store, session-ticket, and ALPN-match flags for `wing_tls_backend_open`.
 //
 // Example:
 //   cfg.insecure_skip_verify = false, cfg.use_system_roots = false, cfg.enable_session_tickets = false
 //   returns: 6 (NATIVE_FLAG_NO_SYSTEM_ROOTS | NATIVE_FLAG_NO_SESSION_TICKETS)
-inline fn pack_native_verify_flags(cfg: const tls::TlsBackendConfig&) -> i32 {
-    let conds: bool[5] = [
+inline fn pack_native_verify_flags(cfg: const tls::TlsBackendConfig&, is_ip_literal: bool) -> i32 {
+    let conds: bool[6] = [
         cfg.insecure_skip_verify,
         !cfg.use_system_roots,
         !cfg.enable_session_tickets,
         cfg.require_alpn_match,
         cfg.require_client_cert,
+        is_ip_literal,
     ];
-    let masks: i32[5] = [
+    let masks: i32[6] = [
         NATIVE_FLAG_INSECURE_SKIP_VERIFY,
         NATIVE_FLAG_NO_SYSTEM_ROOTS,
         NATIVE_FLAG_NO_SESSION_TICKETS,
         NATIVE_FLAG_REQUIRE_ALPN_MATCH,
         NATIVE_FLAG_REQUIRE_CLIENT_CERT,
+        NATIVE_FLAG_SERVER_IS_IP_LITERAL,
     ];
     var flags: i32 = 0;
-    for i in 5 {
+    for i in 6 {
         if conds[i] { flags = flags | masks[i]; }
     }
     return flags;

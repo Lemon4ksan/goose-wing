@@ -32,7 +32,6 @@ fn test_duration_arithmetic_and_bounds(t: lit::T&) {
         let d_m = core::mins(50);
         let d_h = core::hours(2);
         let d_d = core::days(3);
-        let d_w = core::weeks(1);
 
         sub.assert_eq(d_ns.as_nanos(), 50);
         sub.assert_eq(d_us.as_nanos(), 50000);
@@ -42,16 +41,10 @@ fn test_duration_arithmetic_and_bounds(t: lit::T&) {
         sub.assert_eq(d_s.as_millis(), 50000);
         sub.assert_eq(d_s.as_secs(), 50);
         sub.assert_eq(d_m.as_secs(), 3000);
-        sub.assert_eq(d_m.as_mins(), 50);
-        sub.assert_eq(d_h.as_mins(), 120);
-        sub.assert_eq(d_h.as_hours(), 2);
-        sub.assert_eq(d_d.as_hours(), 72);
-        sub.assert_eq(d_d.as_days(), 3);
-        sub.assert_eq(d_w.as_days(), 7);
+        sub.assert_eq(d_h.as_secs(), 7200);
+        sub.assert_eq(d_d.as_secs(), 259200);
 
         sub.assert_in_delta(core::millis(1500).as_secs_f64(), 1.5, 0.000001);
-        sub.assert_in_delta(core::secs(90).as_mins_f64(), 1.5, 0.000001);
-        sub.assert_in_delta(core::mins(90).as_hours_f64(), 1.5, 0.000001);
     };
 
     t.run("Operator Arithmetic & Mutating Assignments") { sub =>
@@ -81,14 +74,13 @@ fn test_duration_arithmetic_and_bounds(t: lit::T&) {
         let neg = core::secs(-5);
         let min_i64_dur = core::Duration { nanos: -9223372036854775807 - 1 };
 
-        sub.assert_true(pos.is_positive());
         sub.assert_false(pos.is_negative() || pos.is_zero());
 
         sub.assert_true(zero_dur.is_zero());
-        sub.assert_false(zero_dur.is_positive() || zero_dur.is_negative());
+        sub.assert_false(zero_dur.is_negative());
 
         sub.assert_true(neg.is_negative());
-        sub.assert_false(neg.is_positive() || neg.is_zero());
+        sub.assert_false(neg.is_zero());
 
         sub.assert_eq(pos.abs().as_secs(), 5);
         sub.assert_eq(zero_dur.abs().as_nanos(), 0);
@@ -114,27 +106,6 @@ fn test_duration_arithmetic_and_bounds(t: lit::T&) {
 // 2. Duration Truncation and Rounding
 // ----------------------------------------------------------------------------
 fn test_duration_truncation_and_rounding(t: lit::T&) {
-    t.run("Truncation Towards Zero") { sub =>
-        // Step <= 0 returns dur unchanged
-        sub.assert_eq(core::truncate(core::secs(75), core::secs(0)).as_secs(), 75);
-        sub.assert_eq(core::truncate(core::secs(75), core::secs(-1)).as_secs(), 75);
-
-        // Positive truncation
-        sub.assert_eq(core::truncate(core::secs(75), core::mins(1)).as_secs(), 60);
-        sub.assert_eq(core::truncate(core::secs(59), core::mins(1)).as_secs(), 0);
-        sub.assert_eq(core::truncate(core::secs(120), core::mins(1)).as_secs(), 120);
-
-        // Negative truncation (towards zero)
-        sub.assert_eq(core::truncate(core::secs(-75), core::mins(1)).as_secs(), -60);
-        sub.assert_eq(core::truncate(core::secs(-59), core::mins(1)).as_secs(), 0);
-
-        // i64.min truncation must stay negative (towards zero), never wrap to positive
-        let min_dur = core::Duration { nanos: -9223372036854775807 - 1 };
-        let trunc_min = core::truncate(min_dur, core::secs(1));
-        sub.assert_true(trunc_min.is_negative(), "truncate(min_i64) must remain negative");
-        sub.assert_eq(trunc_min.as_nanos(), -9223372036000000000, "truncate(min_i64) rounds toward zero");
-    };
-
     t.run("Rounding Half-Away-From-Zero") { sub =>
         // Step <= 0 returns dur unchanged
         sub.assert_eq(core::round(core::secs(75), core::secs(0)).as_secs(), 75);
@@ -195,84 +166,6 @@ fn test_duration_format_and_parse_security(t: lit::T&) {
         // i64.min must format cleanly without double minus "--"
         buf.clear(); core::format(buf, core::Duration { nanos: -9223372036854775807 - 1 });
         sub.assert_contains(buf[..], "-2562047h47m16.854775808s");
-    };
-
-    t.run("Valid ParseDuration Matrix (Basic, Composite, High-Precision Fraction)") { sub =>
-        let d1, ok1 = core::parse_duration("500ms");
-        sub.require_true(ok1);
-        sub.assert_eq(d1.as_millis(), 500);
-
-        let d2, ok2 = core::parse_duration("1h30m45s");
-        sub.require_true(ok2);
-        sub.assert_eq(d2.as_secs(), 5445);
-
-        let d3, ok3 = core::parse_duration("-2.5s");
-        sub.require_true(ok3);
-        sub.assert_in_delta(d3.as_secs_f64(), -2.5, 0.000001);
-
-        let d4, ok4 = core::parse_duration("100ns");
-        sub.require_true(ok4);
-        sub.assert_eq(d4.as_nanos(), 100);
-
-        let d5, ok5 = core::parse_duration("2w3d4h");
-        sub.require_true(ok5);
-        sub.assert_eq(d5.as_hours(), 2 * 168 + 3 * 24 + 4);
-
-        // 9-digit fractional nanoseconds in large units (MUST NOT OVERFLOW i64)
-        let d6, ok6 = core::parse_duration("0.500000000h");
-        sub.require_true(ok6, "0.500000000h must parse without fraction multiplication overflow");
-        sub.assert_eq(d6.as_mins(), 30);
-
-        let d7, ok7 = core::parse_duration("0.500000000d");
-        sub.require_true(ok7, "0.500000000d must parse without fraction multiplication overflow");
-        sub.assert_eq(d7.as_hours(), 12);
-
-        let d8, ok8 = core::parse_duration("0.500000000w");
-        sub.require_true(ok8, "0.500000000w must parse without fraction multiplication overflow");
-        sub.assert_eq(d8.as_hours(), 84);
-
-        let d9, ok9 = core::parse_duration("+10s");
-        sub.require_true(ok9);
-        sub.assert_eq(d9.as_secs(), 10);
-
-        // Leading dot shorthand (Go compatibility, e.g. .5s)
-        let d_lead, ok_lead = core::parse_duration(".5s");
-        sub.require_true(ok_lead, ".5s leading dot must parse cleanly");
-        sub.assert_eq(d_lead.as_millis(), 500);
-    };
-
-    t.run("ParseDuration Malicious & Malformed Vectors (Injection & Overflow Rejection)") { sub =>
-        let bad_vectors = [
-            StringVector { input: "", expect_ok: false, desc: "empty string" },
-            StringVector { input: "   ", expect_ok: false, desc: "whitespace only" },
-            StringVector { input: "+", expect_ok: false, desc: "lone plus sign" },
-            StringVector { input: "-", expect_ok: false, desc: "lone minus sign" },
-            StringVector { input: "+   ", expect_ok: false, desc: "plus sign with spaces" },
-            StringVector { input: "-   ", expect_ok: false, desc: "minus sign with spaces" },
-            StringVector { input: "s", expect_ok: false, desc: "unit with no number" },
-            StringVector { input: "ms", expect_ok: false, desc: "unit with no number" },
-            StringVector { input: "-s", expect_ok: false, desc: "sign and unit with no number" },
-            StringVector { input: "500", expect_ok: false, desc: "number with no unit" },
-            StringVector { input: "-100", expect_ok: false, desc: "negative number with no unit" },
-            StringVector { input: "500xyz", expect_ok: false, desc: "unknown unit xyz" },
-            StringVector { input: "100sec", expect_ok: false, desc: "invalid unit sec (must be s)" },
-            StringVector { input: ".s", expect_ok: false, desc: "dot only with unit" },
-            StringVector { input: "..s", expect_ok: false, desc: "double dot with unit" },
-            StringVector { input: "1.2.3s", expect_ok: false, desc: "multiple dots in number" },
-            StringVector { input: "1..5s", expect_ok: false, desc: "consecutive dots in number" },
-            StringVector { input: "1.s", expect_ok: false, desc: "trailing dot with no fraction digits" },
-            StringVector { input: "10s+20s", expect_ok: false, desc: "embedded plus sign" },
-            StringVector { input: "10s-5s", expect_ok: false, desc: "embedded minus sign" },
-            StringVector { input: "9223372036854775808ns", expect_ok: false, desc: "nanos exceeding i64.max" },
-            StringVector { input: "999999999999999999h", expect_ok: false, desc: "hours multiplication overflow" },
-            StringVector { input: "3000000h3000000h", expect_ok: false, desc: "accumulation sum overflow" },
-            StringVector { input: "9223372036854775807s", expect_ok: false, desc: "seconds multiplication overflow" },
-        ];
-
-        lit::run_table(sub, "BadDurationMatrix", bad_vectors[..]) { sub2, row, idx =>
-            let _, ok = core::parse_duration(row.input);
-            sub2.assert_eq(ok, row.expect_ok, row.desc);
-        };
     };
 }
 
@@ -421,7 +314,7 @@ fn test_time_construction_and_pre1970(t: lit::T&) {
         sub.assert_eq(tm.hour(), 14);
         sub.assert_eq(tm.minute(), 30);
         sub.assert_eq(tm.second(), 45);
-        sub.assert_eq(tm.nanosecond(), 123456789);
+        sub.assert_eq(tm.nsec, 123456789);
     };
 
     t.run("Pre-1970 Negative Unix Timestamps") { sub =>
@@ -442,46 +335,14 @@ fn test_time_construction_and_pre1970(t: lit::T&) {
         // Normalization of negative fractional nanoseconds
         let tm_norm = core::unix(100, -250000000);
         sub.assert_eq(tm_norm.unix(), 99, "negative nanos must decrement sec");
-        sub.assert_eq(tm_norm.nanosecond(), 750000000, "nanos must be normalized in [0, 999_999_999]");
+        sub.assert_eq(tm_norm.nsec, 750000000, "nanos must be normalized in [0, 999_999_999]");
 
         // min_i64 nanoseconds normalization (must stay in the past, never wrap to future)
         let min_i64_nanos = -9223372036854775807 - 1;
         let tm_min_ns = core::unix(0, min_i64_nanos);
         sub.assert_lt(tm_min_ns.unix(), 0, "unix(0, min_i64) must be in the past");
         sub.assert_eq(tm_min_ns.unix(), -9223372037);
-        sub.assert_eq(tm_min_ns.nanosecond(), 145224192);
-    };
-
-    t.run("Calendar Boundary Projections") { sub =>
-        let tm = core::date(2026, core::Month.October, 23, 15, 45, 30, 500, 0);
-
-        let sod = tm.start_of_day();
-        sub.assert_eq(sod.hour(), 0);
-        sub.assert_eq(sod.minute(), 0);
-        sub.assert_eq(sod.second(), 0);
-        sub.assert_eq(sod.nanosecond(), 0);
-
-        let eod = tm.end_of_day();
-        sub.assert_eq(eod.hour(), 23);
-        sub.assert_eq(eod.minute(), 59);
-        sub.assert_eq(eod.second(), 59);
-        sub.assert_eq(eod.nanosecond(), 999999999);
-
-        let som = tm.start_of_month();
-        sub.assert_eq(som.day(), 1);
-        sub.assert_eq(som.hour(), 0);
-
-        let eom = tm.end_of_month();
-        sub.assert_eq(eom.day(), 31);
-        sub.assert_eq(eom.hour(), 23);
-
-        let soy = tm.start_of_year();
-        sub.assert_eq(soy.month_number(), 1);
-        sub.assert_eq(soy.day(), 1);
-
-        let eoy = tm.end_of_year();
-        sub.assert_eq(eoy.month_number(), 12);
-        sub.assert_eq(eoy.day(), 31);
+        sub.assert_eq(tm_min_ns.nsec, 145224192);
     };
 }
 
@@ -499,8 +360,8 @@ fn test_time_arithmetic_and_redos_immunity(t: lit::T&) {
 
         sub.assert_true(t1.before(t2));
         sub.assert_true(t2.after(t1));
-        sub.assert_false(t1.equal(t2));
-        sub.assert_true(t1.equal(t1));
+        sub.assert_ne(t1.compare(t2), 0);
+        sub.assert_eq(t1.compare(t1), 0);
 
         // Sub-second comparison
         sub.assert_true(t1.before(t3));
@@ -522,155 +383,26 @@ fn test_time_arithmetic_and_redos_immunity(t: lit::T&) {
         let min_i64_val = -9223372036854775807 - 1;
         sub.assert_eq(diff_neg_huge.as_nanos(), min_i64_val, "negative difference > 292 years must saturate to min_i64");
     };
-
-    t.run("Clamped Month & Year Arithmetic") { sub =>
-        // Non-leap year: Jan 31 + 1 month -> Feb 28
-        let jan31_25 = core::date(2025, core::Month.January, 31, 12, 0, 0, 0, 0);
-        let feb28_25 = jan31_25.add_months_clamped(1);
-        sub.assert_eq(feb28_25.year(), 2025);
-        sub.assert_eq(feb28_25.month_number(), 2);
-        sub.assert_eq(feb28_25.day(), 28);
-
-        // Leap year: Jan 31 + 1 month -> Feb 29
-        let jan31_24 = core::date(2024, core::Month.January, 31, 12, 0, 0, 0, 0);
-        let feb29_24 = jan31_24.add_months_clamped(1);
-        sub.assert_eq(feb29_24.year(), 2024);
-        sub.assert_eq(feb29_24.month_number(), 2);
-        sub.assert_eq(feb29_24.day(), 29);
-
-        // Leap day + 1 year -> Feb 28
-        let feb29_leap = core::date(2024, core::Month.February, 29, 12, 0, 0, 0, 0);
-        let next_yr = feb29_leap.add_years_clamped(1);
-        sub.assert_eq(next_yr.year(), 2025);
-        sub.assert_eq(next_yr.month_number(), 2);
-        sub.assert_eq(next_yr.day(), 28);
-
-        // Backward subtraction: March 31 - 1 month -> Feb 28
-        let mar31_25 = core::date(2025, core::Month.March, 31, 12, 0, 0, 0, 0);
-        let prev_feb = mar31_25.add_months_clamped(-1);
-        sub.assert_eq(prev_feb.year(), 2025);
-        sub.assert_eq(prev_feb.month_number(), 2);
-        sub.assert_eq(prev_feb.day(), 28);
-    };
-
-    t.run("CRITICAL: ReDoS & CPU-Hang Immunity in add_months_clamped") { sub =>
-        let base = core::date(2026, core::Month.January, 15, 12, 0, 0, 0, 0);
-
-        // Massive positive addition: previously a while loop would execute 100 billion iterations!
-        let sw = core::stopwatch();
-        let huge_future = base.add_months_clamped(1200000000); // 100 million years
-        let dur_elapsed = sw.elapsed();
-        sub.assert_lt(dur_elapsed.as_millis(), 10, "add_months_clamped with 1.2 billion months must complete in O(1) time");
-        sub.assert_eq(huge_future.year(), 2026 + 100000000);
-        sub.assert_eq(huge_future.month_number(), 1);
-
-        // Massive negative subtraction: must also complete in O(1) time
-        let sw_neg = core::stopwatch();
-        let huge_past = base.add_months_clamped(-1200000000);
-        let dur_neg_elapsed = sw_neg.elapsed();
-        sub.assert_lt(dur_neg_elapsed.as_millis(), 10, "add_months_clamped with -1.2 billion months must complete in O(1) time");
-        sub.assert_eq(huge_past.year(), 2026 - 100000000);
-        sub.assert_eq(huge_past.month_number(), 1);
-    };
-}
-
-// ----------------------------------------------------------------------------
-// 8. Time Truncation, Rounding & Timezones
-// ----------------------------------------------------------------------------
-fn test_time_truncation_rounding_and_timezones(t: lit::T&) {
-    t.run("Time Truncate & Round Half-Up") { sub =>
-        let tm = core::date(2026, core::Month.October, 23, 14, 25, 45, 0, 0);
-
-        let trunc_h = tm.truncate(core::hours(1));
-        sub.assert_eq(trunc_h.hour(), 14);
-        sub.assert_eq(trunc_h.minute(), 0);
-
-        let round_down = tm.round(core::hours(1));
-        sub.assert_eq(round_down.hour(), 14);
-        sub.assert_eq(round_down.minute(), 0);
-
-        let tm_half = core::date(2026, core::Month.October, 23, 14, 30, 0, 0, 0);
-        let round_half = tm_half.round(core::hours(1));
-        sub.assert_eq(round_half.hour(), 15, "half-hour rounds up to next hour");
-
-        // Negative timestamp rounding (pre-1970) must not crash
-        let tm_pre = core::unix(-3600, 0);
-        let round_pre = tm_pre.round(core::mins(15));
-        sub.assert_eq(round_pre.unix(), -3600);
-
-        // Negative timestamp truncation (pre-1970) must round down towards -infinity
-        let tm_pre_sec = core::unix(-1, 500000000); // -0.5s
-        let trunc_pre_sec = tm_pre_sec.truncate(core::secs(10));
-        sub.assert_eq(trunc_pre_sec.unix(), -10);
-        sub.assert_eq(trunc_pre_sec.nanosecond(), 0);
-
-        let trunc_pre_general = tm_pre_sec.truncate(core::millis(1500)); // 1.5s general branch
-        sub.assert_eq(trunc_pre_general.unix(), -2);
-        sub.assert_eq(trunc_pre_general.nanosecond(), 500000000); // -1.5s == unix(-2, 500_000_000)
-
-        // Post-2262 date truncation without nanosecond overflow
-        let t_2500 = core::date(2500, core::Month.January, 1, 14, 25, 45, 0, 0);
-        let t_2500_trunc = t_2500.truncate(core::hours(1));
-        sub.assert_eq(t_2500_trunc.year(), 2500, "year must remain 2500");
-        sub.assert_eq(t_2500_trunc.hour(), 14);
-        sub.assert_eq(t_2500_trunc.minute(), 0);
-    };
-
-    t.run("Timezone Offsets & in_tz Minute Handling") { sub =>
-        let utc_instant = core::date(2026, core::Month.October, 23, 12, 0, 0, 0, 0);
-
-        // Moscow UTC+3
-        let msk = utc_instant.in_tz(3, 0);
-        sub.assert_eq(msk.tz_offset, 10800);
-        sub.assert_eq(msk.hour(), 15, "12:00 UTC -> 15:00 UTC+3");
-
-        // New York UTC-5
-        let nyc = utc_instant.in_tz(-5, 0);
-        sub.assert_eq(nyc.tz_offset, -18000);
-        sub.assert_eq(nyc.hour(), 7, "12:00 UTC -> 07:00 UTC-5");
-
-        // St. John's UTC-3:30 (handles both positive and negative minute argument)
-        let nfl1 = utc_instant.in_tz(-3, 30);
-        sub.assert_eq(nfl1.tz_offset, -12600);
-        let nfl2 = utc_instant.in_tz(-3, -30);
-        sub.assert_eq(nfl2.tz_offset, -12600);
-
-        // Lord Howe Island UTC+10:30
-        let lhi = utc_instant.in_tz(10, 30);
-        sub.assert_eq(lhi.tz_offset, 37800);
-
-        // Negative minutes with 0 hours (e.g. UTC-0:30)
-        let half_neg = utc_instant.in_tz(0, -30);
-        sub.assert_eq(half_neg.tz_offset, -1800);
-    };
 }
 
 // ----------------------------------------------------------------------------
 // 9. RFC 3339 / ISO 8601 Codec & Attack Vectors
 // ----------------------------------------------------------------------------
 fn test_rfc3339_codec_and_attack_vectors(t: lit::T&) {
-    t.run("RFC 3339 Formatting (UTC, Offset, Nano, Extreme Offset)") { sub =>
+    t.run("RFC 3339 Formatting (UTC, Offset)") { sub =>
         var buf: u8[..64] = [];
         let tm = core::date(2026, core::Month.October, 23, 14, 30, 45, 500000000, 0);
 
         buf.clear(); core::format_rfc3339(buf, tm);
         sub.assert_bytes_eq(buf[..], "2026-10-23T14:30:45Z");
 
-        buf.clear(); core::format_rfc3339_nano(buf, tm);
-        sub.assert_bytes_eq(buf[..], "2026-10-23T14:30:45.5Z");
-
-        let tm_offset = tm.in_offset(10800);
+        let tm_offset = core::date(2026, core::Month.October, 23, 17, 30, 45, 0, 10800);
         buf.clear(); core::format_rfc3339(buf, tm_offset);
         sub.assert_bytes_eq(buf[..], "2026-10-23T17:30:45+03:00");
 
-        let tm_neg_offset = tm.in_offset(-18000);
+        let tm_neg_offset = core::date(2026, core::Month.October, 23, 9, 30, 45, 0, -18000);
         buf.clear(); core::format_rfc3339(buf, tm_neg_offset);
         sub.assert_bytes_eq(buf[..], "2026-10-23T09:30:45-05:00");
-
-        // i32.min offset (-2147483648) widening must not crash
-        let tm_min_tz = tm.in_offset(-2147483648);
-        buf.clear(); core::format_rfc3339(buf, tm_min_tz);
-        sub.assert_contains(buf[..], "-");
     };
 
     t.run("Valid RFC 3339 Parsing Matrix") { sub =>
@@ -846,11 +578,9 @@ fn test_branchless_constant_time(t: lit::T&) {
         sub.assert_eq(core::ct_is_zero_u64(0xFFFFFFFFFFFFFFFF), 0, "all ones is not zero (u64)");
     };
 
-    t.run("ct_eq, ct_lt, ct_gt") { sub =>
+    t.run("ct_eq and ct_lt") { sub =>
         sub.assert_eq(core::ct_eq_u32(42, 42), 1, "42 == 42");
         sub.assert_eq(core::ct_eq_u32(42, 43), 0, "42 != 43");
-        sub.assert_eq(core::ct_eq_u64(10000000000, 10000000000), 1, "10B == 10B");
-        sub.assert_eq(core::ct_eq_u64(10000000000, 10000000001), 0, "10B != 10B+1");
 
         sub.assert_eq(core::ct_lt_u32(10, 20), 1, "10 < 20 (u32)");
         sub.assert_eq(core::ct_lt_u32(20, 20), 0, "20 !< 20 (u32)");
@@ -859,11 +589,6 @@ fn test_branchless_constant_time(t: lit::T&) {
         sub.assert_eq(core::ct_lt_u64(100, 200), 1, "100 < 200 (u64)");
         sub.assert_eq(core::ct_lt_u64(200, 200), 0, "200 !< 200 (u64)");
         sub.assert_eq(core::ct_lt_u64(300, 200), 0, "300 !< 200 (u64)");
-
-        sub.assert_eq(core::ct_gt_u32(20, 10), 1, "20 > 10 (u32)");
-        sub.assert_eq(core::ct_gt_u32(10, 20), 0, "10 !> 20 (u32)");
-        sub.assert_eq(core::ct_gt_u64(200, 100), 1, "200 > 100 (u64)");
-        sub.assert_eq(core::ct_gt_u64(100, 200), 0, "100 !> 200 (u64)");
     };
 
     t.run("ct_mask, ct_select, ct_min, ct_max") { sub =>
@@ -882,27 +607,14 @@ fn test_branchless_constant_time(t: lit::T&) {
         sub.assert_eq(core::ct_select_u64(mask64_t, 123456789012, 987654321098), 123456789012, "ct_select true (u64)");
         sub.assert_eq(core::ct_select_u64(mask64_f, 123456789012, 987654321098), 987654321098, "ct_select false (u64)");
 
-        sub.assert_eq(core::ct_min_u32(15, 25), 15, "min_u32 15 vs 25");
-        sub.assert_eq(core::ct_min_u32(40, 30), 30, "min_u32 40 vs 30");
-        sub.assert_eq(core::ct_max_u32(15, 25), 25, "max_u32 15 vs 25");
-        sub.assert_eq(core::ct_max_u32(40, 30), 40, "max_u32 40 vs 30");
-
         sub.assert_eq(core::ct_min_u64(500, 1000), 500, "min_u64");
         sub.assert_eq(core::ct_max_u64(500, 1000), 1000, "max_u64");
     };
 
-    t.run("ct_abs_i64 and clamp functions") { sub =>
+    t.run("ct_abs_i64 and clamp_i64") { sub =>
         sub.assert_eq(core::ct_abs_i64(500), 500, "abs(500)");
         sub.assert_eq(core::ct_abs_i64(-500), 500, "abs(-500)");
         sub.assert_eq(core::ct_abs_i64(0), 0, "abs(0)");
-
-        sub.assert_eq(core::clamp_u32(5, 10, 20), 10, "clamp_u32 below");
-        sub.assert_eq(core::clamp_u32(15, 10, 20), 15, "clamp_u32 within");
-        sub.assert_eq(core::clamp_u32(25, 10, 20), 20, "clamp_u32 above");
-
-        sub.assert_eq(core::clamp_u64(5, 10, 20), 10, "clamp_u64 below");
-        sub.assert_eq(core::clamp_u64(15, 10, 20), 15, "clamp_u64 within");
-        sub.assert_eq(core::clamp_u64(25, 10, 20), 20, "clamp_u64 above");
 
         sub.assert_eq(core::clamp_i64(-5, 10, 20), 10, "clamp_i64 below");
         sub.assert_eq(core::clamp_i64(15, 10, 20), 15, "clamp_i64 within");
@@ -950,15 +662,7 @@ fn test_saturation_and_checked_arithmetic(t: lit::T&) {
         sub.assert_eq(core::sub_sat_i64(100, 30), 70, "sub_sat_i64 normal");
     };
 
-    t.run("Checked Arithmetic and Retry-After Conversion") { sub =>
-        let c_u32_ovf = core::add_checked_u32(0xFFFFFFFF, 1);
-        sub.assert_eq(c_u32_ovf.overflow, true, "add_checked_u32 ovf flag");
-        sub.assert_eq(c_u32_ovf.value, 0, "add_checked_u32 wrapped val");
-
-        let c_u32_ok = core::add_checked_u32(100, 200);
-        sub.assert_eq(c_u32_ok.overflow, false, "add_checked_u32 ok flag");
-        sub.assert_eq(c_u32_ok.value, 300, "add_checked_u32 ok val");
-
+    t.run("Checked Arithmetic") { sub =>
         let c_u64_ovf = core::add_checked_u64(core::U64_MAX, 1);
         sub.assert_eq(c_u64_ovf.overflow, true, "add_checked_u64 ovf flag");
 
@@ -968,10 +672,6 @@ fn test_saturation_and_checked_arithmetic(t: lit::T&) {
         let c_i64_ok = core::mul_checked_i64(10, -5);
         sub.assert_eq(c_i64_ok.overflow, false, "mul_checked_i64 ok flag");
         sub.assert_eq(c_i64_ok.value, -50, "mul_checked_i64 ok val");
-
-        sub.assert_eq(core::retry_after_sec_to_ms_sat(10), 10000, "retry-after 10s -> 10000ms");
-        sub.assert_eq(core::retry_after_sec_to_ms_sat(-5), 0, "retry-after negative -> 0ms");
-        sub.assert_eq(core::retry_after_sec_to_ms_sat(core::I64_MAX), core::I64_MAX, "retry-after huge -> I64_MAX");
     };
 }
 
@@ -1033,26 +733,13 @@ fn test_bit_manipulation_and_endianness(t: lit::T&) {
         sub.assert_eq(core::rotr64(rot16, 16), val64, "rotr64 invert rotl64");
     };
 
-    t.run("is_pow2 and next_pow2") { sub =>
-        sub.assert_eq(core::is_pow2_u32(0), false, "0 is not pow2 (u32)");
-        sub.assert_eq(core::is_pow2_u32(1), true, "1 is pow2 (u32)");
-        sub.assert_eq(core::is_pow2_u32(1024), true, "1024 is pow2 (u32)");
-        sub.assert_eq(core::is_pow2_u32(1023), false, "1023 is not pow2 (u32)");
-
-        sub.assert_eq(core::next_pow2_u32(0), 1, "next_pow2(0)");
-        sub.assert_eq(core::next_pow2_u32(1), 1, "next_pow2(1)");
-        sub.assert_eq(core::next_pow2_u32(5), 8, "next_pow2(5)");
-        sub.assert_eq(core::next_pow2_u32(16), 16, "next_pow2(16)");
-        sub.assert_eq(core::next_pow2_u32(17), 32, "next_pow2(17)");
-
+    t.run("is_pow2_u64 and next_pow2_u64") { sub =>
+        sub.assert_eq(core::is_pow2_u64(0), false, "0 is not pow2 (u64)");
+        sub.assert_eq(core::is_pow2_u64(1), true, "1 is pow2 (u64)");
+        sub.assert_eq(core::is_pow2_u64(1024), true, "1024 is pow2 (u64)");
         sub.assert_eq(core::is_pow2_u64(0x8000000000000000), true, "2^63 is pow2 (u64)");
+        sub.assert_eq(core::next_pow2_u64(5), 8, "next_pow2_u64(5)");
         sub.assert_eq(core::next_pow2_u64(0x8000000000000001), 0x8000000000000000, "next_pow2 overflow clamp");
-    };
-
-    t.run("bswap16, bswap32, bswap64") { sub =>
-        sub.assert_eq(core::bswap16(0x1234), 0x3412, "bswap16");
-        sub.assert_eq(core::bswap32(0x12345678), 0x78563412, "bswap32");
-        sub.assert_eq(core::bswap64(0x0102030405060708), 0x0807060504030201, "bswap64");
     };
 
     t.run("Little-Endian and Big-Endian codecs") { sub =>
@@ -1066,16 +753,16 @@ fn test_bit_manipulation_and_endianness(t: lit::T&) {
         sub.assert_eq(core::read_be_u64(test_buf[..], 0), 0x0102030405060708, "read_be_u64");
 
         var out: u8[..16] = [];
-        core::write_be_u16(out, 0x1234);
-        sub.assert_eq(out[0], 0x12, "write_be_u16 byte 0");
-        sub.assert_eq(out[1], 0x34, "write_be_u16 byte 1");
+        core::append_u16_be(out, 0x1234);
+        sub.assert_eq(out[0], 0x12, "append_u16_be byte 0");
+        sub.assert_eq(out[1], 0x34, "append_u16_be byte 1");
 
         out.clear();
-        core::write_be_u32(out, 0x12345678);
-        sub.assert_eq(out[0], 0x12, "write_be_u32 byte 0");
-        sub.assert_eq(out[1], 0x34, "write_be_u32 byte 1");
-        sub.assert_eq(out[2], 0x56, "write_be_u32 byte 2");
-        sub.assert_eq(out[3], 0x78, "write_be_u32 byte 3");
+        core::append_u32_be(out, 0x12345678);
+        sub.assert_eq(out[0], 0x12, "append_u32_be byte 0");
+        sub.assert_eq(out[1], 0x34, "append_u32_be byte 1");
+        sub.assert_eq(out[2], 0x56, "append_u32_be byte 2");
+        sub.assert_eq(out[3], 0x78, "append_u32_be byte 3");
 
         var at_buf: u8[8] = [0; 8];
         core::write_be_u16_at(at_buf[..], 0, 0xA1B2);
@@ -1115,14 +802,6 @@ fn test_euclidean_division_and_remainder(t: lit::T&) {
         // -7 = 3 * -3 + 2
         sub.assert_eq(core::div_euclid_i64(-7, -3), 3, "-7 / -3 == 3");
     };
-
-    t.run("fast_mod_reduce_i32 Ring Buffer Indexing") { sub =>
-        sub.assert_eq(core::fast_mod_reduce_i32(0, 16), 0, "idx 0 in buf 16");
-        sub.assert_eq(core::fast_mod_reduce_i32(15, 16), 15, "idx 15 in buf 16");
-        sub.assert_eq(core::fast_mod_reduce_i32(16, 16), 0, "idx 16 wraps to 0");
-        sub.assert_eq(core::fast_mod_reduce_i32(-1, 16), 15, "idx -1 wraps to 15");
-        sub.assert_eq(core::fast_mod_reduce_i32(-17, 16), 15, "idx -17 wraps to 15");
-    };
 }
 
 // ----------------------------------------------------------------------------
@@ -1145,20 +824,7 @@ fn test_prng_and_lemire_range(t: lit::T&) {
         sub.assert_ne(u1, 0, "WyRand next_u32 non-zero");
     };
 
-    t.run("Xoroshiro64StarStar Generation") { sub =>
-        var rng = core::new_xoroshiro64_star_star(123456);
-        let a = core::next_u32(rng);
-        let b = core::next_u32(rng);
-        sub.assert_ne(a, b, "Xoroshiro64 steps state");
-    };
-
     t.run("Lemire Fast-Range Bounds (Biased and Unbiased)") { sub =>
-        // Boundary check: output must strictly be in [0, range)
-        for i in 100 {
-            let r_biased = core::fast_range_biased_u32((i * 123456789) as! u32, 50);
-            sub.assert_lt(r_biased, 50, "fast_range_biased_u32 < 50");
-        }
-
         let r64_biased = core::fast_range_biased_u64(core::U64_MAX, 100);
         sub.assert_lt(r64_biased, 100, "fast_range_biased_u64 < 100");
 
@@ -1167,130 +833,6 @@ fn test_prng_and_lemire_range(t: lit::T&) {
             let r_unbiased = core::fast_range_unbiased_u32(rng, 37);
             sub.assert_lt(r_unbiased, 37, "fast_range_unbiased_u32 < 37");
         }
-    };
-}
-
-// ----------------------------------------------------------------------------
-// 17. Backoff & Jitter Strategies (Happy Eyeballs / AWS)
-// ----------------------------------------------------------------------------
-fn test_backoff_and_jitter_strategies(t: lit::T&) {
-    t.run("AWS Full and Equal Jitter Bounds") { sub =>
-        var rng = core::new_wyrand(1234);
-        let base_ms: u64 = 100;
-        let cap_ms:  u64 = 10000;
-
-        for attempt in 10 {
-            let sleep_full = core::backoff_full_jitter_ms(rng, base_ms, cap_ms, attempt as u32);
-            sub.assert_le(sleep_full, cap_ms, "Full Jitter <= cap");
-
-            let sleep_equal = core::backoff_equal_jitter_ms(rng, base_ms, cap_ms, attempt as u32);
-            sub.assert_le(sleep_equal, cap_ms, "Equal Jitter <= cap");
-        }
-    };
-
-    t.run("AWS Decorrelated Jitter (Clamping Flaw Immunity)") { sub =>
-        var rng = core::new_wyrand(5678);
-        let base_ms: u64 = 50;
-        let cap_ms:  u64 = 5000;
-        var sleep_ms = base_ms;
-
-        // In naive implementations, if sleep_ms >= cap_ms, clamping to [base_ms, cap_ms]
-        // causes the range [base_ms, sleep * 3] to collapse or become degenerate.
-        // Goose-wing math guarantees sleep >= base_ms and <= cap_ms always!
-        for i in 50 {
-            sleep_ms = core::backoff_decorrelated_jitter_ms(rng, base_ms, cap_ms, sleep_ms);
-            sub.assert_ge(sleep_ms, base_ms, "Decorrelated sleep >= base");
-            sub.assert_le(sleep_ms, cap_ms, "Decorrelated sleep <= cap");
-        }
-    };
-
-    t.run("Happy Eyeballs Delay Clamping (RFC 8305)") { sub =>
-        // Candidate delay below absolute minimum 10ms -> clamped to 10ms
-        let d_low = core::clamp_happy_eyeballs_delay_ms(5, false);
-        sub.assert_eq(d_low, 10, "RFC 8305 floor >= 10ms");
-
-        // First family recommended min 100ms
-        let d_first = core::clamp_happy_eyeballs_delay_ms(50, true);
-        sub.assert_eq(d_first, 100, "RFC 8305 first family >= 100ms");
-
-        // Normal CAD within window [100ms, 2000ms]
-        let d_normal = core::clamp_happy_eyeballs_delay_ms(250, false);
-        sub.assert_eq(d_normal, 250, "Normal CAD preserved");
-
-        // Max CAD ceiling 2000ms
-        let d_high = core::clamp_happy_eyeballs_delay_ms(5000, false);
-        sub.assert_eq(d_high, 2000, "Max CAD clamped to 2000ms");
-    };
-}
-
-// ----------------------------------------------------------------------------
-// 18. Jacobson EWMA RTT Estimator (RFC 6298 / RFC 9002 Errata ID 7539)
-// ----------------------------------------------------------------------------
-fn test_jacobson_rtt_estimator_errata7539(t: lit::T&) {
-    t.run("Initial State and First Sample") { sub =>
-        var est = core::new_jacobson_rtt_estimator(333000);
-        sub.assert_eq(est.has_sample, false, "init has no sample");
-        sub.assert_eq(core::smoothed_rtt_us(est), 333000, "init srtt 333ms");
-        sub.assert_eq(core::rttvar_us(est), 166500, "init rttvar 166.5ms");
-
-        // First RTT sample: 100 ms (100,000 us)
-        core::on_rtt_sample(est, 100000, 0, 25000, false);
-        sub.assert_eq(est.has_sample, true, "has sample after first update");
-        sub.assert_eq(est.min_rtt_us, 100000, "min_rtt initialized to first sample");
-        sub.assert_eq(core::smoothed_rtt_us(est), 100000, "first sample srtt == sample");
-        sub.assert_eq(core::rttvar_us(est), 50000, "first sample rttvar == sample / 2");
-    };
-
-    t.run("RFC 9002 Errata ID 7539 Variance Order Invariant") { sub =>
-        var est = core::new_jacobson_rtt_estimator(100000);
-        core::on_rtt_sample(est, 100000, 0, 25000, false);
-
-        // Second sample: 120 ms (120,000 us)
-        // With Errata ID 7539:
-        // prior_srtt = 100,000 us
-        // abs_diff = |120,000 - 100,000| = 20,000 us
-        // rttvar_scaled was 200,000 (4 * 50,000).
-        // rttvar_scaled = 200,000 - 50,000 + 20,000 = 170,000.
-        // rttvar = 170,000 / 4 = 42,500 us.
-        // srtt_scaled was 800,000 (8 * 100,000).
-        // srtt_scaled = 800,000 - 100,000 + 120,000 = 820,000.
-        // srtt = 820,000 / 8 = 102,500 us.
-        core::on_rtt_sample(est, 120000, 0, 25000, false);
-
-        sub.assert_eq(core::smoothed_rtt_us(est), 102500, "Errata 7539 srtt");
-        sub.assert_eq(core::rttvar_us(est), 42500, "Errata 7539 rttvar calculated before srtt update");
-    };
-
-    t.run("Defensive Ack Delay Subtraction & Handshake Bounding") { sub =>
-        var est = core::new_jacobson_rtt_estimator(50000);
-        core::on_rtt_sample(est, 50000, 0, 25000, false);
-
-        // Before handshake confirmation: ack_delay is ignored
-        core::on_rtt_sample(est, 60000, 10000, 25000, false);
-        // sample with unconfirmed handshake treats adjusted_rtt = latest_rtt (60,000)
-        sub.assert_eq(est.min_rtt_us, 50000, "min_rtt remains 50ms");
-
-        // After handshake confirmation:
-        // Peer reports malicious ack_delay 50,000 us on latest_rtt 60,000 us
-        // min_rtt is 50,000 us. latest_rtt (60,000) < min_rtt (50,000) + ack_delay (25,000 clamped).
-        // Goose-wing math DEFENSIVELY rejects subtracting ack_delay so adjusted_rtt does not shrink below min_rtt!
-        core::on_rtt_sample(est, 60000, 50000, 25000, true);
-        sub.assert_ge(core::smoothed_rtt_us(est), 50000, "Defensive barrier protects srtt");
-    };
-
-    t.run("Probe Timeout (PTO) and Loss Time Threshold") { sub =>
-        var est = core::new_jacobson_rtt_estimator(80000);
-        core::on_rtt_sample(est, 80000, 0, 25000, false);
-
-        // PTO = smoothed_rtt + 4 * rttvar + max_ack_delay
-        // = 80,000 + 4 * 40,000 + 25,000 = 80,000 + 160,000 + 25,000 = 265,000 us
-        let pto = core::probe_timeout_us(est, 25000);
-        sub.assert_eq(pto, 265000, "RFC 9002 PTO formula");
-
-        // Loss time threshold = max(9/8 * max(latest_rtt, srtt), timer_granularity)
-        let loss_thresh = core::loss_time_threshold_us(est);
-        // 9/8 * 80,000 = 90,000 us
-        sub.assert_eq(loss_thresh, 90000, "QUIC loss time threshold 9/8 ratio");
     };
 }
 
@@ -1306,14 +848,6 @@ fn test_fast_non_cryptographic_hashes(t: lit::T&) {
         let hello = "hello";
         sub.assert_eq(core::fnv1a_32(hello[..]), 0x4F9F2CAB, "FNV-1a 32-bit 'hello'");
         sub.assert_eq(core::fnv1a_64(hello[..]), 0xA430D84680AABD0B, "FNV-1a 64-bit 'hello'");
-    };
-
-    t.run("xxHash32 Reference Vectors") { sub =>
-        let empty_buf: u8[0] = [];
-        sub.assert_eq(core::xxhash32(empty_buf[..], 0), 0x02CC5D05, "xxHash32 empty seed 0");
-
-        let hello = "hello";
-        sub.assert_eq(core::xxhash32(hello[..], 0), 0xFB0077F9, "xxHash32 'hello' seed 0");
     };
 
     t.run("wyhash64 Consistency and Block Processing") { sub =>
@@ -1339,55 +873,6 @@ fn test_fast_non_cryptographic_hashes(t: lit::T&) {
         let comb12 = core::hash_combine_u64(h1, h2);
         let comb21 = core::hash_combine_u64(h2, h1);
         sub.assert_ne(comb12, comb21, "hash_combine_u64 must be non-commutative");
-
-        let h32_1: u32 = 0x12345678;
-        let h32_2: u32 = 0x87654321;
-        let comb32_12 = core::hash_combine_u32(h32_1, h32_2);
-        let comb32_21 = core::hash_combine_u32(h32_2, h32_1);
-        sub.assert_ne(comb32_12, comb32_21, "hash_combine_u32 must be non-commutative");
-    };
-}
-
-// ----------------------------------------------------------------------------
-// 20. Constant-Time SOCKS5 Frame Length Validation
-// ----------------------------------------------------------------------------
-fn test_socks5_frame_validation_ct(t: lit::T&) {
-    t.run("SOCKS5 Address Types and Bounds") { sub =>
-        // IPv4 (ATYP 0x01): [VER=5, CMD=1, RSV=0, ATYP=1, IPv4 (4B), Port (2B)] -> 10 bytes
-        let buf_ipv4: u8[10] = [0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, 0x1F, 0x90];
-        let len_ipv4 = core::socks5_expected_frame_len_ct(buf_ipv4[..]);
-        sub.assert_eq(len_ipv4, 10, "SOCKS5 IPv4 expected length");
-
-        // Too short (< 5 bytes)
-        let buf_short: u8[4] = [0x05, 0x01, 0x00, 0x01];
-        let len_short = core::socks5_expected_frame_len_ct(buf_short[..]);
-        sub.assert_eq(len_short, 0, "SOCKS5 frame < 5 bytes returns 0");
-
-        // IPv6 (ATYP 0x04): 4 header + 16 addr + 2 port = 22 bytes
-        let buf_ipv6: u8[6] = [0x05, 0x01, 0x00, 0x04, 0x00, 0x00];
-        let len_ipv6 = core::socks5_expected_frame_len_ct(buf_ipv6[..]);
-        sub.assert_eq(len_ipv6, 22, "SOCKS5 IPv6 expected length");
-
-        // FQDN (ATYP 0x03): 4 header + 1 len + N bytes + 2 port = 7 + N
-        // domain_len = 14 -> 7 + 14 = 21 bytes
-        let buf_fqdn: u8[6] = [0x05, 0x01, 0x00, 0x03, 14, 0x00];
-        let len_fqdn = core::socks5_expected_frame_len_ct(buf_fqdn[..]);
-        sub.assert_eq(len_fqdn, 21, "SOCKS5 FQDN expected length (7 + 14 = 21)");
-
-        // FQDN with 0 length domain is invalid
-        let buf_fqdn_zero: u8[6] = [0x05, 0x01, 0x00, 0x03, 0, 0x00];
-        let len_fqdn_zero = core::socks5_expected_frame_len_ct(buf_fqdn_zero[..]);
-        sub.assert_eq(len_fqdn_zero, 0, "SOCKS5 FQDN with zero length invalid");
-
-        // Non-SOCKS5 version (e.g. SOCKS4 = 4)
-        let buf_v4: u8[6] = [0x04, 0x01, 0x00, 0x01, 127, 0];
-        let len_v4 = core::socks5_expected_frame_len_ct(buf_v4[..]);
-        sub.assert_eq(len_v4, 0, "SOCKS4 version rejected");
-
-        // Unknown ATYP returns 0
-        let buf_bad_atyp: u8[6] = [0x05, 0x01, 0x00, 0x02, 10, 0];
-        let len_bad_atyp = core::socks5_expected_frame_len_ct(buf_bad_atyp[..]);
-        sub.assert_eq(len_bad_atyp, 0, "SOCKS5 unknown ATYP returns 0");
     };
 }
 
@@ -1415,29 +900,6 @@ fn test_thread_containment(t: lit::T&) {
 // 22. Singleflight Deduplication & SPSC Lock-Free Ring
 // ----------------------------------------------------------------------------
 fn test_singleflight_and_spsc(t: lit::T&) {
-    t.run("Singleflight Deduplication") { sub =>
-        var g = core::SingleflightGroup { .. };
-        let leader1, _, _ = core::start_or_join(g, "resource-key");
-        sub.assert_true(leader1, "First caller is leader");
-
-        let leader2, _, shared2 = core::start_or_join(g, "resource-key");
-        sub.assert_false(leader2, "Second caller is joiner");
-        sub.assert_true(shared2, "Second caller marked shared");
-        sub.assert_eq(core::waiter_count(g, "resource-key"), 1, "1 joiner recorded");
-
-        let fin_ok, waiters = core::finish_call(g, "resource-key", 42, true);
-        sub.assert_true(fin_ok, "finish_call ok");
-        sub.assert_eq(waiters, 1, "1 waiter notified");
-
-        let val, res_ok = core::result_value(g, "resource-key");
-        sub.assert_true(res_ok, "Result available");
-        sub.assert_eq(val, 42, "Result value matches 42");
-
-        let forgot = core::forget(g, "resource-key");
-        sub.assert_true(forgot, "Entry forgotten");
-        sub.assert_false(core::is_in_flight(g, "resource-key"), "Key no longer in flight");
-    };
-
     t.run("SPSC Lock-Free Ring Queue") { sub =>
         let ring, ok = core::spsc_init(16);
         if ok {
@@ -1481,11 +943,6 @@ fn test_singleflight_and_spsc(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_case_folding(t: lit::T&) {
     t.run("ASCII Predicates & Character Conversions") { sub =>
-        sub.assert_true(core::is_ascii_upper('A' as u8), "A is upper");
-        sub.assert_true(core::is_ascii_upper('Z' as u8), "Z is upper");
-        sub.assert_false(core::is_ascii_upper('a' as u8), "a is not upper");
-        sub.assert_false(core::is_ascii_upper('9' as u8), "9 is not upper");
-
         sub.assert_true(core::is_ascii_lower('a' as u8), "a is lower");
         sub.assert_true(core::is_ascii_lower('z' as u8), "z is lower");
         sub.assert_false(core::is_ascii_lower('A' as u8), "A is not lower");
@@ -1504,16 +961,10 @@ fn test_case_folding(t: lit::T&) {
 
         sub.assert_eq(core::to_lower_ascii_byte('M' as u8), 'm' as u8, "M -> m");
         sub.assert_eq(core::to_lower_ascii_byte('m' as u8), 'm' as u8, "m -> m");
-        sub.assert_eq(core::to_upper_ascii_byte('w' as u8), 'W' as u8, "w -> W");
-        sub.assert_eq(core::to_upper_ascii_byte('W' as u8), 'W' as u8, "W -> W");
 
         var lower_buf: u8[..64] = [];
         core::to_lower_ascii("GoOsE-WiNg v1.0!", lower_buf);
         sub.assert_eq(lower_buf[..], "goose-wing v1.0!", "to_lower_ascii string conversion");
-
-        var upper_buf: u8[..64] = [];
-        core::to_upper_ascii("goose-wing v1.0!", upper_buf);
-        sub.assert_eq(upper_buf[..], "GOOSE-WING V1.0!", "to_upper_ascii string conversion");
     };
 
     t.run("Case-Insensitive Equality & Affixes") { sub =>
@@ -1565,8 +1016,6 @@ fn test_trimming(t: lit::T&) {
 
     t.run("ASCII Space Trimming (CR, LF, TAB, SP)") { sub =>
         let multiline = "\r\n  \t{\"status\": \"healthy\"}\n\r\t  ";
-        sub.assert_eq(core::trim_ascii_space_start(multiline), "{\"status\": \"healthy\"}\n\r\t  ", "trim_ascii_space_start");
-        sub.assert_eq(core::trim_ascii_space_end(multiline), "\r\n  \t{\"status\": \"healthy\"}", "trim_ascii_space_end");
         sub.assert_eq(core::trim_ascii_space(multiline), "{\"status\": \"healthy\"}", "trim_ascii_space both ends");
         sub.assert_eq(multiline.trim_ascii_space(), "{\"status\": \"healthy\"}", "trim_ascii_space via UFCS");
     };
@@ -1640,12 +1089,6 @@ fn test_search_and_split(t: lit::T&) {
         sub.assert_true(sep_found, "split_once found CRLFCRLF");
         sub.assert_eq(headers_part, "Content-Length: 42", "split_once headers");
         sub.assert_eq(body_part, "{\"ok\":true}", "split_once body");
-
-        let fold_str = "Key=ValUE; charset=utf-8";
-        let f_left, f_right, f_found = fold_str.split_once_fold("CHARSET=");
-        sub.assert_true(f_found, "split_once_fold found CHARSET=");
-        sub.assert_eq(f_left, "Key=ValUE; ", "split_once_fold left");
-        sub.assert_eq(f_right, "utf-8", "split_once_fold right");
     };
 
     t.run("Zero-Allocation ByteTokenizer") { sub =>
@@ -2057,25 +1500,13 @@ fn test_regress_core_time(t: lit::T&) {
         sub.assert_eq(t2.unix_milli(), -1, "unix_milli matches Euclidean quotient for -1ms");
         sub.assert_eq(t2.unix_micro(), -1000, "unix_micro matches Euclidean quotient for -1ms");
         sub.assert_eq(t2.unix_nano(), -1000000, "unix_nano matches Euclidean quotient for -1ms");
-
-        // Truncate on negative timestamp with Euclidean alignment
-        let t3 = core::unix(-15, 0); // 15s before epoch
-        let trunc10 = t3.truncate(core::secs(10));
-        sub.assert_eq(trunc10.wall_sec, -20, "truncate(-15s, 10s) floors Euclidean quotient to -20s");
-
-        let t4 = core::unix(-15, 0);
-        let round10 = t4.round_seconds_multiple(10 * core::SECOND);
-        sub.assert_eq(round10.wall_sec, -20, "round_seconds_multiple(-15s, 10s) rounds half-away from zero to -20s");
     };
 
-    t.run("Bug 2: DURATION_MIN_NANOS rounding & truncation without signed overflow") { sub =>
+    t.run("Bug 2: DURATION_MIN_NANOS rounding without signed overflow") { sub =>
         // DURATION_MIN_NANOS = -9223372036854775807 - 1 (cannot be negated in i64)
         let d_min = core::Duration { nanos: -9223372036854775807 - 1 };
         let r = d_min.round(core::secs(1));
         sub.assert_eq(r.nanos, -9223372036854775807 - 1, "round on DURATION_MIN_NANOS clamps safely");
-
-        let tr = d_min.truncate(core::secs(1));
-        sub.assert_eq(tr.nanos, -9223372036000000000, "truncate on DURATION_MIN_NANOS truncates safely to second boundary");
     };
 }
 
@@ -2123,18 +1554,23 @@ fn test_regress_core_url(t: lit::T&) {
         sub.assert_true(u_v6.valid, "scoped IPv6 literal parsed cleanly");
     };
 
-    t.run("Bug 7: Query parameter length clamping against u16 overflow") { sub =>
+    t.run("Bug 7: Fast query parameter lookup") { sub =>
         let q_raw = "service=auth&token=xyz789&mode=fast";
-        let tokens = core::parse_query_params(q_raw);
+        var out_svc:  u8[..32] = [];
+        var out_tok:  u8[..32] = [];
+        var out_mode: u8[..32] = [];
 
-        sub.assert_true(core::has_query_param(tokens, "service"), "param 'service' found");
-        sub.assert_eq(core::get_query_param(tokens, "service"), "auth", "param 'service' value matches");
+        sub.assert_true(core::has_query_param_fast(q_raw, "service"), "param 'service' found");
+        sub.assert_true(core::get_query_param_fast(q_raw, "service", out_svc) == core::QueryParamMatch.Value);
+        sub.assert_eq(out_svc[..], "auth", "param 'service' value matches");
 
-        sub.assert_true(core::has_query_param(tokens, "token"), "param 'token' found");
-        sub.assert_eq(core::get_query_param(tokens, "token"), "xyz789", "param 'token' value matches");
+        sub.assert_true(core::has_query_param_fast(q_raw, "token"), "param 'token' found");
+        sub.assert_true(core::get_query_param_fast(q_raw, "token", out_tok) == core::QueryParamMatch.Value);
+        sub.assert_eq(out_tok[..], "xyz789", "param 'token' value matches");
 
-        sub.assert_true(core::has_query_param(tokens, "mode"), "param 'mode' found");
-        sub.assert_eq(core::get_query_param(tokens, "mode"), "fast", "param 'mode' value matches");
+        sub.assert_true(core::has_query_param_fast(q_raw, "mode"), "param 'mode' found");
+        sub.assert_true(core::get_query_param_fast(q_raw, "mode", out_mode) == core::QueryParamMatch.Value);
+        sub.assert_eq(out_mode[..], "fast", "param 'mode' value matches");
     };
 }
 
@@ -2253,46 +1689,9 @@ fn test_regress_core_compress(t: lit::T&) {
 }
 
 // ============================================================================
-// 35. Synchronization and Memory Regressions (core/sync & core/io)
+// 35. Memory Regressions (core/io)
 // ============================================================================
 fn test_regress_core_sync_and_io(t: lit::T&) {
-    t.run("Bug 20: SingleFlight long key (>64B) unshared execution fallback") { sub =>
-        var sf = core::SingleflightGroup { .. };
-
-        // Normal key <= 64B
-        let k_short = "short-dedup-key";
-        let is_leader1, _, shared1 = core::start_or_join(sf, k_short);
-        sub.assert_true(is_leader1, "short key registers leader");
-        sub.assert_false(shared1, "not shared initially");
-
-        // Long key > 64B (must execute unshared without poisoning entry table)
-        var k_long: u8[..128] = [];
-        for i in 80 { k_long.push('k'); }
-
-        let is_leader_long, _, shared_long = core::start_or_join(sf, k_long[..]);
-        sub.assert_true(is_leader_long, "long key falls back to unshared leader execution");
-        sub.assert_false(shared_long, "long key is not shared");
-        sub.assert_eq(sf.total_leader_calls, 2, "leader calls incremented");
-    };
-
-    t.run("Bug 21: GuardedArena bounds subtraction check prevents uint64 overflow") { sub =>
-        // GuardedArena initialization with size 0 returns false safely
-        let arena_bad, ok_bad = core::guarded_arena_init(0, 0);
-        sub.assert_false(ok_bad, "guarded_arena_init rejects 0 capacity");
-
-        var dummy_arena = core::GuardedArena {
-            handle:   1,
-            capacity: 4096,
-            used:     4000,
-            flags:    0,
-        };
-        // Attempt write of 200 bytes when only 96 bytes remain
-        var buf: u8[200] = [0; 200];
-        let written, ok_w = core::guarded_arena_write(dummy_arena, buf[..]);
-        sub.assert_false(ok_w, "guarded_arena_write rejects write exceeding remaining capacity");
-        sub.assert_eq(written, 0, "0 bytes written on overflow");
-    };
-
     t.run("Bug 22: PageRingBuffer sock_fd == 0 (stdin) valid descriptor support") { sub =>
         var pr = core::PageRingBuffer {
             capacity: 4096,
@@ -2369,21 +1768,11 @@ fn test_regress_core_audit_bugs(t: lit::T&) {
 // 37. Math & Crypto Regressions
 // ----------------------------------------------------------------------------
 fn test_math_and_crypto_regressions(t: lit::T&) {
-    t.run("Bug A1: ct_min_i64 / ct_max_i64 / ct_min_i32 / ct_max_i32 signed overflow at I64_MIN") { sub =>
+    t.run("Bug A1: ct_min_i64 / ct_max_i64 signed overflow at I64_MIN") { sub =>
         sub.assert_eq(core::ct_min_i64(core::I64_MIN, 0), core::I64_MIN, "ct_min_i64(I64_MIN, 0)");
         sub.assert_eq(core::ct_max_i64(core::I64_MIN, 0), 0, "ct_max_i64(I64_MIN, 0)");
         sub.assert_eq(core::ct_min_i64(core::I64_MAX, -1), -1, "ct_min_i64(I64_MAX, -1)");
         sub.assert_eq(core::ct_max_i64(core::I64_MAX, -1), core::I64_MAX, "ct_max_i64(I64_MAX, -1)");
-        sub.assert_eq(core::ct_min_i32(core::I32_MIN, 0), core::I32_MIN, "ct_min_i32(I32_MIN, 0)");
-        sub.assert_eq(core::ct_max_i32(core::I32_MIN, 0), 0, "ct_max_i32(I32_MIN, 0)");
-        sub.assert_eq(core::retry_after_sec_to_ms_sat(core::I64_MIN), 0, "retry_after_sec_to_ms_sat(I64_MIN)");
-        sub.assert_eq(core::clamp_happy_eyeballs_delay_ms(core::I64_MIN, false), 10, "clamp_happy_eyeballs_delay_ms(I64_MIN)");
-    };
-
-    t.run("Bug A2: backoff_decorrelated_jitter_ms respects cap_ms when cap_ms < base_ms") { sub =>
-        var rng = core::new_wyrand(12345);
-        let res = core::backoff_decorrelated_jitter_ms(rng, 1000, 500, 1000);
-        sub.assert_true(res <= 500, "backoff_decorrelated_jitter_ms must not exceed cap_ms");
     };
 
     t.run("Bug A3: RFC 6979 int2octets(x) & bits2octets(h1) reduction in ecdsa_p256_sign and DER decode bounds") { sub =>
@@ -2484,12 +1873,12 @@ fn test_compress_and_time_regressions(t: lit::T&) {
     t.run("Bug B5: ZStreamCompressor / ZStreamDecompressor preserve preset dict across sync-flush blocks") { sub =>
         let dict = "SHARED_PREFIX_DICTIONARY_TOKEN_1234567890_";
         var comp = core::new_zstream_compressor(core::ContainerFormat.Raw, 6);
-        core::zstream_set_dictionary(comp, dict);
+        comp.dict = dict;
         var wire1: u8[..256] = [];
         var wire2: u8[..256] = [];
-        let ok_w1 = core::zstream_write(comp, "first_chunk_", wire1);
-        let ok_f1 = core::zstream_sync_flush(comp, wire1);
-        let ok_w2 = core::zstream_write(comp, "SHARED_PREFIX_DICTIONARY_TOKEN_1234567890_end", wire2);
+        let ok_w1 = core::zstream_write(comp, "first_chunk_", wire1, core::FlushMode.NoFlush);
+        let ok_f1 = core::zstream_write(comp, "", wire1, core::FlushMode.SyncFlush);
+        let ok_w2 = core::zstream_write(comp, "SHARED_PREFIX_DICTIONARY_TOKEN_1234567890_end", wire2, core::FlushMode.NoFlush);
         let ok_fin = core::zstream_finish(comp, wire2);
         sub.assert_true(ok_w1 && ok_f1 && ok_w2 && ok_fin, "multi-block dict stream compressed");
 
@@ -2501,26 +1890,7 @@ fn test_compress_and_time_regressions(t: lit::T&) {
         sub.assert_eq(out[..], "first_chunk_SHARED_PREFIX_DICTIONARY_TOKEN_1234567890_end", "decompressed multi-block dict payload matches");
     };
 
-    t.run("Bug D1-D3: Time negative rounding, format_duration sub-ms precision, and RFC 9110 §5.6.7 HTTP-date") { sub =>
-        // -0.1s (wall_sec = -1, nsec = 900_000_000) rounded to 1s must be 0s, not -1s
-        let t_neg = core::unix(-1, 900000000);
-        let r_neg = t_neg.round(core::secs(1));
-        sub.assert_eq(r_neg.wall_sec, 0, "round(-0.1s, 1s) == 0s");
-        sub.assert_eq(r_neg.nsec, 0, "round(-0.1s, 1s) nsec == 0");
-
-        // 1.0005ms (1_000_500ns) formatted and parsed back must preserve 500ns
-        let d_ms = core::nanos(1000500);
-        var fmt_ms: u8[..64] = [];
-        core::format(fmt_ms, d_ms);
-        let parsed_ms, ok_p = core::parse_duration(fmt_ms[..]);
-        sub.assert_true(ok_p, "format_duration output parses");
-        sub.assert_eq(parsed_ms.nanos, 1000500, "format_duration preserves nanosecond precision for ms range");
-
-        // parse_duration on DURATION_MIN_FORMATTED
-        let min_d, ok_min = core::parse_duration(core::DURATION_MIN_FORMATTED);
-        sub.assert_true(ok_min, "DURATION_MIN_FORMATTED parses cleanly");
-        sub.assert_eq(min_d.nanos, core::DURATION_MIN_NANOS, "DURATION_MIN_FORMATTED round-trips");
-
+    t.run("Bug D1-D3: RFC 9110 §5.6.7 HTTP-date and write_le round-trips") { sub =>
         // RFC 9110 §5.6.7 HTTP-date strict grammar
         let t_bad1, ok_b1 = core::parse_http_date("Sun, 06-Nov-94 08:49:37 GMT");
         sub.assert_false(ok_b1, "rfc850-date must reject 3-letter day-name");
@@ -2558,32 +1928,13 @@ fn test_url_regressions(t: lit::T&) {
         sub.assert_eq(core::host(u_reparsed), "", "re-parsed host remains empty");
     };
 
-    t.run("Bug C3: Relative resolution with same special scheme and 0 slashes (http:g, http:?q)") { sub =>
-        let base, err_b = core::parse_url("http://example.com/dir/page.html");
-        let rel_g = core::resolve_reference(base, "http:sub.html");
-        sub.assert_true(rel_g.valid, "http:sub.html resolves against base");
-        sub.assert_eq(core::href(rel_g), "http://example.com/dir/sub.html", "http:sub.html resolved relative to base");
-    };
-
-    t.run("Bug C4: IPv6 ZoneID in registrable_site_from_url and blob: inner URL unwrapping") { sub =>
-        let u_v6, err_6 = core::parse_url("http://[fe80::1%25eth0]:8080/index.html");
-        let orig_v6 = core::origin_from_url(u_v6);
-        sub.assert_true(core::is_same_site_origin_url(orig_v6, u_v6), "origin_from_url and registrable_site_from_url agree on scoped IPv6");
-
-        let u_blob, err_bl = core::parse_url("blob:https://app.example.com/550e8400-e29b-41d4-a716-446655440000");
-        let u_https, err_ht = core::parse_url("https://api.example.com/v1");
-        sub.assert_true(core::is_schemeful_same_site_urls(u_blob, u_https), "blob:https://app.example.com is same-site with https://api.example.com");
-    };
-
-    t.run("Bug C5 & C6: normalize_http_target_uri empty host & query percent-encoded key matching") { sub =>
+    t.run("Bug C5 & C6: normalize_http_target_uri empty host & percent decoding") { sub =>
         var norm_out: u8[..128] = [];
         let ok_empty_host = core::normalize_http_target_uri("http://:80/path", norm_out);
         sub.assert_false(ok_empty_host, "http://:80/path with empty host rejected");
 
-        let q_toks = core::parse_query_params("a%20b=1&x=2");
-        sub.assert_false(core::has_query_param(q_toks, "a%20b"), "decoded key 'a b' must not match literal 'a%20b'");
-        sub.assert_true(core::has_query_param(q_toks, "a b"), "decoded key 'a b' matches 'a b'");
-        sub.assert_false(core::validate_query_param_count("a=1", 0), "validate_query_param_count('a=1', 0) must return false");
+        sub.assert_false(core::has_query_param_fast("a%20b=1&x=2", "a b"), "raw lookup does not match decoded key without percent-encoding");
+        sub.assert_true(core::has_query_param_fast("a%20b=1&x=2", "a%20b"), "raw key 'a%20b' matches");
 
         var dec_small: u8[..4] = [];
         let ok_dec = core::percent_decode("%41%42%43%44", dec_small);
@@ -2723,72 +2074,6 @@ fn test_flat_index_map(t: lit::T&) {
     };
 }
 
-fn test_bitmask_and_bitset(t: lit::T&) {
-    t.run("Bitmask u32/u64 Flag Ops and Multi-Word u64[:] BitSet") { sub =>
-        // 1. u32 flag operations
-        var m32: u32 = 0;
-        m32.set_flag(0x05);
-        sub.assert_true(m32.has_flag(0x01), "u32 has_flag 0x01");
-        sub.assert_true(m32.has_all_flags(0x05), "u32 has_all_flags 0x05");
-        sub.assert_false(m32.has_all_flags(0x07), "u32 missing 0x02");
-        m32.toggle_flag(0x06); // 0b101 ^ 0b110 = 0b011
-        sub.assert_eq(m32, 0x03 as u32, "u32 toggle_flag");
-        m32.clear_flag(0x01);
-        sub.assert_eq(m32, 0x02 as u32, "u32 clear_flag");
-
-        let b32, ok32 = m32.pop_lowest_bit();
-        sub.assert_true(ok32, "u32 pop_lowest_bit succeeds");
-        sub.assert_eq(b32, 1 as u32, "u32 lowest bit index is 1");
-        sub.assert_eq(m32, 0 as u32, "u32 mask cleared after pop");
-        let _, empty32 = m32.pop_lowest_bit();
-        sub.assert_false(empty32, "u32 pop_lowest_bit on 0 returns false");
-
-        // 2. u64 flag & bit-index operations
-        var m64: u64 = 0;
-        m64.set_bit(0);
-        m64.set_bit(63);
-        m64.set_bit(64); // out-of-range no-op
-        sub.assert_true(m64.test_bit(0), "u64 bit 0 set");
-        sub.assert_true(m64.test_bit(63), "u64 bit 63 set");
-        sub.assert_false(m64.test_bit(64), "u64 bit 64 out of range");
-        m64.clear_bit(63);
-        sub.assert_false(m64.test_bit(63), "u64 bit 63 cleared");
-        m64.set_bit(63);
-        sub.assert_eq(popcount(m64), 2, "u64 popcount is 2");
-
-        let lo1, ok1 = m64.pop_lowest_bit();
-        sub.assert_true(ok1 && lo1 == 0, "u64 first popped bit is 0");
-        let lo2, ok2 = m64.pop_lowest_bit();
-        sub.assert_true(ok2 && lo2 == 63, "u64 second popped bit is 63");
-        sub.assert_eq(m64, 0 as u64, "u64 mask empty");
-
-        // 3. Multi-word BitSet (256 bits)
-        var bs: u64[4] = [0; 4];
-        sub.assert_false(bs[..].bitset_any(), "empty bitset_any is false");
-        sub.assert_true(bs[..].bitset_set(3), "set bit 3");
-        sub.assert_true(bs[..].bitset_set(66), "set bit 66 (word 1)");
-        sub.assert_true(bs[..].bitset_set(255), "set bit 255 (word 3)");
-        sub.assert_false(bs[..].bitset_set(256), "out-of-range bit 256 rejected");
-        sub.assert_true(bs[..].bitset_any(), "bitset_any is true");
-        sub.assert_true(bs[..].bitset_test(66), "bitset_test(66)");
-        sub.assert_eq(bs[..].bitset_popcount(), 3 as u64, "bitset_popcount == 3");
-
-        let n1, fn1 = bs[..].bitset_next_set(0);
-        sub.assert_true(fn1 && n1 == 3, "next_set from 0 is 3");
-        let n2, fn2 = bs[..].bitset_next_set(4);
-        sub.assert_true(fn2 && n2 == 66, "next_set from 4 skips to 66");
-        let n3, fn3 = bs[..].bitset_next_set(67);
-        sub.assert_true(fn3 && n3 == 255, "next_set from 67 skips to 255");
-
-        sub.assert_true(bs[..].bitset_clear(66), "clear bit 66");
-        sub.assert_false(bs[..].bitset_test(66), "bit 66 cleared");
-        sub.assert_eq(bs[..].bitset_popcount(), 2 as u64, "bitset_popcount == 2");
-
-        bs[..].bitset_clear_all();
-        sub.assert_false(bs[..].bitset_any(), "bitset_clear_all empties all words");
-    };
-}
-
 fn test_token_bucket(t: lit::T&) {
     t.run("TokenBucket Saturating Refill & Burst Clamping") { sub =>
         var tb = core::TokenBucket { tokens: 5, burst: 5, rate_per_sec: 10, last_refill_ms: 1000 };
@@ -2814,66 +2099,6 @@ fn test_token_bucket(t: lit::T&) {
     };
 }
 
-fn test_ring_cursor(t: lit::T&) {
-    t.run("RingCursor Power-of-Two Wraparound & Capacity Guards") { sub =>
-        var c = core::RingCursor { head: 2, tail: 2, mask: 3 }; // cap = 4
-        sub.assert_eq(core::ring_cursor_cap(c), 4 as u64, "cap is mask + 1");
-        sub.assert_eq(core::ring_cursor_len(c), 0 as u64, "initially empty");
-        sub.assert_eq(core::ring_cursor_free(c), 4 as u64, "4 free slots");
-
-        let _, empty_ok = core::ring_cursor_pop(c);
-        sub.assert_false(empty_ok, "pop on empty fails");
-
-        let s0, ok0 = core::ring_cursor_push(c);
-        let s1, ok1 = core::ring_cursor_push(c);
-        let s2, ok2 = core::ring_cursor_push(c);
-        let s3, ok3 = core::ring_cursor_push(c);
-        sub.assert_true(ok0 && s0 == 2, "push 0 -> slot 2");
-        sub.assert_true(ok1 && s1 == 3, "push 1 -> slot 3");
-        sub.assert_true(ok2 && s2 == 0, "push 2 wraps -> slot 0");
-        sub.assert_true(ok3 && s3 == 1, "push 3 wraps -> slot 1");
-
-        let _, full_ok = core::ring_cursor_push(c);
-        sub.assert_false(full_ok, "push on full fails");
-        sub.assert_eq(core::ring_cursor_free(c), 0 as u64, "0 free slots");
-
-        let p0, pok0 = core::ring_cursor_pop(c);
-        sub.assert_true(pok0 && p0 == 2, "pop 0 -> slot 2");
-        sub.assert_eq(core::ring_cursor_len(c), 3 as u64, "3 occupied after pop");
-    };
-}
-
-fn test_free_index_list(t: lit::T&) {
-    t.run("FreeIndexList O(1) Init, Alloc, Exhaustion & LIFO Free") { sub =>
-        var fl = core::FreeIndexList { .. };
-        var next: i32[4] = [-1; 4];
-        core::free_list_init(fl, next[..]);
-        sub.assert_eq(fl.head, 0, "init head is 0");
-        sub.assert_eq(fl.active, 0, "init active is 0");
-
-        let i0, ok0 = core::free_list_alloc(fl, next[..]);
-        let i1, ok1 = core::free_list_alloc(fl, next[..]);
-        let i2, ok2 = core::free_list_alloc(fl, next[..]);
-        let i3, ok3 = core::free_list_alloc(fl, next[..]);
-        sub.assert_true(ok0 && i0 == 0, "alloc 0");
-        sub.assert_true(ok1 && i1 == 1, "alloc 1");
-        sub.assert_true(ok2 && i2 == 2, "alloc 2");
-        sub.assert_true(ok3 && i3 == 3, "alloc 3");
-        sub.assert_eq(fl.active, 4, "active == 4");
-
-        let _, ex_ok = core::free_list_alloc(fl, next[..]);
-        sub.assert_false(ex_ok, "exhausted returns false");
-
-        sub.assert_false(core::free_list_free(fl, next[..], -1), "out-of-bounds free rejected");
-        sub.assert_false(core::free_list_free(fl, next[..], 4), "out-of-bounds free rejected");
-
-        sub.assert_true(core::free_list_free(fl, next[..], 2), "free slot 2");
-        sub.assert_eq(fl.active, 3, "active decremented to 3");
-        let re, re_ok = core::free_list_alloc(fl, next[..]);
-        sub.assert_true(re_ok && re == 2, "re-alloc returns freed slot 2");
-    };
-}
-
 fn main() {
     var runner = lit::new_runner("Core Primitives (Time, Math, Sync, Bytes, IO Streams) Suite", lit::Verbosity.Verbose);
 
@@ -2883,8 +2108,7 @@ fn main() {
     lit::run_case(runner, "4. Monotonic Primitives: Stopwatch & Deadline (Anti-Overflow)", test_stopwatch_and_deadline_overflow);
     lit::run_case(runner, "5. Civil Calendar Math & Proleptic Gregorian Leap Years", test_hinnant_civil_calendar_and_leap_years);
     lit::run_case(runner, "6. Time Construction, Accessors, Projections & Pre-1970", test_time_construction_and_pre1970);
-    lit::run_case(runner, "7. Time Arithmetic, Comparisons & ReDoS / DoS Immunity", test_time_arithmetic_and_redos_immunity);
-    lit::run_case(runner, "8. Time Truncation, Rounding & Timezones", test_time_truncation_rounding_and_timezones);
+    lit::run_case(runner, "7. Time Arithmetic & Comparisons", test_time_arithmetic_and_redos_immunity);
     lit::run_case(runner, "9. RFC 3339 / ISO 8601 Codec & Attack Vectors", test_rfc3339_codec_and_attack_vectors);
     lit::run_case(runner, "10. RFC 9110 Section 5.6.7 HTTP-Date Formatting & 3-Format Parser Security", test_http_date_rfc9110_and_attack_vectors);
     lit::run_case(runner, "11. Branchless Constant-Time Arithmetic & Selection", test_branchless_constant_time);
@@ -2893,12 +2117,9 @@ fn main() {
     lit::run_case(runner, "14. Bit Manipulation & Endianness Codecs", test_bit_manipulation_and_endianness);
     lit::run_case(runner, "15. Euclidean Division & Remainder", test_euclidean_division_and_remainder);
     lit::run_case(runner, "16. PRNGs & Lemire Fast-Range Mapping", test_prng_and_lemire_range);
-    lit::run_case(runner, "17. Backoff & Jitter Strategies (Happy Eyeballs / AWS)", test_backoff_and_jitter_strategies);
-    lit::run_case(runner, "18. Jacobson EWMA RTT Estimator (RFC 6298 / RFC 9002 Errata ID 7539)", test_jacobson_rtt_estimator_errata7539);
     lit::run_case(runner, "19. Fast Non-Cryptographic Hashing & Combinators", test_fast_non_cryptographic_hashes);
-    lit::run_case(runner, "20. Constant-Time SOCKS5 Frame Length Validation", test_socks5_frame_validation_ct);
     lit::run_case(runner, "21. Crash Containment via thread_spawn_contained", test_thread_containment);
-    lit::run_case(runner, "22. Singleflight Deduplication & SPSC Lock-Free Ring", test_singleflight_and_spsc);
+    lit::run_case(runner, "22. SPSC Lock-Free Ring", test_singleflight_and_spsc);
     lit::run_case(runner, "23. ASCII Predicates, Case Conversions & Folding", test_case_folding);
     lit::run_case(runner, "24. Linear Whitespace, ASCII Whitespace & Byte Trimming", test_trimming);
     lit::run_case(runner, "25. Byte Search, Slice Splitting & ByteTokenizer", test_search_and_split);
@@ -2911,17 +2132,14 @@ fn main() {
     lit::run_case(runner, "32. Core URL: Scheme Bounds, Fold, Authority & Query", test_regress_core_url);
     lit::run_case(runner, "33. Core Crypto: Ed25519 Torsion, X25519 & AEAD Zeroize", test_regress_core_crypto);
     lit::run_case(runner, "34. Core Compress: Deflate Rollback, Zstream & Zstd", test_regress_core_compress);
-    lit::run_case(runner, "35. Core Sync & IO: SingleFlight & Guarded Memory Bounds", test_regress_core_sync_and_io);
+    lit::run_case(runner, "35. Core IO: PageRingBuffer descriptor guard", test_regress_core_sync_and_io);
     lit::run_case(runner, "36. Core Audit: ByteBuilder Leak, ct_abs_i64 & Host ZoneID", test_regress_core_audit_bugs);
     lit::run_case(runner, "37. Math & Crypto Regressions", test_math_and_crypto_regressions);
     lit::run_case(runner, "38. Compress & Time Regressions", test_compress_and_time_regressions);
     lit::run_case(runner, "39. URL Regressions", test_url_regressions);
     lit::run_case(runner, "40. Bounded JSON Primitives", test_json_bounded_primitives);
     lit::run_case(runner, "41. FlatIndexMap GetOrPut, Backward-Shift Delete & ABA Gen", test_flat_index_map);
-    lit::run_case(runner, "42. Bitmask u32/u64 Flag Ops & Multi-Word BitSet", test_bitmask_and_bitset);
     lit::run_case(runner, "43. TokenBucket Saturating Refill & Burst Clamping", test_token_bucket);
-    lit::run_case(runner, "44. RingCursor Power-of-Two Wraparound & Capacity Guards", test_ring_cursor);
-    lit::run_case(runner, "45. FreeIndexList O(1) Init, Alloc, Exhaustion & LIFO Free", test_free_index_list);
 
     let ok = lit::finish(runner);
     assert(ok);

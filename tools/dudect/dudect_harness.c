@@ -61,6 +61,8 @@ uint8_t wing_dudect_rsa_pkcs1_sha256_sign(sl_u8 n_be, sl_u8 d_be, sl_u8 msg,
                                           sl_u8 out);
 uint8_t wing_dudect_xchacha20_poly1305(sl_u8 key, sl_u8 iv, sl_u8 pt,
                                        sl_u8 out);
+uint8_t wing_dudect_aes128_gcm_seal_pure(sl_u8 key, sl_u8 iv, sl_u8 pt,
+                                         sl_u8 aad, sl_u8 out);
 #ifdef __cplusplus
 }
 #endif
@@ -361,11 +363,11 @@ static uint8_t run_aes256_block(DudectFixtures *f, ClassSlot *s) {
   return acc;
 }
 
-static uint8_t run_aes_gcm_seal_scalar(DudectFixtures *f, ClassSlot *s) {
-  uint8_t tag[16];
-  int64_t n = wing_aes_gcm_seal_scalar(s->aes128_k, 16, s->gcm_iv, s->gcm_pt,
-                                       64, s->gcm_aad, 16, f->out, tag);
-  return (uint8_t)(tag[0] ^ (uint8_t)n);
+static uint8_t run_aes_gcm_seal_pure(DudectFixtures *f, ClassSlot *s) {
+  return wing_dudect_aes128_gcm_seal_pure(
+      make_slice(s->aes128_k, 16), make_slice(s->gcm_iv, 12),
+      make_slice(s->gcm_pt, 64), make_slice(s->gcm_aad, 16),
+      make_slice(f->out, 80));
 }
 
 static uint8_t run_chacha20_poly1305(DudectFixtures *f, ClassSlot *s) {
@@ -459,7 +461,7 @@ static const TargetSpec g_targets[] = {
     {"ct_eq_bytes", run_ct_eq_bytes, 0},
     {"aes128_encrypt_block", run_aes128_block, 0},
     {"aes_encrypt_block", run_aes256_block, 0},
-    {"wing_aes_gcm_seal_scalar", run_aes_gcm_seal_scalar, 0},
+    {"aes128_gcm_seal_pure", run_aes_gcm_seal_pure, 0},
     {"chacha20_poly1305", run_chacha20_poly1305, 0},
     {"xchacha20_poly1305", run_xchacha20_poly1305, 0},
     {"x25519_scalarmult", run_x25519_scalarmult, 0},

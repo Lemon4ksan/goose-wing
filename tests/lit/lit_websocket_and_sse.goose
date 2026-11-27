@@ -1343,16 +1343,12 @@ fn wing_validate_ws_close_wire(buf: const u8[:]) -> i64 {
     return code;
 }
 
-// Wire validator for streaming UTF-8 using core::validate_utf8_streaming
+// Wire validator for UTF-8 using core::validate_utf8
 fn wing_validate_utf8_wire(buf: const u8[:]) -> i32 {
-    let valid, ok = core::validate_utf8_streaming(buf, true);
-    if ok && valid == buf.len {
+    if core::validate_utf8(buf) {
         return 1;
     }
-    if !ok {
-        return -2;
-    }
-    return -1;
+    return -2;
 }
 
 fn run_08_verify_ws_streaming_utf8() {

@@ -132,7 +132,7 @@ fn verify_server_cert_and_signature(
 }
 
 fn classify_ee_failure_alert(ee_body: const u8[:]) -> tls::Alert {
-    var entries: tls::ExtensionEntry[..32] = [];
+    var entries: tls::ExtensionEntry[..64] = [];
     guard tls::parse_extensions_block(ee_body, entries) else { return tls::Alert.DecodeError; }
     for &e in entries {
         if e.ext_type == rfc::TLS_EXT_SERVER_NAME && e.data.len != 0 {
@@ -146,7 +146,7 @@ fn has_duplicate_extension_type(ext_block: const u8[:]) -> bool {
     var c = core::cursor_from(ext_block);
     var body, ok_b = c.read_u16_sub_cursor();
     guard ok_b && c.cursor_len() == 0 else { return false; }
-    var seen: u16[..32] = [];
+    var seen: u16[..64] = [];
     while body.cursor_len() > 0 {
         let et, ok_t = body.read_u16();
         let _, ok_d = body.read_u16_prefixed();
@@ -197,7 +197,7 @@ fn classify_sh_failure_alert(sh_msg: const u8[:]) -> tls::Alert {
     var rand_arr: u8[32] = [0; 32];
     let ext_bytes, ok_pre = read_server_hello_preamble(sh_msg, rand_arr, tmp);
     guard ok_pre else { return tls::Alert.DecodeError; }
-    var entries: tls::ExtensionEntry[..32] = [];
+    var entries: tls::ExtensionEntry[..64] = [];
     if !tls::parse_extensions_block(ext_bytes, entries) {
         return if has_duplicate_extension_type(ext_bytes) {
             tls::Alert.IllegalParameter

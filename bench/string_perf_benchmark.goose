@@ -63,7 +63,6 @@ fn test_token_equality_benchmark(t: lit::T&) {
         var matches_base: i64 = 0;
         for _ in iters {
             for tok in tokens {
-                core::prefetch_t0(tok);
                 if baseline_starts_with(tok, prefix) {
                     matches_base++;
                 }
@@ -77,7 +76,6 @@ fn test_token_equality_benchmark(t: lit::T&) {
         var matches_opt: i64 = 0;
         for _ in iters {
             for tok in tokens {
-                core::prefetch_t0(tok);
                 if tok.len >= prefix.len && core::equal_short(tok[..prefix.len], prefix) {
                     matches_opt++;
                 }

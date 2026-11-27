@@ -7,8 +7,6 @@ namespace cookie;
 import std;
 import core;
 
-// ---- same-site enumeration -------------------------------------------------
-
 // RFC 6265bis SameSite mode.
 enum SameSite {
     Default, // Lax with Lax-allowing-unsafe 2-minute window
@@ -43,8 +41,6 @@ fn parse_same_site(raw_val: const u8[:]) -> SameSite {
     return SameSite.Unknown;
 }
 
-// ---- priority enumeration --------------------------------------------------
-
 // Eviction priority levels during garbage collection.
 enum Priority {
     Low,
@@ -78,8 +74,6 @@ fn parse_priority(raw_val: const u8[:]) -> Priority {
     return Priority.Unknown;
 }
 
-// ---- source scheme enumeration ---------------------------------------------
-
 // Source scheme for origin-bound cookies.
 enum SourceScheme {
     Unset,
@@ -111,8 +105,6 @@ fn cookie_internal::parse_source_scheme(raw_val: const u8[:]) -> cookie::SourceS
     }
     return cookie::SourceScheme.Unknown;
 }
-
-// ---- deletion cause enumeration --------------------------------------------
 
 // Deletion reason for persistence and notifications.
 enum DeleteCause {

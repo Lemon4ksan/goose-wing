@@ -47,24 +47,6 @@ fn trim_lws(val: const u8[:]) -> const u8[:] {
     return val[start..end_pos];
 }
 
-// Trims ASCII whitespace (spaces, tabs, newlines, carriage returns) from start of val.
-fn trim_ascii_space_start(val: const u8[:]) -> const u8[:] {
-    var start: i64 = 0;
-    while start < val.len && is_ascii_space(val[start]) {
-        start++;
-    }
-    return val[start..];
-}
-
-// Trims ASCII whitespace from end of val.
-fn trim_ascii_space_end(val: const u8[:]) -> const u8[:] {
-    var end_pos: i64 = val.len;
-    while end_pos > 0 && is_ascii_space(val[end_pos - 1]) {
-        end_pos--;
-    }
-    return val[..end_pos];
-}
-
 // Trims ASCII whitespace from both ends of val.
 fn trim_ascii_space(val: const u8[:]) -> const u8[:] {
     var start: i64 = 0;

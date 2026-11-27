@@ -37,7 +37,7 @@ python tools/dudect.py --docker --samples 5000
 | `ct_eq_bytes` | Identical 64-byte buffers | First-byte mismatch (`eq_b[0] ^= 1`) |
 | `aes128_encrypt_block` | All-zero 128-bit key and block | Random 128-bit keys and blocks |
 | `aes_encrypt_block` | All-zero 256-bit key and block | Random 256-bit keys and blocks |
-| `wing_aes_gcm_seal_scalar` | Fixed key, IV, AAD, 64B plaintext | Random key, IV, AAD, 64B plaintext |
+| `aes_gcm_seal_pure` | Fixed key, IV, AAD, 64B plaintext | Random key, IV, AAD, 64B plaintext |
 | `chacha20_poly1305` | Fixed key, IV, 64B plaintext | Random key, IV, 64B plaintext |
 | `x25519_scalarmult` | Fixed all-zero clamped scalar | Random 32-byte scalars |
 | `ecdsa_p256_sign` | Fixed private key (`d = 1`) | Random 256-bit private keys |

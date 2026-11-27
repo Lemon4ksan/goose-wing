@@ -45,40 +45,6 @@ fn format_rfc3339<B>(out: B&, time_val: Time) {
     }
 }
 
-// Formats Time into RFC 3339 with nanosecond fractional precision (e.g. "2026-10-22T23:18:18.5Z").
-fn format_rfc3339_nano<B>(out: B&, time_val: Time) {
-    let year_val, month_val, day_val, hour_val, min_val, sec_val = civil_parts(time_val);
-    append_4d(out, year_val);
-    out.push('-');
-    append_2d(out, month_val);
-    out.push('-');
-    append_2d(out, day_val);
-    out.push('T');
-    append_2d(out, hour_val);
-    out.push(':');
-    append_2d(out, min_val);
-    out.push(':');
-    append_2d(out, sec_val);
-    append_trimmed_fraction(out, time_val.nsec, 9);
-
-    if time_val.tz_offset == 0 {
-        out.push('Z');
-    } else {
-        var offset_val: i64 = time_val.tz_offset as i64;
-        if offset_val < 0 {
-            out.push('-');
-            offset_val = -offset_val;
-        } else {
-            out.push('+');
-        }
-        let offset_hours = offset_val / 3600;
-        let offset_mins = (offset_val % 3600) / 60;
-        append_2d(out, offset_hours);
-        out.push(':');
-        append_2d(out, offset_mins);
-    }
-}
-
 // Universal format hook for Time: used automatically by print(time_val) and str(time_val).
 fn format<B>(out: B&, time_val: Time) {
     format_rfc3339(out, time_val);
@@ -262,22 +228,6 @@ fn parse_digits(str_val: const u8[:]) -> i64, bool {
 }
 
 // Example:
-//   str_val = "9223372036854775808", limit = 0x8000000000000000
-//   returns: 9223372036854775808, ok = true
-fn parse_digits_bounded_u64(str_val: const u8[:], limit: u64) -> u64, bool {
-    guard str_val.len > 0 else { return 0, false; }
-    var val: u64 = 0;
-    for ch in str_val {
-        guard ch >= '0' && ch <= '9' else { return 0, false; }
-        let digit_val = sub_sat_u64(ch, 48);
-        let max_val, _ = div_rem_u64(sub_sat_u64(limit, digit_val), 10);
-        guard digit_val <= limit && val <= max_val else { return 0, false; }
-        val = add_sat_u64(mul_sat_u64(val, 10), digit_val);
-    }
-    return val, true;
-}
-
-// Example:
 //   token = "Sun"
 //   returns: 0
 fn parse_weekday_short(token: const u8[:]) -> i64 {
@@ -305,77 +255,6 @@ fn parse_weekday_name(token: const u8[:]) -> i64 {
     if eq_ascii_fold(token, "friday") { return 5; }
     if eq_ascii_fold(token, "saturday") { return 6; }
     return -1;
-}
-
-fn duration_unit_multiplier(unit_str: const u8[:]) -> i64, bool {
-    if unit_str == "ns" { return NANOSECOND, true; }
-    if unit_str == "us" || unit_str == "\xc2\xb5s" || unit_str == "\xce\xbcs" { return MICROSECOND, true; }
-    if unit_str == "ms" { return MILLISECOND, true; }
-    if unit_str == "s" { return SECOND, true; }
-    if unit_str == "m" { return MINUTE, true; }
-    if unit_str == "h" { return HOUR, true; }
-    if unit_str == "d" { return DAY, true; }
-    if unit_str == "w" { return WEEK, true; }
-    return 0, false;
-}
-
-// Example:
-//   fraction_str = "5", unit_mult = SECOND
-//   returns: 500000000, ok = true
-fn parse_scaled_fraction(fraction_str: const u8[:], unit_mult: i64) -> i64, bool {
-    guard fraction_str.len > 0 else { return 0, true; }
-    var fraction_nanos_9d: i64 = 0;
-    var scale:             i64 = 100000000;
-    for frac_idx in fraction_str.len {
-        let char_byte = fraction_str[frac_idx];
-        guard char_byte >= '0' && char_byte <= '9' else { return 0, false; }
-        if scale > 0 {
-            fraction_nanos_9d += (char_byte - '0') * scale;
-            scale /= 10;
-        }
-    }
-    if unit_mult >= SECOND {
-        return fraction_nanos_9d * (unit_mult / SECOND), true;
-    }
-    return (fraction_nanos_9d * unit_mult) / SECOND, true;
-}
-
-// Example:
-//   num_str = "1.5", unit_mult = SECOND, max_mag = 0x7FFFFFFFFFFFFFFF
-//   returns: 1500000000, ok = true
-fn parse_duration_component(num_str: const u8[:], unit_mult: i64, max_mag: u64) -> u64, bool {
-    guard unit_mult > 0 else { return 0, false; }
-    let mult_u64 = unit_mult as u64;
-    var dot_pos = -1;
-    for scan_idx in num_str.len {
-        if num_str[scan_idx] == '.' {
-            if dot_pos >= 0 { return 0, false; }
-            dot_pos = scan_idx;
-        }
-    }
-
-    if dot_pos < 0 {
-        let int_val, int_ok = parse_digits_bounded_u64(num_str, max_mag / mult_u64);
-        guard int_ok else { return 0, false; }
-        return int_val * mult_u64, true;
-    }
-
-    let whole_str = num_str[..dot_pos];
-    let fraction_str = num_str[dot_pos + 1..];
-    guard fraction_str.len > 0 else { return 0, false; }
-
-    var whole_nanos: u64 = 0;
-    if whole_str.len > 0 {
-        let whole_val, ok_whole = parse_digits_bounded_u64(whole_str, max_mag / mult_u64);
-        guard ok_whole else { return 0, false; }
-        whole_nanos = whole_val * mult_u64;
-    }
-
-    let fraction_nanos_i64, ok_frac = parse_scaled_fraction(fraction_str, unit_mult);
-    guard ok_frac else { return 0, false; }
-    let fraction_nanos = fraction_nanos_i64 as u64;
-    guard whole_nanos <= max_mag - fraction_nanos else { return 0, false; }
-    return whole_nanos + fraction_nanos, true;
 }
 
 // Example:

@@ -7,7 +7,7 @@ namespace core;
 import std;
 
 // Equal check for 1..32 byte slices using branchless unaligned 64/32/16-bit XOR.
-fn equal_short(s: const u8[:], needle: const u8[:]) -> bool {
+checkfree inline fn equal_short(s: const u8[:], needle: const u8[:]) -> bool {
     guard s.len == needle.len else { return false; }
     let n = needle.len;
     guard n >= 1 else { return true; }
@@ -54,31 +54,66 @@ fn ends_with(s: const u8[:], suffix: const u8[:]) -> bool {
 }
 
 extern fn native_memchr(s: const u8[:], b: u8) -> i64 = "wing_memchr";
-extern fn native_simd_last_index_of_byte(s: const u8[:], b: u8) -> i64 = "wing_simd_last_index_of_byte";
-extern fn native_simd_count_byte(s: const u8[:], b: u8) -> i64 = "wing_simd_count_byte";
 
-// Checks whether s contains byte b using vectorized memchr.
-fn contains_byte(s: const u8[:], b: u8) -> bool {
-    guard s.len > 0 else { return false; }
-    return native_memchr(s, b) >= 0;
+// Checks whether s contains byte b using inline SWAR for short slices or vectorized memchr.
+inline fn contains_byte(s: const u8[:], b: u8) -> bool {
+    return index_of_byte(s, b) >= 0;
 }
 
 // Returns the 0-based index of the first occurrence of byte b in s, or -1 if not found.
-fn index_of_byte(s: const u8[:], b: u8) -> i64 {
+inline fn index_of_byte(s: const u8[:], b: u8) -> i64 {
     guard s.len > 0 else { return -1; }
+    if s.len < 32 {
+        var i: i64 = 0;
+        while i + 8 <= s.len {
+            let hit = swar_eq_mask(read_le_u64(s, i), b);
+            if hit != 0 {
+                return i + (ctz(hit) >> 3);
+            }
+            i += 8;
+        }
+        while i < s.len {
+            if s[i] == b { return i; }
+            i += 1;
+        }
+        return -1;
+    }
     return native_memchr(s, b);
 }
 
 // Returns the 0-based index of the last occurrence of byte b in s, or -1 if not found.
 fn last_index_of_byte(s: const u8[:], b: u8) -> i64 {
     guard s.len > 0 else { return -1; }
-    return native_simd_last_index_of_byte(s, b);
+    var i = s.len;
+    while i >= 8 {
+        let chunk_start = i - 8;
+        let hit = swar_eq_mask(read_le_u64(s, chunk_start), b);
+        if hit != 0 {
+            return chunk_start + (7 - (clz(hit) >> 3));
+        }
+        i = chunk_start;
+    }
+    while i > 0 {
+        i -= 1;
+        if s[i] == b { return i; }
+    }
+    return -1;
 }
 
-// Counts the number of non-overlapping occurrences of byte b in s using SSE2 vector popcount.
+// Counts the number of non-overlapping occurrences of byte b in s using 64-bit SWAR popcount.
 fn count_byte(s: const u8[:], b: u8) -> i64 {
     guard s.len > 0 else { return 0; }
-    return native_simd_count_byte(s, b);
+    var cnt: i64 = 0;
+    var i:   i64 = 0;
+    while i + 8 <= s.len {
+        cnt += popcount(swar_eq_mask(read_le_u64(s, i), b));
+        i += 8;
+    }
+    while i < s.len {
+        if s[i] == b { cnt += 1; }
+        i += 1;
+    }
+    return cnt;
 }
 
 // Zero-initialized 256-byte membership table constant.
@@ -158,13 +193,101 @@ fn rfind_not_byteset(s: const u8[:], set: const u8[:]) -> i64 {
     return byteset_rfind(s, set, true);
 }
 
-extern fn native_simd_find_pair(
-    s: const u8[:], b1: u8, off1: i64, b2: u8, off2: i64, needle: const u8[:],
-) -> i64 = "wing_simd_find_pair";
+// 64-bit SWAR candidate byte-match filter (Mycroft zero-byte; safe when paired with exact verify).
+checkfree inline fn swar_cand_mask(w: u64, spread: u64) -> u64 {
+    let x = w ^ spread;
+    return (x - 0x0101010101010101) & (~x) & 0x8080808080808080;
+}
 
-extern fn native_simd_rfind_pair(
-    s: const u8[:], b1: u8, off1: i64, b2: u8, off2: i64, needle: const u8[:],
-) -> i64 = "wing_simd_rfind_pair";
+// 64-bit SWAR packed-pair forward substring search (memchr rare-pair algorithm).
+inline fn find_pair_swar(
+    s:      const u8[:],
+    b1:     u8,
+    off1:   i64,
+    b2:     u8,
+    off2:   i64,
+    needle: const u8[:],
+) -> i64 {
+    let nlen = needle.len;
+    guard nlen > 0 else { return 0; }
+    guard s.len >= nlen && off1 >= 0 && off1 < nlen && off2 >= 0 && off2 < nlen else { return -1; }
+    let limit = s.len - nlen + 1;
+    if limit >= 32 {
+        var pos: i64 = 0;
+        while pos < limit {
+            let rel = index_of_byte(s[pos + off1..limit + off1], b1);
+            if rel < 0 { return -1; }
+            let cand = pos + rel;
+            if s[cand + off2] == b2 && equal_short(s[cand..cand + nlen], needle) {
+                return cand;
+            }
+            pos = cand + 1;
+        }
+        return -1;
+    }
+    let sp1 = 0x0101010101010101 * (b1 as u64);
+    let sp2 = 0x0101010101010101 * (b2 as u64);
+    var i: i64 = 0;
+    while i + 8 <= limit {
+        let m1 = swar_cand_mask(read_le_u64(s, i + off1), sp1);
+        let m2 = swar_cand_mask(read_le_u64(s, i + off2), sp2);
+        var hit = m1 & m2;
+        while hit != 0 {
+            let cand = i + (ctz(hit) >> 3);
+            if equal_short(s[cand..cand + nlen], needle) {
+                return cand;
+            }
+            hit &= hit - 1;
+        }
+        i += 8;
+    }
+    while i < limit {
+        if s[i + off1] == b1 && s[i + off2] == b2 && equal_short(s[i..i + nlen], needle) {
+            return i;
+        }
+        i += 1;
+    }
+    return -1;
+}
+
+// 64-bit SWAR packed-pair reverse substring search.
+inline fn rfind_pair_swar(
+    s:      const u8[:],
+    b1:     u8,
+    off1:   i64,
+    b2:     u8,
+    off2:   i64,
+    needle: const u8[:],
+) -> i64 {
+    let nlen = needle.len;
+    guard nlen > 0 else { return s.len; }
+    guard s.len >= nlen && off1 >= 0 && off1 < nlen && off2 >= 0 && off2 < nlen else { return -1; }
+    let sp1 = 0x0101010101010101 * (b1 as u64);
+    let sp2 = 0x0101010101010101 * (b2 as u64);
+    var i = s.len - nlen + 1;
+    while i >= 8 {
+        let chunk_start = i - 8;
+        let m1 = swar_cand_mask(read_le_u64(s, chunk_start + off1), sp1);
+        let m2 = swar_cand_mask(read_le_u64(s, chunk_start + off2), sp2);
+        var hit = m1 & m2;
+        while hit != 0 {
+            let bit = 7 - (clz(hit) >> 3);
+            let cand = chunk_start + bit;
+            if equal_short(s[cand..cand + nlen], needle) {
+                return cand;
+            }
+            hit ^= (1 as u64) << (((bit * 8) + 7) as u64);
+        }
+        i = chunk_start;
+    }
+    while i > 0 {
+        i -= 1;
+        if s[i + off1] == b1 && s[i + off2] == b2 && equal_short(s[i..i + nlen], needle) {
+            return i;
+        }
+    }
+    return -1;
+}
 
 // memchr background-frequency ranks (smaller = rarer).
 const BYTE_RANK: u8[256] = [
@@ -505,7 +628,7 @@ fn rfind_two_way(haystack: const u8[:], needle: const u8[:]) -> i64 {
     };
 }
 
-// Searches for needle in haystack using SIMD packed-pair (< 32 bytes) or Two-Way (> 32 bytes).
+// Searches for needle in haystack using 64-bit SWAR packed-pair (<= 32 bytes) or Two-Way (> 32 bytes).
 // Returns the 0-based byte index of the first match, or -1 if not found.
 fn find(haystack: const u8[:], needle: const u8[:]) -> i64 {
     guard needle.len <= haystack.len else { return -1; }
@@ -515,7 +638,7 @@ fn find(haystack: const u8[:], needle: const u8[:]) -> i64 {
     }
     if needle.len <= 32 {
         let a, b = rare_pair(needle);
-        return native_simd_find_pair(haystack, needle[a], a, needle[b], b, needle);
+        return find_pair_swar(haystack, needle[a], a, needle[b], b, needle);
     }
     return find_two_way(haystack, needle);
 }
@@ -530,7 +653,7 @@ fn rfind(haystack: const u8[:], needle: const u8[:]) -> i64 {
     }
     if needle.len <= 32 {
         let a, b = rare_pair(needle);
-        return native_simd_rfind_pair(haystack, needle[a], a, needle[b], b, needle);
+        return rfind_pair_swar(haystack, needle[a], a, needle[b], b, needle);
     }
     return rfind_two_way(haystack, needle);
 }
@@ -540,39 +663,39 @@ fn contains(haystack: const u8[:], needle: const u8[:]) -> bool {
     return find(haystack, needle) >= 0;
 }
 
-extern fn native_swar_find_ctl(s: const u8[:]) -> i64 = "wing_swar_find_ctl";
-extern fn native_fast_find_crlfcrlf(s: const u8[:]) -> i64 = "wing_fast_find_crlfcrlf";
-
 // Scans slice 8 bytes at a time in 1 CPU cycle using SWAR hasLess(word, 32) (uWebSockets HttpParser.h).
 // Returns the index of the first control character (< 32, e.g. \r, \n, \t, \0), or s.len if none found.
-fn swar_find_ctl(s: const u8[:]) -> i64 {
-    return native_swar_find_ctl(s);
+checkfree inline fn swar_find_ctl(s: const u8[:]) -> i64 {
+    var rest = s;
+    while rest.len >= 8 {
+        let w = read_le_u64(rest, 0);
+        let m = (w - 0x2020202020202020) & (~w) & 0x8080808080808080;
+        if m != 0 {
+            return (s.len - rest.len) + (ctz(m) >> 3);
+        }
+        rest = rest[8..];
+    }
+    for b, k in rest {
+        if b < 32 { return (s.len - rest.len) + k; }
+    }
+    return s.len;
 }
 
-// High-speed CRLFCRLF (\r\n\r\n) HTTP header delimiter scanner.
+// High-speed CRLFCRLF (\r\n\r\n) HTTP header delimiter scanner using AVX2 memchr/SWAR + 32-bit match.
 // Returns the index of the first '\r' in \r\n\r\n, or -1 if not found.
-fn fast_find_crlfcrlf(s: const u8[:]) -> i64 {
-    return native_fast_find_crlfcrlf(s);
-}
-
-// Places sentinel fence bytes '\r' and 'a' at offset length and length+1 in wire buffer (uWebSockets HttpParser.h).
-// Allows SWAR and vectorized parsers to scan safely without bounds checks in the inner loop.
-fn fence_wire_slice(buf: u8[:], length: i64) -> bool {
-    guard length >= 0 && length <= sub_sat_i64(buf.len, 2) else { return false; }
-    buf[length] = '\r';
-    buf[length + 1] = 'a';
-    return true;
-}
-
-extern fn native_prefetch_t0(s: const u8[:]) = "wing_prefetch_t0";
-extern fn native_prefetch_nta(s: const u8[:]) = "wing_prefetch_nta";
-
-// Prefetches slice memory into L1 Data Cache.
-inline fn prefetch_t0(s: const u8[:]) {
-    native_prefetch_t0(s);
-}
-
-// Prefetches slice memory using non-temporal streaming hint (minimizes cache pollution).
-inline fn prefetch_nta(s: const u8[:]) {
-    native_prefetch_nta(s);
+inline fn fast_find_crlfcrlf(s: const u8[:]) -> i64 {
+    let n = s.len;
+    guard n >= 4 else { return -1; }
+    let limit = n - 4;
+    var i: i64 = 0;
+    while i <= limit {
+        let rel = index_of_byte(s[i..limit + 1], '\r');
+        if rel < 0 { return -1; }
+        let pos = i + rel;
+        if read_le_u32(s, pos) == 0x0A0D0A0D {
+            return pos;
+        }
+        i = pos + 1;
+    }
+    return -1;
 }

@@ -560,7 +560,7 @@ fn record_decrypt_aes128_gcm_into(
     guard tag_slice.len == 16 else { return 0, 0, Alert.DecodeError, false; }
     for i in 16 { tag[i] = tag_slice[i]; }
 
-    let dec_len, ok_open = core::fused_aes_gcm_decrypt(
+    let dec_len, ok_open = core::aes128_gcm_open_into(
         key, nonce, ciphertext, record_header, tag, out_plaintext[..ct_len],
     );
     guard ok_open && dec_len == ct_len else {
@@ -620,7 +620,7 @@ fn record_decrypt_aes128_gcm(
 
     var temp_dec: u8[16624] = [0; 16624];
     defer core::secure_zeroize_slice(temp_dec[..ct_len]);
-    let dec_len, ok_open = core::fused_aes_gcm_decrypt(
+    let dec_len, ok_open = core::aes128_gcm_open_into(
         key,
         nonce,
         ciphertext,

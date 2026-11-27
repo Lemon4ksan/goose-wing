@@ -16,36 +16,11 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 // 1. Mozilla PSL Scoping & Tenant Isolation
 // ----------------------------------------------------------------------------
 fn test_psl_scoping_and_tenants(t: lit::T&) {
-    t.run("PSL Rule Types: Normal, Wildcard, Exception") { sub =>
-        // 1. Normal ICANN rule: co.uk
-        var s_couk: u8[..64] = [];
-        let icann_couk = core::public_suffix_with_icann("service.co.uk", s_couk);
-        sub.assert_true(icann_couk, "co.uk is in ICANN section");
-        sub.assert_bytes_eq(s_couk[..], "co.uk", "suffix is co.uk");
-
-        // 2. Wildcard rule: *.ck -> any label under ck is a public suffix
-        var s_ck: u8[..64] = [];
-        let icann_ck = core::public_suffix_with_icann("foo.ck", s_ck);
-        sub.assert_true(icann_ck, "*.ck is ICANN wildcard");
-        sub.assert_bytes_eq(s_ck[..], "foo.ck", "foo.ck matched wildcard *.ck");
-
-        // 3. Exception rule: !www.ck -> suffix is 'ck', so www.ck is registrable domain
-        var s_ex: u8[..64] = [];
-        let icann_ex = core::public_suffix_with_icann("www.ck", s_ex);
-        sub.assert_true(icann_ex, "!www.ck exception rule");
-        sub.assert_bytes_eq(s_ex[..], "ck", "exception rule stripped leftmost label to ck");
-
+    t.run("Private Suffix Section, Exception & Strict Tenant Isolation") { sub =>
+        // Exception rule: !www.ck -> www.ck is registrable domain
         var etld_ex: u8[..64] = [];
         core::extract_etld_plus_one("www.ck", etld_ex);
         sub.assert_bytes_eq(etld_ex[..], "www.ck", "www.ck is eTLD+1 due to exception rule");
-    };
-
-    t.run("Private Suffix Section & Strict Tenant Isolation") { sub =>
-        // github.io is a Private section suffix
-        var s_gh: u8[..64] = [];
-        let icann_gh = core::public_suffix_with_icann("alice.github.io", s_gh);
-        sub.assert_false(icann_gh, "github.io belongs to Private section (not ICANN)");
-        sub.assert_bytes_eq(s_gh[..], "github.io", "suffix is github.io");
 
         // Tenant isolation: alice.github.io must have eTLD+1 alice.github.io
         var etld_alice: u8[..64] = [];
@@ -61,13 +36,6 @@ fn test_psl_scoping_and_tenants(t: lit::T&) {
         var etld_proj: u8[..64] = [];
         core::extract_etld_plus_one("project.alice.github.io", etld_proj);
         sub.assert_bytes_eq(etld_proj[..], "alice.github.io", "subdomain bound to tenant eTLD+1");
-    };
-
-    t.run("RegistrableSite Construction from URL") { sub =>
-        let url_app = core::new_url("https://sub.portal.example.com/dashboard");
-        let reg_site = core::registrable_site_from_url(url_app);
-        sub.assert_bytes_eq(reg_site.scheme[..], "https", "scheme is https");
-        sub.assert_bytes_eq(reg_site.registrable_domain[..], "example.com", "registrable domain is example.com");
     };
 }
 

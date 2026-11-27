@@ -638,8 +638,8 @@ fn verify_iocomp_track_e(p_cfg: const net_internal::TransportDriverConfig&) {
     var zc = core::new_zstream_compressor(core::ContainerFormat.Zlib, 6);
     var zc_out: u8[..128] = [];
     assert(core::write(zc, "hello", zc_out));
-    assert(core::sync_flush(zc, zc_out));
-    assert(core::full_flush(zc, zc_out));
+    assert(core::write(zc, "", zc_out, core::FlushMode.SyncFlush));
+    assert(core::write(zc, "", zc_out, core::FlushMode.FullFlush));
     assert(core::finish(zc, zc_out));
     print("IOCOMP_TRACK_E_OK: 1");
 }

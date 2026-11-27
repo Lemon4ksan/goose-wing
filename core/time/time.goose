@@ -146,7 +146,6 @@ fn clock(time_val: Time) -> i64, i64, i64 {
 fn hour(time_val: Time) -> i64 { let _, _, _, hour_val, _, _ = civil_parts(time_val); return hour_val; }
 fn minute(time_val: Time) -> i64 { let _, _, _, _, min_val, _ = civil_parts(time_val); return min_val; }
 fn second(time_val: Time) -> i64 { let _, _, _, _, _, sec_val = civil_parts(time_val); return sec_val; }
-fn nanosecond(time_val: Time) -> i64 { return time_val.nsec; }
 
 inline fn scale_wall_time_sat(wall_sec: i64, sub_units: i64, scale: i64) -> i64 {
     if wall_sec < 0 && sub_units > 0 {
@@ -234,50 +233,9 @@ fn sub(time_val: Time, dur: Duration) -> Time {
     };
 }
 
-// add_months_clamped adds months_count calendar months to time_val with end-of-month clamping.
-//
-// Caller Contract & Nuances:
-// - End-of-Month Clamping: Adding 1 month to January 31 produces February 28 (or Feb 29 in leap years),
-//   NEVER rolling over to March 3. Safe for monthly recurring subscriptions, billing, and deadlines.
-// - Offset Invariance: Preserves the original wall-clock hours, minutes, seconds, nanoseconds, and tz_offset.
-// - Algorithmic Bound: Operates in O(1) constant time without loops or memory allocations.
-fn add_months_clamped(time_val: Time, months_count: i64) -> Time {
-    let current_year, current_month, current_day, hour_val, min_val, sec_val = civil_parts(time_val);
-    let zero_based = add_sat_i64(sub_sat_i64(current_month, 1), months_count);
-    let year_delta = div_euclid_i64(zero_based, 12);
-    let new_month = add_sat_i64(rem_euclid_i64(zero_based, 12), 1);
-    let new_year = add_sat_i64(current_year, year_delta);
-
-    let max_day_in_month = days_in_month(new_year, new_month);
-    let clamped_day = min(current_day, max_day_in_month);
-    let base_days = civil_to_days(new_year, new_month, clamped_day);
-    let clock_secs = add_sat_i64(
-        add_sat_i64(mul_sat_i64(hour_val, 3600), mul_sat_i64(min_val, 60)),
-        sec_val,
-    );
-    let total_secs = sub_sat_i64(
-        add_sat_i64(mul_sat_i64(base_days, 86400), clock_secs),
-        time_val.tz_offset,
-    );
-    return Time {
-        wall_sec:  total_secs,
-        nsec:      time_val.nsec,
-        tz_offset: time_val.tz_offset,
-    };
-}
-
-// Adds years with leap-day clamping (e.g. Feb 29, 2024 + 1 year -> Feb 28, 2025).
-fn add_years_clamped(time_val: Time, years_count: i64) -> Time {
-    return add_months_clamped(time_val, mul_sat_i64(years_count, 12));
-}
-
 fn days_in_month(time_val: Time) -> i64 {
     let year_val, month_val, _, _, _, _ = civil_parts(time_val);
     return days_in_month(year_val, month_val);
-}
-
-fn days_in_year(time_val: Time) -> i64 {
-    return if is_leap_year(time_val.year()) { 366 } else { 365 };
 }
 
 fn is_leap_year(time_val: Time) -> bool {
@@ -286,10 +244,6 @@ fn is_leap_year(time_val: Time) -> bool {
 
 fn since(time_val: Time) -> Duration {
     return now().sub(time_val);
-}
-
-fn until(time_val: Time) -> Duration {
-    return time_val.sub(now());
 }
 
 // Three-way comparison hook (-1 for earlier, 0 for equal, +1 for later).
@@ -304,168 +258,12 @@ fn compare(time_val: Time, other_time: Time) -> i64 {
     return 0;
 }
 
-fn equal(time_val: Time, other_time: Time) -> bool {
-    return time_val.wall_sec == other_time.wall_sec && time_val.nsec == other_time.nsec;
-}
-
 fn before(time_val: Time, other_time: Time) -> bool {
     return compare(time_val, other_time) < 0;
 }
 
 fn after(time_val: Time, other_time: Time) -> bool {
     return compare(time_val, other_time) > 0;
-}
-
-// Rounds time_val down to a multiple of dur since the Unix epoch.
-// If dur <= 0, returns time_val unchanged.
-fn truncate(time_val: Time, dur: Duration) -> Time {
-    if dur.nanos <= 0 { return time_val; }
-
-    // Multiple of whole seconds (e.g. 1s, 1m, 1h, 1d)
-    if dur.nanos >= 1000000000 && (dur.nanos % 1000000000 == 0) {
-        let step_secs = dur.nanos / 1000000000;
-        let rem = time_val.wall_sec % step_secs;
-        let trunc_sec = time_val.wall_sec - rem;
-        return Time {
-            wall_sec:  trunc_sec,
-            nsec:      0,
-            tz_offset: time_val.tz_offset,
-        };
-    }
-
-    // Sub-second step that divides 1 second evenly (e.g. 1ms, 10ms, 100ms, 500ms, 1us)
-    if dur.nanos < 1000000000 && (1000000000 % dur.nanos == 0) {
-        let trunc_nsec = (time_val.nsec / dur.nanos) * dur.nanos;
-        return Time {
-            wall_sec:  time_val.wall_sec,
-            nsec:      trunc_nsec as i32,
-            tz_offset: time_val.tz_offset,
-        };
-    }
-
-    // General case: bounded within ~292 years
-    let max_sec: i64 = 9223372036;
-    if (time_val.wall_sec > -max_sec || (time_val.wall_sec == -max_sec && time_val.nsec >= 0)) &&
-       (time_val.wall_sec < max_sec || (time_val.wall_sec == max_sec && time_val.nsec <= 854775807)) {
-        let total_nanos = time_val.wall_sec * 1000000000 + time_val.nsec;
-        let rem = total_nanos % dur.nanos;
-        let base_nanos = total_nanos - rem;
-        var truncated_time = unix(0, base_nanos);
-        truncated_time.tz_offset = time_val.tz_offset;
-        return truncated_time;
-    }
-
-    return time_val;
-}
-
-fn round_seconds_multiple(time_val: Time, dur_nanos: i64) -> Time {
-    let step_secs = dur_nanos / NANOS_PER_SEC;
-    guard step_secs > 0 else { return time_val; }
-    let is_neg = time_val.wall_sec < 0;
-    let has_pos_nsec = is_neg && time_val.nsec > 0;
-    let abs_sec = if is_neg {
-        if has_pos_nsec { (-time_val.wall_sec) - 1 } else { -time_val.wall_sec }
-    } else {
-        time_val.wall_sec
-    };
-    let abs_nsec = if has_pos_nsec { NANOS_PER_SEC - time_val.nsec } else { time_val.nsec as i64 };
-    let rem = abs_sec % step_secs;
-    var base_sec = abs_sec - rem;
-    let rem_nanos = rem * NANOS_PER_SEC + abs_nsec;
-    if rem_nanos >= (dur_nanos + 1) / 2 {
-        base_sec += step_secs;
-    }
-    return Time {
-        wall_sec:  if is_neg { -base_sec } else { base_sec },
-        nsec:      0,
-        tz_offset: time_val.tz_offset,
-    };
-}
-
-fn round_subsecond_divisor(time_val: Time, dur_nanos: i64) -> Time {
-    let nsec_64: i64 = time_val.nsec;
-    let quotient = nsec_64 / dur_nanos;
-    let rem = nsec_64 % dur_nanos;
-    var base_nsec = quotient * dur_nanos;
-    var sec_add: i64 = 0;
-    let round_up = if time_val.wall_sec < 0 {
-        rem > dur_nanos / 2
-    } else {
-        rem >= (dur_nanos + 1) / 2
-    };
-    if round_up {
-        base_nsec += dur_nanos;
-        if base_nsec >= NANOS_PER_SEC {
-            base_nsec -= NANOS_PER_SEC;
-            sec_add = 1;
-        }
-    }
-    return Time {
-        wall_sec:  time_val.wall_sec + sec_add,
-        nsec:      base_nsec as i32,
-        tz_offset: time_val.tz_offset,
-    };
-}
-
-fn round_general_nanos(time_val: Time, dur_nanos: i64) -> Time {
-    let above_min = time_val.wall_sec > -MAX_WALL_SEC_FOR_NANOS ||
-        (time_val.wall_sec == -MAX_WALL_SEC_FOR_NANOS && time_val.nsec >= 0);
-    let below_max = time_val.wall_sec < MAX_WALL_SEC_FOR_NANOS ||
-        (time_val.wall_sec == MAX_WALL_SEC_FOR_NANOS && time_val.nsec <= 854775807);
-    if above_min && below_max {
-        let total_nanos = time_val.wall_sec * NANOS_PER_SEC + time_val.nsec;
-        let is_neg = total_nanos < 0;
-        let abs_nanos = if is_neg { -total_nanos } else { total_nanos };
-        let quotient = abs_nanos / dur_nanos;
-        let remainder = abs_nanos - quotient * dur_nanos;
-        var base_nanos = quotient * dur_nanos;
-        if remainder >= dur_nanos - remainder {
-            base_nanos += dur_nanos;
-        }
-        let rounded_nanos = if is_neg { -base_nanos } else { base_nanos };
-        var rounded_time = unix(0, rounded_nanos);
-        rounded_time.tz_offset = time_val.tz_offset;
-        return rounded_time;
-    }
-    return time_val;
-}
-
-// round returns the result of rounding time_val to the nearest multiple of dur since the Unix epoch (half rounds up).
-// If dur <= 0, round returns time_val unchanged.
-fn round(time_val: Time, dur: Duration) -> Time {
-    if dur.nanos <= 0 { return time_val; }
-
-    if dur.nanos >= NANOS_PER_SEC && (dur.nanos % NANOS_PER_SEC == 0) {
-        return round_seconds_multiple(time_val, dur.nanos);
-    }
-    if dur.nanos < NANOS_PER_SEC && (NANOS_PER_SEC % dur.nanos == 0) {
-        return round_subsecond_divisor(time_val, dur.nanos);
-    }
-    return round_general_nanos(time_val, dur.nanos);
-}
-
-// Timezone adjustments
-
-fn in_offset(time_val: Time, tz_offset_seconds: i32) -> Time {
-    var shifted_time = time_val;
-    shifted_time.tz_offset = tz_offset_seconds;
-    return shifted_time;
-}
-
-fn in_tz(time_val: Time, hours_offset: i64, minutes_offset: i64 = 0) -> Time {
-    let is_neg = hours_offset < 0 || minutes_offset < 0;
-    let h_sec = mul_sat_i64(hours_offset, 3600);
-    let m_sec = mul_sat_i64(minutes_offset, 60);
-    let abs_h = if h_sec < 0 { sub_sat_i64(0, h_sec) } else { h_sec };
-    let abs_m = if m_sec < 0 { sub_sat_i64(0, m_sec) } else { m_sec };
-    let mag = add_sat_i64(abs_h, abs_m);
-    let min_i32 = sub_sat_i64(0, 2147483648);
-    let signed_secs = if is_neg {
-        max(sub_sat_i64(0, mag), min_i32)
-    } else {
-        min(mag, 2147483647)
-    };
-    return in_offset(time_val, signed_secs as i32);
 }
 
 fn utc(time_val: Time) -> Time {
@@ -476,37 +274,4 @@ fn utc(time_val: Time) -> Time {
 
 fn tz_offset(time_val: Time) -> i32 {
     return time_val.tz_offset;
-}
-
-// Civil Calendar Boundaries
-
-fn start_of_day(time_val: Time) -> Time {
-    let year_val, month_val, day_val, _, _, _ = civil_parts(time_val);
-    return date(year_val, month_from_number(month_val), day_val, 0, 0, 0, 0, time_val.tz_offset);
-}
-
-fn end_of_day(time_val: Time) -> Time {
-    let year_val, month_val, day_val, _, _, _ = civil_parts(time_val);
-    return date(year_val, month_from_number(month_val), day_val, 23, 59, 59, 999999999, time_val.tz_offset);
-}
-
-fn start_of_month(time_val: Time) -> Time {
-    let year_val, month_val, _, _, _, _ = civil_parts(time_val);
-    return date(year_val, month_from_number(month_val), 1, 0, 0, 0, 0, time_val.tz_offset);
-}
-
-fn end_of_month(time_val: Time) -> Time {
-    let year_val, month_val, day_val, _, _, _ = civil_parts(time_val);
-    let last_day = days_in_month(year_val, month_val);
-    return date(year_val, month_from_number(month_val), last_day, 23, 59, 59, 999999999, time_val.tz_offset);
-}
-
-fn start_of_year(time_val: Time) -> Time {
-    let year_val, _, _, _, _, _ = civil_parts(time_val);
-    return date(year_val, Month.January, 1, 0, 0, 0, 0, time_val.tz_offset);
-}
-
-fn end_of_year(time_val: Time) -> Time {
-    let year_val, _, _, _, _, _ = civil_parts(time_val);
-    return date(year_val, Month.December, 31, 23, 59, 59, 999999999, time_val.tz_offset);
 }

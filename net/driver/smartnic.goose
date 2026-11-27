@@ -13,23 +13,19 @@ import net.driver.types;
 extern fn native_smartnic_probe() -> i32 = "wing_smartnic_probe";
 extern fn native_smartnic_probe_ktls() -> i32 = "wing_smartnic_probe_ktls";
 extern fn native_smartnic_enable_ktls(fd: i64) -> i32 = "wing_smartnic_enable_ktls";
-extern fn native_smartnic_abort_ktls(fd: i64) = "wing_smartnic_abort_ktls";
+extern fn native_smartnic_shutdown(fd: i64, how: i32) -> i32 = "wing_tcp_shutdown";
 extern fn native_smartnic_recv_record(fd: i64, dst: u8[:], out_rt: u8[:]) -> i32 = "wing_smartnic_recv_record";
 extern fn native_smartnic_send_record(fd: i64, src: const u8[:], record_type: u8) -> i32 = "wing_smartnic_send_record";
-extern fn wing_smartnic_set_hardware_tls_tx(
-    fd:      i64, version: u16, cipher_type: u16,
-    key:     const u8[:],
-    iv:      const u8[:],
-    salt:    const u8[:],
-    rec_seq: const u8[:],
-) -> i32;
-extern fn wing_smartnic_set_hardware_tls_rx(
-    fd:      i64, version: u16, cipher_type: u16,
-    key:     const u8[:],
-    iv:      const u8[:],
-    salt:    const u8[:],
-    rec_seq: const u8[:],
-) -> i32;
+extern fn native_smartnic_set_hardware_tls(
+    fd:          i64,
+    is_tx:       i32,
+    version:     u16,
+    cipher_type: u16,
+    key:         const u8[:],
+    iv:          const u8[:],
+    salt:        const u8[:],
+    rec_seq:     const u8[:],
+) -> i32 = "wing_smartnic_set_hardware_tls";
 
 enum SmartNicModel {
     Generic,
@@ -153,23 +149,23 @@ fn smartnic_attach_hardware_tls(
         AesGcm256 => TLS_CIPHER_AES_GCM_256_ID,
     };
 
-    let tx_err = wing_smartnic_set_hardware_tls_tx(
-        fd, rfc::TLS_VERSION_1_3, cipher_id,
+    let tx_err = native_smartnic_set_hardware_tls(
+        fd, 1, rfc::TLS_VERSION_1_3, cipher_id,
         tx_key, tx_iv, tx_salt, tx_seq,
     );
     guard tx_err == 0 else {
-        native_smartnic_abort_ktls(fd);
+        let _ = native_smartnic_shutdown(fd, 2);
         return new_smartnic_session(fd), tx_err;
     }
 
     var rx_offloaded = false;
     if has_any_rx {
-        let rx_err = wing_smartnic_set_hardware_tls_rx(
-            fd, rfc::TLS_VERSION_1_3, cipher_id,
+        let rx_err = native_smartnic_set_hardware_tls(
+            fd, 0, rfc::TLS_VERSION_1_3, cipher_id,
             rx_key, rx_iv, rx_salt, rx_seq,
         );
         guard rx_err == 0 else {
-            native_smartnic_abort_ktls(fd);
+            let _ = native_smartnic_shutdown(fd, 2);
             return new_smartnic_session(fd), rx_err;
         }
         rx_offloaded = true;

@@ -571,13 +571,20 @@ inline fn is_origin_group_unused(grp: const net::ConnectionGroup&) -> bool {
 
 // ---- Retry-After Helpers ---------------------------------------------------
 
+// Converts seconds from RFC 9110 Retry-After header to milliseconds with saturation.
+inline fn retry_after_sec_to_ms_sat(seconds: i64) -> i64 {
+    let clamped_sec = max(seconds, 0) as! u64;
+    let ms_u64 = core::mul_sat_u64(clamped_sec, 1000);
+    return min(ms_u64, core::I64_MAX as! u64) as! i64;
+}
+
 fn try_parse_retry_after_seconds(clean: const u8[:]) -> i64, bool {
     for ch in clean {
         guard core::is_ascii_digit(ch) else { return 0, false; }
     }
     let secs, ok_s = core::parse_digits(clean);
     guard ok_s && secs >= 0 else { return 0, false; }
-    return core::retry_after_sec_to_ms_sat(secs), true;
+    return retry_after_sec_to_ms_sat(secs), true;
 }
 
 fn try_parse_retry_after_http_date(clean: const u8[:], now_unix_ms: i64) -> i64, bool {

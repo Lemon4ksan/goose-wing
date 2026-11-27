@@ -117,14 +117,15 @@ fn rio_acquire_address_buf(pool: RioAddressPool&) -> i32, RIO_BUF, bool
 fn rio_release_address_buf(pool: RioAddressPool&, slot_idx: i32) -> bool
 fn rio_submit_send(rq_id: u64, desc: const RioBufferDescriptor&, req_context: u64 = 0) -> i32
 fn rio_submit_recv(rq_id: u64, desc: const RioBufferDescriptor&, req_context: u64 = 0) -> i32
-fn rio_drain_completions(cq_id: u64, out_results: RioResult[..64]&) -> u32
+fn rio_drain_completions(cq_id: u64, out_results: RioResult[..64]&) -> i32
 ```
 
 Manages pre-pinned virtual memory slabs (`native_rio_register_slice`),
 persistent overlapped `AcceptEx` listeners (`rio_listen`,
-`native_rio_poll_accept`), and `RIO_BUF` slices so Winsock skips per-call page
-locking on `RIOSend` and `RIOReceive`. `rio_drain_completions` dequeues up to 64
-`RioResult` completion records per sweep.
+`native_rio_poll_accept`), synchronous TLS-over-RIO handshake bridging
+(`net/driver/rio_hs_internal.goose`), and `RIO_BUF` slices so Winsock skips
+per-call page locking on `RIOSend` and `RIOReceive`. `rio_drain_completions`
+dequeues up to 64 `RioResult` completion records per sweep in pure Goose.
 
 ### 4. BSD / macOS `kqueue` Backend (`net/driver/kqueue.goose`)
 
@@ -167,7 +168,8 @@ fn xsk_fill_ring_enqueue_burst(ring: XskRingState&, addrs: const u64[:]) -> u32
 Manages the four `AF_XDP` producer/consumer rings (`fill`, `comp`, `rx`, `tx`)
 over a bounds-checked `AfXdpUmem` arena (`af_xdp_umem_write` and
 `af_xdp_umem_read` validate `[0..umem.len)` and `<= 2048` byte chunks), plus an
-unprivileged cross-platform UMEM loopback ring (`af_xdp_open_loopback`).
+unprivileged cross-platform UMEM loopback ring in pure Goose
+(`af_xdp_open_loopback`), keeping `shim/af_xdp.c` focused on hardware XSK setup.
 
 ### 6. DPDK Poll-Mode Driver Backend (`net/driver/dpdk.goose`)
 
@@ -193,7 +195,7 @@ fn dpdk_stage_tx_burst(ctx: DpdkContext&, mbufs: const u64[:]) -> u32
 
 Provides a user-space Poll-Mode Driver (PMD) abstraction over fixed-size
 2048-byte mbuf packet pools (`DpdkMempool`), supporting both `libdpdk` queues
-and a lock-free userspace packet ring (`dpdk_tx_packet_push`,
+via `shim/dpdk.c` and a pure-Goose userspace packet ring (`dpdk_tx_packet_push`,
 `dpdk_rx_burst_read`).
 
 ### 7. SmartNIC & Linux kTLS Offload (`net/driver/smartnic.goose`)

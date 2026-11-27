@@ -46,7 +46,7 @@ fn read_client_hello(
 fn extract_client_hello_sni(ch_msg: const u8[:], out_sni: u8[..255]&) -> bool {
     out_sni.clear();
     var sid:     u8[..32]             = [];
-    var entries: ExtensionEntry[..32] = [];
+    var entries: ExtensionEntry[..64] = [];
     let _, ok_pre = tls_internal::decode_ch_server_preamble(ch_msg, sid, entries);
     guard ok_pre else { return false; }
     let sni_ext, has_sni = find_extension(entries, rfc::TLS_EXT_SERVER_NAME);

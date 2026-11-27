@@ -251,44 +251,109 @@ fn unseal_single_slot_record<B>(
     return tls::SliceUnsealStatus.Error;
 }
 
-inline fn consume_next_ciphertext_record<B>(
-    slot:      tls::CipherSlot&,
-    rem:       const u8[:],
-    scratch:   u8[:],
-    out_plain: B&,
-) -> i64, tls::SliceUnsealStatus {
-    let total_rec, hdr_st = peek_ciphertext_record_len(rem);
-    guard hdr_st == tls::SliceUnsealStatus.Ok else { return 0, hdr_st; }
-    let rec_slice = rem[..total_rec];
-    let st = unseal_single_slot_record(
-        slot,
-        rec_slice[..rfc::TLS_RECORD_HEADER_LEN],
-        rec_slice[rfc::TLS_RECORD_HEADER_LEN..],
-        scratch,
-        out_plain,
-    );
-    return total_rec, st;
+inline fn finish_direct_control_record<B>(
+    slot:       tls::CipherSlot&,
+    inner_type: u8,
+    start:      i64,
+    dec_len:    i64,
+    cap_end:    i64,
+    out_plain:  B&,
+) -> tls::SliceUnsealStatus {
+    let ctrl_end = core::add_sat_i64(start, dec_len);
+    var st = tls::SliceUnsealStatus.Error;
+    if inner_type == rfc::TLS_CONTENT_ALERT {
+        let alert_level, alert_code, _, ok_a = tls::parse_alert_message(out_plain[start..ctrl_end]);
+        if ok_a && alert_code == tls::Alert.CloseNotify {
+            slot.peer_closed = true;
+            st = tls::SliceUnsealStatus.Closed;
+        } else if ok_a && alert_level == 1 && alert_code == tls::Alert.UserCanceled {
+            let warn_cnt = core::add_sat_u64(slot.warning_alerts, 1);
+            if warn_cnt <= 4 {
+                slot.warning_alerts = warn_cnt as u8;
+                st = tls::SliceUnsealStatus.ControlHandled;
+            }
+        }
+    } else if inner_type == rfc::TLS_CONTENT_HANDSHAKE {
+        st = apply_unsealed_slot_handshake_control(slot, out_plain[start..ctrl_end]);
+        if st == tls::SliceUnsealStatus.Closed {
+            slot.peer_closed = true;
+        }
+    }
+    core::secure_zeroize_slice(out_plain[start..cap_end]);
+    out_plain.resize(start);
+    return st;
 }
 
-fn tls_unseal_records_with_scratch<B>(
+inline fn unseal_single_record_direct<B>(
+    slot:      tls::CipherSlot&,
+    rec_hdr:   const u8[:],
+    rec_body:  const u8[:],
+    out_plain: B&,
+) -> tls::SliceUnsealStatus {
+    guard !tls::aead_exceeds_hard_limit(slot.cipher_suite, slot.rx_seq) else {
+        return tls::SliceUnsealStatus.Error;
+    }
+    let avail = core::sub_sat_i64(out_plain.cap, out_plain.len);
+    guard avail >= rec_body.len else { return tls::SliceUnsealStatus.Error; }
+    let start = out_plain.len;
+    let cap_end = core::add_sat_i64(start, rec_body.len);
+    out_plain.resize(cap_end, 0);
+    let klen = slot.key_len as i64;
+    let dec_len, inner_type, _, ok_dec = record_decrypt_prepared_into(
+        slot.cipher_suite,
+        slot.rx_key[..klen],
+        slot.rx_aes_key,
+        slot.rx_iv,
+        slot.rx_seq,
+        rec_hdr,
+        rec_body,
+        out_plain[start..cap_end],
+    );
+    guard ok_dec && dec_len <= rec_body.len else {
+        core::secure_zeroize_slice(out_plain[start..cap_end]);
+        out_plain.resize(start);
+        return tls::SliceUnsealStatus.Error;
+    }
+    tls::increment_record_seq_num(slot.rx_seq);
+    if inner_type == rfc::TLS_CONTENT_APPLICATION_DATA {
+        let plain_end = core::add_sat_i64(start, dec_len);
+        if cap_end > plain_end {
+            core::secure_zeroize_slice(out_plain[plain_end..cap_end]);
+        }
+        out_plain.resize(plain_end);
+        if dec_len > 0 {
+            slot.empty_app_records = 0;
+            slot.warning_alerts = 0;
+            on_key_update_app_data(slot.key_update_tracker);
+            return tls::SliceUnsealStatus.Ok;
+        }
+        let empty_cnt = core::add_sat_u64(slot.empty_app_records, 1);
+        guard empty_cnt <= 32 else { return tls::SliceUnsealStatus.Error; }
+        slot.empty_app_records = empty_cnt as u8;
+        return tls::SliceUnsealStatus.ControlHandled;
+    }
+    return finish_direct_control_record(slot, inner_type, start, dec_len, cap_end, out_plain);
+}
+
+fn tls_unseal_records_direct<B>(
     slot:      tls::CipherSlot&,
     cipher_in: const u8[:],
-    scratch:   u8[:],
     out_plain: B&,
 ) -> i64, tls::SliceUnsealStatus {
     let saved_len = out_plain.len;
     var rem = cipher_in;
-    var consumed:    i64 = 0;
-    var max_touched: i64 = 0;
+    var consumed: i64 = 0;
     var final_status = tls::SliceUnsealStatus.ControlHandled;
-    defer if max_touched > 0 { core::secure_zeroize_slice(scratch[..max_touched]); };
     while rem.len > 0 {
-        let total_rec, st = consume_next_ciphertext_record(slot, rem, scratch, out_plain);
-        if total_rec > rfc::TLS_RECORD_HEADER_LEN {
-            let body_len = min(core::sub_sat_i64(total_rec, rfc::TLS_RECORD_HEADER_LEN), scratch.len);
-            max_touched = max(max_touched, body_len);
-        }
-        if st == tls::SliceUnsealStatus.NeedMore { break; }
+        let total_rec, hdr_st = peek_ciphertext_record_len(rem);
+        guard hdr_st == tls::SliceUnsealStatus.Ok else { break; }
+        let rec_slice = rem[..total_rec];
+        let st = unseal_single_record_direct(
+            slot,
+            rec_slice[..rfc::TLS_RECORD_HEADER_LEN],
+            rec_slice[rfc::TLS_RECORD_HEADER_LEN..],
+            out_plain,
+        );
         if st == tls::SliceUnsealStatus.Error {
             if out_plain.len > saved_len {
                 core::secure_zeroize_slice(out_plain[saved_len..out_plain.len]);
@@ -342,10 +407,9 @@ inline fn seal_sans_io_key_update_if_needed<B>(
     return true;
 }
 
-fn tls_seal_app_data_with_buf<B>(
+fn tls_seal_app_data_direct<B>(
     slot:       tls::CipherSlot&,
     plain_in:   const u8[:],
-    rec_buf:    u8[:],
     out_cipher: B&,
 ) -> bool {
     guard !tls::aead_exceeds_hard_limit(slot.cipher_suite, slot.tx_seq) else { return false; }
@@ -369,7 +433,10 @@ fn tls_seal_app_data_with_buf<B>(
         slot.tx_seq = saved_seq;
     };
 
-    guard seal_sans_io_key_update_if_needed(slot, rec_buf, out_cipher) else { return false; }
+    if needs_ku {
+        var ku_buf: u8[64] = [0; 64];
+        guard seal_sans_io_key_update_if_needed(slot, ku_buf[..], out_cipher) else { return false; }
+    }
 
     let klen = slot.key_len as i64;
     var rem = plain_in;
@@ -378,6 +445,10 @@ fn tls_seal_app_data_with_buf<B>(
             return false;
         }
         let chunk_len = min(rem.len, rfc::TLS_MAX_RECORD_PLAINTEXT_LEN);
+        let rec_len = core::add_sat_i64(chunk_len, 22);
+        let start = out_cipher.len;
+        let cap_end = core::add_sat_i64(start, rec_len);
+        out_cipher.resize(cap_end, 0);
         let sealed_len, _, ok_seal = record_seal_prepared_into(
             slot.cipher_suite,
             slot.tx_key[..klen],
@@ -386,11 +457,12 @@ fn tls_seal_app_data_with_buf<B>(
             slot.tx_seq,
             rfc::TLS_CONTENT_APPLICATION_DATA,
             rem[..chunk_len],
-            rec_buf,
+            out_cipher[start..cap_end],
         );
-        guard ok_seal && sealed_len > 0 && out_cipher.try_append(rec_buf[..sealed_len]) else {
+        guard ok_seal && sealed_len > 0 && sealed_len <= rec_len else {
             return false;
         }
+        out_cipher.resize(core::add_sat_i64(start, sealed_len));
         tls::increment_record_seq_num(slot.tx_seq);
         rem = rem[chunk_len..];
     }

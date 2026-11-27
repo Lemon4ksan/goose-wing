@@ -10,16 +10,6 @@ import rfc.ws;
 import net.tcp;
 import .websocket;
 
-// ---- Native CSPRNG & SIMD Shims ------------------------------------------
-
-extern fn native_simd_mask_websocket(data: u8[:], mask: const u8[4]&) = "wing_simd_mask_websocket";
-extern fn native_simd_unmask_shifted(
-    slice:       u8[:],
-    header_len:  i64,
-    payload_len: i64,
-    mask:        const u8[4]&,
-) = "wing_simd_unmask_shifted";
-
 // ---- Shared Buffer Capacity Helpers --------------------------------------
 
 inline fn ws_buf_cap<B>(b: const B&) -> i64 {

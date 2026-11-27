@@ -522,33 +522,6 @@ fn test_aes_gcm_prepared_key_contexts(t: lit::T&) {
         let _, _, ok_after = core::aes_gcm_seal_prepared(ctx, nonce, pt, aad, dec[..]);
         sub.assert_false(ok_after, "zeroized ctx rejects seal");
     };
-
-    t.run("4-Block Interleaved AES-128-GCM Scalar Fusion Round-Trip") { sub =>
-        let key16:   u8[16] = [0x42; 16];
-        let nonce12: u8[12] = [0x24; 12];
-        let pt64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        var ks = core::aes128_key_schedule(key16);
-        let zero_blk: u8[16] = [0; 16];
-        let h = core::aes128_encrypt_block(ks, zero_blk);
-        let j0 = core::init_j0(nonce12);
-        let enc_j0 = core::aes128_encrypt_block(ks, j0);
-
-        var ctr_e = j0;
-        var ghash_e: u8[16] = [0; 16];
-        var ct64:    u8[64] = [0; 64];
-        core::fused_aes128_gcm_encrypt_4blocks(ks, h, ctr_e, ghash_e, pt64, ct64[..], 0);
-        let tag_e = core::fused_aes128_gcm_finalize_tag(h, enc_j0, ghash_e, 0, 64);
-
-        var ctr_d = j0;
-        var ghash_d: u8[16] = [0; 16];
-        var dec64:   u8[64] = [0; 64];
-        core::fused_aes128_gcm_decrypt_4blocks(ks, h, ctr_d, ghash_d, ct64[..], dec64[..], 0);
-        let tag_d = core::fused_aes128_gcm_finalize_tag(h, enc_j0, ghash_d, 0, 64);
-        core::zeroize_aes128_ks(ks);
-
-        sub.assert_true(core::ct_eq_tag16(tag_e, tag_d), "fused finalize tags match");
-        sub.assert_eq(dec64[..], pt64, "fused 4-block decryption matches plaintext");
-    };
 }
 
 fn test_poly1305_carry_and_long_len_debug(t: lit::T&) {

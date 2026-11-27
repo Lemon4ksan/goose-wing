@@ -60,7 +60,7 @@ fn verify_bogo_tls13_downgrade_and_extensions() {
         0x00, 0x10, 0x00, 0x00,
         0x00, 0x10, 0x00, 0x00,
     ];
-    var entries: tls::ExtensionEntry[..32] = [];
+    var entries: tls::ExtensionEntry[..64] = [];
     assert(!tls::parse_extensions_block(dup_ext_block[..], entries));
 
     // 3. BoGo: Forbidden extensions in EncryptedExtensions (key_share 0x0033, pre_shared_key 0x0029, cookie 0x002C)
@@ -68,9 +68,9 @@ fn verify_bogo_tls13_downgrade_and_extensions() {
     var out_alpn: u8[..32] = [];
     for i in 4 {
         var ee_wire: u8[..16] = [];
-        core::write_be_u16(ee_wire, 4);
-        core::write_be_u16(ee_wire, forbidden_types[i]);
-        core::write_be_u16(ee_wire, 0);
+        core::append_u16_be(ee_wire, 4);
+        core::append_u16_be(ee_wire, forbidden_types[i]);
+        core::append_u16_be(ee_wire, 0);
         assert(!tls_internal::parse_encrypted_extensions_alpn(ee_wire[..], out_alpn));
     }
 

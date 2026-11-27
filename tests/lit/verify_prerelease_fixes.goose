@@ -7,13 +7,11 @@
 import std;
 import wing from "../..";
 
-extern fn lit_crypto_random_bytes(out: u8[:]) -> i32 = "wing_crypto_random_bytes";
-
 fn test_csprng_windows_and_posix() {
     var r1: u8[32] = [0; 32];
     var r2: u8[32] = [0; 32];
-    let rc1 = lit_crypto_random_bytes(r1[..]);
-    let rc2 = lit_crypto_random_bytes(r2[..]);
+    let rc1 = if core::csprng_fill(r1[..]) { 0 } else { -1 };
+    let rc2 = if core::csprng_fill(r2[..]) { 0 } else { -1 };
     var nz1: i64 = 0;
     var nz2: i64 = 0;
     for b in r1 { if b != 0 { nz1 += 1; } }
@@ -59,7 +57,7 @@ fn test_query_helpers() {
     let tiny_ok = m_tiny == core::QueryParamMatch.Missing && tiny.len == 0;
 
     let alpha_ok = core::is_ascii_alphanumeric('Z') && !core::is_ascii_alphanumeric('-');
-    let case_ok = core::to_lower_ascii_byte('A') == 'a' && core::to_upper_ascii_byte('z') == 'Z';
+    let case_ok = core::to_lower_ascii_byte('A') == 'a' && core::to_lower_ascii_byte('z') == 'z';
     print(
         "query_match: val=", val_ok, " flag=", flag_ok, " empty=", empty_ok,
         " miss=", miss_ok, " tiny=", tiny_ok, " ascii=", alpha_ok && case_ok,

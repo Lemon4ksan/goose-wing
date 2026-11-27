@@ -1868,131 +1868,6 @@ fn test_rate_limiter_burst_and_concurrency(t: lit::T&) {
     };
 }
 
-// ----------------------------------------------------------------------------
-// 31. Singleflight Thundering Herd & Cache Stampede Defense
-// ----------------------------------------------------------------------------
-fn test_singleflight_thundering_herd(t: lit::T&) {
-    t.run("FLIGHT-01: Duplicate call suppression (10 concurrent requests, exactly 1 leader)") { sub =>
-        var g = core::SingleflightGroup { .. };
-        let key = "cache:user:profile:42";
-
-        var leader_count = 0;
-        var follower_count = 0;
-
-        // 10 callers concurrently request the same key
-        for caller_id in 10 {
-            let is_lead, val, shared = core::start_or_join(g, key);
-            if is_lead {
-                leader_count++;
-            } else {
-                follower_count++;
-            }
-        }
-
-        sub.assert_eq(leader_count, 1, "Exactly ONE caller must be designated as leader");
-        sub.assert_eq(follower_count, 9, "9 callers must join as followers (duplicate suppression)");
-        sub.assert_eq(core::waiter_count(g, key), 9, "Waiter count must be 9");
-        sub.assert_true(core::is_in_flight(g, key), "Key must be marked in-flight");
-    };
-
-    t.run("FLIGHT-02: Result broadcast and shared flag accuracy ") { sub =>
-        var g = core::SingleflightGroup { .. };
-        let key = "db:query:orders";
-
-        // Leader starts
-        let is_lead1, _, _ = core::start_or_join(g, key);
-        sub.assert_true(is_lead1);
-
-        // Follower 1 joins
-        let is_lead2, _, _ = core::start_or_join(g, key);
-        sub.assert_false(is_lead2);
-
-        // Leader finishes computation with result 8888
-        let finish_ok, waiters = core::finish_call(g, key, 8888, true);
-        sub.assert_true(finish_ok);
-        sub.assert_eq(waiters, 1);
-
-        // Verify shared status and result value
-        sub.assert_true(core::is_shared(g, key), "Result was shared between leader and follower");
-        let cached_val, ok = core::result_value(g, key);
-        sub.assert_true(ok);
-        sub.assert_eq(cached_val, 8888);
-    };
-
-    t.run("FLIGHT-03: Unshared execution (single caller)") { sub =>
-        var g = core::SingleflightGroup { .. };
-        let key = "db:query:rare_item";
-
-        let is_lead, _, _ = core::start_or_join(g, key);
-        sub.assert_true(is_lead);
-
-        let finish_ok, waiters = core::finish_call(g, key, 42, true);
-        sub.assert_true(finish_ok);
-        sub.assert_eq(waiters, 0, "No waiters joined");
-        sub.assert_false(core::is_shared(g, key), "Single caller execution must not be marked shared");
-    };
-
-    t.run("FLIGHT-04: Explicit Forget & re-execution ") { sub =>
-        var g = core::SingleflightGroup { .. };
-        let key = "cache:stock:price";
-
-        // Initial run
-        core::start_or_join(g, key);
-        core::finish_call(g, key, 100, true);
-
-        // Forget key
-        let forgot = core::forget(g, key);
-        sub.assert_true(forgot, "forget must successfully remove the key");
-
-        // Subsequent call must execute as new leader
-        let is_lead_next, _, _ = core::start_or_join(g, key);
-        sub.assert_true(is_lead_next, "After forget, next call must be a new leader");
-    };
-
-    t.run("FLIGHT-05: ForgetUnshared proposal ") { sub =>
-        var g = core::SingleflightGroup { .. };
-
-        // 1. Shared key
-        core::start_or_join(g, "key_shared");
-        core::start_or_join(g, "key_shared"); // waiter joined
-        core::finish_call(g, "key_shared", 1, true);
-
-        // forget_unshared must NOT forget a shared key
-        let forgot_shared = core::forget_unshared(g, "key_shared");
-        sub.assert_false(forgot_shared, "forget_unshared must not remove shared key");
-
-        // 2. Unshared key
-        core::start_or_join(g, "key_unshared");
-        core::finish_call(g, "key_unshared", 2, true);
-
-        // forget_unshared MUST forget unshared key
-        let forgot_unshared = core::forget_unshared(g, "key_unshared");
-        sub.assert_true(forgot_unshared, "forget_unshared must remove unshared key");
-    };
-
-    t.run("FLIGHT-06: Error / Failure unblocking ") { sub =>
-        var g = core::SingleflightGroup { .. };
-        let key = "db:broken_query";
-
-        // Leader starts
-        let is_lead, _, _ = core::start_or_join(g, key);
-        sub.assert_true(is_lead);
-
-        // Follower joins
-        let is_lead2, _, _ = core::start_or_join(g, key);
-        sub.assert_false(is_lead2);
-
-        // Leader fails
-        let finish_ok, waiters = core::finish_call(g, key, 0, false);
-        sub.assert_true(finish_ok);
-        sub.assert_eq(waiters, 1);
-
-        let res, ok = core::result_value(g, key);
-        sub.assert_false(ok, "Result value must record failure status without deadlocking");
-        sub.assert_false(core::is_in_flight(g, key), "Key must not remain in-flight after failure");
-    };
-}
-
 // --- Component: cookie_security ---
 // Tests for cookie security prefix enforcement and Max-Age bounds.
 
@@ -2727,7 +2602,6 @@ fn main() {
     lit::run_case(runner, "28. Dangerous Service Ports & Port 0 SSRF Bypass", test_dangerous_service_ports);
     lit::run_case(runner, "29. Public Suffix Boundary Attacks & FQDN Edge Cases (Go PSL Bugs)", test_public_suffix_boundary_attacks);
     lit::run_case(runner, "30. Token Bucket & GCRA Burst / Concurrency Limits (Go Rate Limiter Bugs)", test_rate_limiter_burst_and_concurrency);
-    lit::run_case(runner, "31. Singleflight Thundering Herd & Cache Stampede Defense (Go Singleflight Bugs)", test_singleflight_thundering_herd);
     lit::run_case(runner, "32. RFC 6265bis Section 5.6 Insecure Cookie Protection", test_rfc6265bis_sec56_shadowing_protection);
     lit::run_case(runner, "33. Case-Insensitive Prefix Enforcement", test_case_insensitive_prefix_enforcement);
     lit::run_case(runner, "34. Max-Age Capping and Overflow Protection", test_max_age_overflow_and_capping);

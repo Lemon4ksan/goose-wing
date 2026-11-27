@@ -168,7 +168,12 @@ fn prepare_h2_server_preface<B>(
     raw_stream: const u8[:],
     out_wire:   B&,
 ) -> i64 {
-    let max_streams = if server.max_h2_concurrent_streams > 0 { server.max_h2_concurrent_streams } else { 100 };
+    let req_streams = if server.max_h2_concurrent_streams > 0 {
+        server.max_h2_concurrent_streams
+    } else {
+        16
+    };
+    let max_streams = min(req_streams, sess.streams.cap as u32);
     sess.conn.max_concurrent_streams = max_streams;
     if server.max_header_bytes > 0 {
         sess.conn.max_header_list_size = min(server.max_header_bytes, 0x7FFFFFFF) as u32;
@@ -490,6 +495,10 @@ fn process_ready_http1_connection_buf<Stage, InBuf, FragBuf, OutBuf>(
         if serve_http1_upgraded_ws(conn_fd, server, req, consumed, stage, in_buf, ws_frag_buf, out_wire) {
             return false;
         }
+    }
+    if try_reject_invalid_ws_upgrade(server, req, out_wire) {
+        flush_http1_cork_buf(conn_fd, out_wire);
+        return false;
     }
     let wants_ka = dispatch_http1_connection_turn(conn_fd, server, peer_ip, req, stage, out_wire);
     in_buf.compact_wire_buffer(consumed);

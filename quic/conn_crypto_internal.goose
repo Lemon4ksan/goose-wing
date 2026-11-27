@@ -278,7 +278,7 @@ inline fn quic_aead_open_cipher_raw(
         var key16: u8[16] = [0; 16];
         defer core::secure_zeroize_16(key16);
         for i in 16 { key16[i] = aead_key[i]; }
-        let dec_len, ok_open = core::fused_aes_gcm_decrypt(key16, nonce, ct_slice, aad, tag, out_plain[..pt_len]);
+        let dec_len, ok_open = core::aes128_gcm_open_into(key16, nonce, ct_slice, aad, tag, out_plain[..pt_len]);
         return ok_open && dec_len == pt_len;
     }
     if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 && aead_key.len == 32 {

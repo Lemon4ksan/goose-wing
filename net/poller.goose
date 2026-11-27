@@ -388,7 +388,7 @@ fn wake_tag(p: Poller&, tag: u64) -> bool {
 fn simulate_read_ready(p: Poller&, fd: i32, bytes_avail: i64 = 0) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
-    p.registrations[idx].sim.ready.set_flag(core::POLL_READ);
+    p.registrations[idx].sim.ready |= core::POLL_READ;
     p.registrations[idx].sim.bytes = bytes_avail;
     return true;
 }
@@ -396,21 +396,21 @@ fn simulate_read_ready(p: Poller&, fd: i32, bytes_avail: i64 = 0) -> bool {
 fn simulate_write_ready(p: Poller&, fd: i32) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
-    p.registrations[idx].sim.ready.set_flag(core::POLL_WRITE);
+    p.registrations[idx].sim.ready |= core::POLL_WRITE;
     return true;
 }
 
 fn simulate_error(p: Poller&, fd: i32) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
-    p.registrations[idx].sim.ready.set_flag(core::POLL_ERROR);
+    p.registrations[idx].sim.ready |= core::POLL_ERROR;
     return true;
 }
 
 fn simulate_hangup(p: Poller&, fd: i32) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
-    p.registrations[idx].sim.ready.set_flag(core::POLL_HANGUP);
+    p.registrations[idx].sim.ready |= core::POLL_HANGUP;
     p.registrations[idx].sim.eof = true;
     return true;
 }

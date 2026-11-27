@@ -297,7 +297,13 @@ fn select_alpn_result(c: AlpnCandidates) -> tls::NegotiatedAlpn {
     return tls::NegotiatedAlpn.None;
 }
 
-fn check_and_add_extension(entries: tls::ExtensionEntry[..32]&, ext_type: u16, data: const u8[:]) -> bool {
+inline fn is_tls_grease_u16(val: u16) -> bool {
+    let hi = val >> 8;
+    let lo = val & 0xFF;
+    return (val & 0x0F0F) == 0x0A0A && hi == lo;
+}
+
+fn check_and_add_extension(entries: tls::ExtensionEntry[..64]&, ext_type: u16, data: const u8[:]) -> bool {
     for i in entries.len {
         if entries[i].ext_type == ext_type {
             return false;
@@ -354,7 +360,7 @@ fn validate_client_key_share_entries(shares: const u8[:], allow_empty: bool = fa
     }
     guard shares.len >= 5 else { return false; }
     var sc = core::cursor_from(shares);
-    var seen_groups: u16[..32] = [];
+    var seen_groups: u16[..64] = [];
     while sc.buf.len > 0 {
         let grp, ok_g = sc.read_u16();
         let kex, ok_k = sc.read_u16_prefixed();

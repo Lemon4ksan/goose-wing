@@ -5,6 +5,7 @@
 namespace net_internal;
 
 import std;
+import os;
 
 // Native Windows RIO C shims (mswsock.dll)
 extern fn native_rio_probe() -> i32 = "wing_rio_probe";
@@ -12,21 +13,6 @@ extern fn native_rio_available() -> i32 = "wing_rio_available";
 extern fn native_rio_deregister_buffer(buf_id: u64) = "wing_rio_deregister_buffer";
 extern fn native_rio_create_cq(queue_size: u32) -> u64 = "wing_rio_create_cq";
 extern fn native_rio_close_cq(cq_id: u64) = "wing_rio_close_cq";
-extern fn native_rio_cq_is_corrupt(cq_id: u64) -> i32 = "wing_rio_cq_is_corrupt";
-extern fn native_rio_receive(
-    rq_id:       u64,
-    buf_id:      u64,
-    offset:      u32,
-    length:      u32,
-    req_context: u64,
-) -> i32 = "wing_rio_receive";
-extern fn native_rio_send(
-    rq_id:       u64,
-    buf_id:      u64,
-    offset:      u32,
-    length:      u32,
-    req_context: u64,
-) -> i32 = "wing_rio_send";
 extern fn native_rio_register_slice(buf: u8[:]) -> u64 = "wing_rio_register_slice";
 extern fn native_rio_dequeue_slice(cq_id: u64, dst: RioResult[:]) -> i32 = "wing_rio_dequeue_slice";
 extern fn native_rio_wait_cq(cq_id: u64, timeout_ms: i32) -> i32 = "wing_rio_wait_cq";
@@ -53,24 +39,9 @@ extern fn native_rio_post_send(
     req_ctx: u64,
 ) -> i32 = "wing_rio_post_send";
 extern fn native_rio_listen(host: const u8[:], port: u16, backlog: i32) -> i64 = "wing_rio_listen";
-extern fn native_rio_accept(listen_fd: i64) -> i64 = "wing_rio_accept";
 extern fn native_rio_is_listener(sock_fd: i64) -> i32 = "wing_rio_is_listener";
 extern fn native_rio_poll_accept(listen_fd: i64, timeout_ms: i32) -> i64 = "wing_rio_poll_accept";
 extern fn native_rio_cancel_accept(listen_fd: i64) -> i32 = "wing_rio_cancel_accept";
-extern fn native_rio_hs_begin(
-    sock_fd:  i64,
-    rq_id:    u64,
-    rx_cq:    u64,
-    tx_cq:    u64,
-    buf_id:   u64,
-    slab:     u8[:],
-    rx_off:   u32,
-    tx_off:   u32,
-    buf_size: u32,
-    sock_ctx: u64,
-) = "wing_rio_hs_begin";
-extern fn native_rio_hs_is_rx_inflight() -> i32 = "wing_rio_hs_is_rx_inflight";
-extern fn native_rio_hs_end(out_leftover: u8[:]) -> i32 = "wing_rio_hs_end";
 
 // Page-locked registered memory buffer slice descriptor for Windows RIO
 struct RioBufferDescriptor {
@@ -223,7 +194,7 @@ fn rio_submit_send(rq_id: u64, desc: const RioBufferDescriptor&, req_context: u6
     guard rq_id != 0 && desc.is_registered && desc.buffer_id != 0 && desc.length > 0 else {
         return -1;
     }
-    return native_rio_send(rq_id, desc.buffer_id, desc.offset as u32, desc.length, req_context);
+    return native_rio_post_send(rq_id, desc.buffer_id, desc.offset as u32, desc.length, req_context);
 }
 
 // Enqueues a registered buffer slice into a Windows RIO Request Queue (`RIOReceive`).
@@ -231,7 +202,7 @@ fn rio_submit_recv(rq_id: u64, desc: const RioBufferDescriptor&, req_context: u6
     guard rq_id != 0 && desc.is_registered && desc.buffer_id != 0 && desc.length > 0 else {
         return -1;
     }
-    return native_rio_receive(rq_id, desc.buffer_id, desc.offset as u32, desc.length, req_context);
+    return native_rio_post_recv(rq_id, desc.buffer_id, desc.offset as u32, desc.length, req_context);
 }
 
 // Windows RIORESULT completion entry returned by RIODequeueCompletion (mswsock.h).
@@ -251,27 +222,21 @@ fn rio_listen(host: const u8[:], port: u16, backlog: i32 = 128) -> i64 {
 // Accepts an incoming TCP connection onto a `WSA_FLAG_REGISTERED_IO` socket via `AcceptEx`.
 fn rio_accept(listen_fd: i64) -> i64 {
     guard listen_fd > 0 else { return -1; }
-    return native_rio_accept(listen_fd);
+    let deadline_ns = (clock_ns() as u64) + 200000000;
+    while true {
+        let sfd = native_rio_poll_accept(listen_fd, 200);
+        if sfd != 0 {
+            return sfd;
+        }
+        if (clock_ns() as u64) >= deadline_ns {
+            return -1;
+        }
+    }
+    return -1;
 }
 
 // Arms `RIONotify` and waits up to `timeout_ms` for CQ completions.
 fn rio_wait_cq(cq_id: u64, timeout_ms: i32) -> i32 {
     guard cq_id != 0 else { return -1; }
     return native_rio_wait_cq(cq_id, timeout_ms);
-}
-
-// Drains completed Windows RIO operations into a bounded `RioResult[..64]` slice.
-// Returns `-1` if the CQ latched `RIO_CORRUPT_CQ`.
-fn rio_drain_completions(cq_id: u64, out_results: RioResult[..64]&) -> i32 {
-    guard cq_id != 0 else { return 0; }
-    out_results.clear();
-    var raw: RioResult[64] = [RioResult { .. }; 64];
-    let n = native_rio_dequeue_slice(cq_id, raw[..]);
-    guard n >= 0 else { return -1; }
-    guard n > 0 else { return 0; }
-    let count = min(n as i64, 64);
-    for i in count {
-        let _ = out_results.try_push(raw[i]);
-    }
-    return out_results.len as i32;
 }

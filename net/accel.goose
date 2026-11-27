@@ -75,11 +75,8 @@ struct ReactorAccelRuntime {
     slab:                  u8[>..]                       = [],
 }
 
-checkfree inline fn copy_bytes_to_slab(dst: u8[:], src: const u8[:]) {
-    guard dst.len >= src.len else { return; }
-    for i in src.len {
-        dst[i] = src[i];
-    }
+inline fn copy_bytes_to_slab(dst: u8[:], src: const u8[:]) {
+    core::copy_bytes_fast(dst, 0, src);
 }
 
 inline fn compact_uring_sqe_prefix(accel: ReactorAccelRuntime&, submitted: i32) {
@@ -400,6 +397,7 @@ fn reactor_init_accel(accel: ReactorAccelRuntime&, requested: ReactorAccelMode, 
     accel.mode = ReactorAccelMode.PollFallback;
     if listener_fd > 0 {
         tcp_set_nonblocking(listener_fd, true);
+        let _ = tcp_set_nodelay(listener_fd, true);
         if epoll_add(accel.epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG) {
             accel.epfd_registered_count = core::add_sat_i64(accel.epfd_registered_count, 1) as i32;
         }
@@ -498,15 +496,17 @@ fn reactor_submit_accel_tx(accel: ReactorAccelRuntime&, slot: i64, conn: i64, wi
         ensure_uring_tx_slab(accel);
         let tx_off = core::shl_sat_u64(slot as u64, 15) as i64;
         let tx_end = core::add_sat_i64(tx_off, wire.len);
-        copy_bytes_to_slab(accel.slab[tx_off..tx_end], wire);
-        var sqe = net_internal::UringSqe { .. };
-        let tok = reactor_accel_slot_token(accel, slot);
-        net_internal::uring_prep_send_slice(
-            sqe, conn as i32, accel.slab[tx_off..tx_end], REACTOR_URING_TAG_SEND | tok,
-        );
-        if reactor_queue_uring_sqe(accel, sqe) {
-            accel.slot_tx_inflight[slot] = true;
-            return true;
+        if tx_end <= accel.slab.len {
+            copy_bytes_to_slab(accel.slab[tx_off..tx_end], wire);
+            var sqe = net_internal::UringSqe { .. };
+            let tok = reactor_accel_slot_token(accel, slot);
+            net_internal::uring_prep_send_slice(
+                sqe, conn as i32, accel.slab[tx_off..tx_end], REACTOR_URING_TAG_SEND | tok,
+            );
+            if reactor_queue_uring_sqe(accel, sqe) {
+                accel.slot_tx_inflight[slot] = true;
+                return true;
+            }
         }
     }
     if can_uring && accel.uring_sqe_batch.len > 0 {
@@ -567,8 +567,8 @@ fn reactor_wait_readiness_events(
     } else {
         timeout_ms
     };
-    var raw_udata: u64[128] = [0; 128];
-    let raw_cap = min(ready_udata.len, 128);
+    var raw_udata: u64[512] = [0; 512];
+    let raw_cap = min(ready_udata.len, 512);
     let n_ep = net_internal::epoll_wait_direct(accel.epfd, empty_fds[..], raw_udata[..raw_cap], eff_timeout);
     guard n_ep > 0 else { return 0; }
     let ep_lim = min(n_ep as i64, raw_cap);

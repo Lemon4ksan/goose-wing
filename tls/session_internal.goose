@@ -45,8 +45,6 @@ extern fn native_tls_state_lock(lock_id: i32) = "wing_tls_state_lock";
 
 extern fn native_tls_state_unlock(lock_id: i32) = "wing_tls_state_unlock";
 
-extern fn raw_tls_csprng_bytes(out: u8[:]) -> i32 = "wing_crypto_random_bytes";
-
 var g_tls_sim_last_epoch: u64 = 0;
 
 var g_tls_csprng_fault_for_test: bool = false;
@@ -74,7 +72,7 @@ fn native_tls_csprng_bytes(out: u8[:]) -> i32 {
         core::secure_zeroize_slice(out);
         return -1;
     }
-    return raw_tls_csprng_bytes(out);
+    return if core::csprng_fill(out) { 0 } else { -1 };
 }
 
 // Wipes all cryptographic keys, IVs, traffic secrets, ticket cache material, and buffered

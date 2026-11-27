@@ -20,7 +20,7 @@ python tools/ctgrind.py --docker
 
 ## Audit checks
 
-- Native execution of `ctgrind_harness` covering `wing_aes_gcm_seal_scalar`,
+- Native execution of `ctgrind_harness` covering `core::aes_gcm_seal_pure`,
   `ct_eq_bytes`, `aes128_encrypt_block`, `aes_encrypt_block`,
   `chacha20_poly1305`, `x25519_scalarmult`, `ecdsa_p256_sign`, `ed25519_sign`,
   `rsa_mod_exp`, and `mlkem768_decapsulate`.

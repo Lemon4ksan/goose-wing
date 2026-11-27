@@ -289,6 +289,29 @@ fn authorize_ws_upgrade_stage<Stage, B>(
     return allowed;
 }
 
+// Rejects malformed WebSocket upgrade requests on registered WS routes with 426 or 400 (RFC 6455 §4.2.1/§4.4).
+fn try_reject_invalid_ws_upgrade<B>(
+    server:   server::HttpServer&,
+    req:      const http::Request&,
+    wire_out: B&,
+) -> bool {
+    guard server.ws_route_count > 0 && server::find_ws_route(server, req.url[..]) >= 0 else {
+        return false;
+    }
+    let fail_code = realtime::classify_ws_upgrade_failure(req);
+    guard fail_code != 0 else { return false; }
+    var rej = http::Response { status_code: fail_code, .. };
+    if fail_code == rfc::STATUS_UPGRADE_REQUIRED {
+        rej.set_header("Sec-WebSocket-Version", rfc::WS_RFC6455_VERSION);
+    }
+    rej.set_header("Connection", "close");
+    server::serialize_http1_response(
+        rej, server.server_name[..], wire_out, 0, resolve_server_header_policy(server),
+    );
+    server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
+    return true;
+}
+
 fn finish_single_h1_wire_turn<Stage, B>(
     server:       server::HttpServer&,
     effective_ip: const u8[:],
@@ -310,6 +333,9 @@ fn finish_single_h1_wire_turn<Stage, B>(
                 return server::PipelineOutcome.Handled;
             }
         }
+    }
+    if try_reject_invalid_ws_upgrade(server, g_turn_req, wire_out) {
+        return server::PipelineOutcome.Handled;
     }
 
     if server.trust_proxy_headers {
@@ -367,6 +393,9 @@ fn execute_single_h1_wire_turn<Stage, B>(
                 return server::PipelineOutcome.Handled, true;
             }
         }
+    }
+    if try_reject_invalid_ws_upgrade(server, req, wire_out) {
+        return server::PipelineOutcome.Handled, false;
     }
 
     if server.trust_proxy_headers {

@@ -591,27 +591,6 @@ fn reactor_drain_listener(
     }
 }
 
-// Drains incoming client connection tasks from lock-free SPSC ring queue.
-fn reactor_drain_worker_ring(
-    ring:          const core::SpscRing&,
-    epfd:          i64,
-    table:         server::SoAConnTable&,
-    leftover_pool: slice_pool<u8>&,
-    slot_pool:     ReactorSlotPool&,
-    timer_wheel:   core::TickTimerWheel&,
-    total_served:  i64&,
-) {
-    guard ring.is_open && ring.handle != 0 else { return; }
-    loop {
-        var client_val: u64 = 0;
-        let popped = ring.spsc_pop(client_val);
-        if !popped { break; }
-        let client_fd = client_val as i64;
-        guard client_fd > 0 else { continue; }
-        reactor_accept_plain_fd(client_fd, epfd, table, leftover_pool, slot_pool, timer_wheel, total_served);
-    }
-}
-
 inline fn reactor_emit_slot_goaway(table: const server::SoAConnTable&, slot: i64, cork_wire: u8[..65536]&) {
     guard is_active_slot(table, slot) && table.is_h2[slot] else { return; }
     let fd = table.fds[slot];
