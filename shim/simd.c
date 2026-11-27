@@ -15,11 +15,25 @@
 #include <stdbool.h>
 #include <string.h>
 
-#if defined(_MSC_VER)
+#if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#ifndef LOAD_LIBRARY_SEARCH_SYSTEM32
+#define LOAD_LIBRARY_SEARCH_SYSTEM32 0x00000800
+#endif
+#else
+#include <errno.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <unistd.h>
+#if defined(__linux__)
+#include <sys/random.h>
+#endif
+#endif
+
+#if defined(_MSC_VER)
 #include <intrin.h>
 #elif defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
@@ -1020,6 +1034,97 @@ int64_t wing_simd_deflate_l1_chunk(wing_bytes_ro src, int64_t chunk_start, int64
     }
 #endif
     return -2;
+}
+
+#if defined(_WIN32)
+typedef LONG(WINAPI *wing_bcrypt_gen_random_fn)(void *, unsigned char *, unsigned long, unsigned long);
+typedef BOOLEAN(WINAPI *wing_rtl_gen_random_fn)(void *, unsigned long);
+
+static int32_t wing_win32_random_bytes(uint8_t *dst, int64_t len) {
+    static wing_bcrypt_gen_random_fn cached_bcrypt = NULL;
+    static wing_rtl_gen_random_fn cached_rtl = NULL;
+    static volatile LONG init_state = 0;
+
+    if (InterlockedCompareExchange(&init_state, 0, 0) != 2) {
+        if (InterlockedCompareExchange(&init_state, 1, 0) == 0) {
+            HMODULE h_bcrypt = LoadLibraryExA("bcrypt.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+            if (!h_bcrypt) h_bcrypt = LoadLibraryA("bcrypt.dll");
+            if (h_bcrypt) {
+                FARPROC p = GetProcAddress(h_bcrypt, "BCryptGenRandom");
+                if (p) memcpy(&cached_bcrypt, &p, sizeof(cached_bcrypt));
+            }
+            if (!cached_bcrypt) {
+                HMODULE h_advapi = LoadLibraryExA("advapi32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+                if (!h_advapi) h_advapi = LoadLibraryA("advapi32.dll");
+                if (h_advapi) {
+                    FARPROC p = GetProcAddress(h_advapi, "SystemFunction036");
+                    if (p) memcpy(&cached_rtl, &p, sizeof(cached_rtl));
+                }
+            }
+            InterlockedExchange(&init_state, 2);
+        } else {
+            while (InterlockedCompareExchange(&init_state, 0, 0) != 2) {
+                Sleep(0);
+            }
+        }
+    }
+
+    int64_t off = 0;
+    while (off < len) {
+        int64_t rem = len - off;
+        unsigned long chunk = (rem > 0x40000000LL) ? 0x40000000UL : (unsigned long)rem;
+        if (cached_bcrypt) {
+            if (cached_bcrypt(NULL, dst + off, chunk, 0x00000002UL) != 0) return 0;
+        } else if (cached_rtl) {
+            if (!cached_rtl(dst + off, chunk)) return 0;
+        } else {
+            return 0;
+        }
+        off += (int64_t)chunk;
+    }
+    return 1;
+}
+#endif
+
+int32_t wing_os_random_bytes(wing_bytes_rw dst) {
+    if (!dst.data || dst.len <= 0) return 0;
+#if defined(_WIN32)
+    return wing_win32_random_bytes(dst.data, dst.len);
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+    arc4random_buf(dst.data, (size_t)dst.len);
+    return 1;
+#elif defined(__linux__)
+    int64_t off = 0;
+    while (off < dst.len) {
+        ssize_t n = getrandom(dst.data + off, (size_t)(dst.len - off), 0);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return 0;
+        }
+        if (n == 0) return 0;
+        off += (int64_t)n;
+    }
+    return 1;
+#else
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    int64_t off = 0;
+    while (off < dst.len) {
+        ssize_t n = read(fd, dst.data + off, (size_t)(dst.len - off));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            close(fd);
+            return 0;
+        }
+        if (n == 0) {
+            close(fd);
+            return 0;
+        }
+        off += (int64_t)n;
+    }
+    close(fd);
+    return 1;
+#endif
 }
 
 #if defined(__GNUC__) || defined(__clang__)

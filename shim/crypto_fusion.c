@@ -55,6 +55,7 @@ static inline void wing_fusion_zeroize(volatile void *ptr, size_t len) {
 #endif
 }
 
+#if defined(__x86_64__) || defined(_M_X64)
 // Overwrites dead callee stack spills left behind by vectorized AES-GCM / ChaCha20 / Poly1305 frames.
 WING_NOINLINE
 static void wing_scrub_stack_1024(void) {
@@ -62,7 +63,6 @@ static void wing_scrub_stack_1024(void) {
     wing_fusion_zeroize(scrub, sizeof(scrub));
 }
 
-#if defined(__x86_64__) || defined(_M_X64)
 #if defined(_MSC_VER) && !defined(__clang__)
 WING_NOINLINE
 static void wing_zero_xmm_regs(void) {
@@ -1065,6 +1065,7 @@ WING_TARGET_AVX2 WING_ZERO_REGS static void wing_chacha20_xor_avx2(uint32_t init
 }
 #endif
 
+#if defined(__x86_64__) || defined(_M_X64)
 static inline void wing_xor_bytes_fast(uint8_t *dst, const uint8_t *src, const uint8_t *ks, int64_t take) {
     int64_t i = 0;
     for (; i + 8 <= take; i += 8) {
@@ -1367,6 +1368,7 @@ static void wing_poly1305_finish(wing_poly1305_state *st, uint8_t tag[16]) {
     wing_store64_le(tag + 8, sum1);
     wing_fusion_zeroize(st, sizeof(*st));
 }
+#endif
 
 int64_t wing_chacha_poly_seal_aead(wing_slice key, wing_slice iv, wing_slice src, wing_slice aad, wing_slice dst,
                                    wing_slice tag_out) {
@@ -1521,10 +1523,6 @@ int64_t wing_chacha_poly_open_aead(wing_slice key, wing_slice iv, wing_slice src
     return -2;
 #endif
 }
-
-#if !(defined(__x86_64__) || defined(_M_X64))
-// Close non-x86 guard only needed for ChaCha20-Poly1305 above; AES-GCM wrappers below handle both paths.
-#endif
 
 int64_t wing_aes_gcm_seal_aead(wing_slice key, wing_slice iv, wing_slice src, wing_slice aad, wing_slice dst,
                                wing_slice tag_out) {

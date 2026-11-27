@@ -1,18 +1,18 @@
 # goose-sloc baseline v1 bce_measured=0
-TOTAL 428 169185 120077 1361267 14973 -1 1610
+TOTAL 428 169187 120080 1361333 14974 -1 1610
 DIR . 4 396 401 2160 31 0
 DIR auth 23 5760 4579 47324 616 33
 DIR cli 6 2362 1826 19185 119 30
 DIR client 27 10028 6232 76961 498 36
 DIR cookie 9 4075 2789 33248 437 32
-DIR core 68 23619 17776 214933 2460 237
+DIR core 68 23619 17776 214971 2461 237
 DIR dns 5 938 786 7431 159 5
 DIR fingerprint 8 1892 1324 14338 219 19
 DIR grpc 11 3909 2781 30003 361 89
 DIR h1 5 1502 1176 12301 201 28
 DIR http 54 18002 13809 144585 2325 171
 DIR http2 9 5632 3460 47166 414 49
-DIR http3 10 6908 4758 50381 439 74
+DIR http3 10 6908 4758 50393 439 74
 DIR net 42 16511 11610 132088 1261 161
 DIR proxy 7 5285 3334 38229 254 66
 DIR quic 17 9873 6774 75831 879 115
@@ -20,7 +20,7 @@ DIR realtime 10 4621 3311 36276 557 47
 DIR rfc 7 1488 1102 12216 204 0
 DIR security 15 4893 3529 38784 429 45
 DIR server 37 18947 11895 143681 1048 149
-DIR tls 45 19579 14881 162210 1724 202
+DIR tls 45 19581 14884 162226 1724 202
 DIR wire 9 2965 1944 21936 338 22
 FILE core.goose 12 12 56 3 100 -1 0
 FILE rfc.goose 10 10 44 4 100 -1 0
@@ -84,7 +84,7 @@ FILE core/math.goose 8 8 48 4 100 -1 0
 FILE core/opt.goose 8 4 59 4 50 -1 0
 FILE core/secret.goose 13 9 102 8 69 -1 0
 FILE core/time.goose 11 11 65 3 100 -1 0
-FILE core/ufcs.goose 130 155 2135 12 119 -1 2
+FILE core/ufcs.goose 130 155 2137 12 119 -1 2
 FILE core/url.goose 9 9 55 3 100 -1 0
 FILE dns/cache.goose 95 58 643 8 61 -1 2
 FILE dns/doh.goose 43 47 395 11 109 -1 0
@@ -172,7 +172,7 @@ FILE http3/internal.goose 410 179 3211 20 44 -1 1
 FILE http3/qpack.goose 745 543 5542 100 73 -1 6
 FILE http3/qpack_codec.goose 231 179 1735 39 77 -1 3
 FILE http3/qpack_internal.goose 557 494 4787 29 89 -1 15
-FILE http3/server_session.goose 2581 1744 16990 108 68 -1 26
+FILE http3/server_session.goose 2581 1744 17002 108 68 -1 26
 FILE http3/stream_internal.goose 712 451 5252 21 63 -1 5
 FILE http3/types.goose 158 21 944 8 13 -1 0
 FILE net/accel.goose 634 469 5080 11 74 -1 13
@@ -325,7 +325,7 @@ FILE tls/pki_crl_internal.goose 468 348 4069 31 74 -1 2
 FILE tls/pki_nc_san_internal.goose 661 538 5589 48 81 -1 2
 FILE tls/pki_ocsp_internal.goose 585 475 5453 20 81 -1 1
 FILE tls/pki_sig_internal.goose 484 351 4389 56 73 -1 0
-FILE tls/pki_x509_ext_internal.goose 682 491 5467 40 72 -1 2
+FILE tls/pki_x509_ext_internal.goose 684 494 5483 40 72 -1 2
 FILE tls/pq_mlkem_internal.goose 532 520 5210 70 98 -1 0
 FILE tls/pq_ntt_internal.goose 511 425 5486 49 83 -1 61
 FILE tls/quic_handshake.goose 1379 967 10932 48 70 -1 3
@@ -369,7 +369,7 @@ FILE client/session/stage_bricks_internal.goose 528 281 3775 10 53 -1 0
 FILE client/session/stages.goose 150 63 929 18 42 -1 0
 FILE client/session/tls_hop_internal.goose 502 329 4070 15 66 -1 1
 FILE client/session/verbs.goose 233 148 2057 21 64 -1 1
-FILE core/bytes/case.goose 163 104 2086 27 64 -1 3
+FILE core/bytes/case.goose 163 104 2087 27 64 -1 3
 FILE core/bytes/format.goose 155 116 1609 14 75 -1 0
 FILE core/bytes/json.goose 358 357 3095 76 100 -1 11
 FILE core/bytes/parse.goose 131 107 1655 49 82 -1 3
@@ -388,7 +388,7 @@ FILE core/compress/zstd.goose 3489 2271 28954 189 65 -1 27
 FILE core/crypto/aes.goose 1023 793 9818 85 78 -1 9
 FILE core/crypto/base64.goose 268 227 2588 16 85 -1 6
 FILE core/crypto/chacha.goose 559 479 5906 15 86 -1 15
-FILE core/crypto/csprng.goose 26 23 153 10 88 -1 0
+FILE core/crypto/csprng.goose 26 23 167 11 88 -1 0
 FILE core/crypto/ct.goose 128 101 1269 19 79 -1 3
 FILE core/crypto/ecdsa.goose 1263 1111 12632 175 88 -1 16
 FILE core/crypto/ed25519.goose 493 406 4310 67 82 -1 2
@@ -406,11 +406,11 @@ FILE core/io/ring.goose 172 142 1471 37 83 -1 4
 FILE core/io/spsc_ring.goose 73 42 444 14 58 -1 1
 FILE core/io/types.goose 124 50 740 12 40 -1 0
 FILE core/io/vec.goose 94 75 748 9 80 -1 1
-FILE core/math/arithmetic.goose 138 109 1189 21 79 -1 1
-FILE core/math/bits.goose 179 119 2152 30 66 -1 0
-FILE core/math/ct.goose 73 58 772 20 79 -1 0
+FILE core/math/arithmetic.goose 138 109 1195 21 79 -1 1
+FILE core/math/bits.goose 179 119 2156 30 66 -1 0
+FILE core/math/ct.goose 73 58 781 20 79 -1 0
 FILE core/math/flat_index.goose 341 207 2391 27 61 -1 13
-FILE core/math/hash.goose 89 68 738 7 76 -1 3
+FILE core/math/hash.goose 89 68 740 7 76 -1 3
 FILE core/math/random.goose 50 40 360 7 80 -1 0
 FILE core/time/calendar.goose 110 74 823 7 67 -1 0
 FILE core/time/clock.goose 72 55 504 12 76 -1 0

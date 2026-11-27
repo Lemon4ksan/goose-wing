@@ -166,6 +166,7 @@ jobs:
           $bin = Get-ChildItem -Path $dst -Recurse -Filter "goose.exe" | Select-Object -First 1
           if (-not $bin) { throw "goose.exe not found in release archive" }
           Add-Content -Path $env:GITHUB_PATH -Value $bin.DirectoryName
+          Add-Content -Path $env:GITHUB_ENV -Value "GOOSE_CC=gcc"
 
       - name: Compile all 13 C shims
         shell: bash
@@ -240,7 +241,7 @@ jobs:
 
           for name in use_core use_h1 use_wing; do
             echo "=== JIT $name ==="
-            goose "$TMP_DIR/${name}.goose"
+            goose ${CC_FLAG} "$TMP_DIR/${name}.goose"
             echo "=== AOT $name ==="
             goose build ${CC_FLAG} -O2 -o "$TMP_DIR/${name}${EXT}" "$TMP_DIR/${name}.goose"
             "$TMP_DIR/${name}${EXT}"
@@ -428,10 +429,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install docker compose, Goose compiler, and h2spec
+      - name: Install Goose compiler and h2spec
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential gcc curl ca-certificates docker-compose-plugin
+          sudo apt-get install -y --no-install-recommends build-essential gcc curl ca-certificates
           curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.4/goose-v2026.4-linux-x64.tar.gz | sudo tar -xz -C /opt
           sudo ln -sf /opt/goose-v2026.4-linux-x64/goose /usr/local/bin/goose
           mkdir -p tools/bin

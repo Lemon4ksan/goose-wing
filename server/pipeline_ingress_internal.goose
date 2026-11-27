@@ -615,7 +615,7 @@ fn stage_server_auth_jwt(
 
 inline fn canonicalize_pipeline_ingress_url(
     req: const http::Request&,
-    ext: ServerRequestExtensions&,
+    ext: RequestExtensions&,
     res: http::Response&,
 ) -> bool {
     ext.canon_url.clear();

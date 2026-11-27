@@ -6528,7 +6528,7 @@ tls/pki_x509_ext_internal.goose 463 tls_internal::x509_dispatch_pki_extension 16
 tls/pki_x509_ext_internal.goose 481 tls_internal::x509_dispatch_policy_extension 49.00 0 0.00
 tls/pki_x509_ext_internal.goose 504 tls_internal::x509_dispatch_extension 100.00 0 0.00
 tls/pki_x509_ext_internal.goose 544 tls_internal::x509_check_ext_critical 25.00 0 0.00
-tls/pki_x509_ext_internal.goose 557 tls_internal::x509_record_seen_ext_oid 9.00 0 0.00
+tls/pki_x509_ext_internal.goose 557 tls_internal::x509_record_seen_ext_oid 16.00 0 0.00
 tls/pki_x509_ext_internal.goose 566 tls_internal::x509_parse_single_cert_extension 81.00 0 0.00
 tls/pki_x509_ext_internal.goose 613 tls_internal::read_cert_extensions 49.00 0 0.00
 tls/pki_x509_ext_internal.goose 635 tls_internal::read_tbs_optional_elem 121.00 0 0.00

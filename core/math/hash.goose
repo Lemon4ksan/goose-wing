@@ -14,7 +14,7 @@ const FNV1A_64_OFFSET: u64 = 0xCBF29CE484222325;
 const FNV1A_64_PRIME:  u64 = 0x00000100000001B3;
 
 // Computes 32-bit FNV-1a hash over byte slice.
-inline fn fnv1a_32(data: const u8[:]) -> u32 {
+checkfree inline fn fnv1a_32(data: const u8[:]) -> u32 {
     var h: u32 = FNV1A_32_OFFSET;
     for i in data.len {
         h ^= data[i];
@@ -24,7 +24,7 @@ inline fn fnv1a_32(data: const u8[:]) -> u32 {
 }
 
 // Computes 64-bit FNV-1a hash over byte slice.
-inline fn fnv1a_64(data: const u8[:]) -> u64 {
+checkfree inline fn fnv1a_64(data: const u8[:]) -> u64 {
     var h: u64 = FNV1A_64_OFFSET;
     for i in data.len {
         h ^= data[i];

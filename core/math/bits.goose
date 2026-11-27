@@ -7,24 +7,24 @@ namespace core;
 import std;
 
 // Circular bitwise left rotation (32-bit) with masked shift.
-inline fn rotl32(x: u32, r: u32) -> u32 {
+checkfree inline fn rotl32(x: u32, r: u32) -> u32 {
     return (x << (r & 31)) | (x >> ((0 - r) & 31));
 }
 
 // Circular bitwise right rotation (32-bit) with masked shift.
-inline fn rotr32(x: u32, r: u32) -> u32 {
+checkfree inline fn rotr32(x: u32, r: u32) -> u32 {
     return (x >> (r & 31)) | (x << ((0 - r) & 31));
 }
 
 // Circular bitwise left rotation (64-bit) with masked shift.
-inline fn rotl64(x: u64, r: u32) -> u64 {
+checkfree inline fn rotl64(x: u64, r: u32) -> u64 {
     let sh = (r & 63) as u64;
     let inv = ((0 - r) & 63) as u64;
     return (x << sh) | (x >> inv);
 }
 
 // Circular bitwise right rotation (64-bit) with masked shift.
-inline fn rotr64(x: u64, r: u32) -> u64 {
+checkfree inline fn rotr64(x: u64, r: u32) -> u64 {
     let sh = (r & 63) as u64;
     let inv = ((0 - r) & 63) as u64;
     return (x >> sh) | (x << inv);

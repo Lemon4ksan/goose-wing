@@ -32,7 +32,7 @@ fn is_ascii_alphanumeric(b: u8) -> bool {
 }
 
 // Checks whether byte is an ASCII hexadecimal digit ('0'..'9', 'a'..'f', 'A'..'F').
-inline fn is_ascii_hexdigit(b: u8) -> bool {
+checkfree inline fn is_ascii_hexdigit(b: u8) -> bool {
     return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F');
 }
 

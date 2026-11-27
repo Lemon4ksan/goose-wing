@@ -105,7 +105,7 @@ fn ::has_query_param_fast(raw_query: const u8[:], key: const u8[:]) -> bool {
 
 // ---- safe fixed-capacity buffer operations ---------------------------------
 
-fn ::try_push<A, T>(arr: A&, item: T) -> bool {
+checkfree fn ::try_push<A, T>(arr: A&, item: T) -> bool {
     guard arr.len >= 0 && arr.len < arr.cap else { return false; }
     arr.push(item);
     return true;
@@ -133,7 +133,7 @@ fn ::try_append(arr: u8[>..]&, slice: const u8[:]) -> bool {
     return true;
 }
 
-fn ::try_set<A, S>(arr: A&, slice: S) -> bool {
+checkfree fn ::try_set<A, S>(arr: A&, slice: S) -> bool {
     guard slice.len >= 0 && slice.len <= arr.cap else { return false; }
     arr.clear();
     arr.append(slice);

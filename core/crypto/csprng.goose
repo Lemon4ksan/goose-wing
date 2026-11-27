@@ -2,15 +2,17 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // OS-backed cryptographically secure pseudorandom byte generator (CSPRNG).
-// Uses Goose stdlib `random_bytes` (ProcessPrng/RtlGenRandom on Windows,
-// getentropy/urandom on POSIX), failing closed and wiping output on error.
+// Calls the host OS CSPRNG via `wing_os_random_bytes` (BCryptGenRandom/RtlGenRandom
+// on Windows, arc4random_buf on macOS/BSD, getrandom/urandom on Linux/POSIX),
+// failing closed and wiping output on error.
 namespace core;
 
 import std;
-import os;
 import core.crypto.ct;
 import core.math.bits;
 import core.time.sim;
+
+extern fn native_os_random_bytes(dst: u8[:]) -> i32 = "wing_os_random_bytes";
 
 // Fills `dst` with cryptographically secure random bytes from the host OS CSPRNG,
 // or from the deterministic simulation PRNG when DST entropy override is active.
@@ -20,7 +22,7 @@ fn csprng_fill(dst: u8[:]) -> bool {
     if sim_rng_is_active() {
         return sim_rng_fill(dst);
     }
-    if !random_bytes(dst) {
+    if native_os_random_bytes(dst) != 1 {
         secure_zeroize_slice(dst);
         return false;
     }

@@ -560,7 +560,9 @@ inline fn x509_record_seen_ext_oid(seen_oids: (const u8[:])[..64]&, oid: const u
             return false;
         }
     }
-    return seen_oids.try_push(oid);
+    guard seen_oids.len < seen_oids.cap else { return false; }
+    seen_oids.push(oid);
+    return true;
 }
 
 fn x509_parse_single_cert_extension(

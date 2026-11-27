@@ -34,28 +34,28 @@ inline fn wymum(a: u64, b: u64) -> u64 {
 }
 
 // Branchless unsigned saturating addition (32-bit).
-inline fn add_sat_u32(a: u32, b: u32) -> u32 {
+checkfree inline fn add_sat_u32(a: u32, b: u32) -> u32 {
     let sum = a + b;
     let overflow_mask = ct_mask_u32(ct_lt_u32(sum, a));
     return sum | overflow_mask;
 }
 
 // Branchless unsigned saturating addition (64-bit).
-inline fn add_sat_u64(a: u64, b: u64) -> u64 {
+checkfree inline fn add_sat_u64(a: u64, b: u64) -> u64 {
     let sum = a + b;
     let overflow_mask = ct_mask_u64(ct_lt_u64(sum, a));
     return sum | overflow_mask;
 }
 
 // Branchless unsigned saturating subtraction (32-bit).
-inline fn sub_sat_u32(a: u32, b: u32) -> u32 {
+checkfree inline fn sub_sat_u32(a: u32, b: u32) -> u32 {
     let diff = a - b;
     let borrow_mask = ct_mask_u32(ct_lt_u32(a, b));
     return diff & (~borrow_mask);
 }
 
 // Branchless unsigned saturating subtraction (64-bit).
-inline fn sub_sat_u64(a: u64, b: u64) -> u64 {
+checkfree inline fn sub_sat_u64(a: u64, b: u64) -> u64 {
     let diff = a - b;
     let borrow_mask = ct_mask_u64(ct_lt_u64(a, b));
     return diff & (~borrow_mask);
@@ -93,7 +93,7 @@ inline fn shl_sat_u64(base: u64, shift: u32) -> u64 {
 }
 
 // Branchless signed saturating addition (64-bit).
-inline fn add_sat_i64(a: i64, b: i64) -> i64 {
+checkfree inline fn add_sat_i64(a: i64, b: i64) -> i64 {
     let ua = a as! u64;
     let ub = b as! u64;
     let usum = ua + ub;
@@ -104,7 +104,7 @@ inline fn add_sat_i64(a: i64, b: i64) -> i64 {
 }
 
 // Branchless signed saturating subtraction (64-bit).
-inline fn sub_sat_i64(a: i64, b: i64) -> i64 {
+checkfree inline fn sub_sat_i64(a: i64, b: i64) -> i64 {
     let ua = a as! u64;
     let ub = b as! u64;
     let udiff = ua - ub;
