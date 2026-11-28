@@ -3,6 +3,7 @@ exclude = [
     "worktrees/",
     "scratch/",
     "AGENTS.md",
+    "CHANGELOG.md",
     ".agents/",
     ".github/",
     "tools/goosemarklint/"
