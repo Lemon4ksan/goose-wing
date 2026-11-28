@@ -127,14 +127,14 @@ fn sse_process_line<E>(p: realtime::SseParser&, out_events: E&) {
     }
 }
 
-// Scans for the first line break or NUL byte in an SSE header token.
+// Scans for the first ASCII control byte (0x00..0x1F or 0x7F) in an SSE header token.
 //
 // Example:
 //   s = "id-42\r\ninjected"
 //   returns: 5
 fn sse_clean_token_len(s: const u8[:]) -> i64 {
     for i in s.len {
-        if s[i] == '\r' || s[i] == '\n' || s[i] == 0 {
+        if s[i] < 0x20 || s[i] == 0x7F {
             return i;
         }
     }

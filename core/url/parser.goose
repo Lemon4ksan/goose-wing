@@ -450,7 +450,21 @@ fn canonicalize_whatwg_ipv4_host(raw_host: u8[..256]&) -> UrlParseError {
     let last_dot = last_index_of_byte(trimmed, '.');
     let last_label = if last_dot >= 0 { trimmed[last_dot + 1..] } else { trimmed };
     let _, ends_in_num = parse_whatwg_ipv4_number(last_label);
-    guard ends_in_num else { return UrlParseError.None; }
+    if !ends_in_num {
+        // WHATWG URL §3.5: an all-digit or 0x-hex final label that overflowed 32 bits still ends in a number.
+        var all_digits = last_label.len > 0;
+        for b in last_label {
+            if !is_ascii_digit(b) { all_digits = false; break; }
+        }
+        var is_hex_num = last_label.len >= 2 && last_label[0] == '0' && (last_label[1] == 'x' || last_label[1] == 'X');
+        if is_hex_num {
+            for b in last_label[2..] {
+                if !is_ascii_hexdigit(b) { is_hex_num = false; break; }
+            }
+        }
+        guard !all_digits && !is_hex_num else { return UrlParseError.InvalidHost; }
+        return UrlParseError.None;
+    }
 
     var parts: u64[..4] = [];
     var tok = make_byte_tokenizer(trimmed, '.');

@@ -32,8 +32,17 @@ fn is_valid_ipv4_format(host: const u8[:]) -> bool {
 
 fn is_ip_address_literal(host: const u8[:]) -> bool {
     guard host.len > 0 else { return false; }
-    if contains_byte(host, ':') { return true; }
-    return is_valid_ipv4_format(host);
+    if is_valid_ipv4_format(host) { return true; }
+    let inner = if host.len >= 2 && host[0] == '[' && host[host.len - 1] == ']' {
+        host[1..^1]
+    } else {
+        host
+    };
+    guard contains_byte(inner, ':') else { return false; }
+    let pct_idx = index_of_byte(inner, '%');
+    let addr = if pct_idx >= 0 { inner[..pct_idx] } else { inner };
+    var comp_buf: u8[..64] = [];
+    return parse_and_compress_ipv6(addr, comp_buf);
 }
 
 // Strips IPv6 ZoneID (%25...) from host strings (RFC 6874 Section 4).

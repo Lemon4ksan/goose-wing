@@ -267,7 +267,10 @@ inline fn parse_jwt_cnf_claim(
     seen_cnf = true;
     var seen_jkt = false;
     json::each_member(reader) { sub_key =>
-        if sub_key != "jkt" {
+        if sub_key.contains_byte('\\') {
+            json::skip(reader);
+            had_error = true;
+        } else if sub_key != "jkt" {
             json::skip(reader);
         } else if seen_jkt || json::peek(reader) != '"' {
             json::skip(reader);

@@ -15,6 +15,7 @@ import .websocket;
 
 const WS_LIVE_MAX_RX_WIRE_BYTES: i64 = 131072;
 const WS_LIVE_MAX_CTRL_FRAMES:   u64 = 16;
+const WS_LIVE_MAX_FRAG_FRAMES:   u64 = 16384;
 const WS_LIVE_HEAD_MAX_BYTES:    i64 = 8192;
 
 // Live RFC 6455 WebSocket connection owning a `net::Transport` (TCP or TLS 1.3) and frame state.
@@ -101,7 +102,7 @@ fn find_http1_header_counted(head: const u8[:], name: const u8[:]) -> const u8[:
         let end = if rel >= 0 { core::add_sat_i64(pos, rel) } else { head.len };
         let line = head[pos..end];
         let k, v, ok_col = line.split_once_byte(':');
-        if ok_col && k.trim_lws().eq_ascii_fold(name) {
+        if ok_col && k.eq_ascii_fold(name) {
             if count == 0 { first_val = v.trim_lws(); }
             count = core::add_sat_i64(count, 1);
         }
@@ -134,7 +135,7 @@ fn http1_head_has_token(head: const u8[:], name: const u8[:], token: const u8[:]
         let rel = core::find_crlf(head[pos..]);
         let end = if rel >= 0 { core::add_sat_i64(pos, rel) } else { head.len };
         let k, v, ok_col = head[pos..end].split_once_byte(':');
-        if ok_col && k.trim_lws().eq_ascii_fold(name) && header_value_contains_token(v, token) {
+        if ok_col && k.eq_ascii_fold(name) && header_value_contains_token(v, token) {
             return true;
         }
         if rel < 0 { break; }
@@ -175,7 +176,7 @@ fn validate_ws_upgrade_headers(req_head: const u8[:], allowed_origin: const u8[:
             return "", false;
         }
     }
-    guard host_cnt >= 1 && host_val.len > 0 && ver_cnt == 1 && ver == "13" else { return "", false; }
+    guard host_cnt == 1 && host_val.len > 0 && ver_cnt == 1 && ver == "13" else { return "", false; }
     guard http1_head_has_token(req_head, "Upgrade", "websocket") &&
         http1_head_has_token(req_head, "Connection", "upgrade") else {
         return "", false;
@@ -299,7 +300,7 @@ inline fn is_ws_data_message(view: const WsMessageView&) -> bool {
 
 // Attempts to consume one buffered RFC 6455 frame from `conn.rx_buf`.
 // Returns: `1` = data frame populated, `0` = clean close, `-1` = protocol error,
-// `2` = control frame handled (keep reading), `-3` = need more bytes.
+// `2` = control frame handled (keep reading), `3` = data fragment buffered, `-3` = need more bytes.
 fn try_consume_buffered_ws_frame(
     conn:        WsConn&,
     out_opcode:  u8&,
@@ -307,6 +308,7 @@ fn try_consume_buffered_ws_frame(
     reply:       u8[..256]&,
 ) -> i32 {
     guard conn.rx_buf.len >= 2 else { return -3; }
+    let first_opcode = conn.rx_buf[0] & 0x0F;
     reply.clear();
     var view = WsMessageView { .. };
     let consumed, handled = consume_frame_view(conn.ws, conn.rx_buf[..], view, reply);
@@ -318,13 +320,15 @@ fn try_consume_buffered_ws_frame(
         out_opcode = view.opcode;
         out_payload.append(view.payload);
     }
+    let is_frag_in_progress = !is_data && !rfc::is_ws_control_opcode(first_opcode) && conn.ws.frag_opcode != 0;
     conn.rx_buf.compact_wire_buffer(consumed);
     if conn.ws.is_closed {
         conn.open = false;
         if is_data { return 1; }
         return if is_clean_ws_close_code(conn.ws.close_code) { 0 } else { -1 };
     }
-    return if is_data { 1 } else { 2 };
+    if is_data { return 1; }
+    return if is_frag_in_progress { 3 } else { 2 };
 }
 
 // crap:ignore
@@ -368,12 +372,20 @@ fn ws_recv_frame(
 
     let start_ns = time_ns();
     var ctrl_frames: u64       = 0;
+    var frag_frames: u64       = 0;
     var reply:       u8[..256] = [];
     var chunk:       u8[4096]  = [0; 4096];
 
     while true {
         let step = try_consume_buffered_ws_frame(conn, out_opcode, out_payload, reply);
         if step == 1 || step == 0 || step == -1 { return step; }
+        if step == 3 {
+            frag_frames = core::add_sat_u64(frag_frames, 1);
+            guard frag_frames < WS_LIVE_MAX_FRAG_FRAMES else { return -2; }
+            let _, has_frag_budget = calc_remaining_deadline_ms(start_ns, timeout_ms);
+            guard has_frag_budget else { return -2; }
+            continue;
+        }
         if step == 2 {
             ctrl_frames = core::add_sat_u64(ctrl_frames, 1);
             guard ctrl_frames < WS_LIVE_MAX_CTRL_FRAMES else { return -2; }

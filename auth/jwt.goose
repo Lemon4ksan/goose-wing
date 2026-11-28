@@ -54,9 +54,11 @@ fn parse_jwt_header_json(json_bytes: const u8[:], out_header: JwtHeader&) -> boo
             had_error,
         );
     };
-    // RFC 7515 Section 4.1.11: Critical Header Parameters - every crit entry must appear as extension header.
+    // RFC 7515 Section 4.1.11: Critical Header Parameters - every crit entry must appear as extension header
+    // and MUST NOT reference standard JWS header parameter names.
     for &cp in hdr.crit {
-        if !auth_internal::is_header_key_present(cp.name[..], seen_others[..]) {
+        if rfc::is_standard_jws_header_param(cp.name[..])
+            || !auth_internal::is_header_key_present(cp.name[..], seen_others[..]) {
             had_error = true;
         }
     }

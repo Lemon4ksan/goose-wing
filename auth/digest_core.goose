@@ -232,7 +232,7 @@ fn calculate_digest_response(
 fn append_digest_uri<B>(out: B&, uri: const u8[:]) -> bool {
     guard uri.len > 0 else { return false; }
     for b in uri {
-        guard b != '\r' && b != '\n' && b != '\0' && b != '"' && b != '\\' else { return false; }
+        guard core::is_ascii_vchar(b) && b != '"' && b != '\\' else { return false; }
     }
     return out.try_append(uri);
 }

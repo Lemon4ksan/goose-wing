@@ -279,6 +279,9 @@ fn check_framing_entries(
             guard !has_te && http::validate_transfer_encoding_value(val) else { return false; }
             has_te = true;
         }
+        if name.eq_ascii_fold("host") {
+            guard wire::is_valid_h1_host_value(val.trim_lws()) else { return false; }
+        }
     }
     return true;
 }
@@ -484,6 +487,32 @@ fn has_via_pseudonym_loop(combined_via: const u8[:], pseudonym: const u8[:]) -> 
     return false;
 }
 
+// Checks whether parentheses in a `Via` header are balanced (RFC 9110 §5.6.5).
+//
+// Example:
+//   s = "1.1 edge (x, 1.1 wing"
+//   returns: false
+fn has_balanced_via_comments(s: const u8[:]) -> bool {
+    var i:           i64 = 0;
+    var paren_depth: i64 = 0;
+    while i < s.len {
+        let b = s[i];
+        if paren_depth > 0 && b == '\\' {
+            guard core::add_sat_i64(i, 1) < s.len else { return false; }
+            i = core::add_sat_i64(i, 2);
+            continue;
+        }
+        if b == '(' {
+            paren_depth = core::add_sat_i64(paren_depth, 1);
+        } else if b == ')' {
+            guard paren_depth > 0 else { return false; }
+            paren_depth = core::sub_sat_i64(paren_depth, 1);
+        }
+        i = core::add_sat_i64(i, 1);
+    }
+    return paren_depth == 0;
+}
+
 fn inject_via_header_spill(
     out_headers:   http::HeaderMap&,
     out_arena:     http::OverflowArena&,
@@ -497,6 +526,9 @@ fn inject_via_header_spill(
     let has_existing = http::has_header_slices(in_headers, spill_entries, spill_raw, "Via");
     if has_existing {
         guard http::get_combined_slices(in_headers, spill_entries, spill_raw, "Via", combined, 950) else {
+            return proxy::ProxyPrepareStatus.BadRequest400;
+        }
+        guard has_balanced_via_comments(combined[..]) else {
             return proxy::ProxyPrepareStatus.BadRequest400;
         }
         // RFC 9110 Section 7.6.3: Via - detect forwarding loops when own pseudonym is already present.
@@ -599,7 +631,7 @@ fn append_rfc7239_forwarded_spill(
     guard populate_forwarded_for_node(elem, client_ip) else { return false; }
     guard elem.host.try_set(orig_host) else { return false; }
     guard elem.proto.try_set(proto) else { return false; }
-    var fwd_buf: u8[..512] = [];
+    var fwd_buf: u8[..1024] = [];
     http::format_forwarded_element(elem, fwd_buf);
     guard fwd_buf.len > 0 else { return false; }
     return http::append_header_spill(out_headers, out_arena, rfc::HEADER_FORWARDED, fwd_buf[..]);

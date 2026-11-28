@@ -45,7 +45,7 @@ checkfree fn parse_mandatory_svc_param(val: const u8[:]) -> MandatorySvcParams, 
     while m_off + 2 <= val.len {
         let req_key = dns_internal::read_dns_u16(val, m_off);
         let rk_i32 = req_key as i32;
-        guard req_key >= 1 && req_key != rfc::SVC_PARAM_NO_DEFAULT_ALPN && rk_i32 > last_m_key else {
+        guard req_key >= 1 && req_key < 65535 && rk_i32 > last_m_key else {
             return MandatorySvcParams { .. }, false;
         }
         if req_key > rfc::SVC_PARAM_IPV6HINT {

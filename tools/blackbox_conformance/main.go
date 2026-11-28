@@ -180,7 +180,8 @@ func main() {
 		flagLegacy   = flag.Bool("legacy", false, "run non-duplicate Internet & Legacy semi-valid packet suite")
 		flagLegacyR2 = flag.Bool("legacy-r2", false, "run Round 2 stateful FSM, boundary geometry & differential blackbox suite")
 		flagWave3    = flag.Bool("wave3", false, "run Wave 3 pre-release security audit conformance suites")
-		flagAll      = flag.Bool("all", false, "run Round 1, Round 2, Internet/Legacy R1+R2, and Wave 3 suites")
+		flagWave4    = flag.Bool("wave4", false, "run Wave 4 (0.1.1) security & gRPC hardening conformance suites")
+		flagAll      = flag.Bool("all", false, "run Round 1, Round 2, Internet/Legacy R1+R2, Wave 3, and Wave 4 suites")
 	)
 	flag.Parse()
 
@@ -249,8 +250,14 @@ func main() {
 		}
 		return
 	}
-	if *flagWave3 && !*flagRound2 && !*flagAll && !*flagLegacy && !*flagLegacyR2 {
+	if *flagWave3 && !*flagRound2 && !*flagAll && !*flagLegacy && !*flagLegacyR2 && !*flagWave4 {
 		if runWave3AuditSuite(pki) > 0 {
+			os.Exit(1)
+		}
+		return
+	}
+	if *flagWave4 && !*flagRound2 && !*flagAll && !*flagLegacy && !*flagLegacyR2 && !*flagWave3 {
+		if runWave4AuditSuite() > 0 {
 			os.Exit(1)
 		}
 		return
@@ -401,6 +408,9 @@ func main() {
 	}
 	if *flagAll || *flagWave3 {
 		legacyFails += runWave3AuditSuite(pki)
+	}
+	if *flagAll || *flagWave4 {
+		legacyFails += runWave4AuditSuite()
 	}
 	if len(fails) > 0 || legacyFails > 0 {
 		os.Exit(1)

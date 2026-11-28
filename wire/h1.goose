@@ -23,7 +23,9 @@ inline fn is_valid_h1_request_target(target: const u8[:]) -> bool {
 inline fn is_valid_h1_host_value(host: const u8[:]) -> bool {
     for b in host {
         guard b > 0x20 && b < 0x7F &&
-              b != '/' && b != '?' && b != '#' && b != '\\' && b != '@' else {
+              b != '/' && b != '?' && b != '#' && b != '\\' && b != '@' &&
+              b != ',' && b != ';' && b != '=' && b != '"' && b != '<' && b != '>' &&
+              b != '{' && b != '}' && b != '|' && b != '^' && b != '`' else {
             return false;
         }
     }

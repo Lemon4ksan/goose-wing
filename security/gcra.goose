@@ -19,9 +19,10 @@ struct GcraConfig {
     limit_window_ns:      u64 = 6000000, // tau + T (precalculated window)
 }
 
-// Single TAT state cell (64-bit scalar).
+// Single TAT state cell (with explicit penalty/reservation floor).
 struct GcraCell {
-    tat_ns: u64 = 0,
+    tat_ns:           u64 = 0,
+    penalty_until_ns: u64 = 0,
 }
 
 // Result of a GCRA rate check.
@@ -52,7 +53,9 @@ fn new_gcra_config(rate_per_sec: u64, burst_capacity: u64) -> GcraConfig {
 
 // Evaluates rate limit admission for cost units at now_ns and advances TAT only when allowed.
 fn gcra_check(config: const GcraConfig&, cell: GcraCell&, cost: u64, now_ns: u64) -> GcraDecision {
-    let dec, next_tat = security_internal::eval_gcra_config(config, cell.tat_ns, cost, now_ns);
+    let dec, next_tat = security_internal::eval_gcra_config(
+        config, cell.tat_ns, cost, now_ns, cell.penalty_until_ns,
+    );
     if dec.allowed || next_tat < cell.tat_ns {
         cell.tat_ns = next_tat;
     }
@@ -61,21 +64,28 @@ fn gcra_check(config: const GcraConfig&, cell: GcraCell&, cost: u64, now_ns: u64
 
 // Evaluates rate limit admission without mutating TAT cell state.
 fn gcra_peek(config: const GcraConfig&, cell: const GcraCell&, cost: u64, now_ns: u64) -> GcraDecision {
-    let dec, _ = security_internal::eval_gcra_config(config, cell.tat_ns, cost, now_ns);
+    let dec, _ = security_internal::eval_gcra_config(
+        config, cell.tat_ns, cost, now_ns, cell.penalty_until_ns,
+    );
     return dec;
 }
 
 // Applies penalty delay to TAT to rate-limit abusive clients or handle backpressure.
 fn gcra_penalize(config: const GcraConfig&, cell: GcraCell&, penalty_ns: u64, now_ns: u64) {
     guard penalty_ns > 0 else { return; }
-    let tat_old = security_internal::clamp_clock_drift(cell.tat_ns, now_ns, config.limit_window_ns);
+    let tat_old = security_internal::clamp_clock_drift(
+        cell.tat_ns, now_ns, config.limit_window_ns, cell.penalty_until_ns,
+    );
     let tat_base = core::ct_max_u64(now_ns, tat_old);
-    cell.tat_ns = core::add_sat_u64(tat_base, penalty_ns);
+    let new_tat = core::add_sat_u64(tat_base, penalty_ns);
+    cell.tat_ns = new_tat;
+    cell.penalty_until_ns = core::ct_max_u64(cell.penalty_until_ns, new_tat);
 }
 
 // Resets single TAT cell state to zero.
 fn gcra_reset(cell: GcraCell&) {
     cell.tat_ns = 0;
+    cell.penalty_until_ns = 0;
 }
 
 // ---- Bounded Multi-Client Gateway Rate Limiter -----------------------------
@@ -169,7 +179,7 @@ fn reset_gateway_rate_limiter(limiter: GatewayRateLimiter&) {
         security_internal::reset_entry_slot(entry);
     }
     limiter.entries.clear();
-    limiter.fallback_cell.tat_ns = 0;
+    gcra_reset(limiter.fallback_cell);
     limiter.total_allowed = 0;
     limiter.total_rejected = 0;
 }

@@ -153,8 +153,11 @@ checkfree fn parse_ipv4_hints(rec: dns::HttpsRecord&, val: const u8[:]) -> bool 
     guard val.len > 0 && (val.len & 3) == 0 else { return false; }
     var ip_off: i64 = 0;
     while ip_off + 4 <= val.len {
-        guard rec.ipv4_hints.len < rec.ipv4_hints.cap else { return false; }
-        rec.ipv4_hints.push(read_dns_u32(val, ip_off));
+        if rec.ipv4_hints.len < rec.ipv4_hints.cap {
+            rec.ipv4_hints.push(read_dns_u32(val, ip_off));
+        } else {
+            // RFC 9460 Section 7.1.1: skip IPv4 hints exceeding local storage slots.
+        }
         ip_off += 4;
     }
     committed = true;
@@ -174,9 +177,12 @@ checkfree fn parse_ipv6_hints(rec: dns::HttpsRecord&, val: const u8[:]) -> bool 
     var ip_off: i64    = 0;
     var ip6:    u8[16] = [0; 16];
     while ip_off <= val.len - 16 {
-        for i in 16 { ip6[i] = val[ip_off + i]; }
-        guard rec.ipv6_hints.len < rec.ipv6_hints.cap else { return false; }
-        rec.ipv6_hints.push(ip6);
+        if rec.ipv6_hints.len < rec.ipv6_hints.cap {
+            for i in 16 { ip6[i] = val[ip_off + i]; }
+            rec.ipv6_hints.push(ip6);
+        } else {
+            // RFC 9460 Section 7.1.1: skip IPv6 hints exceeding local storage slots.
+        }
         ip_off += 16;
     }
     committed = true;
@@ -195,8 +201,8 @@ checkfree fn validate_svc_params_framing(rdata: const u8[:]) -> bool {
         let key = read_dns_u16(rdata, off) as i32;
         let val_len = read_dns_u16(rdata, off + 2) as i64;
         off += 4;
-        // RFC 9460 Section 2.2: RDATA Wire Format - SvcParamKeys MUST be in strictly increasing numeric order
-        guard key > last_key && off + val_len <= rdata.len else { return false; }
+        // RFC 9460 Section 2.1 / 2.2: SvcParamKeys MUST be strictly increasing; key 65535 is reserved/invalid.
+        guard key > last_key && key < 65535 && off + val_len <= rdata.len else { return false; }
         last_key = key;
         off += val_len;
     }
@@ -272,7 +278,7 @@ checkfree fn parse_https_svc_params_status(rec: dns::HttpsRecord&, rdata: const 
         off += 4;
         let val_start = off;
         let val_end = val_start + val_len;
-        guard key > last_key && val_start >= 0 && val_start <= val_end && val_end <= rdata.len else {
+        guard key > last_key && key < 65535 && val_start >= 0 && val_start <= val_end && val_end <= rdata.len else {
             return SvcParamStatus.Malformed, false;
         }
         last_key = key;
@@ -787,7 +793,7 @@ checkfree fn parse_answers(
             guard !saw_non_cname && advance_cname_chain(
                 raw, idx, rdlength, rem_jumps, expected_owner, seen_owners, cname_owners,
             ) else { return false; }
-        } else {
+        } else if rtype == resp.qtype {
             if rtype == rfc::DNS_QTYPE_A || rtype == rfc::DNS_QTYPE_AAAA ||
                 rtype == rfc::DNS_QTYPE_HTTPS {
                 saw_non_cname = true;
@@ -795,6 +801,9 @@ checkfree fn parse_answers(
             guard resp.parse_answer_record(
                 raw, expected_owner[..], rtype, rdlength, idx, saw_alias,
             ) else { return false; }
+        } else {
+            idx += rdlength;
+            continue;
         }
         let ttl: u32 = if (raw_ttl & 0x80000000) != 0 { 0 } else { raw_ttl };
         if !has_ttl || ttl < resp.min_ttl_sec {

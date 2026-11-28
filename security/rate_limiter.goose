@@ -66,7 +66,7 @@ fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u
     let delta = core::mul_sat_u64(cost_n, t);
     let limit_window = core::add_sat_u64(tau, t);
     let max_cells = core::add_sat_u64(quota.burst, 1);
-    let tat_old = security_internal::clamp_clock_drift(cell.tat_ns, now_ns, limit_window);
+    let tat_old = security_internal::clamp_clock_drift(cell.tat_ns, now_ns, limit_window, cell.penalty_until_ns);
     let tat_base = core::ct_max_u64(now_ns, tat_old);
 
     if cost_n > max_cells || delta > limit_window {
@@ -122,7 +122,7 @@ fn gcra_reserve_n(
     let tau = quota.delay_tolerance_ns;
     let delta = core::mul_sat_u64(cost_n, t);
     let limit_window = core::add_sat_u64(tau, t);
-    let tat_old = security_internal::clamp_clock_drift(cell.tat_ns, now_ns, limit_window);
+    let tat_old = security_internal::clamp_clock_drift(cell.tat_ns, now_ns, limit_window, cell.penalty_until_ns);
     let tat_base = core::ct_max_u64(now_ns, tat_old);
 
     if delta > core::add_sat_u64(limit_window, max_wait_ns) {
@@ -149,6 +149,7 @@ fn gcra_reserve_n(
     let wait_time = core::sub_sat_u64(t_allow, now_ns);
     if wait_time <= max_wait_ns {
         cell.tat_ns = tat_new;
+        cell.penalty_until_ns = core::ct_max_u64(cell.penalty_until_ns, tat_new);
         return RateLimitDecision.Reserved {
             wait_ns:    wait_time,
             new_tat_ns: tat_new,

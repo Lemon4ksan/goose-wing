@@ -313,7 +313,7 @@ fn extract_path_from_url(raw: const u8[:]) -> const u8[:] {
     let hash_idx = s.index_of_byte('#');
     if hash_idx >= 0 { s = s[..hash_idx]; }
 
-    let prefixes: const u8[:][5] = ["https://", "http://", "wss://", "ws://", "//"];
+    let prefixes: const u8[:][4] = ["https://", "http://", "wss://", "ws://"];
     for pref in prefixes {
         let rest, ok = s.strip_prefix_fold(pref);
         if ok {
@@ -321,6 +321,9 @@ fn extract_path_from_url(raw: const u8[:]) -> const u8[:] {
             s = if slash >= 0 { rest[slash..] } else { "/" };
             break;
         }
+    }
+    while s.len > 1 && s[0] == '/' && s[1] == '/' {
+        s = s[1..];
     }
     return if s.len > 0 { s } else { "/" };
 }

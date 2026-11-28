@@ -423,9 +423,10 @@ fn dispatch_unary<HandlerFn: fn(u16, ServerContext&, const u8[:], u8[>..]&) -> S
 
     let method_idx, ok_method = d.find_method(path_buf[..]);
     if !ok_method {
-        var err_msg: u8[..256] = [];
-        err_msg.append("Method not found: ");
-        err_msg.append(path_buf[..]);
+        var err_msg: u8[..288] = [];
+        if !err_msg.try_append("Method not found: ") || !err_msg.try_append(path_buf[..]) {
+            let _ = err_msg.try_set("Method not found");
+        }
         grpc_internal::build_trailers_only_response(StatusCode.Unimplemented, err_msg[..], ctx, res);
         return true;
     }

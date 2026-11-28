@@ -535,9 +535,15 @@ fn cookie_internal::apply_parsed_attribute(
     } else if attr_name.eq_ascii_fold("partitioned") {
         cookie_ref.partitioned = true;
     } else if attr_name.eq_ascii_fold("samesite") {
-        cookie_ref.same_site = cookie::parse_same_site(attr_val);
+        let parsed_ss = cookie::parse_same_site(attr_val);
+        if parsed_ss != cookie::SameSite.Unknown {
+            cookie_ref.same_site = parsed_ss;
+        }
     } else if attr_name.eq_ascii_fold("priority") {
-        cookie_ref.priority = cookie::parse_priority(attr_val);
+        let parsed_prio = cookie::parse_priority(attr_val);
+        if parsed_prio != cookie::Priority.Unknown {
+            cookie_ref.priority = parsed_prio;
+        }
     } else if attr_name.eq_ascii_fold("path") {
         cookie_ref.apply_parsed_path_attribute(attr_val, default_path);
     } else if attr_name.eq_ascii_fold("max-age") {
@@ -825,14 +831,22 @@ inline fn span_name(raw: const u8[:], span: Span) -> const u8[:] {
 //   raw_header = "theme=dark; sid=abc123", name = "sid"
 //   returns: "abc123", true
 fn find_cookie_value(raw_header: const u8[:], name: const u8[:]) -> const u8[:], bool {
-    guard !cookie_internal::has_prohibited_ctl(raw_header) && name.len > 0
+    guard raw_header.len <= 65535 && !cookie_internal::has_prohibited_ctl(raw_header) && name.len > 0
         && cookie_internal::is_valid_cookie_name(name) else {
         return "", false;
     }
     var cursor: i64 = 0;
     while cursor < raw_header.len {
         let span, ok = next_span(raw_header, cursor);
-        guard ok else { break; }
+        if !ok {
+            // Skip malformed cookie pair to the next ';' delimiter instead of blinding later cookies.
+            let rem = raw_header[cursor..].trim_start_bytes(" \t;");
+            guard rem.len > 0 else { break; }
+            let _, rest, has_semi = rem.split_once_byte(';');
+            guard has_semi else { break; }
+            cursor = core::sub_sat_i64(raw_header.len, rest.len);
+            continue;
+        }
         let cname = span_name(raw_header, span);
         if cname == name {
             return span_value(raw_header, span), true;

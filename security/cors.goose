@@ -155,7 +155,7 @@ fn verify_client_cors_response<H>(
     let expected_origin = if opts.tainted_origin { "null" } else { request_origin.trim_lws() };
 
     if opts.include_credentials {
-        guard acao != "*" && acao.eq_ascii_fold(expected_origin) else { return false; }
+        guard acao != "*" && acao == expected_origin else { return false; }
         let acac, acac_unique = security_internal::find_unique_cors_header(
             resp_headers,
             rfc::HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS,
@@ -166,7 +166,7 @@ fn verify_client_cors_response<H>(
     if acao == "*" {
         return true;
     }
-    return acao.eq_ascii_fold(expected_origin);
+    return acao == expected_origin;
 }
 
 inline fn is_wildcard_cors_policy(policy: const CorsPolicy&) -> bool {

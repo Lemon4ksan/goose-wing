@@ -876,6 +876,18 @@ fn parse_x_accel_control_header(name: const u8[:], val: const u8[:], accel: Upst
     return name.starts_with_fold("x-accel-");
 }
 
+inline fn has_leading_url_scheme(s: const u8[:]) -> bool {
+    let sep = core::find(s, "://");
+    guard sep > 0 && core::is_ascii_alpha(s[0]) else { return false; }
+    for i in 1..sep {
+        let b = s[i];
+        guard core::is_ascii_alphanumeric(b) || b == '+' || b == '-' || b == '.' else {
+            return false;
+        }
+    }
+    return true;
+}
+
 fn try_rewrite_upstream_url<B>(
     url_val:            const u8[:],
     backend_url_prefix: const u8[:],
@@ -886,13 +898,16 @@ fn try_rewrite_upstream_url<B>(
         return url_val, true;
     }
     let suffix = url_val[backend_url_prefix.len..];
-    guard !(public_url_prefix.len == 0 && core::starts_with(suffix, "//")) else {
-        return "", false;
-    }
     var committed = false;
     defer if !committed { out.clear(); };
     guard out.try_set(public_url_prefix) else { return "", false; }
     guard out.try_append(suffix) else { return "", false; }
+    if !has_leading_url_scheme(out[..]) {
+        guard !core::starts_with(out[..], "//") && !core::starts_with(out[..], "/\\")
+            && !core::starts_with(out[..], "\\/") && !core::starts_with(out[..], "\\\\") else {
+            return "", false;
+        }
+    }
     committed = true;
     return out[..], true;
 }
