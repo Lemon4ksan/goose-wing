@@ -89,7 +89,9 @@ fn json_i64_or(n: json::Node?, fallback: i64 = 0) -> i64 {
     let iv, ok_i = json::as_i64(n);
     if ok_i { return iv; }
     let fv, ok_f = json::as_f64(n);
-    if ok_f { return fv as i64; }
+    if ok_f && fv >= -9223372036854774784.0 && fv <= 9223372036854774784.0 {
+        return fv as! i64;
+    }
     return fallback;
 }
 
@@ -154,7 +156,7 @@ fn read_lenient_i64(r: json::Reader&) -> i64, bool {
         json::fail(r, "non-finite or out-of-range float");
         return 0, false;
     }
-    return fv as i64, true;
+    return fv as! i64, true;
 }
 
 fn json_decode_lenient(dst: bool&, r: json::Reader&) {

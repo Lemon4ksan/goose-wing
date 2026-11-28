@@ -39,7 +39,11 @@ EXE_NAME = "fuzz_runner.exe" if os.name == "nt" else "fuzz_runner"
 RUNNER_EXE = LIT_DIR / EXE_NAME
 EVOLVED_DIR = LIT_DIR / "evolved"
 MANIFEST_DIR = LIT_DIR / "manifests"
-CRASH_DIR = LIT_DIR / "crashes"
+CRASH_DIR = (
+    Path(os.environ["LAPTOP_CRASH_DIR"])
+    if os.environ.get("LAPTOP_CRASH_DIR")
+    else (LIT_DIR / "crashes")
+)
 STATUS_FILE = LIT_DIR / "fuzz_status.json"
 STOP_SIGNAL_FILE = LIT_DIR / "fuzz_stop.signal"
 LOG_FILE = LIT_DIR / "fuzz_background.log"
@@ -48,8 +52,15 @@ MAX_EVOLVED_PER_TARGET = 512
 
 # Windows process creation flags for zero-console, zero-lag background execution:
 # CREATE_NO_WINDOW (0x08000000) prevents flashing console windows.
-# IDLE_PRIORITY_CLASS (0x00000040) yields CPU immediately to interactive user apps.
-WIN_HEADLESS_IDLE_FLAGS = (subprocess.CREATE_NO_WINDOW | 0x00000040) if os.name == "nt" else 0
+# IDLE_PRIORITY_CLASS (0x00000040) yields CPU on local interactive desktops;
+# skip IDLE when managed inside laptopd's BelowNormal Win32 Job Object so
+# peer jobs (e.g. compilers) do not starve wall-clock DoS timers.
+_MANAGED_BY_LAPTOPD = bool(os.environ.get("LAPTOP_JOB_ID"))
+WIN_HEADLESS_IDLE_FLAGS = (
+    (subprocess.CREATE_NO_WINDOW if _MANAGED_BY_LAPTOPD else (subprocess.CREATE_NO_WINDOW | 0x00000040))
+    if os.name == "nt"
+    else 0
+)
 
 # Must match `FUZZ_TARGET_NAMES` order in `tests/fuzz/oss_fuzz.goose` (0..26).
 ALL_TARGETS = [
@@ -340,7 +351,14 @@ def build_native_runner(force: bool = False) -> Path:
 
 
 def isolate_native_crash(
-    exe: Path, target: str, batch_files: list[str], rng_seed: int, iters: int
+    exe: Path,
+    target: str,
+    batch_files: list[str],
+    rng_seed: int,
+    iters: int,
+    returncode: int = -1,
+    stdout: str = "",
+    stderr: str = "",
 ) -> None:
     CRASH_DIR.mkdir(parents=True, exist_ok=True)
     for fpath in batch_files:
@@ -350,7 +368,7 @@ def isolate_native_crash(
             cwd=str(ROOT),
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
             creationflags=WIN_HEADLESS_IDLE_FLAGS,
         )
         if res.returncode != 0:
@@ -373,6 +391,20 @@ def isolate_native_crash(
             )
             print(f"\n[!] CRASH ISOLATED in target '{target}' -> {crash_bin}", flush=True)
             return
+
+    crash_meta = CRASH_DIR / f"crash_native_{target}_{rng_seed}.txt"
+    crash_meta.write_text(
+        f"Mode: native\n"
+        f"Target: {target}\n"
+        f"RNG Seed: {rng_seed}\n"
+        f"Iterations: {iters}\n"
+        f"Exit Code: {returncode}\n"
+        f"Reproduce: \"{exe}\" {target} {iters} {rng_seed}\n"
+        f"\n--- Stdout ---\n{stdout}\n"
+        f"\n--- Stderr ---\n{stderr}\n",
+        encoding="utf-8",
+    )
+    print(f"\n[!] NATIVE FAILURE in target '{target}' -> {crash_meta}", flush=True)
 
 
 def record_sancov_crash(
@@ -422,7 +454,7 @@ def run_native_batch(
                 cwd=str(ROOT),
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=180,
                 creationflags=WIN_HEADLESS_IDLE_FLAGS,
             )
             break
@@ -971,7 +1003,14 @@ def main() -> None:
                             flush=True,
                         )
                         isolate_native_crash(
-                            exe, t, res["batch_files"], res["rng_seed"], args.mutations
+                            exe,
+                            t,
+                            res["batch_files"],
+                            res["rng_seed"],
+                            args.mutations,
+                            res["returncode"],
+                            res["stdout"],
+                            res["stderr"],
                         )
                 else:
                     total_execs += res["execs"]

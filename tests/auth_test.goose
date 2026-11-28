@@ -1138,12 +1138,29 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
         let hdr_crit_dup_json = "{\"alg\":\"HS256\",\"crit\":[\"custom\",\"custom\"],\"custom\":\"value\"}";
         sub.assert_false(auth::parse_jwt_header_json(hdr_crit_dup_json, hdr_crit_dup), "Duplicate parameter inside crit list rejected");
 
-        // 7. NumericDate: non-integer float timestamp support (RFC 7519 §2)
+        // 7. NumericDate & custom numeric claims: fractional float truncation safe under --debug (RFC 7519 §2)
         var clm_float = auth::JwtClaims { .. };
-        let clm_float_json = "{\"sub\":\"alice\",\"iat\":1770000000.456,\"exp\":1770003600.789}";
-        sub.assert_true(auth::parse_jwt_claims_json(clm_float_json, clm_float), "Float NumericDate claims parsed successfully");
+        let clm_float_json = "{\"sub\":\"alice\",\"iat\":1770000000.456,\"exp\":1770003600.789,\"ver\":1.1}";
+        sub.assert_true(auth::parse_jwt_claims_json(clm_float_json, clm_float), "Float NumericDate and custom claims parsed");
         sub.assert_eq(clm_float.iat, 1770000000, "iat parsed and truncated to whole seconds");
         sub.assert_eq(clm_float.exp, 1770003600, "exp parsed and truncated to whole seconds");
+
+        let intro_flt, ok_intro_flt = auth::parse_introspection_response("{\"active\":true,\"exp\":1770003600.9}");
+        sub.assert_true(ok_intro_flt, "Introspection fractional exp parsed safely");
+        sub.assert_eq(intro_flt.exp, 1770003600, "Introspection fractional exp truncated cleanly");
+
+        var prob_flt = http::ProblemDetails { .. };
+        sub.assert_true(
+            http::parse_problem_details("{\"status\":404.5,\"title\":\"bad\"}", prob_flt),
+            "ProblemDetails fractional status does not trap",
+        );
+        sub.assert_eq(prob_flt.status, 0, "ProblemDetails fractional status ignored");
+        var prob_oor = http::ProblemDetails { .. };
+        sub.assert_true(
+            http::parse_problem_details("{\"status\":1e20,\"title\":\"oor\"}", prob_oor),
+            "ProblemDetails out-of-range status does not trap",
+        );
+        sub.assert_eq(prob_oor.status, 0, "ProblemDetails out-of-range status ignored");
 
         // 8. SSRF Protection on Remote JWKS URLs (RFC 8725 §3.12)
         sub.assert_true(

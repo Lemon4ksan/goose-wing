@@ -200,11 +200,8 @@ inline fn parse_custom_claim_entry(
     }
     if p == '-' || core::is_ascii_digit(p) {
         let num = json::read_number(reader);
-        if num >= -9223372036854774784.0 && num <= 9223372036854774784.0 {
-            if !auth::set_claim_int(claims, key, num as i64) { had_error = true; }
-        } else {
-            had_error = true;
-        }
+        let in_range = num >= -9223372036854774784.0 && num <= 9223372036854774784.0;
+        if !in_range || !auth::set_claim_int(claims, key, num as! i64) { had_error = true; }
         return;
     }
     json::skip(reader);
@@ -230,7 +227,7 @@ inline fn parse_jwt_numeric_date_claim(
     seen = true;
     let num = json::read_number(reader);
     if num >= 0.0 && num <= 9223372036854774784.0 {
-        dst = num as i64;
+        dst = num as! i64;
     } else {
         had_error = true;
     }
