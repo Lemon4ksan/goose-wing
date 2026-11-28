@@ -121,6 +121,7 @@ inline fn populate_entry(
 ) -> bool {
     guard entry.client_id.try_set(client_id) else { return false; }
     entry.cell.tat_ns = now_ns;
+    entry.cell.penalty_until_ns = 0;
     entry.last_seen_ns = now_ns;
     entry.consecutive_rejects = 0;
     entry.in_use = true;
@@ -211,6 +212,7 @@ inline fn deactivate_client_slot(entry: security::GatewayClientEntry&) {
 inline fn reset_entry_slot(entry: security::GatewayClientEntry&) {
     entry.in_use = false;
     entry.cell.tat_ns = 0;
+    entry.cell.penalty_until_ns = 0;
     entry.consecutive_rejects = 0;
     entry.client_id.clear();
 }
@@ -278,6 +280,7 @@ fn admit_or_reject_new_rate_limit_slot(
         let slot .= limiter.shards[shard_idx].slots[slot_idx];
         let _ = slot.key.try_set(eff_key);
         slot.cell.tat_ns = now_ns;
+        slot.cell.penalty_until_ns = 0;
         slot.active = true;
         return security::gcra_check_n(limiter.quota, slot.cell, cost_n, now_ns);
     }

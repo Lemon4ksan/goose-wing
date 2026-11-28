@@ -26,35 +26,42 @@ struct ForwardedElement {
 //   elem = ForwardedElement { for_node: "192.0.2.60", proto: "https", host: "api.example.com" }
 //   returns: "for=192.0.2.60;proto=https;host=api.example.com"
 fn format_forwarded_element<B>(elem: const ForwardedElement&, out: B&) {
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
     var has_param = false;
 
     if elem.by.len > 0 {
-        out.append("by=");
-        http_internal::append_quoted_node(elem.by[..], out);
+        guard out.try_append("by=") && http_internal::append_quoted_node(elem.by[..], out) else { return; }
         has_param = true;
     }
     if elem.for_node.len > 0 {
-        if has_param { out.push(';'); }
-        out.append("for=");
-        http_internal::append_quoted_node(elem.for_node[..], out);
+        if has_param {
+            guard out.try_push(';') else { return; }
+        }
+        guard out.try_append("for=") && http_internal::append_quoted_node(elem.for_node[..], out) else { return; }
         has_param = true;
     }
     if elem.host.len > 0 {
-        if has_param { out.push(';'); }
-        out.append("host=");
-        http_internal::append_quoted_node(elem.host[..], out);
+        if has_param {
+            guard out.try_push(';') else { return; }
+        }
+        guard out.try_append("host=") && http_internal::append_quoted_node(elem.host[..], out) else { return; }
         has_param = true;
     }
     if elem.proto.len > 0 {
-        if has_param { out.push(';'); }
-        out.append("proto=");
-        out.append(elem.proto[..]);
+        guard http_internal::is_valid_forwarded_proto(elem.proto[..]) else { return; }
+        if has_param {
+            guard out.try_push(';') else { return; }
+        }
+        guard out.try_append("proto=") && out.try_append(elem.proto[..]) else { return; }
     }
+    committed = true;
 }
 
 // Appends `Forwarded` header to outgoing HeaderMap.
 fn append_forwarded_header(out_headers: HeaderMap&, elem: const ForwardedElement&) -> bool {
-    var buf: u8[..512] = [];
+    var buf: u8[..1024] = [];
     format_forwarded_element(elem, buf);
     guard buf.len > 0 else { return false; }
     return append_header(out_headers, rfc::HEADER_FORWARDED, buf[..]);

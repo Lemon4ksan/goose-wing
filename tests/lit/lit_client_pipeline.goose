@@ -1150,7 +1150,10 @@ fn test_ssrf_ipv6() {
 
     assert(security::is_private_or_reserved_ip("2001:20::1"));
     assert(security::is_private_or_reserved_ip("2001:2f::1"));
-    assert(!security::is_private_or_reserved_ip("2001:30::1"));
+    // RFC 6890 (`2001::/23`) and RFC 9374 (`2001:30::/28`) are non-globally reachable; `2001:200::/23` is public.
+    assert(security::is_private_or_reserved_ip("2001:30::1"));
+    assert(security::is_private_or_reserved_ip("2001:1ff::1"));
+    assert(!security::is_private_or_reserved_ip("2001:200::1"));
     print("CHECK_SSRF_IPV6: OK");
 }
 

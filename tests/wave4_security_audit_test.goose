@@ -38,13 +38,21 @@ fn test_w4_proxy_and_forwarded_hardening(sub: lit::T&) {
         "W4-PROXY-01 rejects malformed Host with RFC 7239 injection payload even when preserve_host=false",
     );
 
-    // W4-PROXY-01b: append_quoted_node quotes and escapes non-tchar values
+    // W4-PROXY-01b: append_quoted_node quotes/escapes non-tchar values, rejects CTLs, and rolls back on overflow
     var fwd_elem = http::ForwardedElement { .. };
     let _ = fwd_elem.for_node.try_set("203.0.113.5");
     let _ = fwd_elem.host.try_set("a,for=127.0.0.1");
     var fwd_out: u8[..256] = [];
     http::format_forwarded_element(fwd_elem, fwd_out);
     sub.assert_contains(fwd_out[..], "host=\"a,for=127.0.0.1\"", "W4-PROXY-01b quotes comma-bearing host");
+    var fwd_ctl = http::ForwardedElement { .. };
+    let _ = fwd_ctl.host.try_set("bad\r\nX-Injected: 1");
+    var fwd_ctl_out: u8[..256] = [];
+    http::format_forwarded_element(fwd_ctl, fwd_ctl_out);
+    sub.assert_eq(fwd_ctl_out.len, 0, "W4-PROXY-01c rejects CRLF inside Forwarded element");
+    var fwd_tiny: u8[..16] = [];
+    http::format_forwarded_element(fwd_elem, fwd_tiny);
+    sub.assert_eq(fwd_tiny.len, 0, "W4-PROXY-01d rolls back Forwarded element on buffer overflow (no unclosed quote)");
 
     // W4-PROXY-02: Via loop-detection rejects unbalanced parentheses
     var via_in = http::HeaderMap { .. };
@@ -62,6 +70,10 @@ fn test_w4_proxy_and_forwarded_hardening(sub: lit::T&) {
     sub.assert_false(ok_slash, "W4-PROXY-03 blocks //evil.com rewrite with public_url_prefix=/");
     let _, ok_bs = proxy::try_rewrite_upstream_url("http://backend:8080/\\evil.com", "http://backend:8080", "", loc_out);
     sub.assert_false(ok_bs, "W4-PROXY-03 blocks /\\evil.com WHATWG open redirect");
+    let _, ok_qscheme = proxy::try_rewrite_upstream_url(
+        "http://backend:8080//evil.com/?r=http://ok", "http://backend:8080", "", loc_out,
+    );
+    sub.assert_false(ok_qscheme, "W4-PROXY-03b blocks //evil.com/?r=http://ok query-scheme open redirect bypass");
     let rew_ok, ok_good = proxy::try_rewrite_upstream_url("http://backend:8080/app/home", "http://backend:8080", "", loc_out);
     sub.assert_true(ok_good && rew_ok == "/app/home", "W4-PROXY-03 allows clean relative path rewrite");
 
@@ -129,6 +141,12 @@ fn test_w4_security_csrf_gcra_ssrf_cors(sub: lit::T&) {
     sub.assert_false(d1.allowed, "W4-SEC-02 first check after 60s penalty rejected");
     let d2 = security::gcra_check(gcfg, cell, 1, t0 + 100000001);
     sub.assert_false(d2.allowed, "W4-SEC-02 check at +100ms still blocked (60s penalty preserved)");
+    var gw_rl = security::new_gateway_rate_limiter(10, 5);
+    security::penalize_gateway_client(gw_rl, "abusive", 60000000000, t0);
+    security::reset_gateway_rate_limiter(gw_rl);
+    sub.assert_eq(gw_rl.fallback_cell.penalty_until_ns, 0, "W4-SEC-02b gateway reset clears fallback penalty_until_ns");
+    let gw_dec = security::check_gateway_rate_limit(gw_rl, "fresh-client", 1, t0 + 1);
+    sub.assert_true(gw_dec.allowed, "W4-SEC-02c fresh client after gateway reset is not penalized");
 
     // W4-SEC-03: SSRF blocks bracketed IPv6 with trailing dot, overlong >256B hex metadata, and RFC 6890 IPv6
     sub.assert_true(security::is_private_or_reserved_ip("[::1]."), "W4-SEC-03 blocks [::1].");
@@ -232,6 +250,9 @@ fn test_w4_cookie_auth_url_dns(sub: lit::T&) {
     var rdata_65535: u8[4] = [0xFF, 0xFF, 0x00, 0x00];
     var hrec2 = dns::HttpsRecord { .. };
     sub.assert_false(dns::parse_https_svc_params(hrec2, rdata_65535[..]), "W4-DNS-02 rejects reserved SvcParamKey 65535");
+    var mand_65535: u8[2] = [0xFF, 0xFF];
+    let _, ok_m65535 = dns::parse_mandatory_svc_param(mand_65535[..]);
+    sub.assert_false(ok_m65535, "W4-DNS-02b mandatory rejects reserved SvcParamKey 65535");
 }
 
 fn test_w4_grpc_wire_and_realtime(sub: lit::T&) {
@@ -279,6 +300,11 @@ fn test_w4_grpc_wire_and_realtime(sub: lit::T&) {
     var z_req = http::new_request("GET", "/ping");
     sub.assert_true(wing::serialize_h1_request(z_req, u_z, wire_out), "W4-WIRE-01 serializes link-local IPv6 request");
     sub.assert_false(core::contains(wire_out[..], "%25eth0"), "W4-WIRE-01 strips IPv6 ZoneID from Host header");
+    var conn_req = http::new_request("CONNECT", "/");
+    sub.assert_true(wing::serialize_h1_request(conn_req, u_z, wire_out), "W4-WIRE-01b serializes CONNECT IPv6 request");
+    sub.assert_false(core::contains(wire_out[..], "%25eth0"), "W4-WIRE-01b strips IPv6 ZoneID from CONNECT target");
+    var bad_url = core::Url { .. };
+    sub.assert_false(wing::serialize_h1_request(z_req, bad_url, wire_out), "W4-WIRE-01c fails closed on invalid Url");
 
     // W4-RT-01: SSE Last-Event-ID strips ASCII CTL bytes (0x0B, 0x0C, 0x7F)
     var sse_sub = realtime::new_sse_subscription("http://example.com/events");
@@ -311,6 +337,23 @@ fn test_w4_grpc_wire_and_realtime(sub: lit::T&) {
         realtime::inflate_message_dedicated(ded, c2[..], p2, 512, false) && p2[..] == msg2,
         "W4-RT-02 rx inflate msg2 succeeds without TX dictionary corruption",
     );
+
+    // W4-RT-03: Unsolicited PONG flood during active fragmentation still hits WS_LIVE_MAX_CTRL_FRAMES (-2)
+    var ws_conn = realtime::WsConn {
+        ws:   realtime::new_websocket_session(true),
+        open: true,
+        ..
+    };
+    let frag_start: u8[2] = [0x01, 0x00]; // FIN=0, TEXT, len=0
+    let pong_frame: u8[2] = [0x8A, 0x00]; // FIN=1, PONG, len=0
+    ws_conn.rx_buf.append(frag_start[..]);
+    for _ in 20 {
+        ws_conn.rx_buf.append(pong_frame[..]);
+    }
+    var ws_op: u8      = 0;
+    var ws_pl: u8[>..] = [];
+    let ws_rc = realtime::ws_recv_frame(ws_conn, ws_op, ws_pl, 5000);
+    sub.assert_eq(ws_rc, -2, "W4-RT-03 unsolicited PONG flood during fragmentation hits control-frame limit");
 }
 
 fn main() {

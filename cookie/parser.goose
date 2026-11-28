@@ -831,7 +831,7 @@ inline fn span_name(raw: const u8[:], span: Span) -> const u8[:] {
 //   raw_header = "theme=dark; sid=abc123", name = "sid"
 //   returns: "abc123", true
 fn find_cookie_value(raw_header: const u8[:], name: const u8[:]) -> const u8[:], bool {
-    guard !cookie_internal::has_prohibited_ctl(raw_header) && name.len > 0
+    guard raw_header.len <= 65535 && !cookie_internal::has_prohibited_ctl(raw_header) && name.len > 0
         && cookie_internal::is_valid_cookie_name(name) else {
         return "", false;
     }

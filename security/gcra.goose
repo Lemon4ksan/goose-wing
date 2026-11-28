@@ -179,7 +179,7 @@ fn reset_gateway_rate_limiter(limiter: GatewayRateLimiter&) {
         security_internal::reset_entry_slot(entry);
     }
     limiter.entries.clear();
-    limiter.fallback_cell.tat_ns = 0;
+    gcra_reset(limiter.fallback_cell);
     limiter.total_allowed = 0;
     limiter.total_rejected = 0;
 }

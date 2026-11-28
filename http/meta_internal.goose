@@ -21,26 +21,33 @@ import rfc.http;
 // ---- http/forwarded.goose internal helpers ----
 
 // Appends an RFC 7239 node/host identifier, quoting and escaping non-tchar characters (RFC 9110 §5.6.4).
-fn append_quoted_node<B>(val: const u8[:], out: B&) {
-    var needs_quotes = false;
+// Rejects ASCII CTL bytes and rolls back `out` on capacity overflow.
+fn append_quoted_node<B>(val: const u8[:], out: B&) -> bool {
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+    var needs_quotes = val.len == 0;
     for b in val {
+        guard b >= 0x20 && b != 0x7F else { return false; }
         if !core::is_tchar(b) {
             needs_quotes = true;
-            break;
         }
     }
-    if needs_quotes {
-        let _ = out.try_push('"');
-        for b in val {
-            if b == '"' || b == '\\' {
-                let _ = out.try_push('\\');
-            }
-            let _ = out.try_push(b);
-        }
-        let _ = out.try_push('"');
-    } else {
-        let _ = out.try_append(val);
+    if !needs_quotes {
+        guard out.try_append(val) else { return false; }
+        committed = true;
+        return true;
     }
+    guard out.try_push('"') else { return false; }
+    for b in val {
+        if b == '"' || b == '\\' {
+            guard out.try_push('\\') else { return false; }
+        }
+        guard out.try_push(b) else { return false; }
+    }
+    guard out.try_push('"') else { return false; }
+    committed = true;
+    return true;
 }
 
 // Validates an RFC 7239 Section 5.4 URI scheme (`ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`).

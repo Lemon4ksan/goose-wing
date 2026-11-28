@@ -631,7 +631,7 @@ fn append_rfc7239_forwarded_spill(
     guard populate_forwarded_for_node(elem, client_ip) else { return false; }
     guard elem.host.try_set(orig_host) else { return false; }
     guard elem.proto.try_set(proto) else { return false; }
-    var fwd_buf: u8[..512] = [];
+    var fwd_buf: u8[..1024] = [];
     http::format_forwarded_element(elem, fwd_buf);
     guard fwd_buf.len > 0 else { return false; }
     return http::append_header_spill(out_headers, out_arena, rfc::HEADER_FORWARDED, fwd_buf[..]);

@@ -1,27 +1,27 @@
 # goose-sloc baseline v1 bce_measured=0
-TOTAL 428 169257 120132 1361849 14975 -1 1613
+TOTAL 428 169492 120318 1363734 14990 -1 1624
 DIR . 4 396 401 2160 31 0
-DIR auth 23 5760 4579 47324 616 33
+DIR auth 23 5761 4581 47354 617 33
 DIR cli 6 2362 1826 19185 119 30
-DIR client 27 10031 6233 76981 498 36
-DIR cookie 9 4075 2789 33248 437 32
-DIR core 68 23619 17776 214971 2461 237
-DIR dns 5 938 786 7431 159 5
+DIR client 27 10050 6242 77099 499 36
+DIR cookie 9 4089 2801 33361 438 33
+DIR core 68 23641 17797 215169 2462 237
+DIR dns 5 945 787 7450 161 5
 DIR fingerprint 8 1892 1324 14338 219 19
-DIR grpc 11 3909 2781 30003 361 89
+DIR grpc 11 3927 2794 30134 361 91
 DIR h1 5 1502 1176 12301 201 28
-DIR http 54 18002 13809 144585 2325 171
+DIR http 54 18031 13843 144826 2326 171
 DIR http2 9 5632 3460 47166 414 49
 DIR http3 10 6908 4758 50393 439 74
 DIR net 42 16523 11617 132200 1261 161
-DIR proxy 7 5285 3334 38229 254 66
+DIR proxy 7 5336 3373 38654 259 72
 DIR quic 17 9873 6774 75831 879 115
-DIR realtime 10 4621 3311 36276 557 47
+DIR realtime 10 4649 3334 36498 557 49
 DIR rfc 7 1488 1102 12216 204 0
-DIR security 15 4893 3529 38784 429 45
+DIR security 15 4927 3549 39027 432 45
 DIR server 37 18947 11895 143681 1048 149
 DIR tls 45 19636 14928 162610 1725 205
-DIR wire 9 2965 1944 21936 338 22
+DIR wire 9 2977 1956 22081 338 22
 FILE core.goose 12 12 56 3 100 -1 0
 FILE rfc.goose 10 10 44 4 100 -1 0
 FILE wing.goose 352 357 1924 18 101 -1 0
@@ -30,8 +30,8 @@ FILE auth/acme.goose 59 57 455 20 97 -1 0
 FILE auth/acme_wire.goose 515 368 3506 88 71 -1 1
 FILE auth/device_grant.goose 45 34 349 9 76 -1 0
 FILE auth/digest.goose 205 149 1679 13 73 -1 3
-FILE auth/digest_core.goose 236 212 2205 26 90 -1 14
-FILE auth/digest_internal.goose 226 154 1804 16 68 -1 1
+FILE auth/digest_core.goose 236 212 2200 26 90 -1 14
+FILE auth/digest_internal.goose 226 154 1806 16 68 -1 1
 FILE auth/dpop.goose 248 177 1935 20 71 -1 2
 FILE auth/dpop_claims.goose 326 316 3091 28 97 -1 0
 FILE auth/dpop_internal.goose 64 52 540 3 81 -1 0
@@ -43,10 +43,10 @@ FILE auth/jwk.goose 111 108 1058 7 97 -1 0
 FILE auth/jwk_internal.goose 283 241 2489 35 85 -1 1
 FILE auth/jwks.goose 191 158 1575 18 83 -1 0
 FILE auth/jwks_internal.goose 234 174 1948 29 74 -1 0
-FILE auth/jwt.goose 495 386 3778 46 78 -1 0
+FILE auth/jwt.goose 496 386 3790 47 78 -1 0
 FILE auth/jwt_core.goose 322 307 2830 35 95 -1 0
-FILE auth/jwt_internal.goose 575 437 4446 51 76 -1 7
-FILE auth/oauth_internal.goose 295 220 2169 63 75 -1 0
+FILE auth/jwt_internal.goose 575 439 4466 51 76 -1 7
+FILE auth/oauth_internal.goose 295 220 2170 63 75 -1 0
 FILE auth/pkce.goose 98 99 878 12 101 -1 0
 FILE auth/types.goose 206 35 1294 12 17 -1 0
 FILE cli/args.goose 880 660 7265 55 75 -1 9
@@ -65,14 +65,14 @@ FILE client/policy.goose 66 41 446 10 62 -1 0
 FILE client/redirect.goose 271 113 1486 34 42 -1 0
 FILE client/replay_guard.goose 24 15 131 9 63 -1 0
 FILE client/stream.goose 325 231 2631 39 71 -1 2
-FILE client/stream_facade_internal.goose 639 449 5038 25 70 -1 16
+FILE client/stream_facade_internal.goose 646 452 5073 25 70 -1 16
 FILE client/telemetry.goose 67 46 526 9 69 -1 0
 FILE cookie/canonical.goose 412 289 3082 47 70 -1 0
 FILE cookie/constants.goose 83 43 466 27 52 -1 0
 FILE cookie/dafsa.goose 257 150 3237 50 58 -1 6
-FILE cookie/engine.goose 1039 573 7680 47 55 -1 9
+FILE cookie/engine.goose 1040 574 7696 47 55 -1 9
 FILE cookie/limits.goose 59 52 483 19 88 -1 0
-FILE cookie/parser.goose 695 563 5953 98 81 -1 8
+FILE cookie/parser.goose 708 574 6050 99 81 -1 9
 FILE cookie/policy.goose 292 190 2073 37 65 -1 0
 FILE cookie/psl.goose 516 387 4217 55 75 -1 3
 FILE cookie/store.goose 722 542 6057 57 75 -1 6
@@ -88,8 +88,8 @@ FILE core/ufcs.goose 130 155 2137 12 119 -1 2
 FILE core/url.goose 9 9 55 3 100 -1 0
 FILE dns/cache.goose 95 58 643 8 61 -1 2
 FILE dns/doh.goose 43 47 395 11 109 -1 0
-FILE dns/internal.goose 658 584 5229 95 89 -1 3
-FILE dns/svcb.goose 45 28 326 18 62 -1 0
+FILE dns/internal.goose 665 585 5250 97 88 -1 3
+FILE dns/svcb.goose 45 28 324 18 62 -1 0
 FILE dns/wire.goose 97 69 838 27 71 -1 0
 FILE fingerprint/akamai.goose 246 168 1750 41 68 -1 1
 FILE fingerprint/akamai_internal.goose 314 259 2519 30 82 -1 2
@@ -105,9 +105,9 @@ FILE grpc/connect_internal.goose 489 351 3690 54 72 -1 17
 FILE grpc/constants.goose 99 49 612 15 49 -1 0
 FILE grpc/framing.goose 406 360 3677 70 89 -1 23
 FILE grpc/health.goose 12 4 41 3 33 -1 0
-FILE grpc/internal.goose 545 434 4185 57 80 -1 15
-FILE grpc/server.goose 872 538 6544 49 62 -1 14
-FILE grpc/server_dispatch_internal.goose 469 296 3532 4 63 -1 7
+FILE grpc/internal.goose 549 438 4215 57 80 -1 15
+FILE grpc/server.goose 873 538 6558 49 62 -1 14
+FILE grpc/server_dispatch_internal.goose 482 305 3619 4 63 -1 9
 FILE grpc/server_internal.goose 377 278 2898 16 74 -1 1
 FILE grpc/status.goose 227 185 1765 46 81 -1 12
 FILE h1/client.goose 232 179 1951 31 77 -1 2
@@ -125,16 +125,16 @@ FILE http/digest_fields.goose 270 209 2300 38 77 -1 6
 FILE http/dto.goose 26 10 147 12 38 -1 0
 FILE http/early_hints.goose 139 131 1245 39 94 -1 14
 FILE http/ext_internal.goose 467 438 3943 63 94 -1 5
-FILE http/forwarded.goose 101 88 777 22 87 -1 2
+FILE http/forwarded.goose 108 100 859 22 93 -1 2
 FILE http/headers.goose 1772 1179 13520 137 67 -1 3
 FILE http/hsts.goose 179 123 1417 37 69 -1 0
 FILE http/hsts_nvs_internal.goose 456 399 3765 64 88 -1 6
 FILE http/incremental.goose 31 30 286 22 97 -1 0
 FILE http/internal.goose 428 319 3284 37 75 -1 2
 FILE http/json_codec.goose 561 484 4851 53 86 -1 6
-FILE http/json_helpers.goose 437 362 3602 58 83 -1 9
-FILE http/message_internal.goose 433 367 3469 80 85 -1 0
-FILE http/meta_internal.goose 550 461 4437 73 84 -1 5
+FILE http/json_helpers.goose 439 362 3613 58 82 -1 9
+FILE http/message_internal.goose 432 366 3470 80 85 -1 0
+FILE http/meta_internal.goose 567 484 4534 74 85 -1 5
 FILE http/mime.goose 115 113 1016 25 98 -1 0
 FILE http/multipart.goose 582 441 4523 86 76 -1 2
 FILE http/negotiate.goose 190 178 1676 37 94 -1 0
@@ -142,7 +142,7 @@ FILE http/novarysearch.goose 79 52 582 20 66 -1 1
 FILE http/ohttp.goose 343 296 2981 75 86 -1 0
 FILE http/priority.goose 47 33 345 17 70 -1 0
 FILE http/problem.goose 205 145 1628 31 71 -1 0
-FILE http/request.goose 350 283 3092 43 81 -1 1
+FILE http/request.goose 354 283 3142 43 80 -1 1
 FILE http/response.goose 376 273 2831 50 73 -1 2
 FILE http/resumable_upload.goose 145 124 1134 28 86 -1 0
 FILE http/secret.goose 78 56 662 28 72 -1 0
@@ -207,12 +207,12 @@ FILE net/udp.goose 173 122 1198 15 71 -1 1
 FILE net/upstream_pool.goose 101 61 581 13 60 -1 0
 FILE net/want_queue.goose 75 48 502 8 64 -1 4
 FILE net/wasm_loopback_internal.goose 359 281 2668 12 78 -1 0
-FILE proxy/h2_upstream.goose 1838 1197 12661 48 65 -1 21
-FILE proxy/headers_internal.goose 753 473 5795 35 63 -1 15
+FILE proxy/h2_upstream.goose 1849 1203 12757 48 65 -1 21
+FILE proxy/headers_internal.goose 779 496 5987 40 64 -1 21
 FILE proxy/health_check.goose 281 199 2219 25 71 -1 5
 FILE proxy/internal.goose 676 499 5277 20 74 -1 18
 FILE proxy/load_balancer.goose 400 266 2980 27 67 -1 3
-FILE proxy/reverse_proxy.goose 1000 472 6858 59 47 -1 1
+FILE proxy/reverse_proxy.goose 1014 482 6995 59 48 -1 1
 FILE proxy/stream_relay.goose 337 228 2439 40 68 -1 3
 FILE quic/AckFrame.goose 523 307 3715 60 59 -1 14
 FILE quic/bbr.goose 292 176 1977 23 60 -1 4
@@ -232,14 +232,14 @@ FILE quic/server_endpoint.goose 3094 2035 23968 55 66 -1 43
 FILE quic/stream.goose 358 204 2250 40 57 -1 0
 FILE quic/transport_params_internal.goose 371 332 3076 69 89 -1 1
 FILE realtime/internal.goose 459 377 3482 38 82 -1 1
-FILE realtime/pubsub_wt_internal.goose 663 465 5147 47 70 -1 12
+FILE realtime/pubsub_wt_internal.goose 663 465 5140 47 70 -1 12
 FILE realtime/sse.goose 173 113 1227 22 65 -1 0
 FILE realtime/topic_tree.goose 554 418 4477 87 75 -1 2
 FILE realtime/websocket.goose 729 488 6009 103 67 -1 4
 FILE realtime/webtransport.goose 467 283 3303 109 61 -1 1
-FILE realtime/ws_deflate.goose 293 201 2156 31 69 -1 4
+FILE realtime/ws_deflate.goose 309 210 2287 31 68 -1 4
 FILE realtime/ws_handshake.goose 336 240 2620 48 71 -1 2
-FILE realtime/ws_live.goose 314 280 2834 41 89 -1 12
+FILE realtime/ws_live.goose 326 294 2932 41 90 -1 14
 FILE realtime/ws_pmd_internal.goose 633 446 5021 31 70 -1 9
 FILE rfc/dns.goose 23 23 161 29 100 -1 0
 FILE rfc/grpc.goose 29 29 271 14 100 -1 0
@@ -248,21 +248,21 @@ FILE rfc/h3_quic.goose 262 242 2032 37 92 -1 0
 FILE rfc/http.goose 600 390 4717 51 65 -1 0
 FILE rfc/tls.goose 406 299 3526 41 74 -1 0
 FILE rfc/ws.goose 69 46 862 16 67 -1 0
-FILE security/cors.goose 201 142 1459 22 71 -1 0
+FILE security/cors.goose 201 142 1453 22 71 -1 0
 FILE security/cross_origin_isolation.goose 183 132 1392 37 72 -1 0
 FILE security/crypto_internal.goose 341 283 2995 28 83 -1 3
 FILE security/crypto_jar.goose 311 209 2336 28 67 -1 0
-FILE security/csrf.goose 349 218 2536 59 62 -1 1
+FILE security/csrf.goose 352 220 2564 59 63 -1 1
 FILE security/fetch_policy_internal.goose 409 328 3565 11 80 -1 0
-FILE security/gcra.goose 221 116 1551 30 52 -1 1
+FILE security/gcra.goose 231 119 1597 30 52 -1 1
 FILE security/hpke.goose 254 169 1763 26 67 -1 0
 FILE security/hpke_internal.goose 215 150 1737 8 70 -1 1
-FILE security/policy_internal.goose 537 481 4929 36 90 -1 10
+FILE security/policy_internal.goose 552 490 5014 39 89 -1 10
 FILE security/privacypass.goose 279 211 2341 39 76 -1 5
 FILE security/privacypass_internal.goose 299 272 2550 52 91 -1 11
-FILE security/rate_limit_internal.goose 684 463 5109 9 68 -1 7
-FILE security/rate_limiter.goose 392 183 2693 23 47 -1 1
-FILE security/ssrf.goose 218 172 1828 21 79 -1 5
+FILE security/rate_limit_internal.goose 688 466 5154 9 68 -1 7
+FILE security/rate_limiter.goose 393 184 2716 23 47 -1 1
+FILE security/ssrf.goose 219 174 1850 21 79 -1 5
 FILE server/app.goose 416 248 3463 22 60 -1 0
 FILE server/async_reactor.goose 171 86 1219 12 50 -1 1
 FILE server/cache.goose 130 62 944 11 48 -1 0
@@ -346,8 +346,8 @@ FILE tls/x509.goose 170 119 1295 19 70 -1 0
 FILE tls/x509_chain_internal.goose 470 282 3498 24 60 -1 2
 FILE tls/x509_san.goose 264 241 2289 60 91 -1 0
 FILE wire/budget.goose 146 86 871 12 59 -1 0
-FILE wire/h1.goose 428 254 3039 40 59 -1 4
-FILE wire/h1_exchange.goose 686 535 5599 69 78 -1 6
+FILE wire/h1.goose 430 254 3083 40 59 -1 4
+FILE wire/h1_exchange.goose 696 547 5700 69 79 -1 6
 FILE wire/h2.goose 331 232 2435 47 70 -1 4
 FILE wire/h3.goose 268 164 1864 21 61 -1 1
 FILE wire/hpack.goose 550 352 4337 80 64 -1 5
@@ -356,9 +356,9 @@ FILE wire/service.goose 189 95 1328 31 50 -1 1
 FILE wire/types.goose 18 6 79 6 33 -1 0
 FILE client/session/dns_dial_internal.goose 825 540 6586 8 65 -1 2
 FILE client/session/exec.goose 83 63 674 7 76 -1 5
-FILE client/session/h1_h2_internal.goose 534 363 4125 3 68 -1 4
+FILE client/session/h1_h2_internal.goose 540 365 4166 4 68 -1 4
 FILE client/session/h3_internal.goose 118 108 1068 7 92 -1 0
-FILE client/session/hop_auth_internal.goose 648 433 5075 12 67 -1 0
+FILE client/session/hop_auth_internal.goose 654 437 5117 12 67 -1 0
 FILE client/session/hop_context_internal.goose 586 315 4360 26 54 -1 0
 FILE client/session/hop_dispatch_internal.goose 424 245 3369 4 58 -1 3
 FILE client/session/mock.goose 29 17 261 4 59 -1 0
@@ -421,9 +421,9 @@ FILE core/time/tick_timer.goose 50 42 406 7 84 -1 0
 FILE core/time/time.goose 226 156 1892 21 69 -1 0
 FILE core/time/token_bucket.goose 43 34 319 10 79 -1 0
 FILE core/url/idna.goose 324 319 2727 38 98 -1 8
-FILE core/url/ip.goose 436 388 3648 78 89 -1 3
+FILE core/url/ip.goose 445 396 3743 78 89 -1 3
 FILE core/url/origin.goose 330 220 2600 22 67 -1 2
-FILE core/url/parser.goose 1157 830 8050 94 72 -1 4
+FILE core/url/parser.goose 1170 843 8153 95 72 -1 4
 FILE core/url/path.goose 97 81 832 36 84 -1 2
 FILE core/url/query.goose 147 149 1417 31 101 -1 2
 FILE core/url/types.goose 284 229 2574 42 81 -1 3
@@ -450,12 +450,12 @@ FILE net/driver/rio_hs_internal.goose 246 199 1896 12 81 -1 2
 FILE net/driver/smartnic.goose 164 70 1079 9 43 -1 0
 FILE net/driver/types.goose 87 38 472 14 44 -1 0
 FILE net/driver/uring.goose 396 284 2951 46 72 -1 1
-SCOPE L0_Plaintext_GET bench 41402 28750 9920 2 410707840
-SCOPE L0_Plaintext_GET_Memoized bench 39914 27648 3701 1 147721714
-SCOPE L0_Plaintext_GET::http1.framing stage 20967 15753 375 0 7862625
-SCOPE L0_Plaintext_GET::http1.l0_turn stage 36949 25704 7316 2 270318884
-SCOPE Dynamic_Route_JSON_Serialize bench 38840 27253 77507 20 3010371880
-SCOPE Full_Pipeline_Auth_Cache_Hit bench 41842 29233 47535 11 1988959470
-SCOPE Full_Pipeline_Auth_Cache_Miss bench 41842 29233 50769 12 2124276498
-SCOPE Full_Pipeline_Gzip_Compress bench 46413 31860 46423 10 2154630699
-SCOPE HTTP1_Pipelined_16x bench 39914 27648 154313 39 6159249082
+SCOPE L0_Plaintext_GET bench 41443 28796 9920 2 411114560
+SCOPE L0_Plaintext_GET_Memoized bench 39955 27694 3701 1 147873455
+SCOPE L0_Plaintext_GET::http1.framing stage 21008 15799 375 0 7878000
+SCOPE L0_Plaintext_GET::http1.l0_turn stage 36978 25738 7316 2 270531048
+SCOPE Dynamic_Route_JSON_Serialize bench 38869 27287 77507 20 3012619583
+SCOPE Full_Pipeline_Auth_Cache_Hit bench 41905 29287 47535 11 1991954175
+SCOPE Full_Pipeline_Auth_Cache_Miss bench 41905 29287 50769 12 2127474945
+SCOPE Full_Pipeline_Gzip_Compress bench 46442 31894 46423 10 2155976966
+SCOPE HTTP1_Pipelined_16x bench 39955 27694 154313 39 6165575915

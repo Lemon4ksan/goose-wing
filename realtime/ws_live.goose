@@ -15,6 +15,7 @@ import .websocket;
 
 const WS_LIVE_MAX_RX_WIRE_BYTES: i64 = 131072;
 const WS_LIVE_MAX_CTRL_FRAMES:   u64 = 16;
+const WS_LIVE_MAX_FRAG_FRAMES:   u64 = 16384;
 const WS_LIVE_HEAD_MAX_BYTES:    i64 = 8192;
 
 // Live RFC 6455 WebSocket connection owning a `net::Transport` (TCP or TLS 1.3) and frame state.
@@ -299,7 +300,7 @@ inline fn is_ws_data_message(view: const WsMessageView&) -> bool {
 
 // Attempts to consume one buffered RFC 6455 frame from `conn.rx_buf`.
 // Returns: `1` = data frame populated, `0` = clean close, `-1` = protocol error,
-// `2` = control frame handled (keep reading), `-3` = need more bytes.
+// `2` = control frame handled (keep reading), `3` = data fragment buffered, `-3` = need more bytes.
 fn try_consume_buffered_ws_frame(
     conn:        WsConn&,
     out_opcode:  u8&,
@@ -307,6 +308,7 @@ fn try_consume_buffered_ws_frame(
     reply:       u8[..256]&,
 ) -> i32 {
     guard conn.rx_buf.len >= 2 else { return -3; }
+    let first_opcode = conn.rx_buf[0] & 0x0F;
     reply.clear();
     var view = WsMessageView { .. };
     let consumed, handled = consume_frame_view(conn.ws, conn.rx_buf[..], view, reply);
@@ -318,7 +320,7 @@ fn try_consume_buffered_ws_frame(
         out_opcode = view.opcode;
         out_payload.append(view.payload);
     }
-    let is_frag_in_progress = !is_data && conn.ws.frag_opcode != 0 && reply.len == 0;
+    let is_frag_in_progress = !is_data && !rfc::is_ws_control_opcode(first_opcode) && conn.ws.frag_opcode != 0;
     conn.rx_buf.compact_wire_buffer(consumed);
     if conn.ws.is_closed {
         conn.open = false;
@@ -370,6 +372,7 @@ fn ws_recv_frame(
 
     let start_ns = time_ns();
     var ctrl_frames: u64       = 0;
+    var frag_frames: u64       = 0;
     var reply:       u8[..256] = [];
     var chunk:       u8[4096]  = [0; 4096];
 
@@ -377,6 +380,10 @@ fn ws_recv_frame(
         let step = try_consume_buffered_ws_frame(conn, out_opcode, out_payload, reply);
         if step == 1 || step == 0 || step == -1 { return step; }
         if step == 3 {
+            frag_frames = core::add_sat_u64(frag_frames, 1);
+            guard frag_frames < WS_LIVE_MAX_FRAG_FRAMES else { return -2; }
+            let _, has_frag_budget = calc_remaining_deadline_ms(start_ns, timeout_ms);
+            guard has_frag_budget else { return -2; }
             continue;
         }
         if step == 2 {

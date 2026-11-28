@@ -24,7 +24,10 @@ fn format_request_target(
     out:     u8[..4096]&,
 ) -> bool {
     if req.method == "CONNECT" {
-        return out.try_append(url_val.host());
+        var host_buf: u8[..280] = [];
+        core::format_outgoing_host(url_val, host_buf);
+        guard host_buf.len > 0 else { return false; }
+        return out.try_append(host_buf[..]);
     }
     let p = url_val.pathname();
     if p.len == 0 {
@@ -66,12 +69,12 @@ fn serialize_h1_request(
     }
     var host_buf: u8[..280] = [];
     core::format_outgoing_host(url_val, host_buf);
-    let wire_host = if host_buf.len > 0 { host_buf[..] } else { url_val.host() };
+    guard host_buf.len > 0 else { return false; }
     out.clear();
     guard wire::encode_h1_request(
         req.method[..],
         target_buf[..],
-        wire_host,
+        host_buf[..],
         hdrs,
         "",
         wire::H1HeaderFilterMode.PreserveAll,

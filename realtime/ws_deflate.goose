@@ -127,7 +127,7 @@ fn ws_inflate_message<B>(
 struct DedicatedWsCompressor {
     window_kb:          i64         = 32,
     history:            u8[..65536] = [],
-    rx_history:         u8[..65536] = [],
+    rx_history:         u8[..32768] = [],
     compress_buf:       u8[..65536] = [],
     decompress_buf:     u8[..65536] = [],
     total_compressed:   u64         = 0,

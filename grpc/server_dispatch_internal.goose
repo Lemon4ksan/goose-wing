@@ -334,9 +334,7 @@ fn drain_h2_frames<
     var is_running = true;
     while is_running {
         if core::add_sat_i64(cursor, rfc::H2_FRAME_HEADER_LEN) <= in_buf.len {
-            let raw_len: u32 = ((in_buf[cursor] as u32) << 16)
-                | ((in_buf[cursor + 1] as u32) << 8)
-                | (in_buf[cursor + 2] as u32);
+            let raw_len = core::read_be_u24(in_buf[..], cursor);
             if raw_len > rfc::H2_DEFAULT_MAX_FRAME_SIZE {
                 return false;
             }
