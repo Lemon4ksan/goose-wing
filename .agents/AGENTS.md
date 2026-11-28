@@ -6,21 +6,23 @@ keep each under 13.5 KB so neither is truncated. See
 [`AGENTS.md`](file:///AGENTS.md) for Part 1 (module map, canonical `core::` and
 UFCS primitives catalog, Goose memory model, and compiler idioms).
 
-## Commit conventions and releases
-
-Releases are automated via Google's `release-please` workflow on `main`.
+## Commit conventions, PRs, and releases
 
 - Follow Conventional Commits (`feat:`, `fix:`, `refactor:`, `perf:`, `style:`,
-  `test:`, `chore:`).
-- Mark breaking changes with `!` (`feat!: ...`, `refactor(client)!: ...`) or a
+  `test:`, `chore:`, `ci:`); mark breaking changes with `!` or a
   `BREAKING CHANGE:` footer.
-- Do not bump `version.txt` or `CHANGELOG.md` by hand during feature branches.
+- Automated releases run via `release-please`; never bump `version.txt` or
+  `CHANGELOG.md` by hand.
+- **PR template**: When creating a PR (`gh pr create`), read
+  `.github/PULL_REQUEST_TEMPLATE.md` and fill every section (`model-id`,
+  `effort`, `prompt`, `Description`, `Type of change`, `Checklist`,
+  `How has this been tested?`).
 
 ## Continuous integration, testing, and `goose-lit`
 
-- **CI policy**: Test suites in `.github/workflows/ci.yml` run on
-  `pull_request`. Docker suites (`tools/grpc.py`, `tools/tls.py`,
-  `tools/http3.py`, `tools/toxiproxy.py`) run when `**/*.goose` files change.
+- **CI policy**: `.github/workflows/ci.yml` filters heavy suites via
+  `paths-filter` on `push` and `pull_request`; `pr-template.yml` validates PR
+  bodies.
 - **Local verification (Zero unverified assertions)**: Always run verification
   commands and observe exit code `0` before claiming completion:
   ```bash

@@ -1,0 +1,51 @@
+name: PR template
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  check-pr-template:
+    name: Validate PR template
+    if: ${{ !startsWith(github.head_ref, 'release-please--') && github.actor != 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify required PR template sections
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          body = os.environ.get("PR_BODY") or ""
+          errors = []
+
+          m = re.search(r"(?m)^model-id:\s*(\S+)", body)
+          if not m:
+              errors.append("Missing `model-id:` line from .github/PULL_REQUEST_TEMPLATE.md.")
+          elif m.group(1).lower() == "unspecified":
+              errors.append("Replace `model-id: unspecified` with `human` or the model identifier used.")
+
+          for heading in (
+              "## Description",
+              "## Type of change",
+              "## Checklist",
+              "## How has this been tested?",
+          ):
+              if not re.search(rf"(?m)^{re.escape(heading)}\s*$", body):
+                  errors.append(f"Missing required section `{heading}`.")
+
+          if errors:
+              print("PR description does not match .github/PULL_REQUEST_TEMPLATE.md:")
+              for err in errors:
+                  print(f"  - {err}")
+              sys.exit(1)
+
+          print("PR template validation passed.")
+          PY
