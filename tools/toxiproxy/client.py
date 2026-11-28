@@ -12,6 +12,7 @@ Requires zero external dependencies (pure Python standard library).
 import json
 import logging
 import os
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -50,7 +51,7 @@ class ToxiproxyClient:
 
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=5.0) as resp:
+            with urllib.request.urlopen(req, timeout=15.0) as resp:
                 _ = resp.status
                 body = resp.read()
                 if body:
@@ -130,14 +131,27 @@ class ToxiproxyClient:
         return results
 
     def delete_toxic(self, proxy_name: str, toxic_name: str):
-        try:
-            self._request("DELETE", f"/proxies/{proxy_name}/toxics/{toxic_name}")
-        except ToxiproxyError as exc:
-            if exc.status != 404:
+        for attempt in range(3):
+            try:
+                self._request("DELETE", f"/proxies/{proxy_name}/toxics/{toxic_name}")
+                return
+            except ToxiproxyError as exc:
+                if exc.status == 404:
+                    return
+                if exc.status == 503 and attempt < 2:
+                    time.sleep(0.2)
+                    continue
+                raise
+            except TimeoutError:
+                if attempt < 2:
+                    time.sleep(0.2)
+                    continue
                 raise
 
     def clear_toxics(self, proxy_name: str):
         """Removes all toxics configured on a proxy."""
+        # Allow closing client connections to unwind active ToxicLink goroutines before DELETE /toxics.
+        time.sleep(0.05)
         try:
             toxics = self.list_toxics(proxy_name)
             for t in toxics:
