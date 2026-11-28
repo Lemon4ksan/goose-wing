@@ -19,24 +19,72 @@ jobs:
     name: Detect changes
     runs-on: ubuntu-latest
     outputs:
-      goose: ${{ github.event_name != 'pull_request' || steps.filter.outputs.goose == 'true' }}
+      c_shims: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.c_shims == 'true' }}
+      goose: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.goose == 'true' }}
+      fuzz: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.fuzz == 'true' }}
+      lit: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.lit == 'true' }}
+      oracles: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.oracles == 'true' }}
+      protocols: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.protocols == 'true' }}
     steps:
       - name: Checkout repository
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'workflow_dispatch'
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Filter file paths
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'workflow_dispatch'
         uses: dorny/paths-filter@v3
         id: filter
         with:
           filters: |
+            c_shims:
+              - 'shim/**'
+              - '.github/workflows/ci.yml'
             goose:
+              - '**/*.goose'
+              - 'shim/**'
+              - '*.build'
+              - '.github/workflows/ci.yml'
+            fuzz:
               - '**/*.goose'
               - 'shim/**'
               - '*.build'
               - 'tests/fuzz/**'
               - 'scripts/sancov_runner.py'
+              - '.github/workflows/ci.yml'
+            lit:
+              - '**/*.goose'
+              - 'shim/**'
+              - '*.build'
+              - 'tools/test_runner.py'
+              - 'scripts/verify_ct_asm.py'
+              - '.lit/baseline'
+              - '.github/workflows/ci.yml'
+            oracles:
+              - '**/*.goose'
+              - 'shim/**'
+              - '*.build'
+              - 'tests/fuzz/**'
+              - 'scripts/diff_fuzz.py'
+              - 'scripts/*_differential.py'
+              - '.github/workflows/ci.yml'
+            protocols:
+              - '**/*.goose'
+              - 'shim/**'
+              - '*.build'
+              - 'tools/h2spec.py'
+              - 'tools/h2spec/**'
+              - 'tools/autobahn.py'
+              - 'tools/autobahn/**'
+              - 'tools/grpc.py'
+              - 'tools/grpc/**'
+              - 'tools/tls.py'
+              - 'tools/tls/**'
+              - 'tools/http3.py'
+              - 'tools/http3/**'
+              - 'tools/toxiproxy.py'
+              - 'tools/toxiproxy/**'
               - '.github/workflows/ci.yml'
 
   lint-and-licensing:
@@ -79,6 +127,8 @@ jobs:
 
   c-shims:
     name: Compile C shims
+    needs: changes
+    if: needs.changes.outputs.c_shims == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -282,7 +332,7 @@ jobs:
   fuzz-ram-and-time:
     name: Fuzz constant-RAM and O(n) time budget
     needs: changes
-    if: needs.changes.outputs.goose == 'true'
+    if: needs.changes.outputs.fuzz == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -313,7 +363,7 @@ jobs:
   lit-verification:
     name: Native Goose LIT verification
     needs: changes
-    if: needs.changes.outputs.goose == 'true'
+    if: needs.changes.outputs.lit == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -365,7 +415,7 @@ jobs:
   differential-oracles:
     name: Differential oracle suites
     needs: changes
-    if: needs.changes.outputs.goose == 'true'
+    if: needs.changes.outputs.oracles == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -427,7 +477,7 @@ jobs:
   e2e-protocols:
     name: Protocol tests
     needs: changes
-    if: needs.changes.outputs.goose == 'true'
+    if: needs.changes.outputs.protocols == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
