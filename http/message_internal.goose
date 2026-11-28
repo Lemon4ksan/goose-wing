@@ -239,9 +239,8 @@ fn parse_problem_core_fields(
         let ch = json::peek(reader);
         if (ch >= '0' && ch <= '9') || ch == '-' {
             let num = json::read_number(reader);
-            let code = num as i32;
-            if num >= 100.0 && num <= 599.0 && code == num {
-                out.status = code;
+            if num >= 100.0 && num <= 599.0 && (num as! i32) == num {
+                out.status = num as! i32;
             }
         } else {
             json::skip(reader);

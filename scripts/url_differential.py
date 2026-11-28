@@ -385,14 +385,30 @@ def classify_case(
             go["frag"] == b"" and wg["frag"] == b"#"
         ):
             return "expected_spec_diff", "empty_query_or_hash_delimiter"
+    # 5b. RFC 3986 §5.2.2 / WHATWG empty or '#' relative reference drops base fragment (Go keeps base #frag)
+    if op == "R" and inp_b in (b"", b"#") and diffs == [f"frag:{go['frag']!r}!={wg_f!r}"] and wg_f == b"":
+        return "expected_spec_diff", "rfc3986_empty_ref_drops_base_frag"
     # 6. Non-special opaque schemes
     if sch_str not in SPECIAL_SCHEMES and all(
-        d.startswith(("path:", "host:", "auth:")) for d in diffs
+        d.startswith(("path:", "host:", "auth:", "frag:")) for d in diffs
     ):
         return "expected_spec_diff", "non_special_opaque_scheme"
     # 7. Percent-encoded credentials/paths
     if b"%" in raw and all(d.startswith(("auth:", "path:", "host:")) for d in diffs):
         return "expected_spec_diff", "percent_encoding_repr"
+    # 7a. WHATWG §4.3 embedded '@' in userinfo percent-encoded as '%40' (Go keeps raw '@')
+    if (
+        raw.count(b"@") >= 2
+        and all(d.startswith("auth:") for d in diffs)
+        and go["user"].replace(b"@", b"%40") == wg["user"]
+        and go["pass"].replace(b"@", b"%40") == wg["pass"]
+    ):
+        return "expected_spec_diff", "whatwg_userinfo_at_escape"
+    # 7b. WHATWG §3.5 decimal/partial IPv4 host normalization (e.g. '12' -> '0.0.0.12', '127.0.' -> '127.0.0.0')
+    if sch_str in SPECIAL_SCHEMES and all(d.startswith("host:") for d in diffs):
+        expected_ipv4 = _whatwg_expected_ipv4(go["host"])
+        if expected_ipv4 is not None and expected_ipv4 == wg["host"]:
+            return "expected_spec_diff", "whatwg_ipv4_host_normalization"
     # 8. Space / unescaped ASCII in path/query/frag
     if any(b < 0x21 or b >= 0x7F for b in raw) and all(
         d.startswith(("path:", "query:", "frag:", "auth:")) for d in diffs
@@ -400,6 +416,40 @@ def classify_case(
         return "expected_spec_diff", "whatwg_percent_encode_or_trim"
 
     return "unexpected_mismatch", "; ".join(diffs)
+
+
+def _whatwg_expected_ipv4(host_b: bytes) -> bytes | None:
+    if not host_b:
+        return None
+    parts = host_b.split(b".")
+    if parts[-1] == b"":
+        if len(parts) == 1:
+            return None
+        parts.pop()
+    if not parts or len(parts) > 4:
+        return None
+    nums: list[int] = []
+    for p in parts:
+        if not p:
+            return None
+        try:
+            if p.startswith((b"0x", b"0X")):
+                val = 0 if len(p) == 2 else int(p[2:], 16)
+            elif len(p) >= 2 and p.startswith(b"0"):
+                val = int(p, 8)
+            else:
+                val = int(p, 10)
+        except ValueError:
+            return None
+        if val < 0:
+            return None
+        nums.append(val)
+    if any(n > 255 for n in nums[:-1]) or nums[-1] >= 256 ** (5 - len(nums)):
+        return None
+    ipv4 = nums[-1]
+    for i, n in enumerate(nums[:-1]):
+        ipv4 += n * (256 ** (3 - i))
+    return str(ipaddress.IPv4Address(ipv4)).encode("ascii")
 
 
 def main() -> int:

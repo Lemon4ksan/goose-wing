@@ -257,7 +257,7 @@ inline fn parse_introspection_int_field(reader: json::Reader&, dst: i64&, had_er
     if core::is_ascii_digit(p) {
         let num = json::read_number(reader);
         if num >= 0.0 && num <= 9223372036854774784.0 {
-            dst = num as i64;
+            dst = num as! i64;
         } else {
             had_err = true;
         }
