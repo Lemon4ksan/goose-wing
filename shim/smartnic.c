@@ -4,6 +4,9 @@
 // Layer 4 SmartNIC & Hardware TLS Offload C Shim.
 // Enables hardware offload of TCP and TLS 1.2 / 1.3 crypto directly onto SmartNIC ASICs / DPUs
 // (e.g. NVIDIA BlueField, Mellanox ConnectX-6/7 Dx, Intel Mount Evans).
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 #include <stdint.h>
 #include <stddef.h>
 
@@ -27,6 +30,8 @@ _Static_assert(offsetof(wing_bytes_mut, len) == sizeof(uint8_t *), "wing_bytes_m
 #if defined(__linux__)
 #include <unistd.h>
 #include <string.h>
+#include <poll.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -230,6 +235,48 @@ int32_t wing_smartnic_recv_record(int64_t fd, wing_bytes_mut dst, wing_bytes_mut
     return (int32_t)n;
 }
 
+static uint64_t wing_smartnic_now_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec / 1000000L);
+}
+
+int32_t wing_smartnic_recv_record_timeout(int64_t fd, wing_bytes_mut dst, wing_bytes_mut out_rt, uint32_t timeout_ms) {
+    int32_t rc = wing_smartnic_recv_record(fd, dst, out_rt);
+    if (rc != -2 || timeout_ms == 0) {
+        return rc;
+    }
+    uint64_t start_ms = wing_smartnic_now_ms();
+    for (;;) {
+        uint64_t elapsed = wing_smartnic_now_ms() - start_ms;
+        if (elapsed >= (uint64_t)timeout_ms) {
+            return -2;
+        }
+        uint64_t rem = (uint64_t)timeout_ms - elapsed;
+        int wait_ms = rem > 2147483647ULL ? 2147483647 : (int)rem;
+        struct pollfd pfd;
+        pfd.fd = (int)fd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        int pr = poll(&pfd, 1, wait_ms);
+        if (pr == 0) {
+            return -2;
+        }
+        if (pr < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -errno;
+        }
+        rc = wing_smartnic_recv_record(fd, dst, out_rt);
+        if (rc != -2) {
+            return rc;
+        }
+    }
+}
+
 int32_t wing_smartnic_send_record(int64_t fd, wing_bytes_ro src, uint8_t record_type) {
     if (fd <= 0 || src.data == NULL || src.len <= 0) {
         return -EINVAL;
@@ -316,6 +363,11 @@ int32_t wing_smartnic_recv_record(int64_t fd, wing_bytes_mut dst, wing_bytes_mut
     return -1;
 }
 
+int32_t wing_smartnic_recv_record_timeout(int64_t fd, wing_bytes_mut dst, wing_bytes_mut out_rt, uint32_t timeout_ms) {
+    (void)timeout_ms;
+    return wing_smartnic_recv_record(fd, dst, out_rt);
+}
+
 int32_t wing_smartnic_send_record(int64_t fd, wing_bytes_ro src, uint8_t record_type) {
     (void)fd;
     (void)src;
@@ -354,6 +406,10 @@ int32_t wing_smartnic_recv_record(int64_t fd, wing_bytes_mut dst, wing_bytes_mut
         out_rt.data[0] = 0;
     }
     return -ENOSYS;
+}
+int32_t wing_smartnic_recv_record_timeout(int64_t fd, wing_bytes_mut dst, wing_bytes_mut out_rt, uint32_t timeout_ms) {
+    (void)timeout_ms;
+    return wing_smartnic_recv_record(fd, dst, out_rt);
 }
 int32_t wing_smartnic_send_record(int64_t fd, wing_bytes_ro src, uint8_t record_type) {
     (void)fd;

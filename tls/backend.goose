@@ -469,7 +469,7 @@ recursive fn endpoint_transport_recv_slice(
     guard fd > 0 && dst.len > 0 && tls_internal::endpoint_slot_is_ready(slot_id) else { return -1; }
     let slot .= tls_internal::g_backend_transport_slots[slot_id];
 
-    for _ in 64 {
+    for _ in 32768 {
         let nr, st = tls_internal::endpoint_try_read_buffered(slot, fd, dst);
         if nr > 0 { return (nr & 0x7FFFFFFF) as i32; }
         if st == TlsBackendStatus.Closed { return 0; }

@@ -585,22 +585,18 @@ def run_differential(
 
             mismatches = compare_verdicts(scenarios, res.stdout, verbose)
             if mismatches:
-                if proc.stdin:
-                    try:
-                        proc.stdin.close()
-                    except Exception:
-                        pass
-                try:
-                    proc.terminate()
-                    _, oracle_stderr = proc.communicate(timeout=3)
-                except Exception:
-                    proc.kill()
-                    _, oracle_stderr = proc.communicate(timeout=3)
-                if oracle_stderr and oracle_stderr.strip():
-                    print("ORACLE STDERR:\n" + oracle_stderr.strip())
                 print("DIFFERENTIAL MISMATCHES:")
                 for item in mismatches:
                     print(item)
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=3)
+                except Exception:
+                    proc.kill()
+                    proc.wait(timeout=3)
+                oracle_stderr = proc.stderr.read() if proc.stderr else ""
+                if oracle_stderr.strip():
+                    print("ORACLE STDERR:\n" + oracle_stderr.strip())
                 return 1
 
             # Run interactive live TLS 1.3 tests: OpenSSL <-> Wing TLS 1.3 Server

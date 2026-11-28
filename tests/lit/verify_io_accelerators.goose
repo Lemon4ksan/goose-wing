@@ -472,8 +472,7 @@ fn test_cross_platform_live_batch_and_accelerators(srv: server::HttpServer&) {
         assert(cfd > 0);
         assert(net::tcp_send(cfd, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") > 0);
         assert(server::serve_reactor(srv, lfd, 1) >= 1);
-        var resp: u8[..256] = [];
-        resp.resize(256, 0);
+        var resp: u8[1024] = [0; 1024];
         let nr = net::tcp_recv_slice(cfd, resp[..]);
         assert(nr > 0 && core::contains(resp[..nr], "ACCEL_OK"));
         net::tcp_close(cfd);

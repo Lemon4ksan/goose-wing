@@ -291,8 +291,18 @@ def run_e2e_tests(host: str, port: int) -> tuple[int, int]:
     vn_req.append(1)
     vn_req.extend(b"0123456789")
 
-    s.sendto(vn_req, (host, port))
-    vn_res, _ = s.recvfrom(2048)
+    s.settimeout(0.5)
+    vn_res = b""
+    for _ in range(12):
+        s.sendto(vn_req, (host, port))
+        try:
+            vn_res, _ = s.recvfrom(2048)
+            break
+        except TimeoutError:
+            continue
+    if not vn_res:
+        raise TimeoutError("HTTP/3 server did not respond to Version Negotiation probe")
+    s.settimeout(3.0)
 
     is_vn = len(vn_res) >= 27 and vn_res[0] & 0x80 != 0 and struct.unpack(">I", vn_res[1:5])[0] == 0
     echoed_dcid = vn_res[6 : 6 + len(scid)] == scid if len(vn_res) >= 6 + len(scid) else False

@@ -10,13 +10,14 @@ struct ChaosEchoStage {
     active:           bool = true,
     flaky_calls:      u64  = 0,
     flaky_post_calls: u64  = 0,
+    keepalive_calls:  u64  = 0,
 }
 
 fn handle_digest_chaos_stage(req: const http::Request&, res: http::Response&) -> wire::StageVerdict {
-    http::set_header(res, "Connection", "keep-alive");
     let auth_hdr = req.header("Authorization");
     if auth_hdr.len == 0 {
         res.status_code = 401;
+        http::set_header(res, "Connection", "close");
         http::set_header(
             res,
             "WWW-Authenticate",
@@ -26,6 +27,7 @@ fn handle_digest_chaos_stage(req: const http::Request&, res: http::Response&) ->
         res.body.append("NEED_DIGEST");
         return wire::StageVerdict.ShortCircuit { status_code: 401 };
     }
+    http::set_header(res, "Connection", "keep-alive");
     let ok_d = find(auth_hdr, "username=\"admin\"") >= 0 &&
         find(auth_hdr, "realm=\"chaos-realm\"") >= 0 &&
         find(auth_hdr, "algorithm=SHA-256") >= 0 &&
@@ -110,6 +112,17 @@ fn handle_proxy_up_chaos_stage(req: const http::Request&, res: http::Response&) 
     return wire::StageVerdict.ShortCircuit { status_code: 400 };
 }
 
+fn handle_keepalive_chaos_stage(stage: ChaosEchoStage&, res: http::Response&) -> wire::StageVerdict {
+    stage.keepalive_calls = core::add_sat_u64(stage.keepalive_calls, 1);
+    if (stage.keepalive_calls & 1) == 1 {
+        http::set_header(res, "Connection", "keep-alive");
+    } else {
+        http::set_header(res, "Connection", "close");
+    }
+    res.body.append("KEEPALIVE_OK");
+    return wire::StageVerdict.ShortCircuit { status_code: 200 };
+}
+
 fn server::on_server_stage(
     stage: ChaosEchoStage&,
     phase: wire::ServerHookPhase,
@@ -161,8 +174,7 @@ fn server::on_server_stage(
     } else if req.url[..] == "/proxy-up" {
         return handle_proxy_up_chaos_stage(req, res);
     } else if req.url[..] == "/keepalive" {
-        http::set_header(res, "Connection", "keep-alive");
-        res.body.append("KEEPALIVE_OK");
+        return handle_keepalive_chaos_stage(stage, res);
     } else {
         res.body.append("OK");
     }
@@ -180,6 +192,12 @@ fn main() {
 
     var server = server::new_http_server("0.0.0.0", port);
     let _ = server.server_name.try_set("goose-chaos/1.0");
+    let ws_behavior = realtime::WsBehavior {
+        max_payload_length: 16777216,
+        idle_timeout_s:     30,
+        ..
+    };
+    let _ = server::add_ws_route(server, "/ws", ws_behavior);
     server::add_static_get_route(server, "/ping", "text/plain", "OK", 101);
     server::add_static_route(server.pipeline.router, "POST", "/echo", "text/plain", "ECHO:H2ClientSlicedPayload_777", 202);
     server::add_static_route(server.pipeline.router, "POST", "/h2-large", "text/plain", "H2_LARGE_MULTIFRAME_OK", 203);

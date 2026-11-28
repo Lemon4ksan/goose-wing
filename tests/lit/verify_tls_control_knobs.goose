@@ -538,7 +538,15 @@ fn test_openssl_tickets_and_keylog(cpath: const u8[:], kpath: const u8[:], trust
     var out_psk: u8[..48]  = [];
     var out_age: u32       = 0;
     var out_cs:  u16       = 0;
-    let ossl_srv_suppressed = !tls::lookup_session_ticket_full("ossl-no-tkt.test", out_tkt, out_psk, out_age, out_cs);
+    let pure_pol_cfg = tls::ClientHandshakeConfig {
+        use_system_roots: pure_cli_yes.use_system_roots,
+        trust_store:      trust,
+        ..
+    };
+    let pure_pol_hash = tls_internal::compute_client_policy_hash(pure_pol_cfg);
+    let ossl_srv_suppressed = !tls::lookup_session_ticket_full(
+        "ossl-no-tkt.test", out_tkt, out_psk, out_age, out_cs, 0, 0, 0, 0, pure_pol_hash,
+    );
 
     // 2d. OpenSSL server (tickets enabled) -> PureGoose client (tickets disabled vs enabled).
     var ossl_srv_yes_tkt = ossl_srv_no_tkt;
@@ -554,7 +562,7 @@ fn test_openssl_tickets_and_keylog(cpath: const u8[:], kpath: const u8[:], trust
     tls::tls_endpoint_close(cli2);
     tls::tls_endpoint_close(srv2);
     let pure_backend_skip_store = !tls::lookup_session_ticket_full(
-        "ossl-no-tkt.test", out_tkt, out_psk, out_age, out_cs,
+        "ossl-no-tkt.test", out_tkt, out_psk, out_age, out_cs, 0, 0, 0, 0, pure_pol_hash,
     );
 
     var srv3, _ = tls::tls_endpoint_open(ossl_srv_yes_tkt);
@@ -564,7 +572,7 @@ fn test_openssl_tickets_and_keylog(cpath: const u8[:], kpath: const u8[:], trust
     tls::tls_endpoint_close(cli3);
     tls::tls_endpoint_close(srv3);
     let pure_backend_did_store = tls::lookup_session_ticket_full(
-        "ossl-no-tkt.test", out_tkt, out_psk, out_age, out_cs,
+        "ossl-no-tkt.test", out_tkt, out_psk, out_age, out_cs, 0, 0, 0, 0, pure_pol_hash,
     );
     tls::clear_session_tickets();
 

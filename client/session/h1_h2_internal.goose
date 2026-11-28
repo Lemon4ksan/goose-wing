@@ -46,6 +46,7 @@ fn dispatch_pooled_h1_hop(
     var hop_req = http::Request { .. };
     let _ = hop_req.method.try_set(curr_method);
     http::copy_headers(ctx.headers, hop_req.headers);
+    hop_req.body_prechunked = ctx.body_prechunked;
     hop_req.body.append(ctx.body[..]);
 
     let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);

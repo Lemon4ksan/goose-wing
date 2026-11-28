@@ -1,9 +1,9 @@
 # goose-sloc baseline v1 bce_measured=0
-TOTAL 428 169187 120080 1361333 14974 -1 1610
+TOTAL 428 169257 120132 1361849 14975 -1 1613
 DIR . 4 396 401 2160 31 0
 DIR auth 23 5760 4579 47324 616 33
 DIR cli 6 2362 1826 19185 119 30
-DIR client 27 10028 6232 76961 498 36
+DIR client 27 10031 6233 76981 498 36
 DIR cookie 9 4075 2789 33248 437 32
 DIR core 68 23619 17776 214971 2461 237
 DIR dns 5 938 786 7431 159 5
@@ -13,14 +13,14 @@ DIR h1 5 1502 1176 12301 201 28
 DIR http 54 18002 13809 144585 2325 171
 DIR http2 9 5632 3460 47166 414 49
 DIR http3 10 6908 4758 50393 439 74
-DIR net 42 16511 11610 132088 1261 161
+DIR net 42 16523 11617 132200 1261 161
 DIR proxy 7 5285 3334 38229 254 66
 DIR quic 17 9873 6774 75831 879 115
 DIR realtime 10 4621 3311 36276 557 47
 DIR rfc 7 1488 1102 12216 204 0
 DIR security 15 4893 3529 38784 429 45
 DIR server 37 18947 11895 143681 1048 149
-DIR tls 45 19581 14884 162226 1724 202
+DIR tls 45 19636 14928 162610 1725 205
 DIR wire 9 2965 1944 21936 338 22
 FILE core.goose 12 12 56 3 100 -1 0
 FILE rfc.goose 10 10 44 4 100 -1 0
@@ -336,7 +336,7 @@ FILE tls/server_handshake.goose 93 81 696 20 87 -1 0
 FILE tls/session.goose 565 486 4575 38 86 -1 4
 FILE tls/session_codec_internal.goose 685 559 5742 58 82 -1 9
 FILE tls/session_internal.goose 517 392 4201 25 76 -1 11
-FILE tls/session_slot_internal.goose 728 546 5792 16 75 -1 13
+FILE tls/session_slot_internal.goose 783 590 6176 17 75 -1 16
 FILE tls/session_wire_internal.goose 593 438 4415 59 74 -1 1
 FILE tls/stream.goose 215 201 1935 24 93 -1 1
 FILE tls/ticket.goose 228 152 1609 21 67 -1 0
@@ -356,10 +356,10 @@ FILE wire/service.goose 189 95 1328 31 50 -1 1
 FILE wire/types.goose 18 6 79 6 33 -1 0
 FILE client/session/dns_dial_internal.goose 825 540 6586 8 65 -1 2
 FILE client/session/exec.goose 83 63 674 7 76 -1 5
-FILE client/session/h1_h2_internal.goose 533 362 4117 3 68 -1 4
+FILE client/session/h1_h2_internal.goose 534 363 4125 3 68 -1 4
 FILE client/session/h3_internal.goose 118 108 1068 7 92 -1 0
 FILE client/session/hop_auth_internal.goose 648 433 5075 12 67 -1 0
-FILE client/session/hop_context_internal.goose 584 315 4348 26 54 -1 0
+FILE client/session/hop_context_internal.goose 586 315 4360 26 54 -1 0
 FILE client/session/hop_dispatch_internal.goose 424 245 3369 4 58 -1 3
 FILE client/session/mock.goose 29 17 261 4 59 -1 0
 FILE client/session/pipeline_internal.goose 632 286 4100 5 45 -1 0
@@ -447,7 +447,7 @@ FILE net/driver/l2_frame.goose 297 234 2586 31 79 -1 4
 FILE net/driver/manager.goose 349 269 2190 11 77 -1 0
 FILE net/driver/rio.goose 196 109 1374 24 56 -1 0
 FILE net/driver/rio_hs_internal.goose 246 199 1896 12 81 -1 2
-FILE net/driver/smartnic.goose 152 63 967 9 41 -1 0
+FILE net/driver/smartnic.goose 164 70 1079 9 43 -1 0
 FILE net/driver/types.goose 87 38 472 14 44 -1 0
 FILE net/driver/uring.goose 396 284 2951 46 72 -1 1
 SCOPE L0_Plaintext_GET bench 41402 28750 9920 2 410707840

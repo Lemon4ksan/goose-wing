@@ -21,6 +21,7 @@ import .session_internal;
 import .session;
 import net.tcp;
 import net.transport;
+import net.driver.smartnic;
 
 inline fn prepare_cipher_aes_key(cipher_suite: u16, key: const u8[:], ctx: core::AesGcmKey&) {
     if cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256 || cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
@@ -476,13 +477,39 @@ fn tls_seal_app_data_direct<B>(
     return true;
 }
 
+fn ktls_write_record_all(fd: i64, inner_type: u8, payload: const u8[:]) -> bool {
+    guard fd > 0 && payload.len > 0 else { return false; }
+    var total_sent: i64 = 0;
+    var retries:    i32 = 0;
+    while total_sent < payload.len {
+        let sent = net_internal::smartnic_send_record(fd, payload[total_sent..], inner_type);
+        if sent > 0 {
+            total_sent = core::add_sat_i64(total_sent, sent);
+            retries = 0;
+            continue;
+        }
+        guard sent == -2 && retries < 2000 else { return false; }
+        retries = core::add_sat_i64(retries, 1) as i32;
+        if retries > 64 {
+            sleep_ms(1);
+        }
+    }
+    return true;
+}
+
 // Seals and sends an RFC 8446 Section 6.2 encrypted fatal alert on an active TLS 1.3 cipher slot.
 fn send_encrypted_fatal_alert(fd: i64, slot_idx: u16, alert: tls::Alert) {
     let idx = slot_idx as i64;
     guard fd > 0 && idx >= 0 && idx < tls::g_tls_cipher_slots.len else { return; }
     let slot .= tls::g_tls_cipher_slots[idx];
-    guard slot.in_use && !tls::aead_exceeds_hard_limit(slot.cipher_suite, slot.tx_seq) else { return; }
+    guard slot.in_use else { return; }
     let alert_data: u8[2] = [2, tls::alert_to_u8(alert)];
+    if slot.ktls_tx_active {
+        let _ = net_internal::smartnic_send_record(fd, alert_data[..], rfc::TLS_CONTENT_ALERT);
+        slot.peer_closed = true;
+        return;
+    }
+    guard !tls::aead_exceeds_hard_limit(slot.cipher_suite, slot.tx_seq) else { return; }
     var rec_buf: u8[64] = [0; 64];
     let klen = slot.key_len as i64;
     let sealed_len, _, ok_seal = record_seal_prepared_into(
@@ -514,6 +541,9 @@ recursive fn send_encrypted_record_raw(
     guard idx >= 0 && idx < tls::g_tls_cipher_slots.len else { return false; }
     guard tls::g_tls_cipher_slots[idx].in_use else { return false; }
     guard payload.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else { return false; }
+    if tls::g_tls_cipher_slots[idx].ktls_tx_active {
+        return ktls_write_record_all(fd, inner_type, payload);
+    }
     guard !tls::aead_exceeds_hard_limit(
         tls::g_tls_cipher_slots[idx].cipher_suite, tls::g_tls_cipher_slots[idx].tx_seq,
     ) else {
@@ -552,6 +582,10 @@ recursive fn send_encrypted_record(
     let idx = slot_idx as i64;
     guard idx >= 0 && idx < tls::g_tls_cipher_slots.len && tls::g_tls_cipher_slots[idx].in_use else {
         return false;
+    }
+    if tls::g_tls_cipher_slots[idx].ktls_tx_active {
+        guard payload.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else { return false; }
+        return ktls_write_record_all(fd, inner_type, payload);
     }
     guard !tls::aead_exceeds_hard_limit(
         tls::g_tls_cipher_slots[idx].cipher_suite, tls::g_tls_cipher_slots[idx].tx_seq,
@@ -611,6 +645,9 @@ fn dispatch_post_handshake_record(slot_idx: u16, hs_bytes: const u8[:]) -> tls::
                 return classify_nst_failure_alert(msg_body);
             }
         } else if msg_type == rfc::TLS_HS_KEY_UPDATE {
+            guard !tls::g_tls_cipher_slots[idx].ktls_rx_active else {
+                return tls::Alert.UnexpectedMessage;
+            }
             // RFC 8446 Section 5.1: Record Layer - KeyUpdate MUST end on a record boundary.
             guard core::add_sat_i64(off, full_msg_len) == hs_bytes.len else {
                 return tls::Alert.UnexpectedMessage;
@@ -630,6 +667,24 @@ fn dispatch_post_handshake_record(slot_idx: u16, hs_bytes: const u8[:]) -> tls::
     return tls::Alert.CloseNotify;
 }
 
+// Reads a kernel-decrypted TLS 1.3 record from a Linux kTLS socket with bounded timeout.
+fn ktls_read_app_record(
+    fd:             i64,
+    idx:            i64,
+    timeout_ms:     u32,
+    plain_dec:      u8[:],
+    out_inner_type: u8&,
+) -> i64 {
+    let recvd, rtype = net_internal::smartnic_recv_record_timeout(fd, plain_dec, timeout_ms);
+    if recvd == -2 { return -2; }
+    guard recvd > 0 else {
+        if recvd < 0 { tls::g_tls_cipher_slots[idx].peer_closed = true; }
+        return -1;
+    }
+    out_inner_type = rtype;
+    return recvd;
+}
+
 // Reads and decrypts a single application-layer TLS 1.3 ciphertext record from `fd`.
 // Returns: >0 (decrypted payload length in `plain_dec`), -2 (timeout), -1 (error or unclean TCP EOF).
 fn tls_read_and_unseal_app_record(
@@ -640,6 +695,9 @@ fn tls_read_and_unseal_app_record(
     plain_dec:      u8[:],
     out_inner_type: u8&,
 ) -> i64 {
+    if tls::g_tls_cipher_slots[idx].ktls_rx_active {
+        return ktls_read_app_record(fd, idx, timeout_ms, plain_dec, out_inner_type);
+    }
     var hdr_buf: u8[5] = [0; 5];
     let hdr_st = tls_read_exact_status(fd, hdr_buf[..], timeout_ms);
     if hdr_st == -2 { return -2; }

@@ -15,6 +15,12 @@ extern fn native_smartnic_probe_ktls() -> i32 = "wing_smartnic_probe_ktls";
 extern fn native_smartnic_enable_ktls(fd: i64) -> i32 = "wing_smartnic_enable_ktls";
 extern fn native_smartnic_shutdown(fd: i64, how: i32) -> i32 = "wing_tcp_shutdown";
 extern fn native_smartnic_recv_record(fd: i64, dst: u8[:], out_rt: u8[:]) -> i32 = "wing_smartnic_recv_record";
+extern fn native_smartnic_recv_record_timeout(
+    fd:         i64,
+    dst:        u8[:],
+    out_rt:     u8[:],
+    timeout_ms: u32,
+) -> i32 = "wing_smartnic_recv_record_timeout";
 extern fn native_smartnic_send_record(fd: i64, src: const u8[:], record_type: u8) -> i32 = "wing_smartnic_send_record";
 extern fn native_smartnic_set_hardware_tls(
     fd:          i64,
@@ -57,6 +63,13 @@ fn smartnic_recv_record(fd: i64, dst: u8[:]) -> i32, u8 {
     guard fd > 0 && dst.len > 0 else { return -22, 0; }
     var rt_buf: u8[1] = [0];
     let n = native_smartnic_recv_record(fd, dst, rt_buf[..]);
+    return n, rt_buf[0];
+}
+
+fn smartnic_recv_record_timeout(fd: i64, dst: u8[:], timeout_ms: u32) -> i32, u8 {
+    guard fd > 0 && dst.len > 0 else { return -22, 0; }
+    var rt_buf: u8[1] = [0];
+    let n = native_smartnic_recv_record_timeout(fd, dst, rt_buf[..], timeout_ms);
     return n, rt_buf[0];
 }
 
