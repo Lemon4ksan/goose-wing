@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/Lemon4ksan/goose-wing/compare/v0.1.0...v0.1.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **auth,http,fuzz:** guard float narrowing casts in debug builds and refine fuzzer tooling ([#3](https://github.com/Lemon4ksan/goose-wing/issues/3)) ([4936d2f](https://github.com/Lemon4ksan/goose-wing/commit/4936d2f17bba904ac802a71cc9ecdc763317393e))
+
 ## 0.1.0 (2026-11-28)
 
 
