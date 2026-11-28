@@ -153,6 +153,7 @@ struct H2UpSlot {
     hpack_enc_min_sz:            u64                 = rfc::HPACK_DEFAULT_MAX_DYN_SIZE,
     stream_ids:                  u32[128]            = [0; 128],
     stream_is_head:              u8[128]             = [0; 128],
+    stream_interim_cnt:          u8[128]             = [0; 128],
     stream_unclaimed_id:         u32[128]            = [0; 128],
     stream_unclaimed_rx:         i64[128]            = [0; 128],
     local_rst_ring:              u32[128]            = [0; 128],
@@ -584,6 +585,7 @@ fn clear_up_stream_meta(slot: H2UpSlot&, s_idx: i64) {
     if s_idx >= 0 && s_idx < 128 {
         slot.stream_ids[s_idx] = 0;
         slot.stream_is_head[s_idx] = 0;
+        slot.stream_interim_cnt[s_idx] = 0;
         slot.stream_unclaimed_id[s_idx] = 0;
         slot.stream_unclaimed_rx[s_idx] = 0;
     }
@@ -966,6 +968,7 @@ fn open_up_stream_with_hdrs(
     }
     slot.next_client_sid = core::add_sat_u32(slot.next_client_sid, 2);
     slot.stream_is_head[s_idx] = if method == "HEAD" { 1 } else { 0 };
+    slot.stream_interim_cnt[s_idx] = 0;
     committed = true;
     return sid, true;
 }
@@ -1006,6 +1009,11 @@ fn h2_upstream_open_stream(
     }
     let end_stream = (stream_end == H2UpstreamStreamEnd.EndStream);
     if header_filter == H2UpstreamHeaderFilter.DirectHeaders {
+        guard proxy_internal::has_consistent_framing_headers_slices(
+            in_headers, in_headers.entries[..0], "",
+        ) else {
+            return 0, false;
+        }
         return open_up_stream_with_hdrs(
             slot, sid, method, scheme, authority, path, in_headers, in_headers, end_stream, header_filter,
         );
@@ -1445,10 +1453,13 @@ fn emit_up_resp_headers_event(
         return fail_up_conn(slot, rfc::H2_ERR_PROTOCOL_ERROR);
     }
     let is_interim = pseudo.status >= 100 && pseudo.status < 200;
-    if is_interim && end_stream {
-        return fail_up_conn(slot, rfc::H2_ERR_PROTOCOL_ERROR);
-    }
-    if !is_interim {
+    if is_interim {
+        if end_stream || slot.stream_interim_cnt[s_idx] >= 5
+            || http::has_header(g_h2_up_headers[hdr_idx].hdr, "content-length") {
+            return fail_up_conn(slot, rfc::H2_ERR_PROTOCOL_ERROR);
+        }
+        slot.stream_interim_cnt[s_idx] = slot.stream_interim_cnt[s_idx] + 1;
+    } else {
         st.headers_received = true;
         st.status_code = pseudo.status;
         guard apply_up_resp_content_length(slot, s_idx, pseudo.status, hdr_idx, end_stream) else {

@@ -886,13 +886,17 @@ fn try_rewrite_upstream_url<B>(
         return url_val, true;
     }
     let suffix = url_val[backend_url_prefix.len..];
-    guard !(public_url_prefix.len == 0 && core::starts_with(suffix, "//")) else {
-        return "", false;
-    }
     var committed = false;
     defer if !committed { out.clear(); };
     guard out.try_set(public_url_prefix) else { return "", false; }
     guard out.try_append(suffix) else { return "", false; }
+    let has_scheme = core::find(out[..], "://") >= 0;
+    if !has_scheme {
+        guard !core::starts_with(out[..], "//") && !core::starts_with(out[..], "/\\")
+            && !core::starts_with(out[..], "\\/") && !core::starts_with(out[..], "\\\\") else {
+            return "", false;
+        }
+    }
     committed = true;
     return out[..], true;
 }

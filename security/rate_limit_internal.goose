@@ -11,10 +11,10 @@ import rfc.http;
 const GCRA_MAX_CLOCK_DRIFT_NS: u64 = 5000000000; // 5.0 seconds
 const SLOT_RETRY_AFTER:        u8  = 60;
 
-// Clamps TAT if system clock drifted or jumped backward into the past.
-inline fn clamp_clock_drift(tat_old: u64, now_ns: u64, limit_window: u64) -> u64 {
+// Clamps TAT if system clock drifted or jumped backward into the past, preserving explicit penalty floors.
+inline fn clamp_clock_drift(tat_old: u64, now_ns: u64, limit_window: u64, floor_tat: u64 = 0) -> u64 {
     let drift_threshold = core::add_sat_u64(limit_window, GCRA_MAX_CLOCK_DRIFT_NS);
-    let max_future = core::add_sat_u64(now_ns, drift_threshold);
+    let max_future = core::ct_max_u64(core::add_sat_u64(now_ns, drift_threshold), floor_tat);
     guard tat_old > max_future else { return tat_old; }
     return core::add_sat_u64(now_ns, limit_window);
 }
@@ -40,6 +40,7 @@ fn eval_gcra_config(
     initial_tat: u64,
     cost:        u64,
     now_ns:      u64,
+    floor_tat:   u64 = 0,
 ) -> security::GcraDecision, u64 {
     let t = config.emission_interval_ns;
     let tau = config.tau_ns;
@@ -60,7 +61,7 @@ fn eval_gcra_config(
         }, initial_tat;
     }
 
-    let tat_old = clamp_clock_drift(initial_tat, now_ns, limit_window);
+    let tat_old = clamp_clock_drift(initial_tat, now_ns, limit_window, floor_tat);
     let tat_base = core::ct_max_u64(now_ns, tat_old);
     let tat_new = core::add_sat_u64(tat_base, delta);
     let t_allow = core::sub_sat_u64(tat_new, limit_window);

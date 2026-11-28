@@ -348,6 +348,13 @@ fn process_h2_non_stream_frame<B>(
         state.saw_goaway = true;
         return H2RecvStatus.Continue, true;
     }
+    if hdr.stream_id != stream_id &&
+        (hdr.frame_type == rfc::H2_FRAME_HEADERS
+            || hdr.frame_type == rfc::H2_FRAME_PUSH_PROMISE
+            || hdr.frame_type == rfc::H2_FRAME_CONTINUATION) {
+            // RFC 9113 §4.3: never silently drop HPACK-bearing frames on other streams (would desync dynamic table).
+            return H2RecvStatus.Error, true;
+        }
     if hdr.frame_type == rfc::H2_FRAME_WINDOW_UPDATE || hdr.stream_id != stream_id {
         return H2RecvStatus.Continue, true;
     }

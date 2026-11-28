@@ -149,7 +149,7 @@ inline fn is_ascii_hex_str(s: const u8[:]) -> bool {
 
 fn append_escaped_digest_param<B>(out: B&, val: const u8[:]) -> bool {
     for b in val {
-        guard b != '\r' && b != '\n' && b != 0 else { return false; }
+        guard (b >= 0x20 && b != 0x7F) || b == '\t' else { return false; }
         if b == '"' || b == '\\' {
             guard out.try_push('\\' as u8) else { return false; }
         }

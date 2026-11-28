@@ -187,7 +187,7 @@ inline fn decode_base64_into<B>(trimmed: const u8[:], out: B&) -> bool {
     if (trimmed.len & 3) == 0 {
         return core::base64_decode(trimmed, out) || core::base64url_decode(trimmed, out);
     }
-    guard (trimmed.len & 3) != 1 else { return false; }
+    guard (trimmed.len & 3) != 1 && !trimmed.contains_byte('=') else { return false; }
     var padded: u8[..1400] = [];
     guard padded.try_set(trimmed) else { return false; }
     while (padded.len & 3) != 0 {
@@ -388,6 +388,8 @@ inline fn decode_web_trailer_frame(
     if !is_comp {
         if !grpc::parse_web_trailers(frame_payload, out_resp.status, out_resp.message) {
             out_resp.status = grpc::StatusCode.Unknown;
+            out_resp.payload.clear();
+            return false;
         }
         return true;
     }
@@ -398,6 +400,8 @@ inline fn decode_web_trailer_frame(
     guard ok_gz else { return false; }
     if !grpc::parse_web_trailers(tr_decomp[..], out_resp.status, out_resp.message) {
         out_resp.status = grpc::StatusCode.Unknown;
+        out_resp.payload.clear();
+        return false;
     }
     return true;
 }

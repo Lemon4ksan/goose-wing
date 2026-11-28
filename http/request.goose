@@ -242,7 +242,11 @@ fn json<T>(req: Request&, payload: const T&) {
 
 // Attaches RFC 7617 HTTP Basic authentication credentials marked sensitive and wipes stack temporaries.
 fn basic_auth(req: Request&, user: const u8[:], pass: const u8[:]) -> bool {
-    guard user.len > 0 && !user.contains_byte(':') else { return false; }
+    guard user.len > 0 && !user.contains_byte(':')
+        && core::swar_find_ctl(user) == user.len && !user.contains_byte(0x7F) && user.validate_utf8()
+        && core::swar_find_ctl(pass) == pass.len && !pass.contains_byte(0x7F) && pass.validate_utf8() else {
+        return false;
+    }
     var cred: u8[..512] = [];
     defer core::secure_zeroize_slice(cred[..]);
     guard cred.try_append(user) && cred.try_push(':') && cred.try_append(pass) else { return false; }

@@ -129,9 +129,10 @@ fn prepare_method_dispatch(
     path_buf.append(ctx.method[..]);
     let method_idx, ok_method = d.find_method(path_buf[..]);
     if !ok_method {
-        var err_msg: u8[..256] = [];
-        err_msg.append("Method not found: ");
-        err_msg.append(path_buf[..]);
+        var err_msg: u8[..288] = [];
+        if !err_msg.try_append("Method not found: ") || !err_msg.try_append(path_buf[..]) {
+            let _ = err_msg.try_set("Method not found");
+        }
         build_trailers_only_response(grpc::StatusCode.Unimplemented, err_msg[..], ctx, res);
         return 0, false;
     }
@@ -332,6 +333,14 @@ fn drain_h2_frames<
     var cursor: i64 = 0;
     var is_running = true;
     while is_running {
+        if core::add_sat_i64(cursor, rfc::H2_FRAME_HEADER_LEN) <= in_buf.len {
+            let raw_len: u32 = ((in_buf[cursor] as u32) << 16)
+                | ((in_buf[cursor + 1] as u32) << 8)
+                | (in_buf[cursor + 2] as u32);
+            if raw_len > rfc::H2_DEFAULT_MAX_FRAME_SIZE {
+                return false;
+            }
+        }
         let hdr, payload, ok_frame = wire::read_wire_h2_frame(in_buf[..], cursor);
         if !ok_frame {
             break;
@@ -387,6 +396,7 @@ fn serve_h2_connection<
     }
 
     var is_running = true;
+    var idle_ticks: u32 = 0;
     while is_running {
         is_running = drain_h2_frames(
             conn_fd,
@@ -408,8 +418,13 @@ fn serve_h2_connection<
         chunk.clear();
         let recvd = net::tcp_recv(conn_fd, chunk, 4096, 50);
         if recvd == -2 {
+            idle_ticks = core::add_sat_u32(idle_ticks, 1);
+            if idle_ticks >= 200 {
+                break;
+            }
             continue;
         }
+        idle_ticks = 0;
         let next_in = core::add_sat_i64(in_buf.len, recvd as i64);
         guard next_in <= in_buf.cap && server::try_append_recv_chunk(recvd, chunk, in_buf) else {
             break;

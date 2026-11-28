@@ -32,7 +32,13 @@ inline fn is_same_origin_session_hop(
     if ctx.url_chain.len <= 1 {
         return true;
     }
-    return core::is_same_origin(core::origin_from_url(ctx.url_chain[0]), core::origin_from_url(current_url));
+    let initial_origin = core::origin_from_url(ctx.url_chain[0]);
+    for i in 1..ctx.url_chain.len {
+        guard core::is_same_origin(initial_origin, core::origin_from_url(ctx.url_chain[i])) else {
+            return false;
+        }
+    }
+    return core::is_same_origin(initial_origin, core::origin_from_url(current_url));
 }
 
 inline fn is_secure_dpop_hop_url(url_val: const core::Url&) -> bool {

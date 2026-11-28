@@ -400,11 +400,24 @@ inline fn is_ipv6_local_or_multicast_prefix(eff_ip: const u8[:]) -> bool {
         core::starts_with(eff_ip, "ff") {
         return true;
     }
-    // Benchmarking (RFC 5180), Documentation (RFC 3849), Teredo (RFC 4380), Discard-Only (RFC 6666)
+    // Benchmarking (RFC 5180), Documentation (RFC 3849), Teredo (RFC 4380), Discard-Only (RFC 6666),
+    // IETF Protocol Assignments (RFC 6890: 2001::/23 -> 2001:0::..2001:1ff::)
     if core::starts_with(eff_ip, "2001:2::") || core::starts_with(eff_ip, "2001:2:0:") ||
         core::starts_with(eff_ip, "2001:db8:") || core::starts_with(eff_ip, "2001:0:") ||
-        core::starts_with(eff_ip, "2001::") || core::starts_with(eff_ip, "100::") {
+        core::starts_with(eff_ip, "2001:1:") || core::starts_with(eff_ip, "2001::") ||
+        core::starts_with(eff_ip, "100::") {
         return true;
+    }
+    // RFC 6890: 2001::/23 spans 2001:0000::..2001:01ff:: (compressed 2001:10:..2001:1ff:)
+    if core::starts_with(eff_ip, "2001:") {
+        let rest = eff_ip[5..];
+        let seg_end = rest.index_of_byte(':');
+        if seg_end > 0 && seg_end <= 3 {
+            let seg_val, ok_seg = rest[..seg_end].parse_u64_hex();
+            if ok_seg && seg_val <= 0x1FF {
+                return true;
+            }
+        }
     }
     // ORCHIDv2 (RFC 7343: 2001:20::/28)
     return core::starts_with(eff_ip, "2001:2") && eff_ip.len >= 8 &&
@@ -417,8 +430,11 @@ fn is_private_or_reserved_ipv6(eff_ip: const u8[:]) -> bool {
     }
     if core::starts_with(eff_ip, "::ffff:") || core::starts_with(eff_ip, "0:0:0:0:0:ffff:") {
         let raw_suffix = if core::starts_with(eff_ip, "::ffff:") { eff_ip[7..] } else { eff_ip[15..] };
-        let suffix = if core::starts_with(raw_suffix, "0:") { raw_suffix[2..] } else { raw_suffix };
-        return is_private_ipv4(suffix) || is_private_ipv4_mapped_hex(suffix);
+        // RFC 6890: IPv4-translated SIIT prefix (::ffff:0:0:0/96) is non-globally reachable.
+        if core::starts_with(raw_suffix, "0:") {
+            return true;
+        }
+        return is_private_ipv4(raw_suffix) || is_private_ipv4_mapped_hex(raw_suffix);
     }
     if eff_ip.contains_byte('.') {
         let last_colon = eff_ip.last_index_of_byte(':');
@@ -443,10 +459,11 @@ fn is_private_or_reserved_ipv6(eff_ip: const u8[:]) -> bool {
 }
 
 inline fn is_forbidden_ipv6(host: const u8[:]) -> bool {
-    let h = if host.len >= 2 && host[0] == '[' && host[host.len - 1] == ']' {
-        host[1..^1]
+    let trimmed = host.trim_end_byte('.');
+    let h = if trimmed.len >= 2 && trimmed[0] == '[' && trimmed[trimmed.len - 1] == ']' {
+        trimmed[1..^1]
     } else {
-        host
+        trimmed
     };
     if h == "::1" || h == "::" || h == "0:0:0:0:0:0:0:1" || h == "0:0:0:0:0:0:0:0" { return true; }
     if core::starts_with(h, "::ffff:") || core::starts_with(h, "0:0:0:0:0:ffff:") { return true; }
@@ -486,10 +503,11 @@ inline fn is_ipv4_numeric_or_hex_segment(seg: const u8[:]) -> bool {
 }
 
 inline fn has_hex_prefix(host: const u8[:]) -> bool {
-    guard host.len >= 3 else { return false; }
+    let trimmed = host.trim_end_byte('.');
+    guard trimmed.len >= 3 else { return false; }
     var saw_hex = false;
     var seg_count: i64 = 0;
-    var tok = core::make_byte_tokenizer(host, '.');
+    var tok = core::make_byte_tokenizer(trimmed, '.');
     loop {
         let seg, ok = core::token_next(tok);
         guard ok else { break; }

@@ -45,7 +45,7 @@ fn is_private_or_reserved_ip(ip_str: const u8[:]) -> bool {
         return true;
     }
 
-    let clean_ip = security_internal::strip_ssrf_ip_brackets_and_zone(ip_str).trim_end_byte('.');
+    let clean_ip = security_internal::strip_ssrf_ip_brackets_and_zone(ip_str.trim_end_byte('.')).trim_end_byte('.');
     guard clean_ip.len <= 256 else { return true; }
 
     var lower_buf: u8[..256] = [];
@@ -137,10 +137,11 @@ fn is_cloud_metadata_or_reserved_ip(ip_str: const u8[:]) -> bool {
     if is_cloud_metadata_domain(ip_str) {
         return true;
     }
-    let clean_ip = security_internal::strip_ssrf_ip_brackets_and_zone(ip_str).trim_end_byte('.');
+    let clean_ip = security_internal::strip_ssrf_ip_brackets_and_zone(ip_str.trim_end_byte('.')).trim_end_byte('.');
+    guard clean_ip.len <= 256 else { return true; }
     var lower_buf: u8[..256] = [];
     let norm_ip, ok = security_internal::normalize_ssrf_ip_chars(clean_ip, lower_buf);
-    guard ok else { return false; }
+    guard ok else { return true; }
 
     var octets: u8[4] = [0, 0, 0, 0];
     if security_internal::parse_flexible_ipv4(norm_ip, octets) {

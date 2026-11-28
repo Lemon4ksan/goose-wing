@@ -127,6 +127,7 @@ fn ws_inflate_message<B>(
 struct DedicatedWsCompressor {
     window_kb:          i64         = 32,
     history:            u8[..65536] = [],
+    rx_history:         u8[..65536] = [],
     compress_buf:       u8[..65536] = [],
     decompress_buf:     u8[..65536] = [],
     total_compressed:   u64         = 0,
@@ -205,7 +206,7 @@ fn inflate_message_dedicated<B>(
         return false;
     }
 
-    let dict = if reset_window { "" } else { dedicated.history[..] };
+    let dict = if reset_window { "" } else { dedicated.rx_history[..] };
     let ok_d, err = core::inflate_with_dict_limit(dedicated.decompress_buf[..], out_plain, dict, eff_limit);
     if !ok_d {
         out_plain.clear();
@@ -216,10 +217,25 @@ fn inflate_message_dedicated<B>(
 
     dedicated.total_decompressed = core::add_sat_u64(dedicated.total_decompressed, out_plain.len as u64);
     if reset_window {
-        dedicated.history.clear();
+        dedicated.rx_history.clear();
         dedicated.decompress_buf.clear();
     } else {
-        realtime_internal::update_dedicated_history(dedicated, out_plain[..]);
+        let win_bytes = if dedicated.window_kb > 0 {
+            min(core::mul_sat_i64(dedicated.window_kb, 1024), 32768)
+        } else {
+            32768
+        };
+        let rx_plain = out_plain[..];
+        if rx_plain.len >= win_bytes {
+            let _ = dedicated.rx_history.try_set(rx_plain[core::sub_sat_i64(rx_plain.len, win_bytes)..]);
+        } else {
+            let total = core::add_sat_i64(dedicated.rx_history.len, rx_plain.len);
+            if total > win_bytes {
+                let drop_n = core::sub_sat_i64(total, win_bytes);
+                dedicated.rx_history.compact_wire_buffer(drop_n);
+            }
+            let _ = dedicated.rx_history.try_append(rx_plain);
+        }
     }
     committed = true;
     return true;

@@ -20,15 +20,26 @@ import rfc.http;
 
 // ---- http/forwarded.goose internal helpers ----
 
-// Appends an RFC 7239 node identifier with quotes if it contains IPv6 or non-token characters.
+// Appends an RFC 7239 node/host identifier, quoting and escaping non-tchar characters (RFC 9110 §5.6.4).
 fn append_quoted_node<B>(val: const u8[:], out: B&) {
-    let needs_quotes = val.contains_byte(':') || val.contains_byte('[') || val.contains_byte(']');
-    if needs_quotes && (val.len == 0 || val[0] != '"') {
-        out.push('"');
-        out.append(val);
-        out.push('"');
+    var needs_quotes = false;
+    for b in val {
+        if !core::is_tchar(b) {
+            needs_quotes = true;
+            break;
+        }
+    }
+    if needs_quotes {
+        let _ = out.try_push('"');
+        for b in val {
+            if b == '"' || b == '\\' {
+                let _ = out.try_push('\\');
+            }
+            let _ = out.try_push(b);
+        }
+        let _ = out.try_push('"');
     } else {
-        out.append(val);
+        let _ = out.try_append(val);
     }
 }
 

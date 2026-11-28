@@ -614,11 +614,18 @@ fn discover_and_cache_ech_config(
     let dns_resp, ok_doh = doh_query(session, domain, rfc::DNS_QTYPE_HTTPS, 0);
     guard ok_doh else { return ech, false; }
 
-    let eff_ttl = if dns_resp.min_ttl_sec > 0 { dns_resp.min_ttl_sec } else { 300 };
+    guard dns_resp.min_ttl_sec > 0 else {
+        for &rec in dns_resp.https_records {
+            if rec.has_ech && rec.ech_config_list.len > 0 {
+                return ech, ech.try_set(rec.ech_config_list[..]);
+            }
+        }
+        return ech, false;
+    }
     var cache_entry = dns::CacheEntry {
         qtype:           rfc::DNS_QTYPE_HTTPS,
         inserted_at_sec: now_sec,
-        ttl_sec:         eff_ttl,
+        ttl_sec:         dns_resp.min_ttl_sec,
         valid:           true,
         ..
     };

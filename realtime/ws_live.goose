@@ -101,7 +101,7 @@ fn find_http1_header_counted(head: const u8[:], name: const u8[:]) -> const u8[:
         let end = if rel >= 0 { core::add_sat_i64(pos, rel) } else { head.len };
         let line = head[pos..end];
         let k, v, ok_col = line.split_once_byte(':');
-        if ok_col && k.trim_lws().eq_ascii_fold(name) {
+        if ok_col && k.eq_ascii_fold(name) {
             if count == 0 { first_val = v.trim_lws(); }
             count = core::add_sat_i64(count, 1);
         }
@@ -134,7 +134,7 @@ fn http1_head_has_token(head: const u8[:], name: const u8[:], token: const u8[:]
         let rel = core::find_crlf(head[pos..]);
         let end = if rel >= 0 { core::add_sat_i64(pos, rel) } else { head.len };
         let k, v, ok_col = head[pos..end].split_once_byte(':');
-        if ok_col && k.trim_lws().eq_ascii_fold(name) && header_value_contains_token(v, token) {
+        if ok_col && k.eq_ascii_fold(name) && header_value_contains_token(v, token) {
             return true;
         }
         if rel < 0 { break; }
@@ -175,7 +175,7 @@ fn validate_ws_upgrade_headers(req_head: const u8[:], allowed_origin: const u8[:
             return "", false;
         }
     }
-    guard host_cnt >= 1 && host_val.len > 0 && ver_cnt == 1 && ver == "13" else { return "", false; }
+    guard host_cnt == 1 && host_val.len > 0 && ver_cnt == 1 && ver == "13" else { return "", false; }
     guard http1_head_has_token(req_head, "Upgrade", "websocket") &&
         http1_head_has_token(req_head, "Connection", "upgrade") else {
         return "", false;
@@ -318,13 +318,15 @@ fn try_consume_buffered_ws_frame(
         out_opcode = view.opcode;
         out_payload.append(view.payload);
     }
+    let is_frag_in_progress = !is_data && conn.ws.frag_opcode != 0 && reply.len == 0;
     conn.rx_buf.compact_wire_buffer(consumed);
     if conn.ws.is_closed {
         conn.open = false;
         if is_data { return 1; }
         return if is_clean_ws_close_code(conn.ws.close_code) { 0 } else { -1 };
     }
-    return if is_data { 1 } else { 2 };
+    if is_data { return 1; }
+    return if is_frag_in_progress { 3 } else { 2 };
 }
 
 // crap:ignore
@@ -374,6 +376,9 @@ fn ws_recv_frame(
     while true {
         let step = try_consume_buffered_ws_frame(conn, out_opcode, out_payload, reply);
         if step == 1 || step == 0 || step == -1 { return step; }
+        if step == 3 {
+            continue;
+        }
         if step == 2 {
             ctrl_frames = core::add_sat_u64(ctrl_frames, 1);
             guard ctrl_frames < WS_LIVE_MAX_CTRL_FRAMES else { return -2; }

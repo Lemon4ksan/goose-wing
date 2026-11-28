@@ -53,6 +53,10 @@ fn serialize_h1_request(
     guard !(req.method[..].eq_ascii_fold("TRACE") && (req.body.len > 0 || has_cl || has_te)) else {
         return false;
     }
+    if has_cl {
+        let cl_val, ok_cl = http::validate_content_length_value(req.header("Content-Length"));
+        guard ok_cl && cl_val == req.body.len else { return false; }
+    }
     let needs_zero_cl = req.method[..].eq_ascii_fold(rfc::METHOD_POST) || req.method[..].eq_ascii_fold(rfc::METHOD_PUT);
     var hdrs = req.headers;
     if !has_cl && !has_te && (req.body.len > 0 || needs_zero_cl) {
@@ -60,11 +64,14 @@ fn serialize_h1_request(
         req.body.len.format_i64_dec(cl_buf);
         guard http::append_header(hdrs, "Content-Length", cl_buf[..]) else { return false; }
     }
+    var host_buf: u8[..280] = [];
+    core::format_outgoing_host(url_val, host_buf);
+    let wire_host = if host_buf.len > 0 { host_buf[..] } else { url_val.host() };
     out.clear();
     guard wire::encode_h1_request(
         req.method[..],
         target_buf[..],
-        url_val.host(),
+        wire_host,
         hdrs,
         "",
         wire::H1HeaderFilterMode.PreserveAll,
